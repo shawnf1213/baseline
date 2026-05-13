@@ -23,8 +23,10 @@ export default function PasswordGate({ children }) {
     }
   }, [visible])
 
+  const APP_PASSWORD = (import.meta.env.VITE_APP_PASSWORD || '').replace(/^﻿/, '').trim()
+
   const handleSubmit = () => {
-    if (password === import.meta.env.VITE_APP_PASSWORD) {
+    if (password === APP_PASSWORD) {
       sessionStorage.setItem('baseline_authenticated', 'true')
       setVisible(false)
       setAuthenticated(true)
@@ -54,13 +56,19 @@ export default function PasswordGate({ children }) {
     <div style={{
       position: 'fixed',
       inset: 0,
-      background: '#0a0a0a',
+      backgroundImage: 'url(/baseline-bg.png)',
+      backgroundSize: 'cover',
+      backgroundPosition: 'center',
+      backgroundRepeat: 'no-repeat',
       display: 'flex',
       flexDirection: 'column',
       alignItems: 'center',
       justifyContent: 'center',
       zIndex: 9999,
     }}>
+      {/* Dark overlay so form stays readable */}
+      <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.55)' }} />
+      <div style={{ position: 'relative', zIndex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
       <img
         src="/baseline-logo.png"
         alt="Baseline"
@@ -132,6 +140,7 @@ export default function PasswordGate({ children }) {
         height: 20,
       }}>
         {error}
+      </div>
       </div>
     </div>
   )
