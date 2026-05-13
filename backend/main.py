@@ -1,14 +1,14 @@
-"""
-Baseline Tennis Analytics — FastAPI backend.
+﻿"""
+Baseline Tennis Analytics â€” FastAPI backend.
 
 Wraps all existing Python calculation logic in REST endpoints.
-No logic is rewritten here — only imported and exposed via HTTP.
+No logic is rewritten here â€” only imported and exposed via HTTP.
 
 Endpoints:
-  POST /api/search          — player search
-  POST /api/player/stats    — surface stats + archetype
-  POST /api/prop/calculate  — full prop projection
-  POST /api/h2h             — head-to-head record + stats
+  POST /api/search          â€” player search
+  POST /api/player/stats    â€” surface stats + archetype
+  POST /api/prop/calculate  â€” full prop projection
+  POST /api/h2h             â€” head-to-head record + stats
 """
 
 import sys
@@ -73,7 +73,7 @@ app = FastAPI(title="Baseline Tennis API", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["https://baseline-app-three.vercel.app"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -82,7 +82,7 @@ app.add_middleware(
 
 @app.on_event("startup")
 async def startup():
-    logger.info("Initialising Sofascore client / proxy session…")
+    logger.info("Initialising Sofascore client / proxy sessionâ€¦")
     init_session()
     logger.info("Backend ready.")
 
@@ -165,13 +165,13 @@ def _build_explanation(req: PropRequest, result: dict, lean: str,
         sup = result.get("suppression_factor", 1.0)
         cf  = result.get("cpr_factor", 1.0)
         parts.append(
-            f"Surface CPR {cpr} applies ×{cf:.2f} court-speed multiplier. "
-            f"Opponent return suppression: ×{sup:.2f}."
+            f"Surface CPR {cpr} applies Ã—{cf:.2f} court-speed multiplier. "
+            f"Opponent return suppression: Ã—{sup:.2f}."
         )
     elif pt == "Double Faults":
         pf = result.get("pressure_factor", 1.0)
         parts.append(
-            f"Opponent return aggression factor ×{pf:.2f} — "
+            f"Opponent return aggression factor Ã—{pf:.2f} â€” "
             f"{'increases' if pf > 1 else 'reduces'} second-serve pressure."
         )
     elif pt == "Total Games":
@@ -180,7 +180,7 @@ def _build_explanation(req: PropRequest, result: dict, lean: str,
         sets = result.get("expected_sets", 2.3)
         ch   = result.get("combined_hold", 72)
         parts.append(
-            f"{env} — combined hold {ch:.0f}% → {gps:.1f} games/set "
+            f"{env} â€” combined hold {ch:.0f}% â†’ {gps:.1f} games/set "
             f"over {sets:.1f} expected sets."
         )
     elif pt == "Break Points Won":
@@ -189,7 +189,7 @@ def _build_explanation(req: PropRequest, result: dict, lean: str,
         faced = result.get("opp_bp_faced") or 0
         base  = (conv / 100) * faced
         parts.append(
-            f"{env} — {conv:.0f}% conversion × {faced:.1f} BPs opponent faces per match "
+            f"{env} â€” {conv:.0f}% conversion Ã— {faced:.1f} BPs opponent faces per match "
             f"= {base:.1f} base projection."
         )
         cpr_adj = result.get("cpr_adj_pct", 0)
@@ -202,7 +202,7 @@ def _build_explanation(req: PropRequest, result: dict, lean: str,
         sign = "+" if edge >= 0 else ""
         parts.append(
             f"Model projects {proj:.1f} vs book line {line:.1f} "
-            f"(edge {sign}{edge:.1f}) → {lean}."
+            f"(edge {sign}{edge:.1f}) â†’ {lean}."
         )
 
     return " ".join(parts)
@@ -444,3 +444,4 @@ async def h2h_endpoint(req: H2HRequest):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+
