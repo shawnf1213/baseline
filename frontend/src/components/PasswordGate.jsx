@@ -72,7 +72,7 @@ export default function PasswordGate({ children }) {
       <img
         src="/baseline-logo.png"
         alt="Baseline"
-        style={{ height: 60, width: 'auto' }}
+        style={{ height: 100, width: 'auto', maxWidth: 400 }}
       />
       <div style={{
         fontSize: 13,
