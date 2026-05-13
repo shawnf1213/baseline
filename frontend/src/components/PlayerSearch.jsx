@@ -10,7 +10,11 @@ export default function PlayerSearch({ tour, onSelect, label = 'Search player…
   useEffect(() => {
     const handler = (e) => { if (!ref.current?.contains(e.target)) setOpen(false) }
     document.addEventListener('mousedown', handler)
-    return () => document.removeEventListener('mousedown', handler)
+    document.addEventListener('touchstart', handler)
+    return () => {
+      document.removeEventListener('mousedown', handler)
+      document.removeEventListener('touchstart', handler)
+    }
   }, [])
 
   const pick = (player) => {
@@ -55,7 +59,7 @@ export default function PlayerSearch({ tour, onSelect, label = 'Search player…
               <div style={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', width: 14, height: 14, border: '2px solid var(--border)', borderTopColor: 'var(--green)', borderRadius: '50%', animation: 'spin .6s linear infinite' }} />
             )}
           </div>
-          {open && results.length > 0 && (
+          {query.length >= 3 && results.length > 0 && (
             <div style={{
               position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 50,
               background: '#1a1a1a', border: '1px solid var(--border)', borderRadius: 8,
