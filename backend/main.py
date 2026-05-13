@@ -71,9 +71,15 @@ from src.constants import COURT_CPR, CPR_NEUTRAL, GENERIC_SURFACE_CPR
 # ---------------------------------------------------------------------------
 app = FastAPI(title="Baseline Tennis API", version="1.0.0")
 
+_ALLOWED_ORIGINS = [
+    "https://baseline-app-three.vercel.app",
+    "http://localhost:5173",
+    "http://localhost:5174",
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://baseline-app-three.vercel.app"],
+    allow_origins=_ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
