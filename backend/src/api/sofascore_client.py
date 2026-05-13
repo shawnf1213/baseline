@@ -461,7 +461,7 @@ def _fetch_stats_parallel(event_ids: list) -> dict:
             pass
         return event_id, {}
 
-    with ThreadPoolExecutor(max_workers=5) as ex:
+    with ThreadPoolExecutor(max_workers=10) as ex:
         for eid, data in ex.map(_fetch_one, uncached):
             results[eid] = data
             # Update session state from main thread (map blocks until all done)
@@ -542,7 +542,7 @@ def get_player_stats_by_surface(player_id, tour: str = "ATP") -> dict:
         return st.session_state[cache_key]
 
     now = time.time()
-    events = _get_player_recent_events(pid)  # Fix 5: 2 pages max
+    events = _get_player_recent_events(pid, num_pages=3)
 
     # Filter to finished singles events upfront
     valid: list = []
@@ -558,9 +558,9 @@ def get_player_stats_by_surface(player_id, tour: str = "ATP") -> dict:
             continue
         valid.append(event)
 
-    # Fix 2 & 4 — parallel stats fetch with cache-first
-    event_ids = [e.get("id", 0) for e in valid]
-    stats_map = _fetch_stats_parallel(event_ids)  # no delays, up to 10 concurrent
+    # Fetch stats for the most recent 40 matches only to keep response time reasonable
+    event_ids = [e.get("id", 0) for e in valid[:40]]
+    stats_map = _fetch_stats_parallel(event_ids)
 
     # Merge base row data with fetched stats
     all_match_stats: list = []
