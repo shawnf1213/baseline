@@ -95,23 +95,37 @@ export default function HeadToHead({ tour }) {
           {/* Record */}
           {section('Overall H2H Record')}
           <div style={{ display: 'flex', alignItems: 'center', gap: 32, padding: '20px 24px', background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 12, marginBottom: 16 }}>
-            <div style={{ textAlign: 'center' }}>
-              <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 4 }}>{p1?.name}</div>
-              <div style={{ fontSize: 52, fontWeight: 900, color: 'var(--green)', lineHeight: 1 }}>{h2h.p1_wins}</div>
-            </div>
-            <div style={{ fontSize: 28, color: '#333' }}>–</div>
-            <div style={{ textAlign: 'center' }}>
-              <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 4 }}>{p2?.name}</div>
-              <div style={{ fontSize: 52, fontWeight: 900, color: 'var(--muted)', lineHeight: 1 }}>{h2h.p2_wins}</div>
-            </div>
-            <div style={{ marginLeft: 12, fontSize: 13, color: 'var(--muted)' }}>
-              <div>{h2h.total} meetings</div>
-              {h2h.surface_matches > 0 && surface !== 'All' && (
-                <div style={{ marginTop: 4 }}>
-                  {h2h.surface_p1_wins}–{h2h.surface_p2_wins} on {surface}
+            {h2h.total === 0 ? (
+              <div style={{ fontSize: 15, color: 'var(--muted)', padding: '8px 0' }}>No H2H data available</div>
+            ) : (
+              <>
+                <div style={{ textAlign: 'center' }}>
+                  <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 4 }}>{p1?.name}</div>
+                  <div style={{ fontSize: 60, fontWeight: 900, color: '#00e676', lineHeight: 1 }}>{h2h.p1_wins}</div>
                 </div>
-              )}
-            </div>
+                <div style={{ fontSize: 28, color: '#333' }}>—</div>
+                <div style={{ textAlign: 'center' }}>
+                  <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 4 }}>{p2?.name}</div>
+                  <div style={{ fontSize: 60, fontWeight: 900, color: '#ff4444', lineHeight: 1 }}>{h2h.p2_wins}</div>
+                </div>
+                <div style={{ marginLeft: 12, fontSize: 13, color: 'var(--muted)' }}>
+                  <div>{h2h.total} {h2h.total !== 1 ? 'meetings' : 'meeting'}</div>
+                  {h2h.surface_matches > 0 && surface !== 'All' && (
+                    <div style={{ marginTop: 4 }}>
+                      {h2h.surface_p1_wins}—{h2h.surface_p2_wins} on {surface}
+                    </div>
+                  )}
+                  {h2h.date_range && (
+                    <div style={{ marginTop: 4, fontSize: 11 }}>{h2h.date_range}</div>
+                  )}
+                  {h2h.surface_breakdown && Object.keys(h2h.surface_breakdown).length > 0 && h2h.total >= 3 && (
+                    <div style={{ marginTop: 6, fontSize: 11, color: 'var(--muted)' }}>
+                      {Object.entries(h2h.surface_breakdown).map(([s, n]) => `${n} ${s}`).join(' · ')}
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
           </div>
 
           {/* Stat avgs */}
@@ -172,7 +186,7 @@ export default function HeadToHead({ tour }) {
 
           {h2h.total === 0 && (
             <div style={{ textAlign: 'center', padding: '40px 20px', color: 'var(--muted)' }}>
-              No H2H matches found in tracked history
+              No H2H data available
             </div>
           )}
         </motion.div>

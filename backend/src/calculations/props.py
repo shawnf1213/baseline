@@ -3,6 +3,12 @@ from src.constants import COURT_CPR, CPR_NEUTRAL, ATP_TOUR_AVERAGES
 # Tour-average aces faced per match — used to normalise opponent ace-against rate
 _TOUR_AVG_ACE_AGAINST = {"ATP": 5.5, "WTA": 3.0}
 
+# Tour-average first-serve points won % — used for TA opponent suppression
+_TOUR_AVG_FIRST_WON = {"ATP": 72.0, "WTA": 65.0}
+
+# Average service points per match by tour
+_AVG_SERVICE_PTS = {"ATP": 80, "WTA": 70}
+
 # Handedness matchup ace factors (server_hand, returner_hand) -> factor
 #
 # R server vs L returner:
@@ -65,29 +71,65 @@ def project_aces(
 ) -> dict:
     """
     5-layer ace projection model:
-      L1 — base ace rate on surface (Sofascore)
-      L2 — opponent ace-against rate vs tour average (Tennis Abstract)
+      L1 — base ace rate: TA surface stats (primary) or Sofascore (fallback)
+      L2 — opponent suppression: TA first_won_pct (primary) blended with Sofascore
       L3 — handedness matchup adjustment (Tennis Abstract)
-      L4 — opponent return aggressiveness (Sofascore return_first_serve_pts_won)
+      L4 — opponent ace-against (TA ace_pct blended with Sofascore ace-against)
       L5 — surface/court CPR (court pace rating)
     """
-    base = _safe(player_stats.get("aces"))
-    if base == 0:
+    avg_service_pts = _AVG_SERVICE_PTS.get(tour, 80)
+    ta_used = False
+    ta_surface_matches = 0
+
+    # ── L1: Base ace rate — TA surface stats preferred ────────────────────────
+    sofascore_base = _safe(player_stats.get("aces"))
+    ta_base = None
+    ta_surf = None
+    if player_ta:
+        ta_surf = player_ta.get("surface_stats", {}).get(surface)
+    if ta_surf and ta_surf.get("ace_pct") is not None:
+        ace_pct = ta_surf["ace_pct"]
+        ta_base = (ace_pct / 100) * avg_service_pts
+        ta_used = True
+        ta_surface_matches = ta_surf.get("matches", 0) or 0
+
+    base = ta_base if ta_used else sofascore_base
+    if base == 0 or base is None:
         return {"projection": None, "lean": None, "confidence": 0,
-                "note": "No ace data available for this surface."}
+                "note": "No ace data available for this surface.",
+                "ta_used": ta_used, "ta_surface_matches": ta_surface_matches}
 
     cpr = cpr_override if cpr_override is not None else COURT_CPR.get(court, CPR_NEUTRAL)
 
-    # ── L2: Opponent ace-against rate (Tennis Abstract) ───────────────────────
-    ace_against_factor = 1.0
-    opp_ace_against = None
+    # ── L2: Opponent suppression — TA first_won_pct blended with Sofascore ───
+    opp_ta_surf = None
     if opponent_ta:
-        opp_ace_against = opponent_ta.get("ace_against_per_match")
-    if opp_ace_against and opp_ace_against > 0:
-        tour_avg_ag = _TOUR_AVG_ACE_AGAINST.get(tour, 5.5)
-        raw_factor = opp_ace_against / tour_avg_ag
-        # Clamp to a sensible range — avoids explosion on outliers
-        ace_against_factor = max(0.70, min(1.50, raw_factor))
+        opp_ta_surf = opponent_ta.get("surface_stats", {}).get(surface)
+
+    # Sofascore suppression (always computed as fallback component)
+    opp_ret1 = _safe(opponent_stats.get("return_first_serve_pts_won"))
+    tour_avg_ret1 = ATP_TOUR_AVERAGES["return_first_serve_pts_won"]
+    if opp_ret1 > 0:
+        if opp_ret1 > tour_avg_ret1:
+            ss_suppression = 1 - (opp_ret1 - tour_avg_ret1) / 120
+        else:
+            ss_suppression = 1 + (tour_avg_ret1 - opp_ret1) / 200
+    else:
+        ss_suppression = 1.0
+
+    # TA suppression via opponent first_won_pct
+    if opp_ta_surf and opp_ta_surf.get("first_won_pct") is not None:
+        tour_avg_fw = _TOUR_AVG_FIRST_WON.get(tour, 72.0)
+        opp_fw = opp_ta_surf["first_won_pct"]
+        raw_ta_supp = 1.0 - (opp_fw - tour_avg_fw) / tour_avg_fw
+        raw_ta_supp = max(0.70, min(1.30, raw_ta_supp))
+        # Blend 60% TA + 40% Sofascore if both available
+        if opp_ret1 > 0:
+            suppression = 0.60 * raw_ta_supp + 0.40 * ss_suppression
+        else:
+            suppression = raw_ta_supp
+    else:
+        suppression = ss_suppression
 
     # ── L3: Handedness matchup (Tennis Abstract) ──────────────────────────────
     hand_factor = 1.0
@@ -95,14 +137,11 @@ def project_aces(
     opp_hand    = opponent_ta.get("handedness") if opponent_ta else None
 
     if player_hand and opp_hand:
-        # Choose surface-specific lookup table
         factor_table = (
             _HAND_ACE_FACTORS_GRASS
             if surface == "Grass"
             else _HAND_ACE_FACTORS_CLAY_HARD
         )
-        # If TA has explicit vs-handedness serve data, use the ratio to
-        # refine the fixed factor (takes precedence when available)
         vs_key  = "vs_left" if opp_hand == "L" else "vs_right"
         vs_data = (player_ta.get(vs_key) or {}) if player_ta else {}
         vs_spw  = vs_data.get("serve_pts_won")
@@ -114,29 +153,59 @@ def project_aces(
         else:
             hand_factor = factor_table.get((player_hand, opp_hand), 1.0)
 
-    # ── L4: Opponent return aggressiveness (Sofascore) ────────────────────────
-    opp_ret1 = _safe(opponent_stats.get("return_first_serve_pts_won"))
-    tour_avg_ret1 = ATP_TOUR_AVERAGES["return_first_serve_pts_won"]
-    if opp_ret1 > 0:
-        if opp_ret1 > tour_avg_ret1:
-            suppression = 1 - (opp_ret1 - tour_avg_ret1) / 120
-        else:
-            suppression = 1 + (tour_avg_ret1 - opp_ret1) / 200
-    else:
-        suppression = 1.0
+    # ── L4: Opponent ace-against (TA blended with Sofascore) ─────────────────
+    ace_against_factor = 1.0
+    opp_ace_against = None
+    # Sofascore ace-against
+    ss_opp_ace_against = None
+    if opponent_ta:
+        ss_opp_ace_against = opponent_ta.get("ace_against_per_match")
+    # TA ace_pct for opponent is their own ace rate (correlated with server quality)
+    # Use it as a proxy for how many aces they face
+    ta_opp_ace_against = None
+    if opp_ta_surf and opp_ta_surf.get("ace_pct") is not None:
+        ta_opp_ace_against = (opp_ta_surf["ace_pct"] / 100) * avg_service_pts
+
+    if ta_opp_ace_against is not None and ss_opp_ace_against is not None and ss_opp_ace_against > 0:
+        blended_against = 0.60 * ta_opp_ace_against + 0.40 * ss_opp_ace_against
+        opp_ace_against = blended_against
+    elif ss_opp_ace_against is not None:
+        opp_ace_against = ss_opp_ace_against
+    elif ta_opp_ace_against is not None:
+        opp_ace_against = ta_opp_ace_against
+
+    if opp_ace_against and opp_ace_against > 0:
+        tour_avg_ag = _TOUR_AVG_ACE_AGAINST.get(tour, 5.5)
+        raw_factor = opp_ace_against / tour_avg_ag
+        ace_against_factor = max(0.70, min(1.50, raw_factor))
 
     # ── L5: Court speed (CPR) ─────────────────────────────────────────────────
     cpr_factor = 1 + (cpr - CPR_NEUTRAL) / 100
 
-    # ── Combine layers ────────────────────────────────────────────────────────
-    proj = base * ace_against_factor * hand_factor * suppression * cpr_factor
+    # ── Combine layers (TA projection) ────────────────────────────────────────
+    ta_proj = base * ace_against_factor * hand_factor * suppression * cpr_factor
 
+    # ── Sofascore recency blend ───────────────────────────────────────────────
+    p_matches = player_stats.get("matches_played", 0) or 0
+    o_matches = opponent_stats.get("matches_played", 0) or 0
+
+    if ta_used and sofascore_base > 0 and p_matches >= 3:
+        ss_proj = sofascore_base * ace_against_factor * hand_factor * ss_suppression * cpr_factor
+        proj = 0.70 * ta_proj + 0.30 * ss_proj
+    else:
+        proj = ta_proj
+
+    # ── H2H blend ────────────────────────────────────────────────────────────
     if h2h_ace_avg is not None and h2h_ace_avg > 0:
         proj = proj * 0.70 + h2h_ace_avg * 0.30
 
-    p_matches = player_stats.get("matches_played", 0) or 0
-    o_matches = opponent_stats.get("matches_played", 0) or 0
     conf = _confidence(p_matches, o_matches, h2h_ace_avg is not None)
+
+    # ── Confidence adjustment for TA sample size ──────────────────────────────
+    if ta_used and ta_surface_matches < 20:
+        conf = max(0, conf - 8)
+    elif ta_used and ta_surface_matches > 50:
+        conf = min(95, conf + 5)
 
     return {
         "projection":          round(proj, 1),
@@ -151,6 +220,8 @@ def project_aces(
         "player_hand":         player_hand,
         "opp_hand":            opp_hand,
         "opp_ace_against":     round(opp_ace_against, 1) if opp_ace_against else None,
+        "ta_used":             ta_used,
+        "ta_surface_matches":  ta_surface_matches,
     }
 
 
@@ -158,12 +229,34 @@ def project_double_faults(
     player_stats: dict,
     opponent_stats: dict,
     h2h_df_avg: float = None,
+    player_ta: dict = None,
+    opponent_ta: dict = None,
+    tour: str = "ATP",
+    surface: str = "Hard",
 ) -> dict:
-    base = _safe(player_stats.get("double_faults"))
-    if base == 0:
-        return {"projection": None, "lean": None, "confidence": 0,
-                "note": "No double fault data available for this surface."}
+    avg_service_pts = _AVG_SERVICE_PTS.get(tour, 80)
+    ta_used = False
+    ta_surface_matches = 0
 
+    # ── Base DF rate: TA surface stats preferred ──────────────────────────────
+    sofascore_base = _safe(player_stats.get("double_faults"))
+    ta_base = None
+    ta_surf = None
+    if player_ta:
+        ta_surf = player_ta.get("surface_stats", {}).get(surface)
+    if ta_surf and ta_surf.get("df_pct") is not None:
+        df_pct = ta_surf["df_pct"]
+        ta_base = (df_pct / 100) * avg_service_pts
+        ta_used = True
+        ta_surface_matches = ta_surf.get("matches", 0) or 0
+
+    base = ta_base if ta_used else sofascore_base
+    if base == 0 or base is None:
+        return {"projection": None, "lean": None, "confidence": 0,
+                "note": "No double fault data available for this surface.",
+                "ta_used": ta_used, "ta_surface_matches": ta_surface_matches}
+
+    # ── Opponent pressure factor (Sofascore) ──────────────────────────────────
     opp_ret1 = _safe(opponent_stats.get("return_first_serve_pts_won"))
     opp_ret2 = _safe(opponent_stats.get("return_second_serve_pts_won"))
     opp_ret_avg = (opp_ret1 + opp_ret2) / 2 if (opp_ret1 + opp_ret2) > 0 else 0
@@ -177,14 +270,29 @@ def project_double_faults(
     else:
         pressure = 1.0
 
-    proj = base * pressure
+    ta_val = base * pressure
 
+    # ── Sofascore recency blend (DFs are streakier — give recency more weight)
+    p_matches = player_stats.get("matches_played", 0) or 0
+    o_matches = opponent_stats.get("matches_played", 0) or 0
+
+    if ta_used and sofascore_base > 0 and p_matches >= 3:
+        ss_val = sofascore_base * pressure
+        proj = 0.65 * ta_val + 0.35 * ss_val
+    else:
+        proj = ta_val
+
+    # ── H2H blend ────────────────────────────────────────────────────────────
     if h2h_df_avg is not None and h2h_df_avg > 0:
         proj = proj * 0.70 + h2h_df_avg * 0.30
 
-    p_matches = player_stats.get("matches_played", 0) or 0
-    o_matches = opponent_stats.get("matches_played", 0) or 0
     conf = _confidence(p_matches, o_matches, h2h_df_avg is not None)
+
+    # ── Confidence adjustment for TA sample size ──────────────────────────────
+    if ta_used and ta_surface_matches < 20:
+        conf = max(0, conf - 8)
+    elif ta_used and ta_surface_matches > 50:
+        conf = min(95, conf + 5)
 
     return {
         "projection": round(proj, 1),
@@ -192,6 +300,8 @@ def project_double_faults(
         "confidence": conf,
         "base_avg": round(base, 1),
         "pressure_factor": round(pressure, 3),
+        "ta_used": ta_used,
+        "ta_surface_matches": ta_surface_matches,
     }
 
 
@@ -265,42 +375,78 @@ def project_total_games(
     h2h_games_avg: float = None,
     tour: str = "ATP",
     court: str = "",
+    player_ta: dict = None,
+    opponent_ta: dict = None,
 ) -> dict:
-    p1_srv = _safe(player_stats.get("first_serve_pts_won"), 72.0)
-    p2_srv = _safe(opponent_stats.get("first_serve_pts_won"), 72.0)
-    combined_hold = (p1_srv + p2_srv) / 2
+    ta_used = False
+    ta_surface_matches = 0
 
-    # Step 2 — games per set from combined hold rate (continuous, no discontinuity at boundaries)
+    # ── Sofascore hold rates ──────────────────────────────────────────────────
+    p1_srv_ss = _safe(player_stats.get("first_serve_pts_won"), 72.0)
+    p2_srv_ss = _safe(opponent_stats.get("first_serve_pts_won"), 72.0)
+    combined_hold_ss = (p1_srv_ss + p2_srv_ss) / 2
+
+    # ── TA hold rates: compute from first_in_pct, first_won_pct, second_won_pct
+    p1_ta_surf = player_ta.get("surface_stats", {}).get(surface) if player_ta else None
+    p2_ta_surf = opponent_ta.get("surface_stats", {}).get(surface) if opponent_ta else None
+
+    def _ta_hold(surf_stats):
+        if not surf_stats:
+            return None
+        fin = surf_stats.get("first_in_pct")
+        fw  = surf_stats.get("first_won_pct")
+        sw  = surf_stats.get("second_won_pct")
+        if fin is None or fw is None or sw is None:
+            return None
+        return (fin / 100) * (fw / 100) + (1 - fin / 100) * (sw / 100)
+
+    p1_ta_hold = _ta_hold(p1_ta_surf)
+    p2_ta_hold = _ta_hold(p2_ta_surf)
+
+    if p1_ta_hold is not None and p2_ta_hold is not None:
+        ta_combined_hold = ((p1_ta_hold + p2_ta_hold) / 2) * 100  # scale to % for formula
+        ta_used = True
+        ta_surface_matches = (
+            (p1_ta_surf.get("matches", 0) or 0) + (p2_ta_surf.get("matches", 0) or 0)
+        ) // 2
+
+    # ── Blend hold rates ──────────────────────────────────────────────────────
+    if ta_used:
+        combined_hold = 0.70 * ta_combined_hold + 0.30 * combined_hold_ss
+    else:
+        combined_hold = combined_hold_ss
+
+    p1_srv = p1_srv_ss  # keep for reporting
+    p2_srv = p2_srv_ss
+
+    # ── Games per set from combined hold rate ─────────────────────────────────
     if combined_hold > 75:
-        # 9.5 → 10.5 from 75 → 90
         games_per_set = 9.5 + (combined_hold - 75) / 15
         games_per_set = min(10.5, games_per_set)
     elif combined_hold >= 65:
-        # 8.5 → 9.5 from 65 → 75
         games_per_set = 8.5 + (combined_hold - 65) / 10
     else:
-        # 7.5 → 8.5 from 50 → 65
         games_per_set = max(7.5, 7.5 + (combined_hold - 50) / 15)
 
-    # Step 3 — expected sets adjusted for match balance
+    # ── Expected sets adjusted for match balance ──────────────────────────────
     p1_wr = _safe(player_stats.get("win_rate"), 50.0)
     p2_wr = _safe(opponent_stats.get("win_rate"), 50.0)
     exp_sets = _expected_sets(tour, court, p1_wr, p2_wr)
 
-    # Step 4 — raw total games
+    # ── Raw total games ───────────────────────────────────────────────────────
     proj = games_per_set * exp_sets
 
-    # Step 5 — H2H blend at 35% if available
+    # ── H2H blend at 35% if available ────────────────────────────────────────
     if h2h_games_avg is not None and h2h_games_avg > 0:
         proj = proj * 0.65 + h2h_games_avg * 0.35
 
-    # Step 6 — CPR surface adjustment
+    # ── CPR surface adjustment ────────────────────────────────────────────────
     from src.constants import COURT_CPR
     cpr = COURT_CPR.get(court, CPR_NEUTRAL)
-    if cpr <= 28:       # slow clay — longer rallies extend service games
-        gps_adj = 0.4   # midpoint of +0.3 to +0.5
-    elif cpr >= 43:     # fast grass — points end quickly
-        gps_adj = -0.3  # midpoint of -0.2 to -0.4
+    if cpr <= 28:
+        gps_adj = 0.4
+    elif cpr >= 43:
+        gps_adj = -0.3
     else:
         gps_adj = 0.0
     proj += gps_adj * exp_sets
@@ -311,21 +457,29 @@ def project_total_games(
     o_matches = opponent_stats.get("matches_played", 0) or 0
     conf = _confidence(p_matches, o_matches, h2h_games_avg is not None)
 
+    # ── Confidence adjustment for TA sample size ──────────────────────────────
+    if ta_used and ta_surface_matches < 20:
+        conf = max(0, conf - 8)
+    elif ta_used and ta_surface_matches > 50:
+        conf = min(95, conf + 5)
+
     proj_no_h2h = games_per_set * exp_sets + gps_adj * exp_sets
     lean = "OVER" if proj > proj_no_h2h * 1.02 else "UNDER" if proj < proj_no_h2h * 0.98 else "NEUTRAL"
 
     return {
-        "projection":      round(proj, 1),
-        "lean":            lean,
-        "confidence":      conf,
-        "games_per_set":   round(games_per_set, 1),
-        "expected_sets":   exp_sets,
-        "combined_hold":   round(combined_hold, 1),
-        "p1_srv":          round(p1_srv, 1),
-        "p2_srv":          round(p2_srv, 1),
-        "format":          f"Best of {'5' if court in GRAND_SLAMS and tour == 'ATP' else '3'}",
-        "environment":     env,
-        "cpr":             cpr,
+        "projection":          round(proj, 1),
+        "lean":                lean,
+        "confidence":          conf,
+        "games_per_set":       round(games_per_set, 1),
+        "expected_sets":       exp_sets,
+        "combined_hold":       round(combined_hold, 1),
+        "p1_srv":              round(p1_srv, 1),
+        "p2_srv":              round(p2_srv, 1),
+        "format":              f"Best of {'5' if court in GRAND_SLAMS and tour == 'ATP' else '3'}",
+        "environment":         env,
+        "cpr":                 cpr,
+        "ta_used":             ta_used,
+        "ta_surface_matches":  ta_surface_matches,
     }
 
 
@@ -342,38 +496,88 @@ def project_break_points(
     opponent_ta: dict = None,
     surface: str = "Hard",
 ) -> dict:
-    # Step 1 — opportunity pool: how many BPs the opponent faces per match on their serve
+    ta_used = False
+    ta_surface_matches = 0
+
+    # ── Step 1: Opportunity pool — opponent BPs faced per match on serve ──────
     opp_bp_faced = opponent_stats.get("bp_faced_count")
 
-    # Step 2 — player conversion rate %
-    # Primary: 100 - opponent's BPSvd from Tennis Abstract (surface-specific)
-    # Fallback: Sofascore bp_converted aggregate
+    # ── Step 2: Player conversion rate — TA surface bp_conv_pct as primary ───
     conv_rate_source = ""
-    opp_ta_surf = None
+    player_ta_surf = None
+    opp_ta_surf    = None
+
+    if player_ta:
+        player_ta_surf = player_ta.get("surface_stats", {}).get(surface)
     if opponent_ta:
         surf_stats = opponent_ta.get("surface_stats", {})
         opp_ta_surf = surf_stats.get(surface) or surf_stats.get("All")
 
+    # Primary: player's own TA bp_conv_pct on this surface
+    ta_conv_rate = None
+    if player_ta_surf and player_ta_surf.get("bp_conv_pct") is not None and player_ta_surf.get("matches", 0) >= 5:
+        ta_conv_rate = player_ta_surf["bp_conv_pct"]
+        ta_used = True
+        ta_surface_matches = player_ta_surf.get("matches", 0) or 0
+        conv_rate_source = f"TA player {surface}"
+
+    # Secondary: opponent's TA bp_conv_pct (what returners convert against them)
+    opp_ta_conv = None
     if opp_ta_surf and opp_ta_surf.get("bp_conv_pct") is not None and opp_ta_surf.get("matches", 0) >= 5:
-        # Use 100 - opponent's BPSvd% on this surface (what returners convert against them)
-        conv_rate_pct = opp_ta_surf["bp_conv_pct"]
-        conv_rate_source = f"TA {surface}"
+        opp_ta_conv = opp_ta_surf["bp_conv_pct"]
+
+    # Sofascore fallback conv rate
+    ss_conv_rate = player_stats.get("bp_converted")
+
+    # Determine estimated_bp_opportunities from opponent's bp_saved_pct if available
+    if opp_ta_surf and opp_ta_surf.get("bp_saved_pct") is not None and opp_bp_faced:
+        # Use opp bp_saved_pct to refine opp_bp_faced estimate
+        # No override needed — opp_bp_faced from Sofascore is already per-match
+        estimated_bp_opps = opp_bp_faced
     else:
-        conv_rate_pct = player_stats.get("bp_converted")
+        estimated_bp_opps = opp_bp_faced
+
+    if not estimated_bp_opps or estimated_bp_opps == 0:
+        return {"projection": None, "lean": None, "confidence": 0,
+                "note": "Insufficient break-point-faced data for opponent on this surface.",
+                "ta_used": ta_used, "ta_surface_matches": ta_surface_matches}
+
+    # Determine final conversion rate: blend TA player + TA opponent or fall back
+    if ta_conv_rate is not None and opp_ta_conv is not None:
+        # Both available: weight equally (both describe this specific matchup)
+        conv_rate_pct = (ta_conv_rate + opp_ta_conv) / 2
+        conv_rate_source = f"TA blend {surface}"
+    elif ta_conv_rate is not None:
+        conv_rate_pct = ta_conv_rate
+    elif opp_ta_surf and opp_ta_surf.get("bp_conv_pct") is not None and opp_ta_surf.get("matches", 0) >= 5:
+        # Legacy path: use opponent's bp_conv_pct as it was before
+        conv_rate_pct = opp_ta_surf["bp_conv_pct"]
+        conv_rate_source = f"TA opp {surface}"
+        ta_used = True
+        ta_surface_matches = opp_ta_surf.get("matches", 0) or 0
+    else:
+        conv_rate_pct = ss_conv_rate
         conv_rate_source = ""
 
-    if not opp_bp_faced or opp_bp_faced == 0:
-        return {"projection": None, "lean": None, "confidence": 0,
-                "note": "Insufficient break-point-faced data for opponent on this surface."}
     if not conv_rate_pct or conv_rate_pct == 0:
         return {"projection": None, "lean": None, "confidence": 0,
-                "note": "No break point conversion data available for this surface."}
+                "note": "No break point conversion data available for this surface.",
+                "ta_used": ta_used, "ta_surface_matches": ta_surface_matches}
 
-    # Step 3 — base projection = conversion rate × opponent BPs faced per match
-    proj = (conv_rate_pct / 100) * opp_bp_faced
+    # ── Step 3: Base projection ───────────────────────────────────────────────
+    ta_proj = (conv_rate_pct / 100) * estimated_bp_opps
 
-    # Step 3b — Handedness adjustment (Tennis Abstract)
-    # If opponent is left-handed and TA has explicit player vs-LH BP conversion, use it
+    # ── Sofascore recency blend: 75% TA, 25% Sofascore ───────────────────────
+    p_matches = player_stats.get("matches_played", 0) or 0
+    o_matches = opponent_stats.get("matches_played", 0) or 0
+
+    if ta_used and ss_conv_rate and ss_conv_rate > 0 and p_matches >= 3:
+        ss_proj = (ss_conv_rate / 100) * estimated_bp_opps
+        proj = 0.75 * ta_proj + 0.25 * ss_proj
+    else:
+        proj = ta_proj
+
+    # ── Step 3b: Handedness adjustment ───────────────────────────────────────
     hand_bp_factor = 1.0
     opp_hand = opponent_ta.get("handedness") if opponent_ta else None
     if opp_hand == "L" and player_ta:
@@ -389,12 +593,12 @@ def project_break_points(
 
     proj = proj * hand_bp_factor
 
-    # Step 4 — H2H blend at 30% if ≥ 3 H2H surface matches
+    # ── Step 4: H2H blend at 30% if ≥ 3 H2H surface matches ─────────────────
     h2h_used = h2h_bp_avg is not None and h2h_bp_avg > 0 and h2h_match_count >= 3
     if h2h_used:
         proj = proj * 0.70 + h2h_bp_avg * 0.30
 
-    # Step 5 — CPR surface adjustment ±5%
+    # ── Step 5: CPR surface adjustment ±5% ───────────────────────────────────
     cpr = cpr_override if cpr_override is not None else CPR_NEUTRAL
     if cpr <= 28:
         cpr_adj = -(28 - cpr) / (28 - 20) * 0.05
@@ -410,17 +614,21 @@ def project_break_points(
     p1_ret = _return_pts_won(player_stats)
     p2_srv = _safe(opponent_stats.get("first_serve_pts_won"), 72.0)
 
-    p_matches = player_stats.get("matches_played", 0) or 0
-    o_matches = opponent_stats.get("matches_played", 0) or 0
     conf = _confidence(p_matches, o_matches, h2h_used)
+
+    # ── Confidence adjustment for TA sample size ──────────────────────────────
+    if ta_used and ta_surface_matches < 20:
+        conf = max(0, conf - 8)
+    elif ta_used and ta_surface_matches > 50:
+        conf = min(95, conf + 5)
 
     return {
         "projection":        round(proj, 1),
-        "lean":              "OVER" if proj > (conv_rate_pct / 100) * opp_bp_faced else "UNDER",
+        "lean":              "OVER" if proj > (conv_rate_pct / 100) * estimated_bp_opps else "UNDER",
         "confidence":        conf,
         "conv_rate_pct":     round(conv_rate_pct, 1),
         "conv_rate_source":  conv_rate_source,
-        "opp_bp_faced":      round(opp_bp_faced, 1),
+        "opp_bp_faced":      round(estimated_bp_opps, 1),
         "h2h_bp_avg":        round(h2h_bp_avg, 1) if h2h_used else None,
         "hand_bp_factor":    round(hand_bp_factor, 3),
         "cpr_factor":        round(cpr_factor, 4),
@@ -429,6 +637,8 @@ def project_break_points(
         "p1_ret":            round(p1_ret, 1),
         "p2_srv":            round(p2_srv, 1),
         "environment":       env,
+        "ta_used":           ta_used,
+        "ta_surface_matches": ta_surface_matches,
     }
 
 
@@ -449,6 +659,31 @@ def generate_scouting_report(
     player_hand: str = None,
     opponent_hand: str = None,
 ) -> str:
+    """
+    Generate a punchy, bettor-voice scouting report.
+
+    You are a sharp tennis prop bettor writing a quick pre-match breakdown for
+    other bettors. Write in a direct, confident, first-person analytical voice
+    — like a tennis capper posting their read on Twitter or a Discord channel.
+
+    Rules:
+    - NEVER show multiplication, formulas, or model mechanics. No "×0.89" or
+      "adjusted by court speed". The model already ran — you are interpreting
+      the result.
+    - DO reference specific percentages and stats naturally in sentences, the
+      way a capper would cite them as evidence for their opinion.
+    - Reference surface tendencies, player patterns, and matchup dynamics as
+      your reasoning.
+    - You can reference court speed or surface characteristics in plain English
+      ("Rome is a slow grinder's court", "grass rewards big servers").
+    - Reference H2H if meaningful, dismiss it briefly if sample is too small
+      ("H2H is basically noise at 1 meeting").
+    - End with a clear lean and brief reason — not a probability statement.
+    - 3 to 5 sentences max. Tight and confident, not exhaustive.
+    - You may use the player's last name only after first mention.
+    - DO NOT say "the model projects" or "synthesis of" or
+      "matchup dynamics points to".
+    """
     from src.constants import COURT_CPR, CPR_NEUTRAL
 
     def _s(val, fmt=".0f", default="—"):
@@ -459,143 +694,139 @@ def generate_scouting_report(
         except Exception:
             return default
 
+    def _last(name: str) -> str:
+        parts = name.strip().split()
+        return parts[-1] if parts else name
+
     cpr = COURT_CPR.get(court, CPR_NEUTRAL)
     speed = "fast" if cpr >= 40 else "medium-fast" if cpr >= 36 else "medium" if cpr >= 30 else "slow"
 
-    p_wr = _s(player_surface_stats.get("win_rate"))
     p_aces = _s(player_surface_stats.get("aces"), ".1f")
-    p_dfs = _s(player_surface_stats.get("double_faults"), ".1f")
-    p_fs = _s(player_surface_stats.get("first_serve_pct"), ".0f")
-    p_1sw = _s(player_surface_stats.get("first_serve_pts_won"), ".0f")
+    p_dfs  = _s(player_surface_stats.get("double_faults"), ".1f")
+    p_1sw  = _s(player_surface_stats.get("first_serve_pts_won"), ".0f")
     p_ret1 = _s(player_surface_stats.get("return_first_serve_pts_won"), ".0f")
-    p_bpc = _s(player_surface_stats.get("bp_converted"), ".0f")
+    p_bpc  = _s(player_surface_stats.get("bp_converted"), ".0f")
+    p_wr   = _s(player_surface_stats.get("win_rate"))
     p_matches = player_surface_stats.get("matches_played", 0) or 0
 
-    o_wr = _s(opponent_surface_stats.get("win_rate"))
-    o_aces = _s(opponent_surface_stats.get("aces"), ".1f")
     o_ret1 = _s(opponent_surface_stats.get("return_first_serve_pts_won"), ".0f")
+    o_aces = _s(opponent_surface_stats.get("aces"), ".1f")
+    o_wr   = _s(opponent_surface_stats.get("win_rate"))
     o_matches = opponent_surface_stats.get("matches_played", 0) or 0
 
     proj_val = projection.get("projection", "N/A")
     lean = projection.get("lean", "NEUTRAL")
     conf = projection.get("confidence", 50)
 
+    p_last = _last(player_name)
+    o_last = _last(opponent_name)
+
+    # Court description
+    court_desc = court if court and court not in ("", "None") else f"{surface} courts"
+    court_speed_phrase = (
+        f"{court_desc} plays fast — that rewards big servers"
+        if cpr >= 40 else
+        f"{court_desc} is a slow grinder's surface" if cpr <= 28 else
+        f"{court_desc} is a medium-pace surface"
+    )
+
     sentences = []
 
-    # Form sentence
-    form_word = "strong" if (player_surface_stats.get("win_rate") or 0) > 65 else \
-                "solid" if (player_surface_stats.get("win_rate") or 0) > 50 else "inconsistent"
-    data_note = f"across {p_matches} tracked {surface} matches" if p_matches > 0 else "with limited surface data"
-    sentences.append(
-        f"{player_name} brings a {form_word} {surface} record ({p_wr}% win rate {data_note}), "
-        f"profiling as a {player_arch} with {p_aces} aces and {p_dfs} double faults per match on the surface."
-    )
-
-    # Opponent sentence
-    opp_word = "formidable" if (opponent_surface_stats.get("win_rate") or 0) > 65 else \
-               "dangerous" if (opponent_surface_stats.get("win_rate") or 0) > 50 else "beatable"
-    opp_data = f"across {o_matches} {surface} matches" if o_matches > 0 else "with limited data"
-    sentences.append(
-        f"{opponent_name} is a {opp_word} {opponent_arch} on {surface} ({o_wr}% win rate {opp_data}), "
-        f"averaging {o_aces} aces per match and winning {o_ret1}% of points on opponent first serves."
-    )
-
-    # Court/surface sentence
-    sentences.append(
-        f"The {court} plays as a {speed} surface (CPR {cpr}), which "
-        + (f"amplifies serve power and favors {player_name}'s {player_arch.lower()} game." if cpr >= 37 else
-           f"rewards consistency and return game, conditions where a {player_arch.lower()} can excel." if cpr <= 28 else
-           f"offers balanced conditions where both archetypes are competitive.")
-    )
-
-    # Prop-specific sentence
+    # ── Prop-specific opening ─────────────────────────────────────────────────
     if prop_type == "Aces":
         _o_ret1_raw = opponent_surface_stats.get("return_first_serve_pts_won") or 0
-        suppress_note = (
-            f"{opponent_name}'s {o_ret1}% return rate on first serves "
-            + ("heavily suppresses ace output." if _o_ret1_raw > 36 else
-               f"provides minimal suppression of {player_name}'s serve.")
-        )
-        # Handedness context
         hand_note = ""
-        if player_hand and opponent_hand:
-            matchup = f"{player_hand}H vs {opponent_hand}H"
+        if player_hand and opponent_hand and player_hand != opponent_hand:
             hf = projection.get("hand_factor", 1.0) or 1.0
-            if player_hand != opponent_hand:
-                direction = "boosts" if hf >= 1.0 else "reduces"
-                hand_note = (
-                    f" Handedness matchup ({matchup}) {direction} ace output "
-                    f"by {abs(hf - 1) * 100:.0f}% (×{hf:.2f})."
-                )
-            else:
-                hand_note = f" Same-handedness matchup ({matchup}) — no handedness adjustment."
-        # Ace-against context
-        ag_factor = projection.get("ace_against_factor", 1.0) or 1.0
-        opp_ag = projection.get("opp_ace_against")
-        ag_note = ""
-        if opp_ag is not None:
-            ag_desc = "concedes more aces than average" if ag_factor > 1.05 else (
-                "concedes fewer aces than average" if ag_factor < 0.95 else "concedes an average number of aces"
-            )
-            ag_note = f" {opponent_name} {ag_desc} ({opp_ag:.1f}/match, ×{ag_factor:.2f})."
+            direction = "benefits" if hf >= 1.0 else "hurts"
+            hand_note = f" The {player_hand}H vs {opponent_hand}H matchup {direction} {p_last}'s ace angles."
+        suppress_dir = "a strong returner who keeps ace totals in check" if _o_ret1_raw > 36 else "not a player who really suppresses aces"
         sentences.append(
-            f"For aces, {player_name}'s surface baseline of {p_aces}/match is adjusted by court speed "
-            f"(×{projection.get('cpr_factor', 1.0):.2f}) and opponent suppression "
-            f"(×{projection.get('suppression_factor', 1.0):.2f}). {suppress_note}{ag_note}{hand_note}"
+            f"{player_name} is averaging {p_aces} aces on {surface} and {o_last} is {suppress_dir} "
+            f"— {o_ret1}% on first-serve return points.{hand_note}"
+        )
+        sentences.append(
+            f"{court_speed_phrase}, {"which boosts ace output here" if cpr >= 37 else "which keeps serve margins tighter"}."
         )
     elif prop_type == "Double Faults":
-        pf = projection.get("pressure_factor", 1.0)
+        pf = projection.get("pressure_factor", 1.0) or 1.0
+        pressure_note = (
+            "pushes servers to take more risks on second serves"
+            if pf > 1.02 else
+            "takes pressure off the second serve"
+            if pf < 0.98 else
+            "is roughly neutral on second-serve pressure"
+        )
         sentences.append(
-            f"Double fault projection is driven by {player_name}'s baseline of {p_dfs}/match on {surface}, "
-            f"with opponent pressure adding a ×{pf:.2f} factor — {opponent_name}'s return aggression "
-            f"{'increases' if pf > 1.0 else 'reduces'} second-serve stress."
+            f"{player_name} is at {p_dfs} double faults per match on {surface} — "
+            f"{o_last}'s return game {pressure_note}."
+        )
+        sentences.append(
+            f"{court_speed_phrase}, {"which tends to inflate DF counts as servers go for more" if cpr >= 37 else "which gives servers a bit more margin on second balls"}."
         )
     elif prop_type == "Total Games":
         gps  = projection.get("games_per_set", 0)
         sets = projection.get("expected_sets", 3.0)
         ch   = projection.get("combined_hold", 72)
         env  = ENVIRONMENT_LABELS.get(projection.get("environment", "STANDARD"), "Standard")
+        o_1sw = _s(opponent_surface_stats.get("first_serve_pts_won"), ".0f")
         sentences.append(
-            f"{env} environment — combined hold rate {ch:.0f}% ({player_name} {p_1sw}%, {opponent_name} "
-            f"{_s(opponent_surface_stats.get('first_serve_pts_won'))}%). "
-            f"Modeling {gps:.1f} games/set over {sets:.1f} expected sets on {surface}."
+            f"{player_name} and {o_last} are both holding around {ch:.0f}% combined on {surface} — "
+            f"that's a {env.lower()} setup trending toward {gps:.1f} games per set."
+        )
+        sentences.append(
+            f"{court_speed_phrase}, {"and fast courts tend to produce tight, short games" if cpr >= 40 else "and slow surfaces stretch service games with longer rallies"}."
         )
     elif prop_type == "Break Points Won":
-        conv  = projection.get("conv_rate_pct", 0)
-        faced = projection.get("opp_bp_faced", 0)
-        h2h_bp  = projection.get("h2h_bp_avg")
-        cpr_adj = projection.get("cpr_adj_pct", 0)
-        env  = ENVIRONMENT_LABELS.get(projection.get("environment", "STANDARD"), "Standard")
-        h2h_str = f" H2H average: {h2h_bp:.1f} BPs." if h2h_bp is not None else ""
-        adj_str = f" CPR adjustment: {'+' if cpr_adj >= 0 else ''}{cpr_adj:.1f}%." if cpr_adj != 0 else ""
+        conv  = projection.get("conv_rate_pct", 0) or 0
+        faced = projection.get("opp_bp_faced", 0) or 0
+        env   = ENVIRONMENT_LABELS.get(projection.get("environment", "STANDARD"), "Standard")
         sentences.append(
-            f"{env} environment — {player_name} converts {conv:.0f}% of break points on {surface}. "
-            f"{opponent_name} faces {faced:.1f} BPs/match on serve. "
-            f"Base projection: {conv:.0f}% × {faced:.1f} = {(conv/100)*faced:.1f}.{h2h_str}{adj_str}"
+            f"{player_name} is converting around {conv:.0f}% of break points on {surface} "
+            f"and {o_last} gives up roughly {faced:.1f} BP chances per match on serve — "
+            f"that's a {env.lower()} environment for break point volume."
+        )
+        sentences.append(
+            f"{court_speed_phrase}, {"which shrinks break point opportunity" if cpr >= 40 else "which inflates break point frequency on slow courts"}."
         )
 
-    # H2H context
-    if h2h_summary and h2h_summary.get("total", 0) > 0:
-        total = h2h_summary["total"]
-        p1w = h2h_summary.get("p1_wins", 0)
-        surf_total = h2h_summary.get("surface_matches", 0)
-        h2h_str = f"{p1w}-{total - p1w} overall"
-        if surf_total > 0:
-            sp1w = h2h_summary.get("surface_p1_wins", 0)
-            h2h_str += f", {sp1w}-{surf_total - sp1w} on {surface}"
-        sentences.append(
-            f"Head-to-head: {player_name} leads {h2h_str} — {'this adds high-confidence context' if surf_total >= 3 else 'limited surface H2H data available'}."
-        )
-
-    # Closing
-    direction_phrase = {
-        "OVER": f"lean OVER on {prop_type.lower()}",
-        "UNDER": f"lean UNDER on {prop_type.lower()}",
-        "NEUTRAL": f"a neutral lean on {prop_type.lower()}",
-    }.get(lean, "a neutral lean")
+    # ── Surface / archetype context ───────────────────────────────────────────
+    form_dir = "comfortable" if (player_surface_stats.get("win_rate") or 0) > 55 else "inconsistent"
+    data_note = f"across {p_matches} {surface} matches" if p_matches > 0 else "with limited surface data"
     sentences.append(
-        f"Synthesis of surface data, court speed, and matchup dynamics points to a {direction_phrase}, "
-        f"projecting {proj_val} with {conf}% model confidence."
+        f"{p_last} is {form_dir} on {surface} ({p_wr}% win rate {data_note}) "
+        f"profiling as a {player_arch.lower()} — {o_last} counters as a {opponent_arch.lower()}."
     )
 
-    return " ".join(sentences[:6])
+    # ── H2H ──────────────────────────────────────────────────────────────────
+    if h2h_summary and h2h_summary.get("total", 0) > 0:
+        total = h2h_summary["total"]
+        p1w   = h2h_summary.get("p1_wins", 0)
+        p2w   = total - p1w
+        surf_total = h2h_summary.get("surface_matches", 0)
+        meeting_word = "meeting" if total == 1 else "meetings"
+        if total <= 2:
+            sentences.append(
+                f"H2H is basically noise at {total} {meeting_word} — I'm not weighting it heavily."
+            )
+        else:
+            h2h_edge = f"{player_name} leads {p1w}–{p2w}" if p1w > p2w else (
+                f"{opponent_name} leads {p2w}–{p1w}" if p2w > p1w else f"it's even at {p1w}–{p2w}"
+            )
+            surf_note = ""
+            if surf_total > 0:
+                sp1w = h2h_summary.get("surface_p1_wins", 0)
+                surf_note = f", {sp1w}–{surf_total - sp1w} on {surface}"
+            sentences.append(f"H2H: {h2h_edge} overall{surf_note}.")
+    else:
+        sentences.append("No meaningful H2H history to lean on here.")
+
+    # ── Lean ──────────────────────────────────────────────────────────────────
+    lean_phrases = {
+        "OVER":    f"I'm leaning OVER on the {prop_type.lower()} — the numbers set up well for it.",
+        "UNDER":   f"I'm leaning UNDER on the {prop_type.lower()} — conditions favor a quieter line.",
+        "NEUTRAL": f"Tough to take a strong side on the {prop_type.lower()} here — too even to force it.",
+    }
+    sentences.append(lean_phrases.get(lean, lean_phrases["NEUTRAL"]))
+
+    return " ".join(sentences[:5])

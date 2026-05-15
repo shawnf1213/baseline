@@ -351,11 +351,16 @@ async def prop_calculate(req: PropRequest):
                 tour=req.tour, surface=req.surface,
             )
         elif req.prop_type == "Double Faults":
-            result = project_double_faults(p1_s, p2_s, h2h_df_avg)
+            result = project_double_faults(
+                p1_s, p2_s, h2h_df_avg,
+                player_ta=player_ta, opponent_ta=opponent_ta,
+                tour=req.tour, surface=req.surface,
+            )
         elif req.prop_type == "Total Games":
             result = project_total_games(
                 p1_s, p2_s, req.surface, h2h_games_avg,
-                tour=req.tour, court=court_for_calc
+                tour=req.tour, court=court_for_calc,
+                player_ta=player_ta, opponent_ta=opponent_ta,
             )
         else:  # Break Points Won
             result = project_break_points(
@@ -466,6 +471,8 @@ async def prop_calculate(req: PropRequest):
                 "df_avg":            h2h_df_avg,
                 "bp_avg":            h2h_bp_avg,
                 "games_avg":         h2h_games_avg,
+                "date_range":        h2h_summary.get("date_range"),
+                "surface_breakdown": h2h_summary.get("surface_breakdown", {}),
             },
             "plain_english_explanation": _build_explanation(
                 req, result, lean, proj_val, req.prop_line, cpr
@@ -513,6 +520,8 @@ async def h2h_endpoint(req: H2HRequest):
             "df_avg":               stats.get("df"),
             "bp_avg":               stats.get("bp"),
             "games_avg":            stats.get("games_avg"),
+            "date_range":           summary.get("date_range"),
+            "surface_breakdown":    summary.get("surface_breakdown", {}),
         }
     except Exception as e:
         logger.error("h2h error: %s", e)

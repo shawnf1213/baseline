@@ -678,27 +678,45 @@ export default function PropProjection({ tour }) {
             )}
 
             {/* H2H context */}
-            {result.h2h_context?.total > 0 && (
+            {result.h2h_context && (result.h2h_context.total > 0 || result.h2h_context.total === 0) && (
               <>
                 {section(`H2H Context`)}
                 <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, padding: 16, marginBottom: 16 }}>
-                  <div style={{ display: 'flex', gap: 24, alignItems: 'center', marginBottom: 12 }}>
-                    <div style={{ textAlign: 'center' }}>
-                      <div style={{ fontSize: 11, color: 'var(--muted)' }}>{p1?.name}</div>
-                      <div style={{ fontSize: 36, fontWeight: 900, color: 'var(--green)', fontFamily: '"Barlow Condensed", sans-serif' }}>{result.h2h_context.p1_wins}</div>
-                    </div>
-                    <div style={{ fontSize: 20, color: 'var(--border)' }}>–</div>
-                    <div style={{ textAlign: 'center' }}>
-                      <div style={{ fontSize: 11, color: 'var(--muted)' }}>{p2?.name}</div>
-                      <div style={{ fontSize: 36, fontWeight: 900, color: 'var(--muted)', fontFamily: '"Barlow Condensed", sans-serif' }}>{result.h2h_context.p2_wins}</div>
-                    </div>
-                    <div style={{ fontSize: 12, color: 'var(--muted)', marginLeft: 8 }}>
-                      {result.h2h_context.total} meetings
-                      {result.h2h_context.surface_matches > 0 && ` · ${result.h2h_context.surface_matches} on ${surface}`}
-                    </div>
-                  </div>
-                  {result.h2h_context.ace_avg != null && (
-                    <div style={{ fontSize: 12, color: 'var(--muted)' }}>Avg aces by {p1?.name} in H2H: {fmt(result.h2h_context.ace_avg)}</div>
+                  {result.h2h_context.total === 0 ? (
+                    <div style={{ fontSize: 13, color: 'var(--muted)' }}>No H2H data available</div>
+                  ) : (
+                    <>
+                      <div style={{ display: 'flex', gap: 24, alignItems: 'center', marginBottom: 12 }}>
+                        <div style={{ textAlign: 'center' }}>
+                          <div style={{ fontSize: 11, color: 'var(--muted)' }}>{p1?.name}</div>
+                          <div style={{ fontSize: 44, fontWeight: 900, color: '#00e676', fontFamily: '"Barlow Condensed", sans-serif' }}>{result.h2h_context.p1_wins}</div>
+                        </div>
+                        <div style={{ fontSize: 20, color: 'var(--border)' }}>—</div>
+                        <div style={{ textAlign: 'center' }}>
+                          <div style={{ fontSize: 11, color: 'var(--muted)' }}>{p2?.name}</div>
+                          <div style={{ fontSize: 44, fontWeight: 900, color: '#ff4444', fontFamily: '"Barlow Condensed", sans-serif' }}>{result.h2h_context.p2_wins}</div>
+                        </div>
+                        <div style={{ fontSize: 12, color: 'var(--muted)', marginLeft: 8 }}>
+                          <div>{result.h2h_context.total} {result.h2h_context.total !== 1 ? 'meetings' : 'meeting'}</div>
+                          {result.h2h_context.surface_matches > 0 && (
+                            <div style={{ marginTop: 2 }}>{result.h2h_context.surface_matches} on {surface}</div>
+                          )}
+                          {result.h2h_context.date_range && (
+                            <div style={{ marginTop: 2, fontSize: 11 }}>{result.h2h_context.date_range}</div>
+                          )}
+                          {result.h2h_context.surface_breakdown &&
+                            Object.keys(result.h2h_context.surface_breakdown).length > 0 &&
+                            result.h2h_context.total >= 3 && (
+                            <div style={{ marginTop: 4, fontSize: 11 }}>
+                              {Object.entries(result.h2h_context.surface_breakdown).map(([s, n]) => `${n} ${s}`).join(' · ')}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                      {result.h2h_context.ace_avg != null && (
+                        <div style={{ fontSize: 12, color: 'var(--muted)' }}>Avg aces by {p1?.name} in H2H: {fmt(result.h2h_context.ace_avg)}</div>
+                      )}
+                    </>
                   )}
                 </div>
               </>

@@ -631,6 +631,30 @@ def get_player_stats_by_surface(player_id, tour: str = "ATP") -> dict:
     return surfaces
 
 
+def _get_player_events_paged(player_id: int, max_pages: int = 10) -> list:
+    """
+    Fetch up to max_pages pages of recent events for a player.
+    Stops early if a page returns fewer than 10 events or total > 200.
+    Uses a separate cache key from the stats cache to allow deeper pagination.
+    """
+    cache_key = f"ss_events_h2h_{player_id}"
+    if cache_key in st.session_state:
+        return st.session_state[cache_key]
+
+    all_events = []
+    for page in range(max_pages):
+        data   = _get(f"{BASE_URL}/team/{player_id}/events/last/{page}")
+        events = data.get("events", [])
+        if not events:
+            break
+        all_events.extend(events)
+        if len(events) < 10 or len(all_events) > 200:
+            break
+
+    st.session_state[cache_key] = all_events
+    return all_events
+
+
 def get_h2h_summary(tour: str, p1: str, p2: str,
                     surface: Optional[str] = None) -> dict:
     empty = {
@@ -638,13 +662,25 @@ def get_h2h_summary(tour: str, p1: str, p2: str,
         "surface_matches": 0, "surface_p1_wins": 0, "surface_p2_wins": 0,
         "h2h_rate": 0.5,
         "matches": pd.DataFrame(), "surface_matches_df": pd.DataFrame(),
+        "date_range": None, "surface_breakdown": {},
     }
     p1_id = int(p1)
     p2_id = int(p2)
 
-    events = _get_player_recent_events(p1_id)
+    # Fetch both players' event histories and cross-reference for matches
+    p1_events = _get_player_events_paged(p1_id, max_pages=10)
+    p2_events = _get_player_events_paged(p2_id, max_pages=10)
+
+    # Build a set of event IDs from p2's history for fast lookup
+    p2_event_ids = {e.get("id") for e in p2_events if e.get("id")}
+
+    # Find events appearing in BOTH players' lists where they faced each other
     h2h = []
-    for e in events:
+    seen_ids: set = set()
+    for e in p1_events:
+        eid = e.get("id")
+        if not eid or eid in seen_ids:
+            continue
         home_id = e.get("homeTeam", {}).get("id")
         away_id = e.get("awayTeam", {}).get("id")
         if {home_id, away_id} != {p1_id, p2_id}:
@@ -656,12 +692,34 @@ def get_h2h_summary(tour: str, p1: str, p2: str,
         at = e.get("awayTeam", {}).get("name", "")
         if "/" in ht or "/" in at:
             continue
+        # Prefer events confirmed in p2's history too, but don't discard if missing
+        seen_ids.add(eid)
+        h2h.append(e)
+
+    # Also check p2's events for any matches not yet found via p1
+    for e in p2_events:
+        eid = e.get("id")
+        if not eid or eid in seen_ids:
+            continue
+        home_id = e.get("homeTeam", {}).get("id")
+        away_id = e.get("awayTeam", {}).get("id")
+        if {home_id, away_id} != {p1_id, p2_id}:
+            continue
+        status = e.get("status", {}).get("type", "")
+        if status not in ("finished", "ended"):
+            continue
+        ht = e.get("homeTeam", {}).get("name", "")
+        at = e.get("awayTeam", {}).get("name", "")
+        if "/" in ht or "/" in at:
+            continue
+        seen_ids.add(eid)
         h2h.append(e)
 
     if not h2h:
         return empty
 
     rows = []
+    timestamps = []
     for e in h2h:
         is_p1home = e.get("homeTeam", {}).get("id") == p1_id
         hs  = e.get("homeScore", {}).get("current", 0) or 0
@@ -669,6 +727,8 @@ def get_h2h_summary(tour: str, p1: str, p2: str,
         p1w = (is_p1home and hs > aws) or (not is_p1home and aws > hs)
         ts  = e.get("startTimestamp", 0)
         dt  = datetime.utcfromtimestamp(ts).strftime("%Y-%m-%d") if ts else ""
+        if ts:
+            timestamps.append(ts)
         opp = e.get("awayTeam", {}) if is_p1home else e.get("homeTeam", {})
         rows.append({
             "Match Date":  dt,
@@ -687,6 +747,21 @@ def get_h2h_summary(tour: str, p1: str, p2: str,
     h2h_rate   = (surf_p1w / surf_total if surf_total
                   else p1_wins / total if total else 0.5)
 
+    # Build date_range from earliest to latest year
+    date_range = None
+    if timestamps:
+        years = [datetime.utcfromtimestamp(ts).year for ts in timestamps]
+        if min(years) == max(years):
+            date_range = str(min(years))
+        else:
+            date_range = f"{min(years)}–{max(years)}"
+
+    # Build surface breakdown dict: {surface: count}
+    surface_breakdown: dict = {}
+    for r in rows:
+        surf = r["Surface"]
+        surface_breakdown[surf] = surface_breakdown.get(surf, 0) + 1
+
     return {
         "total":               total,
         "p1_wins":             p1_wins,
@@ -697,6 +772,8 @@ def get_h2h_summary(tour: str, p1: str, p2: str,
         "h2h_rate":            h2h_rate,
         "matches":             pd.DataFrame(rows),
         "surface_matches_df":  pd.DataFrame(surf_rows) if surf_rows else pd.DataFrame(),
+        "date_range":          date_range,
+        "surface_breakdown":   surface_breakdown,
     }
 
 
