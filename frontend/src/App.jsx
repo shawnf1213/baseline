@@ -4,6 +4,7 @@ import PropProjection  from './pages/PropProjection'
 import HeadToHead      from './pages/HeadToHead'
 import ValueBet        from './pages/ValueBet'
 
+// v2 visual redesign deployed
 const TABS = [
   { key: 'surface', label: 'Player Surface Analyzer' },
   { key: 'prop',    label: 'Prop Projection' },
