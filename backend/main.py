@@ -1,4 +1,4 @@
-﻿“””
+"""
 Baseline Tennis Analytics - FastAPI backend.
 
 Wraps all existing Python calculation logic in REST endpoints.
@@ -9,7 +9,7 @@ Endpoints:
   POST /api/player/stats    - surface stats + archetype
   POST /api/prop/calculate  - full prop projection
   POST /api/h2h             - head-to-head record + stats
-“””
+"""
 
 import asyncio
 import sys
@@ -170,67 +170,67 @@ def _build_explanation(req: PropRequest, result: dict, lean: str,
     parts = []
     pt = req.prop_type
 
-    if pt == “Aces”:
-        sup = result.get(“suppression_factor”, 1.0)
-        cf  = result.get(“cpr_factor”, 1.0)
-        hf  = result.get(“hand_factor”, 1.0) or 1.0
-        ag  = result.get(“ace_against_factor”, 1.0) or 1.0
-        ph  = result.get(“player_hand”) or “”
-        oh  = result.get(“opp_hand”) or “”
-        hand_note = “”
+    if pt == "Aces":
+        sup = result.get("suppression_factor", 1.0)
+        cf  = result.get("cpr_factor", 1.0)
+        hf  = result.get("hand_factor", 1.0) or 1.0
+        ag  = result.get("ace_against_factor", 1.0) or 1.0
+        ph  = result.get("player_hand") or ""
+        oh  = result.get("opp_hand") or ""
+        hand_note = ""
         if ph and oh and ph != oh:
-            direction = “reduces” if hf < 1.0 else “boosts”
-            hand_note = f” Handedness ({ph} vs {oh}) {direction} ace projection x{hf:.2f}.”
+            direction = "reduces" if hf < 1.0 else "boosts"
+            hand_note = f" Handedness ({ph} vs {oh}) {direction} ace projection x{hf:.2f}."
         parts.append(
-            f”Surface CPR {cpr} applies x{cf:.2f} court-speed factor.”
-            f” Opponent return suppression x{sup:.2f}.”
-            f” Opponent ace-against factor x{ag:.2f}.{hand_note}”
+            f"Surface CPR {cpr} applies x{cf:.2f} court-speed factor."
+            f" Opponent return suppression x{sup:.2f}."
+            f" Opponent ace-against factor x{ag:.2f}.{hand_note}"
         )
-    elif pt == “Double Faults”:
-        pf = result.get(“pressure_factor”, 1.0)
+    elif pt == "Double Faults":
+        pf = result.get("pressure_factor", 1.0)
         parts.append(
-            f”Opponent return aggression factor x{pf:.2f} -”
-            f” {‘increases’ if pf > 1 else ‘reduces’} second-serve pressure.”
+            f"Opponent return aggression factor x{pf:.2f} -"
+            f" {'increases' if pf > 1 else 'reduces'} second-serve pressure."
         )
-    elif pt == “Total Games”:
-        env = ENVIRONMENT_LABELS.get(result.get(“environment”, “STANDARD”), “Standard”)
-        gps = result.get(“games_per_set”, 0)
-        sets = result.get(“expected_sets”, 2.3)
-        ch   = result.get(“combined_hold”, 72)
+    elif pt == "Total Games":
+        env = ENVIRONMENT_LABELS.get(result.get("environment", "STANDARD"), "Standard")
+        gps = result.get("games_per_set", 0)
+        sets = result.get("expected_sets", 2.3)
+        ch   = result.get("combined_hold", 72)
         parts.append(
-            f”{env} - combined hold {ch:.0f}% -> {gps:.1f} games/set “
-            f”over {sets:.1f} expected sets.”
+            f"{env} - combined hold {ch:.0f}% -> {gps:.1f} games/set "
+            f"over {sets:.1f} expected sets."
         )
-    elif pt == “Break Points Won”:
-        env   = ENVIRONMENT_LABELS.get(result.get(“environment”, “STANDARD”), “Standard”)
-        conv  = result.get(“conv_rate_pct”) or 0
-        faced = result.get(“opp_bp_faced”) or 0
+    elif pt == "Break Points Won":
+        env   = ENVIRONMENT_LABELS.get(result.get("environment", "STANDARD"), "Standard")
+        conv  = result.get("conv_rate_pct") or 0
+        faced = result.get("opp_bp_faced") or 0
         base  = (conv / 100) * faced
-        ta_src = result.get(“conv_rate_source”, “”)
-        src_note = f” (TA {ta_src} data)” if ta_src else “”
+        ta_src = result.get("conv_rate_source", "")
+        src_note = f" (TA {ta_src} data)" if ta_src else ""
         parts.append(
-            f”{env} - {conv:.0f}% conversion x {faced:.1f} BPs opponent faces/match”
-            f” = {base:.1f} base projection.{src_note}”
+            f"{env} - {conv:.0f}% conversion x {faced:.1f} BPs opponent faces/match"
+            f" = {base:.1f} base projection.{src_note}"
         )
-        cpr_adj = result.get(“cpr_adj_pct”, 0)
+        cpr_adj = result.get("cpr_adj_pct", 0)
         if cpr_adj:
-            sign = “+” if cpr_adj >= 0 else “”
-            parts.append(f”Surface CPR {cpr} applies {sign}{cpr_adj:.1f}%.”)
+            sign = "+" if cpr_adj >= 0 else ""
+            parts.append(f"Surface CPR {cpr} applies {sign}{cpr_adj:.1f}%.")
 
     if line > 0:
         edge = proj - line
-        sign = “+” if edge >= 0 else “”
+        sign = "+" if edge >= 0 else ""
         parts.append(
-            f”Model projects {proj:.1f} vs book line {line:.1f} “
-            f”(edge {sign}{edge:.1f}) -> {lean}.”
+            f"Model projects {proj:.1f} vs book line {line:.1f} "
+            f"(edge {sign}{edge:.1f}) -> {lean}."
         )
 
     return " ".join(parts)
 
 
 # ---------------------------------------------------------------------------
-# GET /api/search  — GET avoids CORS preflight entirely
-# POST /api/search — kept for backwards compat
+# GET /api/search  -- GET avoids CORS preflight entirely
+# POST /api/search -- kept for backwards compat
 # ---------------------------------------------------------------------------
 @app.get("/api/search")
 async def search_get(query: str = "", tour: str = "ATP"):
@@ -259,7 +259,7 @@ async def search_post(req: SearchRequest):
 @app.post("/api/player/stats")
 async def player_stats(req: PlayerStatsRequest):
     try:
-        data     = get_player_stats_by_surface(req.player_id, req.tour)
+        data      = get_player_stats_by_surface(req.player_id, req.tour)
         all_stats = data.get("All", {}) or {}
         archetype = classify_archetype(all_stats, req.tour)
 
@@ -298,7 +298,7 @@ async def player_stats(req: PlayerStatsRequest):
 @app.post("/api/prop/calculate")
 async def prop_calculate(req: PropRequest):
     try:
-        # Fetch data
+        # Fetch Sofascore data
         p1_data = get_player_stats_by_surface(req.player_id, req.tour)
         p2_data = get_player_stats_by_surface(req.opponent_id, req.tour)
         h2h_summary = get_h2h_summary(
@@ -523,4 +523,3 @@ async def h2h_endpoint(req: H2HRequest):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
-
