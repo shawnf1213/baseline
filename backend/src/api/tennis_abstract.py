@@ -34,7 +34,6 @@ Returned dict shape (all fields optional — None if not found):
 """
 
 import asyncio
-import json
 import logging
 import os
 import random
@@ -61,29 +60,8 @@ _cache: dict = {}
 _CACHE_TTL   = 86_400   # 24 hours
 
 # ── Constants ──────────────────────────────────────────────────────────────────
-TA_BASE = "https://www.tennisabstract.com/cgi-bin/player.cgi"
-
-# Tennis Abstract match log — fixed column indices (0-based)
-# Confirmed layout from TA source: the JS array `var d = [...]` has
-# columns in this order:
-_COL = {
-    "date":       0,
-    "tournament": 1,
-    "surface":    2,   # "H", "C", "G"
-    "round":      3,
-    "rank":       4,   # player rank at time
-    "opp_rank":   5,
-    "result":     6,   # "W" or "L" (sometimes combined with score at col 7)
-    "score":      7,
-    "dr":         8,   # Dominance Ratio
-    "ace_pct":    9,   # A%
-    "df_pct":     10,  # DF%
-    "first_in":   11,  # 1stIn
-    "first_won":  12,  # 1st%
-    "second_won": 13,  # 2nd%
-    "bp_saved":   14,  # BPSvd%
-    "time":       15,  # optional
-}
+TA_BASE      = "https://www.tennisabstract.com/cgi-bin/player.cgi"
+TA_JSFRAGS   = "https://www.tennisabstract.com/jsfrags/{slug}.js"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Name formatting
@@ -165,9 +143,188 @@ def _fetch_html(ta_name: str) -> Optional[str]:
         return None
 
 
+def _fetch_jsfrags(ta_name: str) -> Optional[str]:
+    """Fetch the jsfrags JS file which contains pre-rendered HTML tables."""
+    url = TA_JSFRAGS.format(slug=ta_name)
+    proxy_url = _pick_proxy_url()
+    try:
+        from curl_cffi import requests as cf
+        session = cf.Session(impersonate="chrome120")
+        session.headers.update({
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
+            ),
+            "Referer": "https://www.tennisabstract.com/",
+        })
+        if proxy_url:
+            session.proxies = {"http": proxy_url, "https": proxy_url}
+        r = session.get(url, timeout=20)
+        if r.status_code != 200:
+            logger.warning("[TA] jsfrags HTTP %d for %s", r.status_code, ta_name)
+            return None
+        logger.info("[TA] jsfrags fetched %s (%d bytes)", ta_name, len(r.text))
+        return r.text
+    except Exception as exc:
+        logger.error("[TA] jsfrags fetch error for %s: %s", ta_name, exc)
+        return None
+
+
 # ─────────────────────────────────────────────────────────────────────────────
-# JS array extraction
+# HTML table parsing from jsfrags
 # ─────────────────────────────────────────────────────────────────────────────
+
+def _extract_soup_from_jsfrags(js_text: str):
+    """
+    Extract the main HTML fragment from the jsfrags JS template literal and
+    return a BeautifulSoup object, or None if parsing fails.
+    """
+    try:
+        from bs4 import BeautifulSoup
+        # jsfrags uses JS template literals: var player_frag = `...`;
+        tl_matches = re.findall(r'var\s+\w+\s*=\s*`([\s\S]*?)`\s*;', js_text)
+        if not tl_matches:
+            return None
+        # Pick the largest fragment (the main one with all tables)
+        html_frag = max(tl_matches, key=len)
+        return BeautifulSoup(html_frag, "html.parser")
+    except Exception as exc:
+        logger.error("[TA] soup extraction error: %s", exc)
+        return None
+
+
+def _parse_career_splits_soup(soup) -> dict:
+    """
+    Parse the career-splits table for per-surface serve statistics.
+    Returns dict keyed by surface ("Hard", "Clay", "Grass") with
+    matches, ace_pct, df_pct, first_in_pct, first_won_pct, second_won_pct.
+    bp_saved_pct is left None (populated separately from recent-results).
+    """
+    t = soup.find("table", id="career-splits")
+    if not t:
+        return {}
+
+    rows = t.find_all("tr")
+    if not rows:
+        return {}
+
+    headers = [c.get_text(strip=True) for c in rows[0].find_all(["th", "td"])]
+    h = {v: i for i, v in enumerate(headers)}
+
+    surface_map = {"Hard": "Hard", "Clay": "Clay", "Grass": "Grass"}
+    stats = {}
+
+    for row in rows[1:]:
+        cells = [c.get_text(strip=True) for c in row.find_all(["th", "td"])]
+        if not cells:
+            continue
+        split = cells[0]
+        if split not in surface_map:
+            continue
+        surf = surface_map[split]
+
+        def pct(key, _cells=cells, _h=h):
+            idx = _h.get(key)
+            if idx is None or idx >= len(_cells):
+                return None
+            return _pf(_cells[idx])
+
+        m_idx = h.get("M")
+        try:
+            n_matches = int(cells[m_idx]) if m_idx is not None and m_idx < len(cells) else 0
+        except (ValueError, TypeError):
+            n_matches = 0
+
+        stats[surf] = {
+            "matches":        n_matches,
+            "ace_pct":        pct("A%"),
+            "df_pct":         pct("DF%"),
+            "first_in_pct":   pct("1stIn"),
+            "first_won_pct":  pct("1st%"),
+            "second_won_pct": pct("2nd%"),
+            "bp_saved_pct":   None,   # filled by _enrich_bpsaved_soup
+            "bp_conv_pct":    None,   # computed from opponent's bp_saved_pct in props.py
+        }
+
+    return stats
+
+
+def _enrich_bpsaved_soup(soup, surface_stats: dict) -> None:
+    """
+    Populate bp_saved_pct (and bp_conv_pct) in surface_stats by aggregating
+    the X/Y BPSvd fractions from the recent-results table.
+    """
+    t = soup.find("table", id="recent-results")
+    if not t:
+        return
+
+    rows = t.find_all("tr")
+    if not rows:
+        return
+
+    headers = [c.get_text(strip=True) for c in rows[0].find_all(["th", "td"])]
+    h = {v: i for i, v in enumerate(headers)}
+
+    surf_col   = h.get("Surface")
+    bpsvd_col  = h.get("BPSvd")
+    if surf_col is None or bpsvd_col is None:
+        return
+
+    bp_data: dict = defaultdict(lambda: [0, 0])   # surf -> [saved, total]
+
+    for row in rows[1:]:
+        cells = [c.get_text(strip=True) for c in row.find_all(["th", "td"])]
+        if len(cells) <= max(surf_col, bpsvd_col):
+            continue
+
+        surf = _normalize_surface(cells[surf_col])
+        if not surf or surf not in surface_stats:
+            continue
+
+        m = re.match(r"(\d+)/(\d+)", cells[bpsvd_col])
+        if m:
+            bp_data[surf][0] += int(m.group(1))
+            bp_data[surf][1] += int(m.group(2))
+
+    for surf, (saved, total) in bp_data.items():
+        if total > 0 and surf in surface_stats:
+            pct = round(100.0 * saved / total, 1)
+            surface_stats[surf]["bp_saved_pct"] = pct
+            surface_stats[surf]["bp_conv_pct"]  = round(100.0 - pct, 1)
+
+
+def _parse_rank_splits_soup(soup) -> dict:
+    """
+    Extract rank-split win rates from the career-splits table
+    (rows labelled 'vs Top 10', etc.).
+    """
+    splits = {"top10": None, "11to50": None, "51plus": None}
+    t = soup.find("table", id="career-splits")
+    if not t:
+        return splits
+
+    rows = t.find_all("tr")
+    if not rows:
+        return splits
+
+    headers = [c.get_text(strip=True) for c in rows[0].find_all(["th", "td"])]
+    h = {v: i for i, v in enumerate(headers)}
+    win_pct_col = h.get("Win%")
+
+    for row in rows[1:]:
+        cells = [c.get_text(strip=True) for c in row.find_all(["th", "td"])]
+        if not cells or win_pct_col is None or win_pct_col >= len(cells):
+            continue
+        label = cells[0].lower()
+        val   = _pf(cells[win_pct_col])
+        if val is None:
+            continue
+        if "top 10" in label or "top10" in label:
+            splits["top10"] = val
+
+    return splits
+
 
 def _extract_js_array_text(html: str, var_name: str) -> Optional[str]:
     """
@@ -482,29 +639,39 @@ def _aggregate_matches(matches: list) -> dict:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _parse_html(html: str, ta_name: str) -> dict:
-    """Extract all TA data from static HTML."""
-    handedness   = _extract_handedness(html)
-    raw_rows     = _extract_match_array(html)
-    matches      = _parse_match_rows(raw_rows)
-    surface_stats= _aggregate_matches(matches)
-    rank_splits  = _extract_rank_splits_html(html)
+    """Extract player metadata (handedness etc.) from the main static HTML."""
+    handedness = _extract_handedness(html)
 
-    logger.info(
-        "[TA] %s parsed: hand=%s  matches=%d  surfaces=%s",
-        ta_name, handedness, len(matches), list(surface_stats.keys()),
-    )
+    logger.info("[TA] %s parsed: hand=%s", ta_name, handedness)
 
     return {
         "handedness":    handedness,
-        "matches":       matches,
-        "surface_stats": surface_stats,
+        "matches":       [],
+        "surface_stats": {},
         "career_splits": [],
         "mcp_serve":     [],
         "mcp_return":    [],
         "h2h_records":   [],
-        "rank_splits":   rank_splits,
-        "_source":       "curl_cffi_regex",
+        "rank_splits":   {},
+        "_source":       "curl_cffi_html_table",
     }
+
+
+def _parse_jsfrags(js_text: str, ta_name: str) -> dict:
+    """Parse surface stats from the jsfrags JS file HTML tables."""
+    soup = _extract_soup_from_jsfrags(js_text)
+    if not soup:
+        return {}
+
+    surface_stats = _parse_career_splits_soup(soup)
+    _enrich_bpsaved_soup(soup, surface_stats)
+    rank_splits   = _parse_rank_splits_soup(soup)
+
+    logger.info(
+        "[TA] %s jsfrags: surfaces=%s  rank_splits=%s",
+        ta_name, list(surface_stats.keys()), rank_splits,
+    )
+    return {"surface_stats": surface_stats, "rank_splits": rank_splits}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -537,22 +704,41 @@ async def get_player_ta_stats(
 
     logger.info("[TA] fetching %s  slug=%s", player_name, ta_name)
 
-    # Run curl-cffi fetch in thread pool (it's blocking I/O)
+    # Run both fetches concurrently in the thread pool
     loop = asyncio.get_event_loop()
 
-    html = await loop.run_in_executor(None, _fetch_html, ta_name)
+    html, jsfrags_text = await asyncio.gather(
+        loop.run_in_executor(None, _fetch_html,     ta_name),
+        loop.run_in_executor(None, _fetch_jsfrags,  ta_name),
+    )
 
     data = _parse_html(html, ta_name) if html else None
 
-    # If we got nothing useful, try alternative slugs
-    if not _is_useful(data):
+    # If main page not found, try alternative slugs
+    if not html:
         for alt in _alt_name_formats(player_name):
             logger.info("[TA] trying alt slug %s", alt)
-            alt_html = await loop.run_in_executor(None, _fetch_html, alt)
-            alt_data = _parse_html(alt_html, alt) if alt_html else None
-            if _is_useful(alt_data):
-                data = alt_data
+            alt_html, alt_jsfrags = await asyncio.gather(
+                loop.run_in_executor(None, _fetch_html,    alt),
+                loop.run_in_executor(None, _fetch_jsfrags, alt),
+            )
+            if alt_html:
+                data        = _parse_html(alt_html, alt)
+                jsfrags_text = alt_jsfrags
                 break
+
+    if data is None:
+        data = {"handedness": None, "matches": [], "surface_stats": {},
+                "career_splits": [], "mcp_serve": [], "mcp_return": [],
+                "h2h_records": [], "rank_splits": {}, "_source": "curl_cffi_html_table"}
+
+    # Merge jsfrags surface stats into data
+    if jsfrags_text:
+        jf = _parse_jsfrags(jsfrags_text, ta_name)
+        if jf.get("surface_stats"):
+            data["surface_stats"] = jf["surface_stats"]
+        if jf.get("rank_splits"):
+            data["rank_splits"] = jf["rank_splits"]
 
     # Cache result (even None — prevents hammering on persistent 404)
     _cache[ta_name] = {"ts": now, "data": data}
