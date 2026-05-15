@@ -29,6 +29,13 @@ const ENV_COLORS = {
   RET_EDGE: '#00E676', WEAK_SERVE: '#EF5350', STANDARD: '#888',
 }
 
+// Surface color dots for selector
+const SURFACE_DOT_COLORS = {
+  Hard:  '#6b9fff',
+  Clay:  '#ff6b35',
+  Grass: '#00e676',
+}
+
 // Shared card style for static (non-interactive) projection cards
 const STATIC_CARD_STYLE = {
   background: 'var(--card)',
@@ -39,6 +46,37 @@ const STATIC_CARD_STYLE = {
 const STATIC_LABEL_STYLE = {
   fontSize: 11, color: 'var(--muted)',
   textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 6,
+}
+
+// ── Change 3: stat color helper ─────────────────────────────────────────────
+function statColor(label, value) {
+  const v = parseFloat(value)
+  if (isNaN(v)) return undefined
+  const l = label.toLowerCase()
+  if (l.includes('ace')) return v > 6 ? '#00e676' : v >= 3 ? '#ffb300' : '#ff4444'
+  if (l.includes('double') || l.includes('df')) return v < 1.5 ? '#00e676' : v <= 2.5 ? '#ffb300' : '#ff4444'
+  if (l.includes('1st serve %') || l.includes('1st in') || l.includes('first in')) return v > 65 ? '#00e676' : v >= 55 ? '#ffb300' : '#ff4444'
+  if (l.includes('1st') && l.includes('won')) return v > 78 ? '#00e676' : v >= 68 ? '#ffb300' : '#ff4444'
+  if (l.includes('2nd') && l.includes('won')) return v > 58 ? '#00e676' : v >= 50 ? '#ffb300' : '#ff4444'
+  if (l.includes('return') || l.includes('rpw')) return v > 42 ? '#00e676' : v >= 35 ? '#ffb300' : '#ff4444'
+  if (l.includes('bp conv') || (l.includes('break') && l.includes('conv'))) return v > 48 ? '#00e676' : v >= 38 ? '#ffb300' : '#ff4444'
+  if (l.includes('bp saved') || (l.includes('break') && l.includes('sav'))) return v > 68 ? '#00e676' : v >= 58 ? '#ffb300' : '#ff4444'
+  if (l.includes('win') || l.includes('win%')) return v > 65 ? '#00e676' : v >= 50 ? '#ffb300' : '#ff4444'
+  return undefined
+}
+
+// ── Change 8: Section divider with label ────────────────────────────────────
+function SectionDivider({ label }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 12, margin: '8px 0' }}>
+      <span style={{
+        fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 700,
+        fontSize: 10, letterSpacing: '0.2em', textTransform: 'uppercase',
+        color: '#2a3540', whiteSpace: 'nowrap',
+      }}>{label}</span>
+      <div style={{ flex: 1, height: 1, background: '#1a1f26' }} />
+    </div>
+  )
 }
 
 // ── Last 5 Matches Bar Chart ────────────────────────────────────────────────
@@ -256,6 +294,36 @@ function HandBadge({ hand }) {
   )
 }
 
+// ── Change 10: Custom surface selector ──────────────────────────────────────
+function SurfaceSelector({ value, onChange }) {
+  return (
+    <div style={{ display: 'flex', gap: 8 }}>
+      {SURFACES.map(s => {
+        const isActive = value === s
+        const dotColor = SURFACE_DOT_COLORS[s]
+        return (
+          <button key={s} onClick={() => onChange(s)} style={{
+            display: 'flex', alignItems: 'center', gap: 6,
+            padding: '8px 14px', borderRadius: 8, cursor: 'pointer', fontSize: 13, fontWeight: 600,
+            background: isActive ? 'var(--card)' : 'transparent',
+            color: isActive ? 'var(--white)' : 'var(--muted)',
+            border: isActive ? `1px solid ${dotColor}` : '1px solid var(--border)',
+            transition: 'all .15s',
+          }}>
+            <span style={{
+              width: 8, height: 8, borderRadius: '50%',
+              background: dotColor,
+              display: 'inline-block',
+              flexShrink: 0,
+            }} />
+            {s}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
 export default function PropProjection({ tour }) {
   const [p1, setP1] = useState(null)
   const [p2, setP2] = useState(null)
@@ -341,6 +409,9 @@ export default function PropProjection({ tour }) {
       '| p1SurfaceStats.win_rate:', p1SurfaceStats?.win_rate)
   }
 
+  // ── Change 2: edge-based border color for Book Line card ──
+  const bookLineBorderColor = edge == null ? '#444' : edge > 0 ? '#00e676' : edge < 0 ? '#ff4444' : '#444'
+
   return (
     <div>
       {/* Players */}
@@ -357,14 +428,10 @@ export default function PropProjection({ tour }) {
       {/* Match Setup */}
       {section('Match Setup')}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 16 }}>
+        {/* ── Change 10: Surface custom selector with colored dots ── */}
         <div>
           <label style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.05em', display: 'block', marginBottom: 6 }}>Surface</label>
-          <select value={surface} onChange={e => { setSurface(e.target.value); setCourt('None'); setResult(null) }} style={{
-            width: '100%', padding: '10px 12px', background: 'var(--card)',
-            border: '1px solid var(--border)', borderRadius: 8, color: 'var(--white)', fontSize: 14,
-          }}>
-            {SURFACES.map(s => <option key={s} value={s}>{s}</option>)}
-          </select>
+          <SurfaceSelector value={surface} onChange={s => { setSurface(s); setCourt('None'); setResult(null) }} />
         </div>
         <div>
           <label style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.05em', display: 'block', marginBottom: 6 }}>Court / Tournament</label>
@@ -382,7 +449,10 @@ export default function PropProjection({ tour }) {
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 16 }}>
         {PROP_TYPES.map(pt => (
           <button key={pt} onClick={() => { setPropType(pt); setResult(null) }} style={{
-            padding: '8px 16px', borderRadius: 20, cursor: 'pointer', fontSize: 13, fontWeight: 600,
+            padding: '8px 16px', borderRadius: 20, cursor: 'pointer',
+            fontSize: 13,
+            fontFamily: '"Barlow Condensed", sans-serif',
+            fontWeight: propType === pt ? 800 : 600,
             background: propType === pt ? 'var(--green)' : 'var(--card)',
             color: propType === pt ? '#000' : 'var(--muted)',
             border: `1px solid ${propType === pt ? 'var(--green)' : 'var(--border)'}`,
@@ -397,7 +467,10 @@ export default function PropProjection({ tour }) {
           width: 36, height: 36, borderRadius: 8, border: '1px solid var(--border)',
           background: 'var(--card)', color: 'var(--white)', cursor: 'pointer', fontSize: 18,
         }}>−</button>
-        <div style={{ fontSize: 28, fontWeight: 800, minWidth: 60, textAlign: 'center' }}>{propLine.toFixed(1)}</div>
+        <div style={{
+          fontSize: 28, fontWeight: 800, minWidth: 60, textAlign: 'center',
+          fontFamily: '"Barlow Condensed", sans-serif',
+        }}>{propLine.toFixed(1)}</div>
         <button onClick={() => setPropLine(l => +(l + 0.5).toFixed(1))} style={{
           width: 36, height: 36, borderRadius: 8, border: '1px solid var(--border)',
           background: 'var(--card)', color: 'var(--white)', cursor: 'pointer', fontSize: 18,
@@ -416,6 +489,7 @@ export default function PropProjection({ tour }) {
         color: p1 && p2 && !loading ? '#000' : 'var(--muted)',
         border: 'none', transition: 'all .2s',
         marginBottom: 24,
+        fontFamily: '"Barlow Condensed", sans-serif',
       }}>
         {loading ? 'Analyzing…' : 'Run Prop Estimate'}
       </button>
@@ -428,8 +502,8 @@ export default function PropProjection({ tour }) {
         <AnimatePresence>
           <motion.div key="results" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4 }}>
 
-            {/* Three static (non-interactive) projection cards */}
-            {section('Prop Projection')}
+            {/* ── Change 8: Section divider before projection ── */}
+            <SectionDivider label="PROJECTION" />
 
             {/* Null-projection banner — shown when backend has insufficient data */}
             {!hasProjection && result.note && (
@@ -439,14 +513,18 @@ export default function PropProjection({ tour }) {
               </div>
             )}
 
+            {/* Three static (non-interactive) projection cards */}
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginBottom: 20 }}>
 
-              {/* Model Projection — static */}
-              <div style={STATIC_CARD_STYLE}>
+              {/* ── Change 2: Model Projection — green top border ── */}
+              <div style={{ ...STATIC_CARD_STYLE, borderTop: '2px solid #00e676' }}>
                 <div style={STATIC_LABEL_STYLE}>Model Projection</div>
                 {hasProjection ? (
                   <>
-                    <div style={{ fontSize: 36, fontWeight: 900, color: 'var(--green)', lineHeight: 1 }}>
+                    <div style={{
+                      fontSize: 36, fontWeight: 900, color: 'var(--green)', lineHeight: 1,
+                      fontFamily: '"Barlow Condensed", sans-serif',
+                    }}>
                       {result.model_projection.toFixed(1)}
                     </div>
                     <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 4 }}>{p1?.name}</div>
@@ -456,10 +534,13 @@ export default function PropProjection({ tour }) {
                 )}
               </div>
 
-              {/* Book Line — static */}
-              <div style={STATIC_CARD_STYLE}>
+              {/* ── Change 2: Book Line — edge-based top border ── */}
+              <div style={{ ...STATIC_CARD_STYLE, borderTop: `2px solid ${bookLineBorderColor}` }}>
                 <div style={STATIC_LABEL_STYLE}>Book Line</div>
-                <div style={{ fontSize: 36, fontWeight: 900, color: 'var(--muted)', lineHeight: 1 }}>
+                <div style={{
+                  fontSize: 36, fontWeight: 900, color: 'var(--muted)', lineHeight: 1,
+                  fontFamily: '"Barlow Condensed", sans-serif',
+                }}>
                   {propLine > 0 ? propLine.toFixed(1) : '—'}
                 </div>
                 {edge != null && (
@@ -469,8 +550,8 @@ export default function PropProjection({ tour }) {
                 )}
               </div>
 
-              {/* Lean — static */}
-              <div style={STATIC_CARD_STYLE}>
+              {/* ── Change 2: Lean — amber top border ── */}
+              <div style={{ ...STATIC_CARD_STYLE, borderTop: '2px solid #ffb300' }}>
                 <div style={STATIC_LABEL_STYLE}>Lean</div>
                 {hasProjection ? (
                   <>
@@ -510,14 +591,24 @@ export default function PropProjection({ tour }) {
             {/* Environment badge */}
             {result.environment && (
               <div style={{ marginBottom: 16 }}>
+                {/* ── Change 11: Pulse keyframes injected via style tag ── */}
+                <style>{`@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }`}</style>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '14px 16px', background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10 }}>
                   <span style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.06em' }}>Match Environment</span>
                   <span style={{
+                    display: 'inline-flex', alignItems: 'center',
                     padding: '4px 12px', borderRadius: 14, fontSize: 11, fontWeight: 700,
                     background: (ENV_COLORS[result.environment] || '#888') + '22',
                     color: ENV_COLORS[result.environment] || '#888',
                     border: `1px solid ${(ENV_COLORS[result.environment] || '#888')}55`,
+                    fontFamily: '"Barlow Condensed", sans-serif',
                   }}>
+                    {/* ── Change 11: Pulsing dot ── */}
+                    <span style={{
+                      display: 'inline-block', width: 6, height: 6,
+                      borderRadius: '50%', background: '#ffb300',
+                      animation: 'pulse 2s infinite', marginRight: 8,
+                    }} />
                     {result.environment_label || result.environment}
                   </span>
                 </div>
@@ -527,7 +618,8 @@ export default function PropProjection({ tour }) {
             {/* Stat comparison — uses result payload if present, prefetched stats as fallback */}
             {(p1SurfaceStats || p2SurfaceStats) && (
               <>
-                {section(`${surface} Stats Comparison`)}
+                {/* ── Change 8: Section divider before stats ── */}
+                <SectionDivider label="SURFACE STATS" />
 
                 {/* Handedness edge indicator — shown when matchup is cross-handed */}
                 {result?.player_handedness && result?.opponent_handedness &&
@@ -571,10 +663,11 @@ export default function PropProjection({ tour }) {
                         <div style={{ fontWeight: 700, color: nc, marginBottom: 12, fontSize: 13, display: 'flex', alignItems: 'center' }}>
                           🎾 {name}<HandBadge hand={hand} />
                         </div>
+                        {/* ── Change 3: color-coded stat values ── */}
                         {rows.map(([lbl, val]) => (
                           <div key={lbl} style={{ display: 'flex', justifyContent: 'space-between', padding: '5px 0', borderBottom: '1px solid #151515', fontSize: 12 }}>
                             <span style={{ color: 'var(--muted)' }}>{lbl}</span>
-                            <span style={{ fontWeight: 600 }}>{val}</span>
+                            <span style={{ fontWeight: 600, color: statColor(lbl, val) || 'var(--white)' }}>{val}</span>
                           </div>
                         ))}
                       </div>
@@ -592,12 +685,12 @@ export default function PropProjection({ tour }) {
                   <div style={{ display: 'flex', gap: 24, alignItems: 'center', marginBottom: 12 }}>
                     <div style={{ textAlign: 'center' }}>
                       <div style={{ fontSize: 11, color: 'var(--muted)' }}>{p1?.name}</div>
-                      <div style={{ fontSize: 36, fontWeight: 900, color: 'var(--green)' }}>{result.h2h_context.p1_wins}</div>
+                      <div style={{ fontSize: 36, fontWeight: 900, color: 'var(--green)', fontFamily: '"Barlow Condensed", sans-serif' }}>{result.h2h_context.p1_wins}</div>
                     </div>
                     <div style={{ fontSize: 20, color: 'var(--border)' }}>–</div>
                     <div style={{ textAlign: 'center' }}>
                       <div style={{ fontSize: 11, color: 'var(--muted)' }}>{p2?.name}</div>
-                      <div style={{ fontSize: 36, fontWeight: 900, color: 'var(--muted)' }}>{result.h2h_context.p2_wins}</div>
+                      <div style={{ fontSize: 36, fontWeight: 900, color: 'var(--muted)', fontFamily: '"Barlow Condensed", sans-serif' }}>{result.h2h_context.p2_wins}</div>
                     </div>
                     <div style={{ fontSize: 12, color: 'var(--muted)', marginLeft: 8 }}>
                       {result.h2h_context.total} meetings
@@ -614,8 +707,19 @@ export default function PropProjection({ tour }) {
             {/* Explanation */}
             {result.plain_english_explanation && (
               <>
-                {section('Model Explanation')}
-                <div style={{ padding: '14px 16px', background: '#00E67608', border: '1px solid #00E67622', borderRadius: 10, fontSize: 13, color: 'var(--muted)', lineHeight: 1.65, marginBottom: 16 }}>
+                {/* ── Change 8: Section divider before model explanation ── */}
+                <SectionDivider label="MODEL EXPLANATION" />
+                {/* ── Change 6: Green left border styling ── */}
+                <div style={{
+                  borderLeft: '4px solid #00e676',
+                  borderRadius: '0 8px 8px 0',
+                  background: '#0d1117',
+                  padding: '16px',
+                  fontSize: 13,
+                  color: '#667788',
+                  lineHeight: 1.6,
+                  marginBottom: 16,
+                }}>
                   {result.plain_english_explanation}
                 </div>
               </>
@@ -624,9 +728,19 @@ export default function PropProjection({ tour }) {
             {/* AI writeup */}
             {result.ai_writeup && (
               <>
-                {section('AI Scouting Report')}
+                {/* ── Change 8: Section divider before AI report ── */}
+                <SectionDivider label="AI SCOUTING REPORT" />
+                {/* ── Change 7: BASELINE AI badge ── */}
                 <div style={{ padding: '16px', background: '#00E67608', border: '1px solid #00E67622', borderRadius: 10, marginBottom: 16, position: 'relative' }}>
-                  <div style={{ position: 'absolute', top: 12, right: 14, fontSize: 10, color: 'var(--green)', fontWeight: 700, letterSpacing: '.06em' }}>BASELINE AI</div>
+                  <span style={{
+                    position: 'absolute', top: 8, right: 12,
+                    color: '#00e676', background: '#001a0b',
+                    border: '1px solid #00e676',
+                    fontSize: 8, fontFamily: '"Barlow Condensed", sans-serif',
+                    fontWeight: 800, letterSpacing: '0.15em',
+                    textTransform: 'uppercase', padding: '2px 8px',
+                    borderRadius: 4,
+                  }}>BASELINE AI</span>
                   <div style={{ fontSize: 13, color: 'var(--muted)', lineHeight: 1.7 }}>{result.ai_writeup}</div>
                 </div>
               </>

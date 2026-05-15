@@ -20,6 +20,26 @@ const STAT_KEYS = [
   'return_second_serve_pts_won','bp_converted','bp_saved',
 ]
 
+// ── Change 12: Surface-specific column header colors ────────────────────────
+const SURFACE_HEADER_COLORS = {
+  All:   '#aaa',
+  Hard:  '#6b9fff',
+  Clay:  '#ff6b35',
+  Grass: '#00e676',
+}
+
+// ── Change 4: Surface-specific tab styles ───────────────────────────────────
+function surfaceTabStyle(surface, isActive) {
+  if (!isActive) return { background: 'transparent', color: 'var(--muted)', border: '1px solid transparent' }
+  const styles = {
+    Hard:  { background: '#001a40', color: '#6b9fff', border: '1px solid #2a3d5a' },
+    Clay:  { background: '#2a0800', color: '#ff6b35', border: '1px solid #5a2010' },
+    Grass: { background: '#001a0b', color: '#00e676', border: '1px solid #1a4020' },
+    All:   { background: 'var(--card)', color: 'var(--green)', border: '1px solid var(--green)' },
+  }
+  return styles[surface] || styles.All
+}
+
 function StatTable({ stats, tour }) {
   const avgs = tour === 'WTA' ? WTA_AVERAGES : ATP_AVERAGES
   const isHigherBetter = (k) => !['double_faults'].includes(k)
@@ -30,7 +50,10 @@ function StatTable({ stats, tour }) {
         <thead>
           <tr>
             <th>Stat</th>
-            {SURFACES.map(s => <th key={s}>{s}</th>)}
+            {/* ── Change 12: Colored surface column headers ── */}
+            {SURFACES.map(s => (
+              <th key={s} style={{ color: SURFACE_HEADER_COLORS[s] }}>{s}</th>
+            ))}
           </tr>
         </thead>
         <tbody>
@@ -59,6 +82,7 @@ function StatTable({ stats, tour }) {
   )
 }
 
+// ── Change 9: Form dots with glow on win dots ────────────────────────────────
 function FormDots({ form }) {
   return (
     <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
@@ -66,6 +90,7 @@ function FormDots({ form }) {
         <div key={i} title={`${m.won ? 'W' : 'L'} vs ${m.opponent} (${m.surface})`} style={{
           width: 12, height: 12, borderRadius: '50%',
           background: m.won ? 'var(--green)' : 'var(--red)',
+          boxShadow: m.won ? '0 0 6px rgba(0, 230, 118, 0.5)' : undefined,
         }} />
       ))}
     </div>
@@ -136,14 +161,13 @@ function MatchHistory({ allMatches }) {
 
   return (
     <div>
+      {/* ── Change 4: surface-colored tabs ── */}
       <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
         {['All','Hard','Clay','Grass'].map(s => (
           <button key={s} onClick={() => { setSurface(s); setPage(0) }} style={{
             padding: '5px 14px', borderRadius: 20, fontSize: 12, cursor: 'pointer',
-            background: surface === s ? 'var(--green)' : 'var(--card)',
-            color: surface === s ? '#000' : 'var(--muted)',
-            border: `1px solid ${surface === s ? 'var(--green)' : 'var(--border)'}`,
             fontWeight: surface === s ? 700 : 400,
+            ...surfaceTabStyle(s, surface === s),
           }}>{s}</button>
         ))}
       </div>
@@ -231,6 +255,72 @@ function TaSurfacePanel({ taStats, surface }) {
   )
 }
 
+// ── Change 5: Win rate card with best-surface highlight ──────────────────────
+const SURFACE_COLORS = {
+  Hard:  '#6b9fff',
+  Clay:  '#ff6b35',
+  Grass: '#00e676',
+  All:   '#00e676',
+}
+const SURFACE_BG_TINTS = {
+  Hard:  'rgba(107,159,255,0.06)',
+  Clay:  'rgba(255,107,53,0.06)',
+  Grass: 'rgba(0,230,118,0.06)',
+  All:   'rgba(0,230,118,0.06)',
+}
+
+function WinRateCards({ stats }) {
+  // Find best surface by win_rate (exclude 'All', compare only Hard/Clay/Grass)
+  let bestSurface = null
+  let bestWr = -1
+  for (const s of ['Hard', 'Clay', 'Grass']) {
+    const wr = stats[s]?.win_rate
+    if (wr != null && wr > bestWr) { bestWr = wr; bestSurface = s }
+  }
+
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12 }}>
+      {SURFACES.map(s => {
+        const d = stats[s] || {}
+        const wr = d.win_rate
+        const mp = d.matches_played || 0
+        const isBest = s === bestSurface
+        const surfColor = SURFACE_COLORS[s] || '#00e676'
+        const bgTint = SURFACE_BG_TINTS[s] || 'transparent'
+
+        return (
+          <div key={s} style={{
+            background: isBest ? bgTint : 'var(--card)',
+            border: isBest ? `2px solid ${surfColor}` : '1px solid var(--border)',
+            borderRadius: 10,
+            padding: '14px 16px',
+            transition: 'border .2s',
+          }}>
+            <div style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 4 }}>
+              {s === 'All' ? 'All Surfaces' : s}
+            </div>
+            <div style={{
+              fontSize: isBest ? '2.5rem' : '1.75rem',
+              fontWeight: 900,
+              fontFamily: '"Barlow Condensed", sans-serif',
+              color: wr > 55 ? 'var(--green)' : wr < 45 ? 'var(--red)' : 'var(--white)',
+              lineHeight: 1.1,
+            }}>
+              {wr != null ? `${wr.toFixed(0)}%` : '—'}
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 4 }}>{mp} matches</div>
+            {isBest && (
+              <div style={{ fontSize: 9, color: surfColor, fontWeight: 700, marginTop: 4, textTransform: 'uppercase', letterSpacing: '.08em' }}>
+                Best Surface
+              </div>
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 export default function SurfaceAnalyzer({ tour }) {
   const [player, setPlayer] = useState(null)
   const [activeSurface, setActiveSurface] = useState('Hard')
@@ -262,7 +352,10 @@ export default function SurfaceAnalyzer({ tour }) {
         <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4 }}>
           {/* Header */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8, flexWrap: 'wrap' }}>
-            <h2 style={{ margin: 0, fontSize: 24, fontWeight: 800 }}>{player.name}</h2>
+            <h2 style={{
+              margin: 0, fontSize: 24, fontWeight: 800,
+              fontFamily: '"Barlow Condensed", sans-serif',
+            }}>{player.name}</h2>
             {stats.archetype && (
               <span style={{ padding: '3px 10px', borderRadius: 12, fontSize: 12, fontWeight: 700, background: '#00E67622', color: 'var(--green)', border: '1px solid #00E67644' }}>
                 {stats.archetype}
@@ -272,38 +365,28 @@ export default function SurfaceAnalyzer({ tour }) {
           </div>
 
           {section('Form (last 10)')}
+          {/* ── Change 9: FormDots with glow ── */}
           <FormDots form={stats.form || []} />
 
           {section('Win Rate by Surface')}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12 }}>
-            {SURFACES.map(s => {
-              const d = stats[s] || {}
-              const wr = d.win_rate
-              const mp = d.matches_played || 0
-              return (
-                <StatCard key={s} label={s === 'All' ? 'All Surfaces' : s}
-                  value={wr != null ? `${wr.toFixed(0)}%` : '—'}
-                  sub={`${mp} matches`}
-                  color={wr > 55 ? 'green' : wr < 45 ? 'red' : undefined}
-                />
-              )
-            })}
-          </div>
+          {/* ── Change 5: Win rate cards with best-surface highlight ── */}
+          <WinRateCards stats={stats} />
 
           {section('Surface Stats')}
+          {/* ── Changes 3 & 12 applied inside StatTable ── */}
           <StatTable stats={stats} tour={tour} />
 
           {/* Tennis Abstract supplemental panel — surface selector */}
           {stats.ta_stats && (
             <>
+              {/* ── Change 4: Surface-colored tab buttons ── */}
               <div style={{ display: 'flex', gap: 8, margin: '16px 0 10px', flexWrap: 'wrap' }}>
                 {['Hard', 'Clay', 'Grass', 'All'].map(s => (
                   <button key={s} onClick={() => setActiveSurface(s)} style={{
                     padding: '4px 12px', borderRadius: 16, fontSize: 11, cursor: 'pointer',
-                    background: activeSurface === s ? 'var(--green)' : 'var(--card)',
-                    color: activeSurface === s ? '#000' : 'var(--muted)',
-                    border: `1px solid ${activeSurface === s ? 'var(--green)' : 'var(--border)'}`,
                     fontWeight: activeSurface === s ? 700 : 400,
+                    fontFamily: '"Barlow Condensed", sans-serif',
+                    ...surfaceTabStyle(s, activeSurface === s),
                   }}>{s}</button>
                 ))}
               </div>

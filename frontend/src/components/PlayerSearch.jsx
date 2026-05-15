@@ -103,7 +103,6 @@ export default function PlayerSearch({ tour, onSelect, label = 'Search player…
               }} />
             )}
           </div>
-<<<<<<< Updated upstream
           {showDropdown && (
             <div style={{
               position: 'absolute', top: '100%', left: 0, right: 0,

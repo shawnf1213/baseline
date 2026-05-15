@@ -20,6 +20,7 @@ export default function LeanBadge({ lean, size = 'lg' }) {
         background: bg, border: `1px solid ${border}`,
         borderRadius: 8, color, fontWeight: 800,
         fontSize: fs, letterSpacing: '.06em',
+        fontFamily: '"Barlow Condensed", sans-serif',
       }}
     >
       {lean}
