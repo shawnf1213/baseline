@@ -184,9 +184,57 @@ function MatchHistory({ allMatches }) {
   )
 }
 
+// Handedness badge — R=gray, L=green
+function HandBadge({ hand }) {
+  if (!hand) return null
+  return (
+    <span style={{
+      display: 'inline-block', fontSize: 9, fontWeight: 800,
+      padding: '1px 6px', borderRadius: 4, marginLeft: 8,
+      verticalAlign: 'middle', letterSpacing: '.05em',
+      background: hand === 'L' ? 'var(--green)' : '#3a3a3a',
+      color:      hand === 'L' ? '#000' : '#888',
+      border: `1px solid ${hand === 'L' ? 'var(--green)' : '#555'}`,
+    }}>{hand === 'L' ? 'Left-handed' : 'Right-handed'}</span>
+  )
+}
+
+// TA surface stats panel shown below the Sofascore stat table
+function TaSurfacePanel({ taStats, surface }) {
+  if (!taStats?.surface_stats) return null
+  const surf = taStats.surface_stats[surface] || taStats.surface_stats['All']
+  if (!surf || !surf.matches) return null
+
+  const rows = [
+    ['Ace %',          surf.ace_pct != null    ? surf.ace_pct.toFixed(1)    + '%' : '—'],
+    ['DF %',           surf.df_pct != null     ? surf.df_pct.toFixed(1)     + '%' : '—'],
+    ['1st In %',       surf.first_in_pct != null  ? surf.first_in_pct.toFixed(1)  + '%' : '—'],
+    ['1st Serve Won',  surf.first_won_pct != null ? surf.first_won_pct.toFixed(1) + '%' : '—'],
+    ['2nd Serve Won',  surf.second_won_pct != null? surf.second_won_pct.toFixed(1)+ '%' : '—'],
+    ['BP Saved %',     surf.bp_saved_pct != null  ? surf.bp_saved_pct.toFixed(1)  + '%' : '—'],
+    ['BP Conv vs opp', surf.bp_conv_pct != null   ? surf.bp_conv_pct.toFixed(1)   + '%' : '—'],
+    ['Matches (TA)',    surf.matches],
+  ]
+
+  return (
+    <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, padding: 16, marginBottom: 16 }}>
+      <div style={{ fontSize: 11, color: 'var(--green)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 10 }}>
+        Tennis Abstract — {surface} Data ({surf.matches} matches)
+      </div>
+      {rows.map(([lbl, val]) => (
+        <div key={lbl} style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', borderBottom: '1px solid #151515', fontSize: 12 }}>
+          <span style={{ color: 'var(--muted)' }}>{lbl}</span>
+          <span style={{ fontWeight: 600 }}>{val}</span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 export default function SurfaceAnalyzer({ tour }) {
   const [player, setPlayer] = useState(null)
-  const { stats, loading, error } = usePlayerStats(player?.id, tour)
+  const [activeSurface, setActiveSurface] = useState('Hard')
+  const { stats, loading, error } = usePlayerStats(player?.id, tour, player?.name || '')
 
   const section = (title) => (
     <div style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.08em', marginBottom: 12, marginTop: 28, paddingBottom: 6, borderBottom: '1px solid var(--border)' }}>
@@ -220,6 +268,7 @@ export default function SurfaceAnalyzer({ tour }) {
                 {stats.archetype}
               </span>
             )}
+            <HandBadge hand={stats.ta_stats?.handedness} />
           </div>
 
           {section('Form (last 10)')}
@@ -243,6 +292,24 @@ export default function SurfaceAnalyzer({ tour }) {
 
           {section('Surface Stats')}
           <StatTable stats={stats} tour={tour} />
+
+          {/* Tennis Abstract supplemental panel — surface selector */}
+          {stats.ta_stats && (
+            <>
+              <div style={{ display: 'flex', gap: 8, margin: '16px 0 10px', flexWrap: 'wrap' }}>
+                {['Hard', 'Clay', 'Grass', 'All'].map(s => (
+                  <button key={s} onClick={() => setActiveSurface(s)} style={{
+                    padding: '4px 12px', borderRadius: 16, fontSize: 11, cursor: 'pointer',
+                    background: activeSurface === s ? 'var(--green)' : 'var(--card)',
+                    color: activeSurface === s ? '#000' : 'var(--muted)',
+                    border: `1px solid ${activeSurface === s ? 'var(--green)' : 'var(--border)'}`,
+                    fontWeight: activeSurface === s ? 700 : 400,
+                  }}>{s}</button>
+                ))}
+              </div>
+              <TaSurfacePanel taStats={stats.ta_stats} surface={activeSurface} />
+            </>
+          )}
 
           {section('Rolling Win Rate (last 20 matches)')}
           <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, padding: 16 }}>

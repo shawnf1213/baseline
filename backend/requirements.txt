@@ -4,3 +4,4 @@ python-dotenv==1.2.2
 pandas==3.0.2
 curl-cffi==0.15.0
 pydantic==2.13.4
+beautifulsoup4==4.12.3

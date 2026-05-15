@@ -16,8 +16,18 @@ function impliedProb(odds) {
   return null
 }
 
-function modelWinProb(p1Stats, p2Stats) {
-  const wr1 = p1Stats?.win_rate ?? 50
+function modelWinProb(p1Stats, p2Stats, p1Rank, p2Rank) {
+  // If TA rank-splits are available for p1, use the split that matches p2's rank
+  const rankSplits = p1Stats?.ta_stats?.rank_splits
+  let wr1 = p1Stats?.win_rate ?? 50
+  if (rankSplits && p2Rank) {
+    const rank = parseInt(p2Rank)
+    if (!isNaN(rank)) {
+      if (rank <= 10 && rankSplits.top10 != null)       wr1 = rankSplits.top10
+      else if (rank <= 50 && rankSplits['11to50'] != null) wr1 = rankSplits['11to50']
+      else if (rankSplits['51plus'] != null)              wr1 = rankSplits['51plus']
+    }
+  }
   const wr2 = p2Stats?.win_rate ?? 50
   const total = wr1 + wr2
   return total > 0 ? (wr1 / total) * 100 : 50
@@ -36,7 +46,10 @@ export default function ValueBet({ tour }) {
   useEffect(() => {
     if (!p1 || !p2) return
     setLoading(true)
-    Promise.all([fetchStats(String(p1.id), tour), fetchStats(String(p2.id), tour)])
+    Promise.all([
+      fetchStats(String(p1.id), tour, p1.name || ''),
+      fetchStats(String(p2.id), tour, p2.name || ''),
+    ])
       .then(([s1, s2]) => { setP1Stats(s1); setP2Stats(s2) })
       .finally(() => setLoading(false))
   }, [p1, p2, tour])
@@ -45,7 +58,7 @@ export default function ValueBet({ tour }) {
   const s2 = p2Stats?.[surface] || p2Stats?.All || {}
   const arch1 = p1Stats?.archetype
   const arch2 = p2Stats?.archetype
-  const modelP1 = p1Stats && p2Stats ? modelWinProb(s1, s2) : null
+  const modelP1 = p1Stats && p2Stats ? modelWinProb(s1, s2, p2?.currentRank, p1?.currentRank) : null
   const modelP2 = modelP1 != null ? 100 - modelP1 : null
 
   const book1 = impliedProb(odds1) ? impliedProb(odds1) * 100 : null
@@ -86,20 +99,41 @@ export default function ValueBet({ tour }) {
           {/* Archetypes */}
           {section('Player Archetypes')}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 16 }}>
-            {[[p1, arch1, s1], [p2, arch2, s2]].map(([pl, arch, s], idx) => (
-              <div key={idx} style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, padding: 16 }}>
-                <div style={{ fontWeight: 700, marginBottom: 8 }}>{pl?.name}</div>
-                {arch && <span style={{ padding: '3px 10px', borderRadius: 12, fontSize: 11, fontWeight: 700, background: '#00E67622', color: 'var(--green)', border: '1px solid #00E67644' }}>{arch}</span>}
-                <div style={{ marginTop: 12, fontSize: 12 }}>
-                  {[['Win Rate', fmtPct(s.win_rate)],['Aces/M', fmt(s.aces)],['1st Srv Won', fmtPct(s.first_serve_pts_won)],['BP Conv', fmtPct(s.bp_converted)]].map(([lbl, val]) => (
-                    <div key={lbl} style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', borderBottom: '1px solid #151515' }}>
-                      <span style={{ color: 'var(--muted)' }}>{lbl}</span>
-                      <span style={{ fontWeight: 600 }}>{val}</span>
-                    </div>
-                  ))}
+            {[[p1, arch1, s1, p1Stats], [p2, arch2, s2, p2Stats]].map(([pl, arch, s, full], idx) => {
+              const hand = full?.ta_stats?.handedness
+              const rSplits = full?.ta_stats?.rank_splits || {}
+              return (
+                <div key={idx} style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, padding: 16 }}>
+                  <div style={{ fontWeight: 700, marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
+                    {pl?.name}
+                    {hand && (
+                      <span style={{
+                        fontSize: 9, fontWeight: 800, padding: '1px 5px', borderRadius: 4,
+                        background: hand === 'L' ? 'var(--green)' : '#3a3a3a',
+                        color: hand === 'L' ? '#000' : '#888',
+                        border: `1px solid ${hand === 'L' ? 'var(--green)' : '#555'}`,
+                      }}>{hand}</span>
+                    )}
+                  </div>
+                  {arch && <span style={{ padding: '3px 10px', borderRadius: 12, fontSize: 11, fontWeight: 700, background: '#00E67622', color: 'var(--green)', border: '1px solid #00E67644' }}>{arch}</span>}
+                  <div style={{ marginTop: 12, fontSize: 12 }}>
+                    {[
+                      ['Win Rate', fmtPct(s.win_rate)],
+                      ['Aces/M', fmt(s.aces)],
+                      ['1st Srv Won', fmtPct(s.first_serve_pts_won)],
+                      ['BP Conv', fmtPct(s.bp_converted)],
+                      ...(rSplits.top10 != null ? [['TA: vs Top 10', rSplits.top10.toFixed(1) + '%']] : []),
+                      ...(rSplits['11to50'] != null ? [['TA: vs 11-50', rSplits['11to50'].toFixed(1) + '%']] : []),
+                    ].map(([lbl, val]) => (
+                      <div key={lbl} style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', borderBottom: '1px solid #151515' }}>
+                        <span style={{ color: 'var(--muted)' }}>{lbl}</span>
+                        <span style={{ fontWeight: 600 }}>{val}</span>
+                      </div>
+                    ))}
+                  </div>
                 </div>
-              </div>
-            ))}
+              )
+            })}
           </div>
 
           {/* Model win probability */}

@@ -233,6 +233,29 @@ function StatMini({ label, v1, v2, n1, n2 }) {
   )
 }
 
+// Handedness badge — R=gray, L=green
+function HandBadge({ hand }) {
+  if (!hand) return null
+  const isLeft = hand === 'L'
+  return (
+    <span style={{
+      display: 'inline-block',
+      fontSize: 9,
+      fontWeight: 800,
+      padding: '1px 6px',
+      borderRadius: 4,
+      marginLeft: 7,
+      letterSpacing: '.05em',
+      verticalAlign: 'middle',
+      background: isLeft ? 'var(--green)' : '#3a3a3a',
+      color: isLeft ? '#000' : '#888',
+      border: `1px solid ${isLeft ? 'var(--green)' : '#555'}`,
+    }}>
+      {isLeft ? 'L' : 'R'}
+    </span>
+  )
+}
+
 export default function PropProjection({ tour }) {
   const [p1, setP1] = useState(null)
   const [p2, setP2] = useState(null)
@@ -249,12 +272,11 @@ export default function PropProjection({ tour }) {
   const [p1PrefetchStats, setP1PrefetchStats] = useState(null)
   const [p2PrefetchStats, setP2PrefetchStats] = useState(null)
 
-  // Warm backend cache only when BOTH players are selected — prevents P1 prefetch
-  // from blocking FastAPI's event loop and slowing down the P2 search request
+  // Warm backend cache only when BOTH players are selected
   useEffect(() => {
     if (!p1 || !p2) return
-    fetchStats(String(p1.id), tour).then(s => setP1PrefetchStats(s)).catch(() => {})
-    fetchStats(String(p2.id), tour).then(s => setP2PrefetchStats(s)).catch(() => {})
+    fetchStats(String(p1.id), tour, p1.name || '').then(s => setP1PrefetchStats(s)).catch(() => {})
+    fetchStats(String(p2.id), tour, p2.name || '').then(s => setP2PrefetchStats(s)).catch(() => {})
   }, [p1?.id, p2?.id, tour])
 
   const courts = ['None', ...(COURTS_BY_SURFACE[surface] || [])]
@@ -506,22 +528,50 @@ export default function PropProjection({ tour }) {
             {(p1SurfaceStats || p2SurfaceStats) && (
               <>
                 {section(`${surface} Stats Comparison`)}
+
+                {/* Handedness edge indicator — shown when matchup is cross-handed */}
+                {result?.player_handedness && result?.opponent_handedness &&
+                  result.player_handedness !== result.opponent_handedness && (
+                  <div style={{
+                    display: 'flex', alignItems: 'center', gap: 10,
+                    padding: '10px 14px', marginBottom: 12,
+                    background: '#00E67608', border: '1px solid #00E67622', borderRadius: 8,
+                    fontSize: 12,
+                  }}>
+                    <span style={{ color: 'var(--green)', fontWeight: 700 }}>⚡ Handedness Edge</span>
+                    <span style={{ color: 'var(--muted)' }}>
+                      {p1?.name} ({result.player_handedness}) vs {p2?.name} ({result.opponent_handedness})
+                      {' — cross-handed matchup affects ace angles and serve patterns'}
+                    </span>
+                  </div>
+                )}
+
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 20 }}>
-                  {[[p1SurfaceStats, p1?.name, 'var(--white)'], [p2SurfaceStats, p2?.name, 'var(--muted)']].map(([s, name, nc], idx) => {
+                  {[
+                    [p1SurfaceStats, p1?.name, 'var(--white)', result?.player_handedness, null],
+                    [p2SurfaceStats, p2?.name, 'var(--muted)', result?.opponent_handedness, result?.opponent_ace_against],
+                  ].map(([s, name, nc, hand, aceAgainst], idx) => {
                     const d = s || {}
+                    const rows = [
+                      ['Aces/Match', fmt(d.aces)],
+                      ['DFs/Match', fmt(d.double_faults)],
+                      ['1st Srv Won', fmtPct(d.first_serve_pts_won)],
+                      ['2nd Srv Won', fmtPct(d.second_serve_pts_won)],
+                      ['Ret Pts Won (1st)', fmtPct(d.return_first_serve_pts_won)],
+                      ['BP Converted', fmtPct(d.bp_converted)],
+                      ['Win Rate', fmtPct(d.win_rate)],
+                      ['Matches', d.matches_played || '—'],
+                    ]
+                    // Add aces-conceded row to opponent card (idx === 1) if TA data available
+                    if (idx === 1 && aceAgainst != null) {
+                      rows.splice(1, 0, ['Aces Conceded/Match', fmt(aceAgainst)])
+                    }
                     return (
                       <div key={idx} style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, padding: 16 }}>
-                        <div style={{ fontWeight: 700, color: nc, marginBottom: 12, fontSize: 13 }}>🎾 {name}</div>
-                        {[
-                          ['Aces/Match', fmt(d.aces)],
-                          ['DFs/Match', fmt(d.double_faults)],
-                          ['1st Srv Won', fmtPct(d.first_serve_pts_won)],
-                          ['2nd Srv Won', fmtPct(d.second_serve_pts_won)],
-                          ['Ret Pts Won (1st)', fmtPct(d.return_first_serve_pts_won)],
-                          ['BP Converted', fmtPct(d.bp_converted)],
-                          ['Win Rate', fmtPct(d.win_rate)],
-                          ['Matches', d.matches_played || '—'],
-                        ].map(([lbl, val]) => (
+                        <div style={{ fontWeight: 700, color: nc, marginBottom: 12, fontSize: 13, display: 'flex', alignItems: 'center' }}>
+                          🎾 {name}<HandBadge hand={hand} />
+                        </div>
+                        {rows.map(([lbl, val]) => (
                           <div key={lbl} style={{ display: 'flex', justifyContent: 'space-between', padding: '5px 0', borderBottom: '1px solid #151515', fontSize: 12 }}>
                             <span style={{ color: 'var(--muted)' }}>{lbl}</span>
                             <span style={{ fontWeight: 600 }}>{val}</span>

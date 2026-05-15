@@ -1,16 +1,17 @@
-﻿"""
-Baseline Tennis Analytics â€” FastAPI backend.
+﻿“””
+Baseline Tennis Analytics - FastAPI backend.
 
 Wraps all existing Python calculation logic in REST endpoints.
-No logic is rewritten here â€” only imported and exposed via HTTP.
+No logic is rewritten here - only imported and exposed via HTTP.
 
 Endpoints:
-  POST /api/search          â€” player search
-  POST /api/player/stats    â€” surface stats + archetype
-  POST /api/prop/calculate  â€” full prop projection
-  POST /api/h2h             â€” head-to-head record + stats
-"""
+  POST /api/search          - player search
+  POST /api/player/stats    - surface stats + archetype
+  POST /api/prop/calculate  - full prop projection
+  POST /api/h2h             - head-to-head record + stats
+“””
 
+import asyncio
 import sys
 import types
 import logging
@@ -53,6 +54,7 @@ from src.api.sofascore_client import (
     get_h2h_summary,
     get_h2h_stat_avg,
 )
+from src.api.tennis_abstract import get_player_ta_stats
 from src.calculations.archetypes import classify_archetype
 from src.calculations.confidence import calculate_confidence
 from src.calculations.props import (
@@ -88,7 +90,7 @@ app.add_middleware(
 
 @app.on_event("startup")
 async def startup():
-    logger.info("Initialising Sofascore client / proxy sessionâ€¦")
+    logger.info("Initialising Sofascore client / proxy session...")
     init_session()
     logger.info("Backend ready.")
 
@@ -108,6 +110,7 @@ class SearchRequest(BaseModel):
 
 class PlayerStatsRequest(BaseModel):
     player_id: str
+    player_name: str = ""
     tour: str = "ATP"
 
 
@@ -167,62 +170,84 @@ def _build_explanation(req: PropRequest, result: dict, lean: str,
     parts = []
     pt = req.prop_type
 
-    if pt == "Aces":
-        sup = result.get("suppression_factor", 1.0)
-        cf  = result.get("cpr_factor", 1.0)
+    if pt == “Aces”:
+        sup = result.get(“suppression_factor”, 1.0)
+        cf  = result.get(“cpr_factor”, 1.0)
+        hf  = result.get(“hand_factor”, 1.0) or 1.0
+        ag  = result.get(“ace_against_factor”, 1.0) or 1.0
+        ph  = result.get(“player_hand”) or “”
+        oh  = result.get(“opp_hand”) or “”
+        hand_note = “”
+        if ph and oh and ph != oh:
+            direction = “reduces” if hf < 1.0 else “boosts”
+            hand_note = f” Handedness ({ph} vs {oh}) {direction} ace projection x{hf:.2f}.”
         parts.append(
-            f"Surface CPR {cpr} applies Ã—{cf:.2f} court-speed multiplier. "
-            f"Opponent return suppression: Ã—{sup:.2f}."
+            f”Surface CPR {cpr} applies x{cf:.2f} court-speed factor.”
+            f” Opponent return suppression x{sup:.2f}.”
+            f” Opponent ace-against factor x{ag:.2f}.{hand_note}”
         )
-    elif pt == "Double Faults":
-        pf = result.get("pressure_factor", 1.0)
+    elif pt == “Double Faults”:
+        pf = result.get(“pressure_factor”, 1.0)
         parts.append(
-            f"Opponent return aggression factor Ã—{pf:.2f} â€” "
-            f"{'increases' if pf > 1 else 'reduces'} second-serve pressure."
+            f”Opponent return aggression factor x{pf:.2f} -”
+            f” {‘increases’ if pf > 1 else ‘reduces’} second-serve pressure.”
         )
-    elif pt == "Total Games":
-        env = ENVIRONMENT_LABELS.get(result.get("environment", "STANDARD"), "Standard")
-        gps = result.get("games_per_set", 0)
-        sets = result.get("expected_sets", 2.3)
-        ch   = result.get("combined_hold", 72)
+    elif pt == “Total Games”:
+        env = ENVIRONMENT_LABELS.get(result.get(“environment”, “STANDARD”), “Standard”)
+        gps = result.get(“games_per_set”, 0)
+        sets = result.get(“expected_sets”, 2.3)
+        ch   = result.get(“combined_hold”, 72)
         parts.append(
-            f"{env} â€” combined hold {ch:.0f}% â†’ {gps:.1f} games/set "
-            f"over {sets:.1f} expected sets."
+            f”{env} - combined hold {ch:.0f}% -> {gps:.1f} games/set “
+            f”over {sets:.1f} expected sets.”
         )
-    elif pt == "Break Points Won":
-        env   = ENVIRONMENT_LABELS.get(result.get("environment", "STANDARD"), "Standard")
-        conv  = result.get("conv_rate_pct") or 0
-        faced = result.get("opp_bp_faced") or 0
+    elif pt == “Break Points Won”:
+        env   = ENVIRONMENT_LABELS.get(result.get(“environment”, “STANDARD”), “Standard”)
+        conv  = result.get(“conv_rate_pct”) or 0
+        faced = result.get(“opp_bp_faced”) or 0
         base  = (conv / 100) * faced
+        ta_src = result.get(“conv_rate_source”, “”)
+        src_note = f” (TA {ta_src} data)” if ta_src else “”
         parts.append(
-            f"{env} â€” {conv:.0f}% conversion Ã— {faced:.1f} BPs opponent faces per match "
-            f"= {base:.1f} base projection."
+            f”{env} - {conv:.0f}% conversion x {faced:.1f} BPs opponent faces/match”
+            f” = {base:.1f} base projection.{src_note}”
         )
-        cpr_adj = result.get("cpr_adj_pct", 0)
+        cpr_adj = result.get(“cpr_adj_pct”, 0)
         if cpr_adj:
-            sign = "+" if cpr_adj >= 0 else ""
-            parts.append(f"Surface CPR {cpr} applies {sign}{cpr_adj:.1f}%.")
+            sign = “+” if cpr_adj >= 0 else “”
+            parts.append(f”Surface CPR {cpr} applies {sign}{cpr_adj:.1f}%.”)
 
     if line > 0:
         edge = proj - line
-        sign = "+" if edge >= 0 else ""
+        sign = “+” if edge >= 0 else “”
         parts.append(
-            f"Model projects {proj:.1f} vs book line {line:.1f} "
-            f"(edge {sign}{edge:.1f}) â†’ {lean}."
+            f”Model projects {proj:.1f} vs book line {line:.1f} “
+            f”(edge {sign}{edge:.1f}) -> {lean}.”
         )
 
     return " ".join(parts)
 
 
 # ---------------------------------------------------------------------------
-# GET /api/search  (GET avoids CORS preflight — no OPTIONS round-trip needed)
+# GET /api/search  — GET avoids CORS preflight entirely
+# POST /api/search — kept for backwards compat
 # ---------------------------------------------------------------------------
 @app.get("/api/search")
-async def search(query: str = "", tour: str = "ATP"):
+async def search_get(query: str = "", tour: str = "ATP"):
     if len(query.strip()) < 3:
         return []
     try:
         return search_players(query.strip(), tour)
+    except Exception as e:
+        logger.error("search error: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/search")
+async def search_post(req: SearchRequest):
+    if len(req.query.strip()) < 3:
+        return []
+    try:
+        return search_players(req.query.strip(), req.tour)
     except Exception as e:
         logger.error("search error: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
@@ -238,6 +263,17 @@ async def player_stats(req: PlayerStatsRequest):
         all_stats = data.get("All", {}) or {}
         archetype = classify_archetype(all_stats, req.tour)
 
+        # Fetch Tennis Abstract data if player name is provided
+        ta_data = None
+        if req.player_name:
+            try:
+                ta_data = await asyncio.wait_for(
+                    get_player_ta_stats(req.player_name, req.tour),
+                    timeout=30.0,
+                )
+            except Exception as e:
+                logger.warning("TA fetch failed for stats endpoint: %s", e)
+
         return {
             "All":   data.get("All", {}),
             "Hard":  data.get("Hard", {}),
@@ -249,6 +285,7 @@ async def player_stats(req: PlayerStatsRequest):
             "Hard_matches":  _safe_matches(data.get("Hard_matches", [])),
             "Clay_matches":  _safe_matches(data.get("Clay_matches", [])),
             "Grass_matches": _safe_matches(data.get("Grass_matches", [])),
+            "ta_stats":      ta_data,
         }
     except Exception as e:
         logger.error("player/stats error: %s", e)
@@ -289,10 +326,29 @@ async def prop_calculate(req: PropRequest):
         cpr = COURT_CPR.get(court_for_calc,
               GENERIC_SURFACE_CPR.get(req.surface, CPR_NEUTRAL))
 
+        # Fetch Tennis Abstract data for both players concurrently (30s timeout each)
+        async def _ta_safe(name):
+            if not name:
+                return None
+            try:
+                return await asyncio.wait_for(
+                    get_player_ta_stats(name, req.tour), timeout=30.0
+                )
+            except Exception as exc:
+                logger.warning("TA fetch failed for '%s': %s", name, exc)
+                return None
+
+        player_ta, opponent_ta = await asyncio.gather(
+            _ta_safe(req.player_name),
+            _ta_safe(req.opponent_name),
+        )
+
         # Run projection
         if req.prop_type == "Aces":
             result = project_aces(
-                p1_s, p2_s, court_for_calc, h2h_ace_avg, cpr_override=cpr
+                p1_s, p2_s, court_for_calc, h2h_ace_avg, cpr_override=cpr,
+                player_ta=player_ta, opponent_ta=opponent_ta,
+                tour=req.tour, surface=req.surface,
             )
         elif req.prop_type == "Double Faults":
             result = project_double_faults(p1_s, p2_s, h2h_df_avg)
@@ -307,6 +363,9 @@ async def prop_calculate(req: PropRequest):
                 h2h_bp_avg=h2h_bp_avg,
                 cpr_override=cpr,
                 h2h_match_count=h2h_surf_matches,
+                player_ta=player_ta,
+                opponent_ta=opponent_ta,
+                surface=req.surface,
             )
 
         proj_val = result.get("projection")
@@ -341,6 +400,13 @@ async def prop_calculate(req: PropRequest):
         p1_arch = classify_archetype(p1_all, req.tour)
         p2_arch = classify_archetype(p2_all, req.tour)
 
+        # Resolve handedness from TA (may be None if TA unavailable)
+        player_hand   = player_ta.get("handedness")   if player_ta   else None
+        opponent_hand = opponent_ta.get("handedness") if opponent_ta else None
+
+        # Opponent ace-against (aces the opponent concedes per match as a returner)
+        opponent_ace_against = opponent_ta.get("ace_against_per_match") if opponent_ta else None
+
         # AI scouting report
         h2h_total = h2h_summary.get("total", 0)
         scouting = generate_scouting_report(
@@ -357,6 +423,8 @@ async def prop_calculate(req: PropRequest):
             player_arch=p1_arch,
             opponent_arch=p2_arch,
             h2h_summary=h2h_summary if h2h_total > 0 else None,
+            player_hand=player_hand,
+            opponent_hand=opponent_hand,
         )
 
         env_key   = result.get("environment") or detect_environment(p1_s, p2_s)
@@ -380,6 +448,11 @@ async def prop_calculate(req: PropRequest):
             "opponent_stats":       p2_s,
             "player_archetype":     p1_arch,
             "opponent_archetype":   p2_arch,
+            # Tennis Abstract enrichment (None when TA unavailable)
+            "player_handedness":    player_hand,
+            "opponent_handedness":  opponent_hand,
+            "opponent_ace_against": opponent_ace_against,
+            "ta_available":         bool(player_ta or opponent_ta),
             "h2h_context": {
                 "total":             h2h_total,
                 "p1_wins":           h2h_summary.get("p1_wins", 0),
