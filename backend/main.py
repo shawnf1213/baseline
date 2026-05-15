@@ -215,14 +215,14 @@ def _build_explanation(req: PropRequest, result: dict, lean: str,
 
 
 # ---------------------------------------------------------------------------
-# POST /api/search
+# GET /api/search  (GET avoids CORS preflight — no OPTIONS round-trip needed)
 # ---------------------------------------------------------------------------
-@app.post("/api/search")
-async def search(req: SearchRequest):
-    if len(req.query.strip()) < 3:
+@app.get("/api/search")
+async def search(query: str = "", tour: str = "ATP"):
+    if len(query.strip()) < 3:
         return []
     try:
-        return search_players(req.query.strip(), req.tour)
+        return search_players(query.strip(), tour)
     except Exception as e:
         logger.error("search error: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
