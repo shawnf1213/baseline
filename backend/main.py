@@ -412,6 +412,11 @@ async def prop_calculate(req: PropRequest):
         # Opponent ace-against (aces the opponent concedes per match as a returner)
         opponent_ace_against = opponent_ta.get("ace_against_per_match") if opponent_ta else None
 
+        # Build recent results strings for AI scouting context
+        # Format: "W 6-3 6-4 vs Napolitano (Clay, Apr 13)"
+        p1_recent = p1_data.get(f"{req.surface}_recent_results", [])
+        p2_recent = p2_data.get(f"{req.surface}_recent_results", [])
+
         # AI scouting report
         h2h_total = h2h_summary.get("total", 0)
         scouting = generate_scouting_report(
@@ -430,6 +435,8 @@ async def prop_calculate(req: PropRequest):
             h2h_summary=h2h_summary if h2h_total > 0 else None,
             player_hand=player_hand,
             opponent_hand=opponent_hand,
+            player_recent_results=p1_recent or None,
+            opponent_recent_results=p2_recent or None,
         )
 
         env_key   = result.get("environment") or detect_environment(p1_s, p2_s)

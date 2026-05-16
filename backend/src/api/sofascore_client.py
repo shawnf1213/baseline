@@ -206,6 +206,11 @@ CLAY_KEYWORDS = [
     "madrid", "rio", "buenos aires", "sao paulo", "marrakech",
     "bastad", "gstaad", "umag", "kitzbuhel", "bucharest",
     "clay", "terre battue",
+    # Challenger clay venues
+    "mexico city", "bogota", "lima", "santiago", "cordoba", "cherbourg",
+    "oeiras", "prostejov", "poznan", "braunschweig", "salzburg",
+    "tampere", "istanbul", "casablanca", "tunis", "cairo",
+    "perugia", "parma", "banja luka", "santa fe", "morelos",
 ]
 GRASS_KEYWORDS = [
     "wimbledon", "queen", "queens", "halle", "stuttgart",
@@ -226,6 +231,55 @@ def _infer_surface(tournament_name: str) -> str:
         if kw in name:
             return "Hard"
     return "Hard"
+
+
+# Sofascore groundType numeric codes → surface name
+_GROUND_TYPE_MAP: dict = {
+    1: "Hard",   # outdoor hard
+    2: "Clay",
+    3: "Grass",
+    4: "Hard",   # carpet (treat as hard)
+    5: "Hard",   # indoor hard
+    "hard": "Hard",
+    "clay": "Clay",
+    "grass": "Grass",
+    "carpet": "Hard",
+    "indoor": "Hard",
+}
+
+
+def _infer_surface_from_event(event: dict) -> str:
+    """
+    Try Sofascore native groundType fields first (numeric or string),
+    then fall back to keyword matching on the tournament name.
+    Checks: event.groundType, tournament.groundType, tournament.uniqueTournament.groundType
+    """
+    tournament = event.get("tournament") or {}
+    unique_t = tournament.get("uniqueTournament") or {}
+
+    for gt_raw in (
+        event.get("groundType"),
+        tournament.get("groundType"),
+        unique_t.get("groundType"),
+    ):
+        if gt_raw is None:
+            continue
+        if isinstance(gt_raw, int):
+            mapped = _GROUND_TYPE_MAP.get(gt_raw)
+            if mapped:
+                return mapped
+        elif isinstance(gt_raw, str):
+            mapped = _GROUND_TYPE_MAP.get(gt_raw.lower())
+            if mapped:
+                return mapped
+        elif isinstance(gt_raw, dict):
+            # Some API versions nest as {"name": "clay"}
+            name_val = (gt_raw.get("name") or "").lower()
+            mapped = _GROUND_TYPE_MAP.get(name_val)
+            if mapped:
+                return mapped
+
+    return _infer_surface(tournament.get("name", ""))
 
 
 # ---------------------------------------------------------------------------
@@ -397,18 +451,77 @@ def _parse_match_stats(stats_data: dict, event: dict, player_id: int) -> Optiona
 # ---------------------------------------------------------------------------
 # Event fetching
 # ---------------------------------------------------------------------------
-def _get_player_recent_events(player_id: int, num_pages: int = 5) -> list:
+def _fetch_event_page(player_id: int, page: int) -> list:
+    """Fetch one page of a player's event history. Returns list (may be empty)."""
+    data = _get(f"{BASE_URL}/team/{player_id}/events/last/{page}")
+    return data.get("events", [])
+
+
+def _get_player_recent_events(player_id: int, max_pages: int = 8) -> list:
+    """
+    Fetch player event pages in parallel batches of 3.
+
+    Strategy:
+    - Batch 0 (pages 0-2): always fetch.
+    - Batch 1 (pages 3-5): always fetch (gives 5-page minimum coverage).
+    - Batch 2 (pages 6-7): fetch only if clay or grass still has < 5 valid
+      finished singles events (challenger players switch surfaces frequently).
+    - Stops early if a batch returns no events (end of history).
+    - Maximum max_pages pages total.
+    """
     cache_key = f"ss_events_{player_id}"
     if cache_key in st.session_state:
         return st.session_state[cache_key]
 
-    all_events = []
-    for page in range(num_pages):
-        data   = _get(f"{BASE_URL}/team/{player_id}/events/last/{page}")
-        events = data.get("events", [])
-        if not events:
+    batch_schedule = [[0, 1, 2], [3, 4, 5], [6, 7]]
+    all_events: list = []
+    now = time.time()
+
+    for batch_idx, batch in enumerate(batch_schedule):
+        pages = [p for p in batch if p < max_pages]
+        if not pages:
             break
-        all_events.extend(events)
+
+        # Fetch this batch in parallel
+        page_results: dict = {}
+        with ThreadPoolExecutor(max_workers=len(pages)) as ex:
+            fut_map = {ex.submit(_fetch_event_page, player_id, p): p for p in pages}
+            for fut in as_completed(fut_map):
+                page_results[fut_map[fut]] = fut.result()
+
+        # Merge in page-number order so events stay roughly chronological
+        got_any = False
+        for p in sorted(pages):
+            evts = page_results.get(p, [])
+            all_events.extend(evts)
+            if evts:
+                got_any = True
+
+        if not got_any:
+            break  # Reached end of player's match history
+
+        # First two batches (pages 0-5) are always fetched — minimum 5-page coverage
+        if batch_idx < 2:
+            continue
+
+        # Batch 2 check: count finished singles per surface from all events so far
+        surf_counts: dict = {}
+        for e in all_events:
+            ts = e.get("startTimestamp", 0) or 0
+            if ts and ts > now:
+                continue
+            if e.get("status", {}).get("type", "") not in ("finished", "ended"):
+                continue
+            ht = e.get("homeTeam", {}).get("name", "")
+            at = e.get("awayTeam", {}).get("name", "")
+            if "/" in ht or "/" in at:
+                continue
+            surf = _infer_surface_from_event(e)
+            surf_counts[surf] = surf_counts.get(surf, 0) + 1
+
+        # Stop only if all surfaces have adequate coverage
+        if all(surf_counts.get(s, 0) >= 5 for s in ("Hard", "Clay", "Grass")):
+            break
 
     st.session_state[cache_key] = all_events
     return all_events
@@ -453,12 +566,20 @@ def _fetch_stats_parallel(event_ids: list) -> dict:
         if port and _proxy_ok():
             pu = _proxy_url(port)
             s.proxies = {"http": pu, "https": pu}
-        try:
-            r = s.get(f"{BASE_URL}/event/{event_id}/statistics", timeout=15)
-            if r.status_code == 200:
-                return event_id, r.json()
-        except Exception:
-            pass
+        url = f"{BASE_URL}/event/{event_id}/statistics"
+        for attempt in range(2):
+            try:
+                r = s.get(url, timeout=15)
+                if r.status_code == 200:
+                    data = r.json()
+                    # Challenger events sometimes return empty statistics on first hit —
+                    # retry once after 500 ms before giving up.
+                    if data.get("statistics"):
+                        return event_id, data
+            except Exception:
+                pass
+            if attempt == 0:
+                time.sleep(0.5)
         return event_id, {}
 
     with ThreadPoolExecutor(max_workers=10) as ex:
@@ -536,15 +657,17 @@ def search_players(query: str, tour: str = "ATP") -> list:
 
 def get_player_stats_by_surface(player_id, tour: str = "ATP") -> dict:
     pid = int(player_id)
-    # v2: includes total_match_games — busts any pre-existing stale cache
-    cache_key = f"ss_surface_v2_{pid}"
+    # v3: parallel page fetching + stat-only aggregation
+    cache_key = f"ss_surface_v3_{pid}"
     if cache_key in st.session_state:
         return st.session_state[cache_key]
 
     now = time.time()
-    events = _get_player_recent_events(pid, num_pages=3)
+    # Fetch up to 8 pages in parallel batches; continues past page 5 if
+    # clay or grass coverage is thin (handles challenger players).
+    events = _get_player_recent_events(pid, max_pages=8)
 
-    # Filter to finished singles events upfront
+    # Filter to finished singles events
     valid: list = []
     for event in events:
         ts = event.get("startTimestamp", 0) or 0
@@ -558,12 +681,18 @@ def get_player_stats_by_surface(player_id, tour: str = "ATP") -> dict:
             continue
         valid.append(event)
 
-    # Fetch stats for the most recent 40 matches only to keep response time reasonable
-    event_ids = [e.get("id", 0) for e in valid[:40]]
+    # Fetch stats for the most recent 50 matches in parallel
+    event_ids = [e.get("id", 0) for e in valid[:50]]
     stats_map = _fetch_stats_parallel(event_ids)
 
-    # Merge base row data with fetched stats
+    # Build per-match records.
+    # all_match_stats  — every finished single (for form/display/win-rate).
+    # stat_matches     — only matches where statistics parsed successfully;
+    #                    these drive the stat averages and "Matches" count shown in cards.
     all_match_stats: list = []
+    stat_matches:    list = []
+    _logged_first = False
+
     for event in valid:
         ts      = event.get("startTimestamp", 0) or 0
         home_id = event.get("homeTeam", {}).get("id")
@@ -575,9 +704,12 @@ def get_player_stats_by_surface(player_id, tour: str = "ATP") -> dict:
 
         score_str = _build_score_str(event)
         tmg = _calc_total_match_games(event)
+        # Use native groundType field first; fall back to keyword matching
+        surface_val = _infer_surface_from_event(event)
+
         base = {
             "won":               won,
-            "surface":           _infer_surface(event.get("tournament", {}).get("name", "")),
+            "surface":           surface_val,
             "tournament":        event.get("tournament", {}).get("name", "Unknown"),
             "timestamp":         ts,
             "date":              datetime.utcfromtimestamp(ts).strftime("%Y-%m-%d") if ts else "",
@@ -587,17 +719,35 @@ def get_player_stats_by_surface(player_id, tour: str = "ATP") -> dict:
             "total_match_games": tmg,
         }
 
+        # Diagnostic: log first match's raw score/side fields to confirm win detection
+        if not _logged_first:
+            logger.info(
+                "[WIN_DETECT] first event: id=%s side=%s homeScore=%s awayScore=%s won=%s surface=%s tourn=%r",
+                event.get("id"), side, hs, aws, won, surface_val,
+                event.get("tournament", {}).get("name", ""),
+            )
+            _logged_first = True
+
+        has_stats = False
         stats_data = stats_map.get(event.get("id", 0)) or {}
         if stats_data:
             parsed = _parse_match_stats(stats_data, event, pid)
             if parsed:
                 base.update(parsed)
+                has_stats = True
 
         all_match_stats.append(base)
+        if has_stats:
+            # Only stat-parsed matches contribute to the aggregated averages
+            stat_matches.append(base)
 
-    # Fix 6 — parallel surface aggregation
+    # Aggregate stats using ONLY stat-parsed matches so the "Matches" count
+    # reflects real data rows, not matches that returned empty statistics.
     def _agg_surface(surf):
-        subset = [m for m in all_match_stats if m.get("surface") == surf] if surf else all_match_stats
+        subset = (
+            [m for m in stat_matches if m.get("surface") == surf]
+            if surf else stat_matches
+        )
         return surf or "All", _agg(subset)
 
     surfaces: dict = {}
@@ -607,7 +757,7 @@ def get_player_stats_by_surface(player_id, tour: str = "ATP") -> dict:
 
     sorted_m = sorted(all_match_stats, key=lambda x: x.get("timestamp", 0), reverse=True)
 
-    # Diagnostic: log period scores for first 3 matches to verify total_match_games extraction
+    # Diagnostic: log first 3 matches for total_match_games verification
     for i, m in enumerate(sorted_m[:3]):
         logger.info(
             "[TOTAL_GAMES] match %d: score=%r  total_match_games=%s  tournament=%r",
@@ -627,7 +777,33 @@ def get_player_stats_by_surface(player_id, tour: str = "ATP") -> dict:
     for surf in ("Hard", "Clay", "Grass"):
         surfaces[f"{surf}_matches"] = [m for m in sorted_m if m.get("surface") == surf]
 
-    st.session_state[cache_key] = surfaces  # keyed as ss_surface_v2_{pid}
+    # Build recent-results strings per surface for AI scouting report context.
+    # Format: "W 6-3 6-4 vs Napolitano (Clay, Apr 13)"
+    def _recent_result_str(m: dict) -> str:
+        result_ch = "W" if m.get("won") else "L"
+        score     = m.get("score", "")
+        opp       = m.get("opponent_name", "Unknown")
+        date_str  = ""
+        ts_val    = m.get("timestamp", 0) or 0
+        if ts_val:
+            try:
+                dt = datetime.utcfromtimestamp(ts_val)
+                date_str = dt.strftime("%b %-d")   # "Apr 13"
+            except Exception:
+                try:
+                    date_str = dt.strftime("%b %d").lstrip("0")
+                except Exception:
+                    date_str = m.get("date", "")
+        tourn = m.get("tournament", "")
+        return f"{result_ch} {score} vs {opp} ({tourn}, {date_str})" if date_str else f"{result_ch} {score} vs {opp} ({tourn})"
+
+    for surf in ("Hard", "Clay", "Grass"):
+        surf_matches = surfaces[f"{surf}_matches"]
+        surfaces[f"{surf}_recent_results"] = [
+            _recent_result_str(m) for m in surf_matches[:5]
+        ]
+
+    st.session_state[cache_key] = surfaces  # keyed as ss_surface_v3_{pid}
     return surfaces
 
 
