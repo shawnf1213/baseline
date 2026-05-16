@@ -1,4 +1,4 @@
-import { motion } from 'framer-motion'
+import { motion } from 'motion/react'
 
 export default function LeanBadge({ lean, size = 'lg' }) {
   if (!lean) return null
@@ -12,15 +12,17 @@ export default function LeanBadge({ lean, size = 'lg' }) {
 
   return (
     <motion.div
-      initial={{ rotateY: 90, opacity: 0 }}
-      animate={{ rotateY: 0, opacity: 1 }}
-      transition={{ duration: 0.4, ease: 'easeOut' }}
+      key={lean}
+      initial={{ rotateX: 90, opacity: 0 }}
+      animate={{ rotateX: 0, opacity: 1 }}
+      transition={{ duration: 0.4, ease: 'backOut' }}
       style={{
         display: 'inline-block', padding: `${py} ${px}`,
         background: bg, border: `1px solid ${border}`,
         borderRadius: 8, color, fontWeight: 800,
         fontSize: fs, letterSpacing: '.06em',
         fontFamily: '"Barlow Condensed", sans-serif',
+        transformPerspective: 600,
       }}
     >
       {lean}

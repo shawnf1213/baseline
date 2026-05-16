@@ -10,10 +10,12 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@number-flow/react": "^0.6.0",
     "@tailwindcss/vite": "^4.3.0",
     "axios": "^1.16.0",
     "framer-motion": "^12.38.0",
     "lucide-react": "^1.14.0",
+    "motion": "^12.38.0",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "recharts": "^3.8.1",

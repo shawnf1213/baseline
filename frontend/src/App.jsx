@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useState, useRef } from 'react'
+import { motion, AnimatePresence } from 'motion/react'
 import SurfaceAnalyzer from './pages/SurfaceAnalyzer'
 import PropProjection  from './pages/PropProjection'
 import HeadToHead      from './pages/HeadToHead'
@@ -15,6 +16,17 @@ const TABS = [
 export default function App() {
   const [tour, setTour] = useState('ATP')
   const [tab,  setTab]  = useState('surface')
+  const prevTabIdx = useRef(0)
+
+  const handleTabChange = (key) => {
+    const newIdx = TABS.findIndex(t => t.key === key)
+    const curIdx = TABS.findIndex(t => t.key === tab)
+    prevTabIdx.current = curIdx
+    setTab(key)
+  }
+
+  const curIdx = TABS.findIndex(t => t.key === tab)
+  const direction = curIdx >= prevTabIdx.current ? 1 : -1
 
   return (
     <div style={{ minHeight: '100vh', background: 'var(--bg)' }}>
@@ -47,7 +59,7 @@ export default function App() {
         WebkitOverflowScrolling: 'touch',
       }}>
         {TABS.map(({ key, label }) => (
-          <button key={key} onClick={() => setTab(key)} style={{
+          <button key={key} onClick={() => handleTabChange(key)} style={{
             padding: '14px 22px', border: 'none', cursor: 'pointer',
             background: 'transparent', whiteSpace: 'nowrap', fontSize: 13, fontWeight: 600,
             color: tab === key ? 'var(--green)' : 'var(--muted)',
@@ -60,11 +72,27 @@ export default function App() {
       </div>
 
       {/* Page */}
-      <div style={{ maxWidth: 960, margin: '0 auto', padding: '24px 16px 60px' }}>
-        {tab === 'surface' && <SurfaceAnalyzer tour={tour} />}
-        {tab === 'prop'    && <PropProjection  tour={tour} />}
-        {tab === 'h2h'     && <HeadToHead      tour={tour} />}
-        {tab === 'value'   && <ValueBet        tour={tour} />}
+      <div style={{ maxWidth: 960, margin: '0 auto', padding: '24px 16px 60px', overflow: 'hidden' }}>
+        <AnimatePresence mode="wait" custom={direction}>
+          <motion.div
+            key={tab}
+            custom={direction}
+            variants={{
+              enter: (d) => ({ x: d * 40, opacity: 0 }),
+              center: { x: 0, opacity: 1 },
+              exit: (d) => ({ x: d * -40, opacity: 0 }),
+            }}
+            initial="enter"
+            animate="center"
+            exit="exit"
+            transition={{ duration: 0.2, ease: 'easeInOut' }}
+          >
+            {tab === 'surface' && <SurfaceAnalyzer tour={tour} />}
+            {tab === 'prop'    && <PropProjection  tour={tour} />}
+            {tab === 'h2h'     && <HeadToHead      tour={tour} />}
+            {tab === 'value'   && <ValueBet        tour={tour} />}
+          </motion.div>
+        </AnimatePresence>
       </div>
     </div>
   )

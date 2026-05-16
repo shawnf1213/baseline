@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { motion } from 'framer-motion'
+import { motion } from 'motion/react'
 import PlayerSearch from '../components/PlayerSearch'
 import LoadingSpinner from '../components/LoadingSpinner'
 import StatCard from '../components/StatCard'

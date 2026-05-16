@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect } from 'react'
-import { motion, AnimatePresence } from 'framer-motion'
+import { motion, AnimatePresence } from 'motion/react'
+import NumberFlow from '@number-flow/react'
 import {
   ScatterChart, Scatter, XAxis, YAxis, Tooltip, ResponsiveContainer,
   BarChart, Bar, CartesianGrid, Cell,
@@ -481,295 +482,313 @@ export default function PropProjection({ tour }) {
         />
       </div>
 
-      {/* Run button */}
-      <button onClick={run} disabled={!p1 || !p2 || loading} style={{
-        width: '100%', padding: '14px 24px', borderRadius: 10, fontSize: 15, fontWeight: 700,
-        cursor: p1 && p2 && !loading ? 'pointer' : 'not-allowed',
-        background: p1 && p2 && !loading ? 'var(--green)' : '#1a1a1a',
-        color: p1 && p2 && !loading ? '#000' : 'var(--muted)',
-        border: 'none', transition: 'all .2s',
-        marginBottom: 24,
-        fontFamily: '"Barlow Condensed", sans-serif',
-      }}>
-        {loading ? 'Analyzing…' : 'Run Prop Estimate'}
-      </button>
+      {/* Run button — Phase 9: motion button with scale effects */}
+      <motion.button
+        whileHover={p1 && p2 && !loading ? { scale: 1.01 } : {}}
+        whileTap={p1 && p2 && !loading ? { scale: 0.98 } : {}}
+        onClick={run}
+        disabled={!p1 || !p2 || loading}
+        style={{
+          width: '100%', padding: '14px 24px', borderRadius: 10, fontSize: 15, fontWeight: 700,
+          cursor: p1 && p2 && !loading ? 'pointer' : 'not-allowed',
+          background: p1 && p2 && !loading ? 'var(--green)' : '#1a1a1a',
+          color: p1 && p2 && !loading ? '#000' : 'var(--muted)',
+          border: 'none',
+          marginBottom: 24,
+          fontFamily: '"Barlow Condensed", sans-serif',
+        }}
+      >
+        {loading ? (
+          <motion.span
+            animate={{ opacity: [1, 0.4, 1] }}
+            transition={{ duration: 0.8, repeat: Infinity }}
+          >
+            Analyzing…
+          </motion.span>
+        ) : 'Run Prop Estimate'}
+      </motion.button>
 
       {/* Results */}
       {loading && <LoadingSpinner message="Analyzing matchup…" />}
       {error   && <div style={{ color: 'var(--red)', padding: 16, background: '#FF444411', borderRadius: 8 }}>Error: {error}</div>}
 
-      {result && !loading && (
-        <AnimatePresence>
-          <motion.div key="results" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4 }}>
+      {/* Phase 2: stagger variants */}
+      <AnimatePresence>
+        {result && !loading && (() => {
+          const container = {
+            hidden: { opacity: 0 },
+            show: { opacity: 1, transition: { staggerChildren: 0.08 } },
+          }
+          const item = {
+            hidden: { opacity: 0, y: 16 },
+            show: { opacity: 1, y: 0, transition: { duration: 0.3, ease: 'easeOut' } },
+          }
+          const envColor = ENV_COLORS[result.environment] || '#888'
+          return (
+            <motion.div key="results" variants={container} initial="hidden" animate="show" exit={{ opacity: 0 }}>
 
-            {/* ── Change 8: Section divider before projection ── */}
-            <SectionDivider label="PROJECTION" />
+              {/* ── Projection cards ── */}
+              <motion.div variants={item}>
+                <SectionDivider label="PROJECTION" />
 
-            {/* Null-projection banner — shown when backend has insufficient data */}
-            {!hasProjection && result.note && (
-              <div style={{ padding: '12px 16px', background: '#FF440011', border: '1px solid #FF440033', borderRadius: 8, marginBottom: 16, fontSize: 13 }}>
-                <span style={{ color: 'var(--amber)', fontWeight: 700 }}>Insufficient Data — </span>
-                <span style={{ color: 'var(--muted)' }}>{result.note}</span>
-              </div>
-            )}
+                {/* Null-projection banner */}
+                {!hasProjection && result.note && (
+                  <div style={{ padding: '12px 16px', background: '#FF440011', border: '1px solid #FF440033', borderRadius: 8, marginBottom: 16, fontSize: 13 }}>
+                    <span style={{ color: 'var(--amber)', fontWeight: 700 }}>Insufficient Data — </span>
+                    <span style={{ color: 'var(--muted)' }}>{result.note}</span>
+                  </div>
+                )}
 
-            {/* Three static (non-interactive) projection cards */}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginBottom: 20 }}>
+                {/* Three static projection cards */}
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginBottom: 20 }}>
 
-              {/* ── Change 2: Model Projection — green top border ── */}
-              <div style={{ ...STATIC_CARD_STYLE, borderTop: '2px solid #00e676' }}>
-                <div style={STATIC_LABEL_STYLE}>Model Projection</div>
-                {hasProjection ? (
-                  <>
+                  {/* Model Projection */}
+                  <div style={{ ...STATIC_CARD_STYLE, borderTop: '2px solid #00e676' }}>
+                    <div style={STATIC_LABEL_STYLE}>Model Projection</div>
+                    {hasProjection ? (
+                      <>
+                        <div style={{
+                          fontSize: 36, fontWeight: 900, color: 'var(--green)', lineHeight: 1,
+                          fontFamily: '"Barlow Condensed", sans-serif',
+                        }}>
+                          <NumberFlow value={result.model_projection} format={{ minimumFractionDigits: 1, maximumFractionDigits: 1 }} />
+                        </div>
+                        <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 4 }}>{p1?.name}</div>
+                      </>
+                    ) : (
+                      <div style={{ fontSize: 14, color: 'var(--muted)', marginTop: 8 }}>N/A</div>
+                    )}
+                  </div>
+
+                  {/* Book Line */}
+                  <div style={{ ...STATIC_CARD_STYLE, borderTop: `2px solid ${bookLineBorderColor}` }}>
+                    <div style={STATIC_LABEL_STYLE}>Book Line</div>
                     <div style={{
-                      fontSize: 36, fontWeight: 900, color: 'var(--green)', lineHeight: 1,
+                      fontSize: 36, fontWeight: 900, color: 'var(--muted)', lineHeight: 1,
                       fontFamily: '"Barlow Condensed", sans-serif',
                     }}>
-                      {result.model_projection.toFixed(1)}
+                      {propLine > 0 ? propLine.toFixed(1) : '—'}
                     </div>
-                    <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 4 }}>{p1?.name}</div>
-                  </>
-                ) : (
-                  <div style={{ fontSize: 14, color: 'var(--muted)', marginTop: 8 }}>N/A</div>
-                )}
-              </div>
-
-              {/* ── Change 2: Book Line — edge-based top border ── */}
-              <div style={{ ...STATIC_CARD_STYLE, borderTop: `2px solid ${bookLineBorderColor}` }}>
-                <div style={STATIC_LABEL_STYLE}>Book Line</div>
-                <div style={{
-                  fontSize: 36, fontWeight: 900, color: 'var(--muted)', lineHeight: 1,
-                  fontFamily: '"Barlow Condensed", sans-serif',
-                }}>
-                  {propLine > 0 ? propLine.toFixed(1) : '—'}
-                </div>
-                {edge != null && (
-                  <div style={{ fontSize: 13, color: edge >= 0 ? 'var(--green)' : 'var(--red)', marginTop: 4 }}>
-                    edge {edge >= 0 ? '+' : ''}{edge.toFixed(1)}
+                    {edge != null && (
+                      <div style={{ fontSize: 13, color: edge >= 0 ? 'var(--green)' : 'var(--red)', marginTop: 4 }}>
+                        edge <NumberFlow value={edge} format={{ minimumFractionDigits: 1, signDisplay: 'always' }} />
+                      </div>
+                    )}
                   </div>
-                )}
-              </div>
 
-              {/* ── Change 2: Lean — amber top border ── */}
-              <div style={{ ...STATIC_CARD_STYLE, borderTop: '2px solid #ffb300' }}>
-                <div style={STATIC_LABEL_STYLE}>Lean</div>
-                {hasProjection ? (
-                  <>
-                    <div style={{ margin: '8px 0' }}>
-                      <LeanBadge lean={result.lean} />
-                    </div>
-                    <ConfidenceGauge confidence={result.confidence || 0} />
-                  </>
-                ) : (
-                  <div style={{ fontSize: 14, color: 'var(--muted)', marginTop: 8 }}>N/A</div>
-                )}
-              </div>
-            </div>
-
-            {/* ── ISSUE 1: Last 5 Matches bar chart ── */}
-            {result.player_surface_matches?.length > 0 && statKey && (
-              <>
-                {section(`Last 5 ${surface} Matches — ${propType} (${p1?.name})`)}
-                <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, padding: '16px 16px 8px', marginBottom: 20 }}>
-                  {propLine > 0 && (
-                    <div style={{ display: 'flex', gap: 16, marginBottom: 12, fontSize: 11 }}>
-                      <span style={{ color: 'var(--green)' }}>■ Over {propLine.toFixed(1)}</span>
-                      <span style={{ color: 'var(--red)' }}>■ Under {propLine.toFixed(1)}</span>
-                      <span style={{ color: '#555' }}>■ Push</span>
-                    </div>
-                  )}
-                  <Last5Chart
-                    matches={result.player_surface_matches}
-                    statKey={statKey}
-                    propLine={propLine}
-                    playerName={p1?.name}
-                  />
+                  {/* Lean */}
+                  <div style={{ ...STATIC_CARD_STYLE, borderTop: '2px solid #ffb300' }}>
+                    <div style={STATIC_LABEL_STYLE}>Lean</div>
+                    {hasProjection ? (
+                      <>
+                        <div style={{ margin: '8px 0' }}>
+                          <LeanBadge lean={result.lean} />
+                        </div>
+                        <ConfidenceGauge confidence={result.confidence || 0} />
+                      </>
+                    ) : (
+                      <div style={{ fontSize: 14, color: 'var(--muted)', marginTop: 8 }}>N/A</div>
+                    )}
+                  </div>
                 </div>
-              </>
-            )}
+              </motion.div>
 
-            {/* Environment badge */}
-            {result.environment && (
-              <div style={{ marginBottom: 16 }}>
-                {/* ── Change 11: Pulse keyframes injected via style tag ── */}
-                <style>{`@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }`}</style>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '14px 16px', background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10 }}>
-                  <span style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.06em' }}>Match Environment</span>
-                  <span style={{
-                    display: 'inline-flex', alignItems: 'center',
-                    padding: '4px 12px', borderRadius: 14, fontSize: 11, fontWeight: 700,
-                    background: (ENV_COLORS[result.environment] || '#888') + '22',
-                    color: ENV_COLORS[result.environment] || '#888',
-                    border: `1px solid ${(ENV_COLORS[result.environment] || '#888')}55`,
-                    fontFamily: '"Barlow Condensed", sans-serif',
-                  }}>
-                    {/* ── Change 11: Pulsing dot ── */}
+              {/* ── Last 5 bar chart ── */}
+              {result.player_surface_matches?.length > 0 && statKey && (
+                <motion.div variants={item}>
+                  {section(`Last 5 ${surface} Matches — ${propType} (${p1?.name})`)}
+                  <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, padding: '16px 16px 8px', marginBottom: 20 }}>
+                    {propLine > 0 && (
+                      <div style={{ display: 'flex', gap: 16, marginBottom: 12, fontSize: 11 }}>
+                        <span style={{ color: 'var(--green)' }}>■ Over {propLine.toFixed(1)}</span>
+                        <span style={{ color: 'var(--red)' }}>■ Under {propLine.toFixed(1)}</span>
+                        <span style={{ color: '#555' }}>■ Push</span>
+                      </div>
+                    )}
+                    <Last5Chart
+                      matches={result.player_surface_matches}
+                      statKey={statKey}
+                      propLine={propLine}
+                      playerName={p1?.name}
+                    />
+                  </div>
+                </motion.div>
+              )}
+
+              {/* ── Environment badge — Phase 8: motion pulse dot ── */}
+              {result.environment && (
+                <motion.div variants={item} style={{ marginBottom: 16 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '14px 16px', background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10 }}>
+                    <span style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.06em' }}>Match Environment</span>
                     <span style={{
-                      display: 'inline-block', width: 6, height: 6,
-                      borderRadius: '50%', background: '#ffb300',
-                      animation: 'pulse 2s infinite', marginRight: 8,
-                    }} />
-                    {result.environment_label || result.environment}
-                  </span>
-                </div>
-              </div>
-            )}
-
-            {/* Stat comparison — uses result payload if present, prefetched stats as fallback */}
-            {(p1SurfaceStats || p2SurfaceStats) && (
-              <>
-                {/* ── Change 8: Section divider before stats ── */}
-                <SectionDivider label="SURFACE STATS" />
-
-                {/* Handedness edge indicator — shown when matchup is cross-handed */}
-                {result?.player_handedness && result?.opponent_handedness &&
-                  result.player_handedness !== result.opponent_handedness && (
-                  <div style={{
-                    display: 'flex', alignItems: 'center', gap: 10,
-                    padding: '10px 14px', marginBottom: 12,
-                    background: '#00E67608', border: '1px solid #00E67622', borderRadius: 8,
-                    fontSize: 12,
-                  }}>
-                    <span style={{ color: 'var(--green)', fontWeight: 700 }}>⚡ Handedness Edge</span>
-                    <span style={{ color: 'var(--muted)' }}>
-                      {p1?.name} ({result.player_handedness}) vs {p2?.name} ({result.opponent_handedness})
-                      {' — cross-handed matchup affects ace angles and serve patterns'}
+                      display: 'inline-flex', alignItems: 'center',
+                      padding: '4px 12px', borderRadius: 14, fontSize: 11, fontWeight: 700,
+                      background: envColor + '22',
+                      color: envColor,
+                      border: `1px solid ${envColor}55`,
+                      fontFamily: '"Barlow Condensed", sans-serif',
+                    }}>
+                      <motion.span
+                        animate={{ scale: [1, 1.4, 1], opacity: [1, 0.4, 1] }}
+                        transition={{ duration: 1.5, repeat: Infinity, ease: 'easeInOut' }}
+                        style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: envColor, marginRight: 6 }}
+                      />
+                      {result.environment_label || result.environment}
                     </span>
                   </div>
-                )}
+                </motion.div>
+              )}
 
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 20 }}>
-                  {[
-                    [p1SurfaceStats, p1?.name, 'var(--white)', result?.player_handedness, null],
-                    [p2SurfaceStats, p2?.name, 'var(--muted)', result?.opponent_handedness, result?.opponent_ace_against],
-                  ].map(([s, name, nc, hand, aceAgainst], idx) => {
-                    const d = s || {}
-                    const rows = [
-                      ['Aces/Match', fmt(d.aces)],
-                      ['DFs/Match', fmt(d.double_faults)],
-                      ['1st Srv Won', fmtPct(d.first_serve_pts_won)],
-                      ['2nd Srv Won', fmtPct(d.second_serve_pts_won)],
-                      ['Ret Pts Won (1st)', fmtPct(d.return_first_serve_pts_won)],
-                      ['BP Converted', fmtPct(d.bp_converted)],
-                      ['Win Rate', fmtPct(d.win_rate)],
-                      ['Matches', d.matches_played || '—'],
-                    ]
-                    // Add aces-conceded row to opponent card (idx === 1) if TA data available
-                    if (idx === 1 && aceAgainst != null) {
-                      rows.splice(1, 0, ['Aces Conceded/Match', fmt(aceAgainst)])
-                    }
-                    return (
-                      <div key={idx} style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, padding: 16 }}>
-                        <div style={{ fontWeight: 700, color: nc, marginBottom: 12, fontSize: 13, display: 'flex', alignItems: 'center' }}>
-                          🎾 {name}<HandBadge hand={hand} />
-                        </div>
-                        {/* ── Change 3: color-coded stat values ── */}
-                        {rows.map(([lbl, val]) => (
-                          <div key={lbl} style={{ display: 'flex', justifyContent: 'space-between', padding: '5px 0', borderBottom: '1px solid #151515', fontSize: 12 }}>
-                            <span style={{ color: 'var(--muted)' }}>{lbl}</span>
-                            <span style={{ fontWeight: 600, color: statColor(lbl, val) || 'var(--white)' }}>{val}</span>
-                          </div>
-                        ))}
-                      </div>
-                    )
-                  })}
-                </div>
-              </>
-            )}
+              {/* ── Stat comparison ── */}
+              {(p1SurfaceStats || p2SurfaceStats) && (
+                <motion.div variants={item}>
+                  <SectionDivider label="SURFACE STATS" />
 
-            {/* H2H context */}
-            {result.h2h_context && (result.h2h_context.total > 0 || result.h2h_context.total === 0) && (
-              <>
-                {section(`H2H Context`)}
-                <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, padding: 16, marginBottom: 16 }}>
-                  {result.h2h_context.total === 0 ? (
-                    <div style={{ fontSize: 13, color: 'var(--muted)' }}>No H2H data available</div>
-                  ) : (
-                    <>
-                      <div style={{ display: 'flex', gap: 24, alignItems: 'center', marginBottom: 12 }}>
-                        <div style={{ textAlign: 'center' }}>
-                          <div style={{ fontSize: 11, color: 'var(--muted)' }}>{p1?.name}</div>
-                          <div style={{ fontSize: 44, fontWeight: 900, color: '#00e676', fontFamily: '"Barlow Condensed", sans-serif' }}>{result.h2h_context.p1_wins}</div>
-                        </div>
-                        <div style={{ fontSize: 20, color: 'var(--border)' }}>—</div>
-                        <div style={{ textAlign: 'center' }}>
-                          <div style={{ fontSize: 11, color: 'var(--muted)' }}>{p2?.name}</div>
-                          <div style={{ fontSize: 44, fontWeight: 900, color: '#ff4444', fontFamily: '"Barlow Condensed", sans-serif' }}>{result.h2h_context.p2_wins}</div>
-                        </div>
-                        <div style={{ fontSize: 12, color: 'var(--muted)', marginLeft: 8 }}>
-                          <div>{result.h2h_context.total} {result.h2h_context.total !== 1 ? 'meetings' : 'meeting'}</div>
-                          {result.h2h_context.surface_matches > 0 && (
-                            <div style={{ marginTop: 2 }}>{result.h2h_context.surface_matches} on {surface}</div>
-                          )}
-                          {result.h2h_context.date_range && (
-                            <div style={{ marginTop: 2, fontSize: 11 }}>{result.h2h_context.date_range}</div>
-                          )}
-                          {result.h2h_context.surface_breakdown &&
-                            Object.keys(result.h2h_context.surface_breakdown).length > 0 &&
-                            result.h2h_context.total >= 3 && (
-                            <div style={{ marginTop: 4, fontSize: 11 }}>
-                              {Object.entries(result.h2h_context.surface_breakdown).map(([s, n]) => `${n} ${s}`).join(' · ')}
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                      {result.h2h_context.ace_avg != null && (
-                        <div style={{ fontSize: 12, color: 'var(--muted)' }}>Avg aces by {p1?.name} in H2H: {fmt(result.h2h_context.ace_avg)}</div>
-                      )}
-                    </>
+                  {result?.player_handedness && result?.opponent_handedness &&
+                    result.player_handedness !== result.opponent_handedness && (
+                    <div style={{
+                      display: 'flex', alignItems: 'center', gap: 10,
+                      padding: '10px 14px', marginBottom: 12,
+                      background: '#00E67608', border: '1px solid #00E67622', borderRadius: 8,
+                      fontSize: 12,
+                    }}>
+                      <span style={{ color: 'var(--green)', fontWeight: 700 }}>⚡ Handedness Edge</span>
+                      <span style={{ color: 'var(--muted)' }}>
+                        {p1?.name} ({result.player_handedness}) vs {p2?.name} ({result.opponent_handedness})
+                        {' — cross-handed matchup affects ace angles and serve patterns'}
+                      </span>
+                    </div>
                   )}
-                </div>
-              </>
-            )}
 
-            {/* Explanation */}
-            {result.plain_english_explanation && (
-              <>
-                {/* ── Change 8: Section divider before model explanation ── */}
-                <SectionDivider label="MODEL EXPLANATION" />
-                {/* ── Change 6: Green left border styling ── */}
-                <div style={{
-                  borderLeft: '4px solid #00e676',
-                  borderRadius: '0 8px 8px 0',
-                  background: '#0d1117',
-                  padding: '16px',
-                  fontSize: 13,
-                  color: '#667788',
-                  lineHeight: 1.6,
-                  marginBottom: 16,
-                }}>
-                  {result.plain_english_explanation}
-                </div>
-              </>
-            )}
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 20 }}>
+                    {[
+                      [p1SurfaceStats, p1?.name, 'var(--white)', result?.player_handedness, null],
+                      [p2SurfaceStats, p2?.name, 'var(--muted)', result?.opponent_handedness, result?.opponent_ace_against],
+                    ].map(([s, name, nc, hand, aceAgainst], idx) => {
+                      const d = s || {}
+                      const rows = [
+                        ['Aces/Match', fmt(d.aces)],
+                        ['DFs/Match', fmt(d.double_faults)],
+                        ['1st Srv Won', fmtPct(d.first_serve_pts_won)],
+                        ['2nd Srv Won', fmtPct(d.second_serve_pts_won)],
+                        ['Ret Pts Won (1st)', fmtPct(d.return_first_serve_pts_won)],
+                        ['BP Converted', fmtPct(d.bp_converted)],
+                        ['Win Rate', fmtPct(d.win_rate)],
+                        ['Matches', d.matches_played || '—'],
+                      ]
+                      if (idx === 1 && aceAgainst != null) {
+                        rows.splice(1, 0, ['Aces Conceded/Match', fmt(aceAgainst)])
+                      }
+                      return (
+                        <div key={idx} style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, padding: 16 }}>
+                          <div style={{ fontWeight: 700, color: nc, marginBottom: 12, fontSize: 13, display: 'flex', alignItems: 'center' }}>
+                            🎾 {name}<HandBadge hand={hand} />
+                          </div>
+                          {rows.map(([lbl, val]) => (
+                            <div key={lbl} style={{ display: 'flex', justifyContent: 'space-between', padding: '5px 0', borderBottom: '1px solid #151515', fontSize: 12 }}>
+                              <span style={{ color: 'var(--muted)' }}>{lbl}</span>
+                              <span style={{ fontWeight: 600, color: statColor(lbl, val) || 'var(--white)' }}>{val}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )
+                    })}
+                  </div>
+                </motion.div>
+              )}
 
-            {/* AI writeup */}
-            {result.ai_writeup && (
-              <>
-                {/* ── Change 8: Section divider before AI report ── */}
-                <SectionDivider label="AI SCOUTING REPORT" />
-                {/* ── Change 7: BASELINE AI badge ── */}
-                <div style={{ padding: '16px', background: '#00E67608', border: '1px solid #00E67622', borderRadius: 10, marginBottom: 16, position: 'relative' }}>
-                  <span style={{
-                    position: 'absolute', top: 8, right: 12,
-                    color: '#00e676', background: '#001a0b',
-                    border: '1px solid #00e676',
-                    fontSize: 8, fontFamily: '"Barlow Condensed", sans-serif',
-                    fontWeight: 800, letterSpacing: '0.15em',
-                    textTransform: 'uppercase', padding: '2px 8px',
-                    borderRadius: 4,
-                  }}>BASELINE AI</span>
-                  <div style={{ fontSize: 13, color: 'var(--muted)', lineHeight: 1.7 }}>{result.ai_writeup}</div>
-                </div>
-              </>
-            )}
+              {/* ── H2H context ── */}
+              {result.h2h_context && (result.h2h_context.total > 0 || result.h2h_context.total === 0) && (
+                <motion.div variants={item}>
+                  {section(`H2H Context`)}
+                  <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, padding: 16, marginBottom: 16 }}>
+                    {result.h2h_context.total === 0 ? (
+                      <div style={{ fontSize: 13, color: 'var(--muted)' }}>No H2H data available</div>
+                    ) : (
+                      <>
+                        <div style={{ display: 'flex', gap: 24, alignItems: 'center', marginBottom: 12 }}>
+                          <div style={{ textAlign: 'center' }}>
+                            <div style={{ fontSize: 11, color: 'var(--muted)' }}>{p1?.name}</div>
+                            <div style={{ fontSize: 44, fontWeight: 900, color: '#00e676', fontFamily: '"Barlow Condensed", sans-serif' }}>{result.h2h_context.p1_wins}</div>
+                          </div>
+                          <div style={{ fontSize: 20, color: 'var(--border)' }}>—</div>
+                          <div style={{ textAlign: 'center' }}>
+                            <div style={{ fontSize: 11, color: 'var(--muted)' }}>{p2?.name}</div>
+                            <div style={{ fontSize: 44, fontWeight: 900, color: '#ff4444', fontFamily: '"Barlow Condensed", sans-serif' }}>{result.h2h_context.p2_wins}</div>
+                          </div>
+                          <div style={{ fontSize: 12, color: 'var(--muted)', marginLeft: 8 }}>
+                            <div>{result.h2h_context.total} {result.h2h_context.total !== 1 ? 'meetings' : 'meeting'}</div>
+                            {result.h2h_context.surface_matches > 0 && (
+                              <div style={{ marginTop: 2 }}>{result.h2h_context.surface_matches} on {surface}</div>
+                            )}
+                            {result.h2h_context.date_range && (
+                              <div style={{ marginTop: 2, fontSize: 11 }}>{result.h2h_context.date_range}</div>
+                            )}
+                            {result.h2h_context.surface_breakdown &&
+                              Object.keys(result.h2h_context.surface_breakdown).length > 0 &&
+                              result.h2h_context.total >= 3 && (
+                              <div style={{ marginTop: 4, fontSize: 11 }}>
+                                {Object.entries(result.h2h_context.surface_breakdown).map(([s, n]) => `${n} ${s}`).join(' · ')}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                        {result.h2h_context.ace_avg != null && (
+                          <div style={{ fontSize: 12, color: 'var(--muted)' }}>Avg aces by {p1?.name} in H2H: {fmt(result.h2h_context.ace_avg)}</div>
+                        )}
+                      </>
+                    )}
+                  </div>
+                </motion.div>
+              )}
 
-            {/* Confidence breakdown */}
-            <ConfidenceBreakdown breakdown={result.confidence_breakdown} />
+              {/* ── Model explanation ── */}
+              {result.plain_english_explanation && (
+                <motion.div variants={item}>
+                  <SectionDivider label="MODEL EXPLANATION" />
+                  <div style={{
+                    borderLeft: '4px solid #00e676',
+                    borderRadius: '0 8px 8px 0',
+                    background: '#0d1117',
+                    padding: '16px',
+                    fontSize: 13,
+                    color: '#667788',
+                    lineHeight: 1.6,
+                    marginBottom: 16,
+                  }}>
+                    {result.plain_english_explanation}
+                  </div>
+                </motion.div>
+              )}
 
-          </motion.div>
-        </AnimatePresence>
-      )}
+              {/* ── AI scouting report ── */}
+              {result.ai_writeup && (
+                <motion.div variants={item}>
+                  <SectionDivider label="AI SCOUTING REPORT" />
+                  <div style={{ padding: '16px', background: '#00E67608', border: '1px solid #00E67622', borderRadius: 10, marginBottom: 16, position: 'relative' }}>
+                    <span style={{
+                      position: 'absolute', top: 8, right: 12,
+                      color: '#00e676', background: '#001a0b',
+                      border: '1px solid #00e676',
+                      fontSize: 8, fontFamily: '"Barlow Condensed", sans-serif',
+                      fontWeight: 800, letterSpacing: '0.15em',
+                      textTransform: 'uppercase', padding: '2px 8px',
+                      borderRadius: 4,
+                    }}>BASELINE AI</span>
+                    <div style={{ fontSize: 13, color: 'var(--muted)', lineHeight: 1.7 }}>{result.ai_writeup}</div>
+                  </div>
+                </motion.div>
+              )}
+
+              {/* ── Confidence breakdown ── */}
+              <motion.div variants={item}>
+                <ConfidenceBreakdown breakdown={result.confidence_breakdown} />
+              </motion.div>
+
+            </motion.div>
+          )
+        })()}
+      </AnimatePresence>
     </div>
   )
 }

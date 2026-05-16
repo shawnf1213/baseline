@@ -1,5 +1,6 @@
 import { useState } from 'react'
-import { motion } from 'framer-motion'
+import { motion } from 'motion/react'
+import NumberFlow from '@number-flow/react'
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
   LineChart, Line, CartesianGrid,
@@ -82,16 +83,23 @@ function StatTable({ stats, tour }) {
   )
 }
 
-// ── Change 9: Form dots with glow on win dots ────────────────────────────────
+// ── Change 9: Form dots with glow on win dots (Phase 10: staggered reveal) ──
 function FormDots({ form }) {
   return (
     <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
       {form.slice(0, 10).map((m, i) => (
-        <div key={i} title={`${m.won ? 'W' : 'L'} vs ${m.opponent} (${m.surface})`} style={{
-          width: 12, height: 12, borderRadius: '50%',
-          background: m.won ? 'var(--green)' : 'var(--red)',
-          boxShadow: m.won ? '0 0 6px rgba(0, 230, 118, 0.5)' : undefined,
-        }} />
+        <motion.div
+          key={i}
+          initial={{ scale: 0, opacity: 0 }}
+          animate={{ scale: 1, opacity: 1 }}
+          transition={{ delay: i * 0.05, type: 'spring', stiffness: 400 }}
+          title={`${m.won ? 'W' : 'L'} vs ${m.opponent} (${m.surface})`}
+          style={{
+            width: 12, height: 12, borderRadius: '50%',
+            background: m.won ? 'var(--green)' : 'var(--red)',
+            boxShadow: m.won ? '0 0 6px rgba(0, 230, 118, 0.5)' : undefined,
+          }}
+        />
       ))}
     </div>
   )
@@ -306,7 +314,9 @@ function WinRateCards({ stats }) {
               color: wr > 55 ? 'var(--green)' : wr < 45 ? 'var(--red)' : 'var(--white)',
               lineHeight: 1.1,
             }}>
-              {wr != null ? `${wr.toFixed(0)}%` : '—'}
+              {wr != null ? (
+                <><NumberFlow value={Math.round(wr)} />%</>
+              ) : '—'}
             </div>
             <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 4 }}>{mp} matches</div>
             {isBest && (

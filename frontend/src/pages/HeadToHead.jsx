@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
-import { motion } from 'framer-motion'
+import { motion } from 'motion/react'
+import NumberFlow from '@number-flow/react'
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine } from 'recharts'
 import PlayerSearch from '../components/PlayerSearch'
 import LoadingSpinner from '../components/LoadingSpinner'
@@ -101,12 +102,12 @@ export default function HeadToHead({ tour }) {
               <>
                 <div style={{ textAlign: 'center' }}>
                   <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 4 }}>{p1?.name}</div>
-                  <div style={{ fontSize: 60, fontWeight: 900, color: '#00e676', lineHeight: 1 }}>{h2h.p1_wins}</div>
+                  <div style={{ fontSize: 60, fontWeight: 900, color: '#00e676', lineHeight: 1 }}><NumberFlow value={h2h.p1_wins} /></div>
                 </div>
                 <div style={{ fontSize: 28, color: '#333' }}>—</div>
                 <div style={{ textAlign: 'center' }}>
                   <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 4 }}>{p2?.name}</div>
-                  <div style={{ fontSize: 60, fontWeight: 900, color: '#ff4444', lineHeight: 1 }}>{h2h.p2_wins}</div>
+                  <div style={{ fontSize: 60, fontWeight: 900, color: '#ff4444', lineHeight: 1 }}><NumberFlow value={h2h.p2_wins} /></div>
                 </div>
                 <div style={{ marginLeft: 12, fontSize: 13, color: 'var(--muted)' }}>
                   <div>{h2h.total} {h2h.total !== 1 ? 'meetings' : 'meeting'}</div>
