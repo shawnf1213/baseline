@@ -1,14 +1,14 @@
 @import "tailwindcss";
 
 :root {
-  --bg:     #0a0a0a;
-  --card:   #111111;
-  --border: #1e1e1e;
+  --bg:     #060809;
+  --card:   #0a0f0c;
+  --border: #1a2520;
   --green:  #00E676;
   --red:    #FF4444;
   --amber:  #FFB300;
   --white:  #FFFFFF;
-  --muted:  #AAAAAA;
+  --muted:  #4a6a50;
 }
 
 *, *::before, *::after { box-sizing: border-box; }
@@ -17,7 +17,7 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--white);
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-family: 'Barlow', -apple-system, BlinkMacSystemFont, sans-serif;
   -webkit-font-smoothing: antialiased;
 }
 
@@ -29,12 +29,18 @@ body {
 
 .baseline-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .baseline-table th {
-  text-align: left; padding: 8px 12px;
-  color: var(--muted); font-size: 11px;
-  text-transform: uppercase; letter-spacing: .05em;
-  border-bottom: 1px solid var(--border);
+  text-align: left; padding: 10px 16px;
+  color: #2a3a30; font-size: 10px;
+  font-family: 'Barlow Condensed', sans-serif; font-weight: 700;
+  text-transform: uppercase; letter-spacing: .1em;
+  border-bottom: 1px solid #0d1510;
 }
-.baseline-table td { padding: 8px 12px; border-bottom: 1px solid #151515; }
-.baseline-table tr:hover td { background: #161616; }
+.baseline-table td { padding: 10px 16px; border-bottom: 1px solid #0d1510; font-size: 13px; }
+.baseline-table tr:hover td { background: #0c1410; }
 
 input, select, button { font-family: inherit; }
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}

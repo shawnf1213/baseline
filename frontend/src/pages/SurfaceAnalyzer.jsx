@@ -31,12 +31,12 @@ const SURFACE_HEADER_COLORS = {
 
 // ── Change 4: Surface-specific tab styles ───────────────────────────────────
 function surfaceTabStyle(surface, isActive) {
-  if (!isActive) return { background: 'transparent', color: 'var(--muted)', border: '1px solid transparent' }
+  if (!isActive) return { background: 'transparent', color: '#2a3a30', border: '1px solid #1a2520' }
   const styles = {
     Hard:  { background: '#001a40', color: '#6b9fff', border: '1px solid #2a3d5a' },
     Clay:  { background: '#2a0800', color: '#ff6b35', border: '1px solid #5a2010' },
     Grass: { background: '#001a0b', color: '#00e676', border: '1px solid #1a4020' },
-    All:   { background: 'var(--card)', color: 'var(--green)', border: '1px solid var(--green)' },
+    All:   { background: '#0a0f0c', color: '#00e676', border: '1px solid #00e676' },
   }
   return styles[surface] || styles.All
 }
@@ -173,8 +173,9 @@ function MatchHistory({ allMatches }) {
       <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
         {['All','Hard','Clay','Grass'].map(s => (
           <button key={s} onClick={() => { setSurface(s); setPage(0) }} style={{
-            padding: '5px 14px', borderRadius: 20, fontSize: 12, cursor: 'pointer',
-            fontWeight: surface === s ? 700 : 400,
+            padding: '6px 16px', borderRadius: 8, fontSize: 11, cursor: 'pointer',
+            fontWeight: 700, fontFamily: '"Barlow Condensed", sans-serif', letterSpacing: 1.5,
+            textTransform: 'uppercase',
             ...surfaceTabStyle(s, surface === s),
           }}>{s}</button>
         ))}
@@ -187,12 +188,12 @@ function MatchHistory({ allMatches }) {
           <tbody>
             {rows.map((m, i) => (
               <tr key={i}>
-                <td style={{ color: 'var(--muted)', whiteSpace: 'nowrap' }}>{m.date || '—'}</td>
-                <td>{m.tournament}</td>
+                <td style={{ color: '#2a3a30', whiteSpace: 'nowrap', fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 700, fontSize: 11, letterSpacing: 1 }}>{m.date || '—'}</td>
+                <td style={{ color: '#4a6a50', fontSize: 13 }}>{m.tournament}</td>
                 <td><SurfaceBadge surface={m.surface} /></td>
                 <td><ResultPill result={m.won ? 'W' : 'L'} /></td>
                 <td>{m.opponent_name}</td>
-                <td style={{ fontVariantNumeric: 'tabular-nums', color: 'var(--muted)' }}>{m.score || '—'}</td>
+                <td style={{ fontVariantNumeric: 'tabular-nums', color: '#3a5040', fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 600 }}>{m.score || '—'}</td>
               </tr>
             ))}
             {rows.length === 0 && <tr><td colSpan={6} style={{ color: 'var(--muted)', textAlign: 'center', padding: 24 }}>No matches</td></tr>}
@@ -249,14 +250,14 @@ function TaSurfacePanel({ taStats, surface }) {
   ]
 
   return (
-    <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, padding: 16, marginBottom: 16 }}>
-      <div style={{ fontSize: 11, color: 'var(--green)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 10 }}>
+    <div style={{ background: '#080d09', border: '1px solid #1a2520', borderRadius: 10, padding: '16px 18px', marginBottom: 16 }}>
+      <div style={{ fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 700, fontSize: 9, letterSpacing: '0.3em', color: '#00e676', textTransform: 'uppercase', marginBottom: 12 }}>
         Tennis Abstract — {surface} Data ({surf.matches} matches)
       </div>
       {rows.map(([lbl, val]) => (
-        <div key={lbl} style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', borderBottom: '1px solid #151515', fontSize: 12 }}>
-          <span style={{ color: 'var(--muted)' }}>{lbl}</span>
-          <span style={{ fontWeight: 600 }}>{val}</span>
+        <div key={lbl} style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', borderBottom: '1px solid #0d1510', fontSize: 12 }}>
+          <span style={{ color: '#2a3a30', fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 600 }}>{lbl}</span>
+          <span style={{ fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 700, fontSize: 13 }}>{val}</span>
         </div>
       ))}
     </div>
@@ -298,8 +299,8 @@ function WinRateCards({ stats }) {
 
         return (
           <div key={s} style={{
-            background: isBest ? bgTint : 'var(--card)',
-            border: isBest ? `2px solid ${surfColor}` : '1px solid var(--border)',
+            background: isBest ? bgTint : '#0a0f0c',
+            border: isBest ? `2px solid ${surfColor}` : '1px solid #1a2520',
             borderRadius: 10,
             padding: '14px 16px',
             transition: 'border .2s',
@@ -308,7 +309,7 @@ function WinRateCards({ stats }) {
               {s === 'All' ? 'All Surfaces' : s}
             </div>
             <div style={{
-              fontSize: isBest ? '2.5rem' : '1.75rem',
+              fontSize: isBest ? '3.5rem' : '2.2rem',
               fontWeight: 900,
               fontFamily: '"Barlow Condensed", sans-serif',
               color: wr > 55 ? 'var(--green)' : wr < 45 ? 'var(--red)' : 'var(--white)',
@@ -320,7 +321,7 @@ function WinRateCards({ stats }) {
             </div>
             <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 4 }}>{mp} matches</div>
             {isBest && (
-              <div style={{ fontSize: 9, color: surfColor, fontWeight: 700, marginTop: 4, textTransform: 'uppercase', letterSpacing: '.08em' }}>
+              <div style={{ fontSize: 9, color: surfColor, fontWeight: 700, marginTop: 4, textTransform: 'uppercase', letterSpacing: '.08em', borderRadius: 4, padding: '2px 8px', background: surfColor + '22', border: '1px solid ' + surfColor + '44', display: 'inline-block' }}>
                 Best Surface
               </div>
             )}
@@ -337,8 +338,10 @@ export default function SurfaceAnalyzer({ tour }) {
   const { stats, loading, error } = usePlayerStats(player?.id, tour, player?.name || '')
 
   const section = (title) => (
-    <div style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.08em', marginBottom: 12, marginTop: 28, paddingBottom: 6, borderBottom: '1px solid var(--border)' }}>
-      {title}
+    <div style={{ display: 'flex', alignItems: 'center', gap: 16, margin: '20px 0 12px' }}>
+      <div style={{ flex: 1, height: 1, background: '#0d1510' }} />
+      <span style={{ fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 700, fontSize: 9, letterSpacing: '0.3em', textTransform: 'uppercase', color: '#1a2a1e', whiteSpace: 'nowrap' }}>{title}</span>
+      <div style={{ flex: 1, height: 1, background: '#0d1510' }} />
     </div>
   )
 
@@ -362,12 +365,9 @@ export default function SurfaceAnalyzer({ tour }) {
         <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4 }}>
           {/* Header */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8, flexWrap: 'wrap' }}>
-            <h2 style={{
-              margin: 0, fontSize: 24, fontWeight: 800,
-              fontFamily: '"Barlow Condensed", sans-serif',
-            }}>{player.name}</h2>
+            <h2 style={{ margin: 0, fontSize: 28, fontWeight: 900, fontFamily: '"Barlow Condensed", sans-serif', letterSpacing: 1 }}>{player.name}</h2>
             {stats.archetype && (
-              <span style={{ padding: '3px 10px', borderRadius: 12, fontSize: 12, fontWeight: 700, background: '#00E67622', color: 'var(--green)', border: '1px solid #00E67644' }}>
+              <span style={{ padding: '3px 12px', borderRadius: 6, fontSize: 10, fontWeight: 700, fontFamily: '"Barlow Condensed", sans-serif', letterSpacing: 1, textTransform: 'uppercase', background: '#001a0b', color: '#00e676', border: '1px solid #1a4020' }}>
                 {stats.archetype}
               </span>
             )}
@@ -393,9 +393,9 @@ export default function SurfaceAnalyzer({ tour }) {
               <div style={{ display: 'flex', gap: 8, margin: '16px 0 10px', flexWrap: 'wrap' }}>
                 {['Hard', 'Clay', 'Grass', 'All'].map(s => (
                   <button key={s} onClick={() => setActiveSurface(s)} style={{
-                    padding: '4px 12px', borderRadius: 16, fontSize: 11, cursor: 'pointer',
-                    fontWeight: activeSurface === s ? 700 : 400,
-                    fontFamily: '"Barlow Condensed", sans-serif',
+                    padding: '6px 16px', borderRadius: 8, fontSize: 11, cursor: 'pointer',
+                    fontWeight: 700, fontFamily: '"Barlow Condensed", sans-serif', letterSpacing: 1.5,
+                    textTransform: 'uppercase',
                     ...surfaceTabStyle(s, activeSurface === s),
                   }}>{s}</button>
                 ))}
@@ -405,12 +405,12 @@ export default function SurfaceAnalyzer({ tour }) {
           )}
 
           {section('Rolling Win Rate (last 20 matches)')}
-          <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, padding: 16 }}>
+          <div style={{ background: '#0a0f0c', border: '1px solid #1a2520', borderRadius: 12, padding: '18px 16px' }}>
             <WinRateSparkline matches={stats.all_matches || []} />
           </div>
 
           {section('Surface Comparison — Aces · DFs · BP Conversion')}
-          <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, padding: 16 }}>
+          <div style={{ background: '#0a0f0c', border: '1px solid #1a2520', borderRadius: 12, padding: '18px 16px' }}>
             <SurfaceBarChart stats={stats} tour={tour} />
           </div>
 

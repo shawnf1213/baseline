@@ -30,46 +30,49 @@ export default function App() {
 
   return (
     <div style={{ minHeight: '100vh', background: 'var(--bg)' }}>
-      {/* Top bar */}
-      <div style={{
-        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        padding: '14px 24px', borderBottom: '1px solid var(--border)',
-        background: 'var(--card)', position: 'sticky', top: 0, zIndex: 100,
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <img src="/baseline-logo.png" alt="Baseline" style={{ height: 40, width: 'auto' }} />
+      {/* Nav */}
+      <nav style={{ position: 'sticky', top: 0, zIndex: 100, background: '#060809', borderBottom: '1px solid #111a14' }}>
+        {/* Top strip */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 24px', borderBottom: '1px solid #0d1510' }}>
+          <div style={{ fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 900, fontSize: 22, letterSpacing: 4, textTransform: 'uppercase' }}>
+            BASE<span style={{ color: '#00e676' }}>LINE</span>
+            <span style={{ marginLeft: 12, fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 700, fontSize: 9, letterSpacing: 3, color: '#1a3a25', verticalAlign: 'middle' }}>OPTIMIZER</span>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+            {/* Live indicator */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#00e676', display: 'inline-block', animation: 'pulse 2s infinite' }} />
+              <span style={{ fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 700, fontSize: 9, letterSpacing: 2, color: '#1a4025', textTransform: 'uppercase' }}>Live Data</span>
+            </div>
+            {/* ATP/WTA toggle */}
+            <div style={{ display: 'flex', background: '#080d09', border: '1px solid #1a2520', borderRadius: 6, overflow: 'hidden' }}>
+              {['ATP', 'WTA'].map(t => (
+                <button key={t} onClick={() => setTour(t)} style={{
+                  fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 700, fontSize: 11, letterSpacing: 1,
+                  padding: '7px 18px', border: 'none', cursor: 'pointer', transition: 'all .15s',
+                  background: tour === t ? '#00e676' : 'transparent',
+                  color: tour === t ? '#000' : '#3a5045',
+                }}>{t}</button>
+              ))}
+            </div>
+          </div>
         </div>
-        <div style={{ display: 'flex', background: '#1a1a1a', borderRadius: 8, border: '1px solid var(--border)', padding: 3, gap: 2 }}>
-          {['ATP', 'WTA'].map(t => (
-            <button key={t} onClick={() => setTour(t)} style={{
-              padding: '6px 18px', borderRadius: 6, fontSize: 12, fontWeight: 700,
-              cursor: 'pointer', border: 'none',
-              background: tour === t ? 'var(--green)' : 'transparent',
-              color: tour === t ? '#000' : 'var(--muted)',
-              transition: 'all .15s',
-            }}>{t}</button>
+        {/* Tab row */}
+        <div style={{ display: 'flex', paddingLeft: 24, overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
+          {TABS.map(({ key, label }) => (
+            <button key={key} onClick={() => handleTabChange(key)} style={{
+              fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 700, fontSize: 11, letterSpacing: 2,
+              textTransform: 'uppercase', padding: '13px 20px',
+              border: 'none', borderBottom: `2px solid ${tab === key ? '#00e676' : 'transparent'}`,
+              cursor: 'pointer', background: 'transparent', whiteSpace: 'nowrap',
+              color: tab === key ? '#00e676' : '#2a3a30',
+              transition: 'color .15s, border-color .15s', minHeight: 44,
+            }}>
+              {label}
+            </button>
           ))}
         </div>
-      </div>
-
-      {/* Tab nav */}
-      <div style={{
-        display: 'flex', borderBottom: '1px solid var(--border)',
-        background: 'var(--card)', overflowX: 'auto',
-        WebkitOverflowScrolling: 'touch',
-      }}>
-        {TABS.map(({ key, label }) => (
-          <button key={key} onClick={() => handleTabChange(key)} style={{
-            padding: '14px 22px', border: 'none', cursor: 'pointer',
-            background: 'transparent', whiteSpace: 'nowrap', fontSize: 13, fontWeight: 600,
-            color: tab === key ? 'var(--green)' : 'var(--muted)',
-            borderBottom: `2px solid ${tab === key ? 'var(--green)' : 'transparent'}`,
-            transition: 'color .15s, border-color .15s', minHeight: 44,
-          }}>
-            {label}
-          </button>
-        ))}
-      </div>
+      </nav>
 
       {/* Page */}
       <div style={{ maxWidth: 960, margin: '0 auto', padding: '24px 16px 60px', overflow: 'hidden' }}>

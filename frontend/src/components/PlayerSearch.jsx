@@ -57,18 +57,28 @@ export default function PlayerSearch({ tour, onSelect, label = 'Search player…
       {selected ? (
         <div
           style={{
-            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-            padding: '10px 14px', background: 'var(--card)', border: '1px solid var(--green)',
-            borderRadius: 8, cursor: 'pointer',
+            background: '#0a0f0c', border: '1px solid #00e676',
+            borderRadius: 12, padding: '14px 16px', cursor: 'pointer',
+            boxShadow: '0 0 0 1px #00e67615',
+            transition: 'all .2s',
           }}
           onClick={clear}
         >
-          <div>
-            <div style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 2 }}>{label}</div>
-            <div style={{ fontWeight: 700, color: 'var(--white)' }}>{selected.name}</div>
-            {selected.currentRank && <div style={{ fontSize: 11, color: 'var(--muted)' }}>Rank #{selected.currentRank}</div>}
+          <div style={{ fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 700, fontSize: 9, letterSpacing: 3, textTransform: 'uppercase', color: '#00e676', marginBottom: 6 }}>{label}</div>
+          <div style={{ fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 900, fontSize: 22, color: '#fff', letterSpacing: 0.5, lineHeight: 1.1 }}>{selected.name}</div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6 }}>
+            {selected.currentRank && (
+              <span style={{ fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 700, fontSize: 9, letterSpacing: 1.5, textTransform: 'uppercase', background: '#0f2010', color: '#00e676', border: '1px solid #1a4020', padding: '2px 8px', borderRadius: 4 }}>
+                Rank #{selected.currentRank}
+              </span>
+            )}
+            {selected.countryAcr && (
+              <span style={{ fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 700, fontSize: 9, letterSpacing: 1, textTransform: 'uppercase', background: '#0d1a35', color: '#6b9fff', border: '1px solid #1a3060', padding: '2px 8px', borderRadius: 4 }}>
+                {selected.countryAcr}
+              </span>
+            )}
+            <X size={12} color="#1a4025" style={{ marginLeft: 'auto' }} />
           </div>
-          <X size={14} color="var(--muted)" />
         </div>
       ) : (
         <>
@@ -83,14 +93,16 @@ export default function PlayerSearch({ tour, onSelect, label = 'Search player…
               placeholder={label}
               autoComplete="off"
               style={{
-                width: '100%',
-                boxSizing: 'border-box',
-                padding: '10px 36px 10px 34px',
-                background: 'var(--card)',
-                border: '1px solid var(--border)',
-                borderRadius: 8,
-                color: 'var(--white)',
-                fontSize: 14,
+                width: '100%', boxSizing: 'border-box',
+                padding: '13px 36px 13px 38px',
+                background: '#0a0f0c',
+                border: '1px solid #1a2520',
+                borderRadius: 12,
+                color: '#4a6a50',
+                fontSize: 15,
+                fontFamily: '"Barlow Condensed", sans-serif',
+                fontWeight: 600,
+                letterSpacing: 1,
                 outline: 'none',
               }}
             />
@@ -107,9 +119,9 @@ export default function PlayerSearch({ tour, onSelect, label = 'Search player…
             <div style={{
               position: 'absolute', top: '100%', left: 0, right: 0,
               zIndex: 1000,
-              background: '#1a1a1a', border: '1px solid var(--border)',
-              borderRadius: 8, marginTop: 4, overflow: 'hidden',
-              boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
+              background: '#080d09', border: '1px solid #1a2520',
+              borderRadius: 10, marginTop: 6, overflow: 'hidden',
+              boxShadow: '0 12px 32px rgba(0,0,0,0.8)',
             }}>
               {loading ? (
                 <div style={{ padding: '12px 14px', color: 'var(--muted)', fontSize: 13 }}>
@@ -129,14 +141,14 @@ export default function PlayerSearch({ tour, onSelect, label = 'Search player…
                       borderBottom: '1px solid var(--border)',
                       display: 'flex', justifyContent: 'space-between', alignItems: 'center',
                     }}
-                    onMouseEnter={e => e.currentTarget.style.background = '#222'}
+                    onMouseEnter={e => e.currentTarget.style.background = '#0d1510'}
                     onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
                   >
                     <div>
-                      <div style={{ fontWeight: 600, fontSize: 14, color: 'var(--white)' }}>{p.name}</div>
-                      {p.countryAcr && <div style={{ fontSize: 11, color: 'var(--muted)' }}>{p.countryAcr}</div>}
+                      <div style={{ fontWeight: 700, fontSize: 14, fontFamily: '"Barlow Condensed", sans-serif', color: '#fff' }}>{p.name}</div>
+                      {p.countryAcr && <div style={{ fontSize: 10, color: '#2a3a30', fontFamily: '"Barlow Condensed", sans-serif', letterSpacing: 1 }}>{p.countryAcr}</div>}
                     </div>
-                    {p.currentRank && <span style={{ fontSize: 11, color: 'var(--muted)' }}>#{p.currentRank}</span>}
+                    {p.currentRank && <span style={{ fontSize: 10, color: '#1a3a25', fontFamily: '"Barlow Condensed", sans-serif' }}>#{p.currentRank}</span>}
                   </div>
                 ))
               ) : (

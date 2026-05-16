@@ -39,14 +39,19 @@ const SURFACE_DOT_COLORS = {
 
 // Shared card style for static (non-interactive) projection cards
 const STATIC_CARD_STYLE = {
-  background: 'var(--card)',
-  border: '1px solid var(--border)',
-  borderRadius: 10,
-  padding: '16px 18px',
+  background: '#0a0f0c',
+  border: '1px solid #1a2520',
+  borderRadius: 12,
+  padding: '20px 22px',
 }
 const STATIC_LABEL_STYLE = {
-  fontSize: 11, color: 'var(--muted)',
-  textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 6,
+  fontFamily: '"Barlow Condensed", sans-serif',
+  fontWeight: 700,
+  fontSize: 9,
+  letterSpacing: '0.3em',
+  textTransform: 'uppercase',
+  color: '#1a3a25',
+  marginBottom: 8,
 }
 
 // ── Change 3: stat color helper ─────────────────────────────────────────────
@@ -69,13 +74,14 @@ function statColor(label, value) {
 // ── Change 8: Section divider with label ────────────────────────────────────
 function SectionDivider({ label }) {
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 12, margin: '8px 0' }}>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 16, margin: '20px 0 12px' }}>
+      <div style={{ flex: 1, height: 1, background: '#0d1510' }} />
       <span style={{
         fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 700,
-        fontSize: 10, letterSpacing: '0.2em', textTransform: 'uppercase',
-        color: '#2a3540', whiteSpace: 'nowrap',
+        fontSize: 9, letterSpacing: '0.3em', textTransform: 'uppercase',
+        color: '#1a2a1e', whiteSpace: 'nowrap',
       }}>{label}</span>
-      <div style={{ flex: 1, height: 1, background: '#1a1f26' }} />
+      <div style={{ flex: 1, height: 1, background: '#0d1510' }} />
     </div>
   )
 }
@@ -297,26 +303,27 @@ function HandBadge({ hand }) {
 
 // ── Change 10: Custom surface selector ──────────────────────────────────────
 function SurfaceSelector({ value, onChange }) {
+  const SURF_STYLES = {
+    Hard:  { active: { background: '#001a40', color: '#6b9fff', border: '1px solid #2a3d5a' }, dot: '#6b9fff' },
+    Clay:  { active: { background: '#2a0800', color: '#ff6b35', border: '1px solid #5a2010' }, dot: '#ff6b35' },
+    Grass: { active: { background: '#001a0b', color: '#00e676', border: '1px solid #1a4020' }, dot: '#00e676' },
+  }
   return (
     <div style={{ display: 'flex', gap: 8 }}>
       {SURFACES.map(s => {
         const isActive = value === s
-        const dotColor = SURFACE_DOT_COLORS[s]
+        const ss = SURF_STYLES[s]
         return (
           <button key={s} onClick={() => onChange(s)} style={{
-            display: 'flex', alignItems: 'center', gap: 6,
-            padding: '8px 14px', borderRadius: 8, cursor: 'pointer', fontSize: 13, fontWeight: 600,
-            background: isActive ? 'var(--card)' : 'transparent',
-            color: isActive ? 'var(--white)' : 'var(--muted)',
-            border: isActive ? `1px solid ${dotColor}` : '1px solid var(--border)',
+            display: 'flex', alignItems: 'center', gap: 7,
+            padding: '9px 16px', borderRadius: 10, cursor: 'pointer',
+            fontFamily: '"Barlow Condensed", sans-serif',
+            fontWeight: 700, fontSize: 12, letterSpacing: 1.5,
+            textTransform: 'uppercase',
             transition: 'all .15s',
+            ...(isActive ? ss.active : { background: '#0a0f0c', color: '#2a3a30', border: '1px solid #1a2520' }),
           }}>
-            <span style={{
-              width: 8, height: 8, borderRadius: '50%',
-              background: dotColor,
-              display: 'inline-block',
-              flexShrink: 0,
-            }} />
+            <span style={{ width: 7, height: 7, borderRadius: '50%', background: isActive ? ss.dot : '#1a2520', display: 'inline-block', flexShrink: 0 }} />
             {s}
           </button>
         )
@@ -382,8 +389,10 @@ export default function PropProjection({ tour }) {
   }, [p1, p2, tour, surface, court, propType, propLine, currentPair])
 
   const section = (title) => (
-    <div style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.08em', marginBottom: 12, marginTop: 24, paddingBottom: 6, borderBottom: '1px solid var(--border)' }}>
-      {title}
+    <div style={{ display: 'flex', alignItems: 'center', gap: 16, margin: '20px 0 12px' }}>
+      <div style={{ flex: 1, height: 1, background: '#0d1510' }} />
+      <span style={{ fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 700, fontSize: 9, letterSpacing: '0.3em', textTransform: 'uppercase', color: '#1a2a1e', whiteSpace: 'nowrap' }}>{title}</span>
+      <div style={{ flex: 1, height: 1, background: '#0d1510' }} />
     </div>
   )
 
@@ -437,8 +446,10 @@ export default function PropProjection({ tour }) {
         <div>
           <label style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.05em', display: 'block', marginBottom: 6 }}>Court / Tournament</label>
           <select value={court} onChange={e => setCourt(e.target.value)} style={{
-            width: '100%', padding: '10px 12px', background: 'var(--card)',
-            border: '1px solid var(--border)', borderRadius: 8, color: 'var(--white)', fontSize: 14,
+            width: '100%', padding: '11px 14px', background: '#0a0f0c',
+            border: '1px solid #1a2520', borderRadius: 10, color: '#4a6a50',
+            fontFamily: '"Barlow Condensed", sans-serif', fontSize: 13, fontWeight: 600,
+            letterSpacing: 0.5,
           }}>
             {courts.map(c => <option key={c} value={c}>{c}</option>)}
           </select>
@@ -450,13 +461,15 @@ export default function PropProjection({ tour }) {
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 16 }}>
         {PROP_TYPES.map(pt => (
           <button key={pt} onClick={() => { setPropType(pt); setResult(null) }} style={{
-            padding: '8px 16px', borderRadius: 20, cursor: 'pointer',
-            fontSize: 13,
+            padding: '10px 20px', borderRadius: 10, cursor: 'pointer',
             fontFamily: '"Barlow Condensed", sans-serif',
-            fontWeight: propType === pt ? 800 : 600,
-            background: propType === pt ? 'var(--green)' : 'var(--card)',
-            color: propType === pt ? '#000' : 'var(--muted)',
-            border: `1px solid ${propType === pt ? 'var(--green)' : 'var(--border)'}`,
+            fontWeight: 700, fontSize: 12, letterSpacing: 1.5,
+            textTransform: 'uppercase',
+            background: propType === pt ? '#00e676' : '#0a0f0c',
+            color: propType === pt ? '#000' : '#2a3a30',
+            border: `1px solid ${propType === pt ? '#00e676' : '#1a2520'}`,
+            boxShadow: propType === pt ? '0 0 20px #00e67630' : 'none',
+            transition: 'all .15s',
           }}>{pt}</button>
         ))}
       </div>
@@ -464,21 +477,28 @@ export default function PropProjection({ tour }) {
       {/* Prop line */}
       {section('Prop Line')}
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 20 }}>
-        <button onClick={() => setPropLine(l => Math.max(0, +(l - 0.5).toFixed(1)))} style={{
-          width: 36, height: 36, borderRadius: 8, border: '1px solid var(--border)',
-          background: 'var(--card)', color: 'var(--white)', cursor: 'pointer', fontSize: 18,
-        }}>−</button>
-        <div style={{
-          fontSize: 28, fontWeight: 800, minWidth: 60, textAlign: 'center',
-          fontFamily: '"Barlow Condensed", sans-serif',
-        }}>{propLine.toFixed(1)}</div>
-        <button onClick={() => setPropLine(l => +(l + 0.5).toFixed(1))} style={{
-          width: 36, height: 36, borderRadius: 8, border: '1px solid var(--border)',
-          background: 'var(--card)', color: 'var(--white)', cursor: 'pointer', fontSize: 18,
-        }}>+</button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 0, background: '#0a0f0c', border: '1px solid #1a2520', borderRadius: 12, padding: '8px 16px' }}>
+          <button onClick={() => setPropLine(l => Math.max(0, +(l - 0.5).toFixed(1)))} style={{
+            width: 40, height: 40, borderRadius: 8, border: '1px solid #1a2520',
+            background: '#111a14', color: '#3a5045', cursor: 'pointer', fontSize: 22,
+            fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 900,
+            transition: 'all .15s', display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }}>−</button>
+          <div style={{
+            fontSize: 64, fontWeight: 900, minWidth: 120, textAlign: 'center',
+            fontFamily: '"Barlow Condensed", sans-serif', lineHeight: 1, color: '#fff',
+            padding: '0 16px',
+          }}>{propLine.toFixed(1)}</div>
+          <button onClick={() => setPropLine(l => +(l + 0.5).toFixed(1))} style={{
+            width: 40, height: 40, borderRadius: 8, border: '1px solid #1a2520',
+            background: '#111a14', color: '#3a5045', cursor: 'pointer', fontSize: 22,
+            fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 900,
+            transition: 'all .15s', display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }}>+</button>
+        </div>
         <input type="number" value={propLine} step={0.5} min={0}
           onChange={e => setPropLine(Math.max(0, parseFloat(e.target.value) || 0))}
-          style={{ width: 80, padding: '8px 12px', background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8, color: 'var(--white)', fontSize: 14 }}
+          style={{ width: 80, padding: '10px 12px', background: '#0a0f0c', border: '1px solid #1a2520', borderRadius: 10, color: '#4a6a50', fontSize: 14 }}
         />
       </div>
 
@@ -489,13 +509,15 @@ export default function PropProjection({ tour }) {
         onClick={run}
         disabled={!p1 || !p2 || loading}
         style={{
-          width: '100%', padding: '14px 24px', borderRadius: 10, fontSize: 15, fontWeight: 700,
-          cursor: p1 && p2 && !loading ? 'pointer' : 'not-allowed',
-          background: p1 && p2 && !loading ? 'var(--green)' : '#1a1a1a',
-          color: p1 && p2 && !loading ? '#000' : 'var(--muted)',
-          border: 'none',
+          width: '100%', padding: '16px 24px', borderRadius: 12, fontSize: 14,
+          fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 700, letterSpacing: 2,
+          textTransform: 'uppercase', cursor: p1 && p2 && !loading ? 'pointer' : 'not-allowed',
+          background: p1 && p2 && !loading ? '#00e676' : '#0a0f0c',
+          color: p1 && p2 && !loading ? '#000' : '#1a2520',
+          border: `1px solid ${p1 && p2 && !loading ? '#00e676' : '#1a2520'}`,
+          boxShadow: p1 && p2 && !loading ? '0 0 30px #00e67625' : 'none',
           marginBottom: 24,
-          fontFamily: '"Barlow Condensed", sans-serif',
+          transition: 'all .15s',
         }}
       >
         {loading ? (
@@ -548,12 +570,12 @@ export default function PropProjection({ tour }) {
                     {hasProjection ? (
                       <>
                         <div style={{
-                          fontSize: 36, fontWeight: 900, color: 'var(--green)', lineHeight: 1,
+                          fontSize: 64, fontWeight: 900, color: '#00e676', lineHeight: 1,
                           fontFamily: '"Barlow Condensed", sans-serif',
                         }}>
                           <NumberFlow value={result.model_projection} format={{ minimumFractionDigits: 1, maximumFractionDigits: 1 }} />
                         </div>
-                        <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 4 }}>{p1?.name}</div>
+                        <div style={{ fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 700, fontSize: 10, letterSpacing: 2, color: '#1a3a25', textTransform: 'uppercase', marginTop: 8 }}>{p1?.name}</div>
                       </>
                     ) : (
                       <div style={{ fontSize: 14, color: 'var(--muted)', marginTop: 8 }}>N/A</div>
@@ -564,13 +586,13 @@ export default function PropProjection({ tour }) {
                   <div style={{ ...STATIC_CARD_STYLE, borderTop: `2px solid ${bookLineBorderColor}` }}>
                     <div style={STATIC_LABEL_STYLE}>Book Line</div>
                     <div style={{
-                      fontSize: 36, fontWeight: 900, color: 'var(--muted)', lineHeight: 1,
+                      fontSize: 64, fontWeight: 900, color: '#3a5040', lineHeight: 1,
                       fontFamily: '"Barlow Condensed", sans-serif',
                     }}>
                       {propLine > 0 ? propLine.toFixed(1) : '—'}
                     </div>
                     {edge != null && (
-                      <div style={{ fontSize: 13, color: edge >= 0 ? 'var(--green)' : 'var(--red)', marginTop: 4 }}>
+                      <div style={{ fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 700, fontSize: 13, letterSpacing: 1, marginTop: 8, color: edge >= 0 ? '#00e676' : '#ff4444' }}>
                         edge <NumberFlow value={edge} format={{ minimumFractionDigits: 1, signDisplay: 'always' }} />
                       </div>
                     )}
@@ -597,7 +619,7 @@ export default function PropProjection({ tour }) {
               {result.player_surface_matches?.length > 0 && statKey && (
                 <motion.div variants={item}>
                   {section(`Last 5 ${surface} Matches — ${propType} (${p1?.name})`)}
-                  <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, padding: '16px 16px 8px', marginBottom: 20 }}>
+                  <div style={{ background: '#0a0f0c', border: '1px solid #1a2520', borderRadius: 12, padding: '18px 18px 10px', marginBottom: 20 }}>
                     {propLine > 0 && (
                       <div style={{ display: 'flex', gap: 16, marginBottom: 12, fontSize: 11 }}>
                         <span style={{ color: 'var(--green)' }}>■ Over {propLine.toFixed(1)}</span>
@@ -618,8 +640,8 @@ export default function PropProjection({ tour }) {
               {/* ── Environment badge — Phase 8: motion pulse dot ── */}
               {result.environment && (
                 <motion.div variants={item} style={{ marginBottom: 16 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '14px 16px', background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10 }}>
-                    <span style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.06em' }}>Match Environment</span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '14px 18px', background: '#0a0f0c', border: '1px solid #1a2520', borderRadius: 12 }}>
+                    <span style={{ fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 700, fontSize: 9, letterSpacing: 2, textTransform: 'uppercase', color: '#2a3a30' }}>Match Environment</span>
                     <span style={{
                       display: 'inline-flex', alignItems: 'center',
                       padding: '4px 12px', borderRadius: 14, fontSize: 11, fontWeight: 700,
@@ -680,14 +702,14 @@ export default function PropProjection({ tour }) {
                         rows.splice(1, 0, ['Aces Conceded/Match', fmt(aceAgainst)])
                       }
                       return (
-                        <div key={idx} style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, padding: 16 }}>
-                          <div style={{ fontWeight: 700, color: nc, marginBottom: 12, fontSize: 13, display: 'flex', alignItems: 'center' }}>
+                        <div key={idx} style={{ background: '#0a0f0c', border: '1px solid #1a2520', borderRadius: 12, padding: '18px 20px' }}>
+                          <div style={{ fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 800, fontSize: 16, color: nc, marginBottom: 14, display: 'flex', alignItems: 'center' }}>
                             🎾 {name}<HandBadge hand={hand} />
                           </div>
                           {rows.map(([lbl, val]) => (
-                            <div key={lbl} style={{ display: 'flex', justifyContent: 'space-between', padding: '5px 0', borderBottom: '1px solid #151515', fontSize: 12 }}>
-                              <span style={{ color: 'var(--muted)' }}>{lbl}</span>
-                              <span style={{ fontWeight: 600, color: statColor(lbl, val) || 'var(--white)' }}>{val}</span>
+                            <div key={lbl} style={{ display: 'flex', justifyContent: 'space-between', padding: '7px 0', borderBottom: '1px solid #0d1510', fontSize: 12 }}>
+                              <span style={{ color: '#2a3a30', fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 600, letterSpacing: 0.5 }}>{lbl}</span>
+                              <span style={{ fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 700, fontSize: 14, color: statColor(lbl, val) || '#4a6a50' }}>{val}</span>
                             </div>
                           ))}
                         </div>
@@ -701,7 +723,7 @@ export default function PropProjection({ tour }) {
               {result.h2h_context && (result.h2h_context.total > 0 || result.h2h_context.total === 0) && (
                 <motion.div variants={item}>
                   {section(`H2H Context`)}
-                  <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, padding: 16, marginBottom: 16 }}>
+                  <div style={{ background: '#0a0f0c', border: '1px solid #1a2520', borderRadius: 12, padding: '18px 20px', marginBottom: 16 }}>
                     {result.h2h_context.total === 0 ? (
                       <div style={{ fontSize: 13, color: 'var(--muted)' }}>No H2H data available</div>
                     ) : (
@@ -747,16 +769,18 @@ export default function PropProjection({ tour }) {
                 <motion.div variants={item}>
                   <SectionDivider label="MODEL EXPLANATION" />
                   <div style={{
-                    borderLeft: '4px solid #00e676',
-                    borderRadius: '0 8px 8px 0',
-                    background: '#0d1117',
-                    padding: '16px',
-                    fontSize: 13,
-                    color: '#667788',
-                    lineHeight: 1.6,
+                    borderLeft: '3px solid #00e676',
+                    borderRadius: '0 10px 10px 0',
+                    background: '#080d09',
+                    padding: '18px 20px',
                     marginBottom: 16,
                   }}>
-                    {result.plain_english_explanation}
+                    <div style={{ fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 700, fontSize: 9, letterSpacing: '0.3em', textTransform: 'uppercase', color: '#00e676', marginBottom: 10 }}>
+                      Model Logic
+                    </div>
+                    <p style={{ fontSize: 13, color: '#3a5040', lineHeight: 1.8, margin: 0 }}>
+                      {result.plain_english_explanation}
+                    </p>
                   </div>
                 </motion.div>
               )}
@@ -765,17 +789,19 @@ export default function PropProjection({ tour }) {
               {result.ai_writeup && (
                 <motion.div variants={item}>
                   <SectionDivider label="AI SCOUTING REPORT" />
-                  <div style={{ padding: '16px', background: '#00E67608', border: '1px solid #00E67622', borderRadius: 10, marginBottom: 16, position: 'relative' }}>
+                  <div style={{ background: '#080d09', border: '1px solid #1a2520', borderRadius: 12, padding: '22px 24px', position: 'relative', marginBottom: 16 }}>
                     <span style={{
-                      position: 'absolute', top: 8, right: 12,
-                      color: '#00e676', background: '#001a0b',
-                      border: '1px solid #00e676',
-                      fontSize: 8, fontFamily: '"Barlow Condensed", sans-serif',
-                      fontWeight: 800, letterSpacing: '0.15em',
-                      textTransform: 'uppercase', padding: '2px 8px',
-                      borderRadius: 4,
+                      position: 'absolute', top: 14, right: 16,
+                      fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 900, fontSize: 8, letterSpacing: '0.2em',
+                      textTransform: 'uppercase', color: '#00e676', background: '#001a0b',
+                      border: '1px solid #00e676', padding: '3px 10px', borderRadius: 3,
                     }}>BASELINE AI</span>
-                    <div style={{ fontSize: 13, color: 'var(--muted)', lineHeight: 1.7 }}>{result.ai_writeup}</div>
+                    <div style={{ fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 700, fontSize: 9, letterSpacing: '0.3em', textTransform: 'uppercase', color: '#1a3a25', marginBottom: 14 }}>
+                      AI Scouting Report
+                    </div>
+                    <p style={{ fontSize: 14, color: '#5a7a68', lineHeight: 1.85, margin: 0, paddingRight: 60 }}>
+                      {result.ai_writeup}
+                    </p>
                   </div>
                 </motion.div>
               )}
