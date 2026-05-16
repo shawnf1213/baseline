@@ -34,6 +34,7 @@ Returned dict shape (all fields optional — None if not found):
 """
 
 import asyncio
+import json
 import logging
 import os
 import random
@@ -41,6 +42,7 @@ import re
 import time
 import unicodedata
 from collections import defaultdict
+from datetime import datetime
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -545,6 +547,7 @@ def _parse_match_rows(rows: list) -> list:
     """
     Convert raw JS array rows into normalised match dicts.
     Handles both 15-column and 16-column (with separate W/L) layouts.
+    Includes a 'Result' field ('W' or 'L') for win-rate computation.
     """
     parsed = []
     for row in rows:
@@ -563,10 +566,13 @@ def _parse_match_rows(rows: list) -> list:
             # 16-col layout: 0..5 = meta, 6=result, 7=score, 8=DR, 9=A%, ...14=BPSvd
             ace_idx, df_idx, fin_idx, fwon_idx, swon_idx, bpsv_idx = 9, 10, 11, 12, 13, 14
             score_idx = 7
+            result = col6
         else:
             # 15-col layout: result+score merged in col[6]; 7=DR, 8=A%, ...13=BPSvd
             ace_idx, df_idx, fin_idx, fwon_idx, swon_idx, bpsv_idx = 8, 9, 10, 11, 12, 13
             score_idx = 6
+            # First character of merged field is W or L
+            result = col6[0] if col6 and col6[0] in ("W", "L") else ""
 
         def _get(idx):
             return row[idx] if n > idx else None
@@ -582,6 +588,7 @@ def _parse_match_rows(rows: list) -> list:
             "Rd":         str(_get(3) or ""),
             "Rk":         str(_get(4) or ""),
             "vRk":        str(_get(5) or ""),
+            "Result":     result,
             "Score":      str(_get(score_idx) or ""),
             "A%":         str(_get(ace_idx)  or ""),
             "DF%":        str(_get(df_idx)   or ""),
@@ -592,6 +599,116 @@ def _parse_match_rows(rows: list) -> list:
         })
 
     return parsed
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Rich stats building from raw match rows
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _parse_match_year(date_str: str) -> Optional[int]:
+    """Extract 4-digit year from Tennis Abstract date strings like '2025-04-13'."""
+    if not date_str:
+        return None
+    m = re.search(r'\b(20\d{2})\b', date_str)
+    if m:
+        return int(m.group(1))
+    return None
+
+
+def _agg_ta_matches(match_list: list) -> dict:
+    """
+    Aggregate a list of Tennis Abstract match dicts into a surface stats block.
+    Returns the same shape as surface_stats entries.
+    """
+    if not match_list:
+        return {"matches": 0}
+
+    n = len(match_list)
+
+    def avg(key):
+        vals = [_pf(r.get(key)) for r in match_list]
+        vals = [v for v in vals if v is not None]
+        return round(sum(vals) / len(vals), 2) if vals else None
+
+    # BP saved: aggregate fraction denominators for accuracy
+    bp_saved_n, bp_total_n = 0, 0
+    for m in match_list:
+        bpsv = str(m.get("BPSvd", ""))
+        fm = re.match(r"(\d+)/(\d+)", bpsv)
+        if fm:
+            bp_saved_n += int(fm.group(1))
+            bp_total_n += int(fm.group(2))
+
+    bp_saved_pct = round(100.0 * bp_saved_n / bp_total_n, 1) if bp_total_n > 0 else avg("BPSvd")
+    bp_conv_pct = round(100.0 - bp_saved_pct, 1) if bp_saved_pct is not None else None
+
+    wins = sum(1 for m in match_list if m.get("Result") == "W")
+
+    return {
+        "matches":        n,
+        "win_rate":       round(wins / n * 100, 1) if n > 0 else None,
+        "ace_pct":        avg("A%"),
+        "df_pct":         avg("DF%"),
+        "first_in_pct":   avg("1stIn"),
+        "first_won_pct":  avg("1st%"),
+        "second_won_pct": avg("2nd%"),
+        "bp_saved_pct":   bp_saved_pct,
+        "bp_conv_pct":    bp_conv_pct,
+    }
+
+
+def _build_rich_stats(matches: list) -> dict:
+    """
+    Build rich multi-tier aggregations from raw parsed match rows.
+    Returns a dict consumed by get_blended_stats().
+    """
+    current_year = datetime.utcnow().year
+    recent_years = {current_year, current_year - 1, current_year - 2, current_year - 3}
+
+    # Bucket matches
+    recent_3yr: dict = defaultdict(list)
+    curr_yr: dict    = defaultdict(list)
+    by_surface: dict = defaultdict(list)
+
+    for m in matches:
+        yr  = _parse_match_year(m.get("Date", ""))
+        srf = m.get("Surface")
+        if not srf:
+            continue
+
+        by_surface[srf].append(m)
+        by_surface["All"].append(m)
+
+        if yr and yr in recent_years:
+            recent_3yr[srf].append(m)
+            recent_3yr["All"].append(m)
+
+        if yr and yr == current_year:
+            curr_yr[srf].append(m)
+            curr_yr["All"].append(m)
+
+    def _per_surf(bucket: dict) -> dict:
+        return {k: _agg_ta_matches(v) for k, v in bucket.items()}
+
+    # Last 20 on each surface
+    last20: dict = {}
+    for srf in ("Hard", "Clay", "Grass"):
+        last20[srf] = _agg_ta_matches(by_surface[srf][:20])
+
+    # Surface match log — up to 10 most recent raw rows per surface
+    surf_log: dict = {}
+    for srf in ("Hard", "Clay", "Grass"):
+        surf_log[srf] = by_surface[srf][:10]
+
+    return {
+        "all_surfaces":       _agg_ta_matches(by_surface.get("All", [])),
+        "by_surface":         _per_surf(by_surface),
+        "recent_3yr":         _per_surf(recent_3yr),
+        "current_year":       _per_surf(curr_yr),
+        "last_20_on_surface": last20,
+        "surface_match_log":  surf_log,
+        "last_10_matches":    matches[:10],
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -639,20 +756,36 @@ def _aggregate_matches(matches: list) -> dict:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _parse_html(html: str, ta_name: str) -> dict:
-    """Extract player metadata (handedness etc.) from the main static HTML."""
+    """Extract player metadata and raw match array from the main static HTML."""
     handedness = _extract_handedness(html)
+    rank_splits = _extract_rank_splits_html(html)
 
-    logger.info("[TA] %s parsed: hand=%s", ta_name, handedness)
+    # Extract raw match array from embedded JS variable
+    raw_rows = _extract_match_array(html)
+    matches  = _parse_match_rows(raw_rows) if raw_rows else []
+
+    # Build surface stats from raw matches (used if jsfrags unavailable)
+    surface_stats_from_matches = _aggregate_matches(matches) if matches else {}
+
+    # Build rich multi-tier stats
+    rich_stats = _build_rich_stats(matches) if matches else {}
+
+    logger.info(
+        "[TA] %s parsed: hand=%s  match_rows=%d  surfaces=%s",
+        ta_name, handedness, len(matches),
+        list(surface_stats_from_matches.keys()),
+    )
 
     return {
         "handedness":    handedness,
-        "matches":       [],
-        "surface_stats": {},
+        "matches":       matches,
+        "surface_stats": surface_stats_from_matches,   # may be overridden by jsfrags
+        "rich_stats":    rich_stats,
         "career_splits": [],
         "mcp_serve":     [],
         "mcp_return":    [],
         "h2h_records":   [],
-        "rank_splits":   {},
+        "rank_splits":   rank_splits,
         "_source":       "curl_cffi_html_table",
     }
 
@@ -729,27 +862,42 @@ async def get_player_ta_stats(
 
     if data is None:
         data = {"handedness": None, "matches": [], "surface_stats": {},
-                "career_splits": [], "mcp_serve": [], "mcp_return": [],
-                "h2h_records": [], "rank_splits": {}, "_source": "curl_cffi_html_table"}
+                "rich_stats": {}, "career_splits": [], "mcp_serve": [],
+                "mcp_return": [], "h2h_records": [], "rank_splits": {},
+                "_source": "curl_cffi_html_table"}
 
-    # Merge jsfrags surface stats into data
+    # Merge jsfrags surface stats into data (jsfrags career-splits table is more
+    # reliable for lifetime aggregates than the raw match array averages).
     if jsfrags_text:
         jf = _parse_jsfrags(jsfrags_text, ta_name)
         if jf.get("surface_stats"):
-            data["surface_stats"] = jf["surface_stats"]
+            # Jsfrags gives career lifetime surface stats — use as primary.
+            # Preserve match counts from raw-match aggregation if jsfrags lacks them.
+            jf_ss = jf["surface_stats"]
+            raw_ss = data.get("surface_stats", {})
+            for surf, stats in jf_ss.items():
+                if stats.get("matches", 0) == 0 and raw_ss.get(surf, {}).get("matches", 0) > 0:
+                    stats["matches"] = raw_ss[surf]["matches"]
+            data["surface_stats"] = jf_ss
         if jf.get("rank_splits"):
             data["rank_splits"] = jf["rank_splits"]
+
+    # Ensure rich_stats is present (built from raw match rows in _parse_html)
+    if not data.get("rich_stats") and data.get("matches"):
+        data["rich_stats"] = _build_rich_stats(data["matches"])
 
     # Cache result (even None — prevents hammering on persistent 404)
     _cache[ta_name] = {"ts": now, "data": data}
 
     if data:
+        rs = data.get("rich_stats") or {}
         logger.info(
-            "[TA] %s -> hand=%s  matches=%d  surfaces=%s",
+            "[TA] %s -> hand=%s  raw_matches=%d  surfaces=%s  3yr_clay=%d",
             ta_name,
             data.get("handedness"),
             len(data.get("matches", [])),
             list(data.get("surface_stats", {}).keys()),
+            (rs.get("recent_3yr") or {}).get("Clay", {}).get("matches", 0),
         )
     else:
         logger.warning("[TA] no data for %s", ta_name)

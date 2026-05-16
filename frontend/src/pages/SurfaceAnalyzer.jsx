@@ -278,7 +278,7 @@ const SURFACE_BG_TINTS = {
   All:   'rgba(0,230,118,0.06)',
 }
 
-function WinRateCards({ stats }) {
+function WinRateCards({ stats, taStats }) {
   // Find best surface by win_rate (exclude 'All', compare only Hard/Clay/Grass)
   let bestSurface = null
   let bestWr = -1
@@ -296,6 +296,11 @@ function WinRateCards({ stats }) {
         const isBest = s === bestSurface
         const surfColor = SURFACE_COLORS[s] || '#00e676'
         const bgTint = SURFACE_BG_TINTS[s] || 'transparent'
+
+        // TA career match count for this surface
+        const taSurf = taStats?.surface_stats?.[s === 'All' ? 'All' : s]
+        const taM = taSurf?.matches || 0
+        const taThin = s !== 'All' && taM < 5 && taM > 0
 
         return (
           <div key={s} style={{
@@ -319,7 +324,19 @@ function WinRateCards({ stats }) {
                 <><NumberFlow value={Math.round(wr)} />%</>
               ) : '—'}
             </div>
-            <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 4 }}>{mp} matches</div>
+            {/* Match count row: SS recent + TA career */}
+            <div style={{ display: 'flex', gap: 6, marginTop: 5, flexWrap: 'wrap' }}>
+              <span style={{ fontSize: 10, color: 'var(--muted)' }}>SS {mp}</span>
+              {taM > 0 && (
+                <span style={{ fontSize: 10, color: '#3a6a40' }}>· TA {taM}</span>
+              )}
+            </div>
+            {/* Amber warning if thin TA data on this surface */}
+            {taThin && (
+              <div style={{ fontSize: 9, color: '#FFB300', fontWeight: 700, marginTop: 4, fontFamily: '"Barlow Condensed", sans-serif', letterSpacing: 0.5 }}>
+                ⚠ Limited surface data
+              </div>
+            )}
             {isBest && (
               <div style={{ fontSize: 9, color: surfColor, fontWeight: 700, marginTop: 4, textTransform: 'uppercase', letterSpacing: '.08em', borderRadius: 4, padding: '2px 8px', background: surfColor + '22', border: '1px solid ' + surfColor + '44', display: 'inline-block' }}>
                 Best Surface
@@ -379,8 +396,8 @@ export default function SurfaceAnalyzer({ tour }) {
           <FormDots form={stats.form || []} />
 
           {section('Win Rate by Surface')}
-          {/* ── Change 5: Win rate cards with best-surface highlight ── */}
-          <WinRateCards stats={stats} />
+          {/* ── Change 5: Win rate cards with best-surface highlight + TA match counts ── */}
+          <WinRateCards stats={stats} taStats={stats.ta_stats} />
 
           {section('Surface Stats')}
           {/* ── Changes 3 & 12 applied inside StatTable ── */}

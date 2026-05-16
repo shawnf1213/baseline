@@ -660,6 +660,8 @@ def generate_scouting_report(
     opponent_hand: str = None,
     player_recent_results: list = None,
     opponent_recent_results: list = None,
+    ta_career_matches: int = 0,
+    data_quality: str = "moderate",
 ) -> str:
     """
     Sharp bettor-voice scouting report. 4 sentences max.
@@ -740,10 +742,17 @@ def generate_scouting_report(
     sentences: list = []
 
     # ── Low-data uncertainty lead ─────────────────────────────────────────────
-    thin_data = p_matches < 5
+    # Use TA career matches as primary indicator; fall back to Sofascore count
+    effective_matches = ta_career_matches if ta_career_matches > 0 else p_matches
+    thin_data = (data_quality == "thin") or effective_matches < 5
     if thin_data:
+        match_note = (
+            f"{effective_matches} career surface matches in our data"
+            if effective_matches > 0 else
+            "very limited surface data"
+        )
         sentences.append(
-            f"{player_name} has barely played on {surface} this year ({p_matches} matches in the sample)"
+            f"{player_name} has {match_note} on {surface}"
             f" — I don't have a great read here, so take this with a grain of salt."
         )
 

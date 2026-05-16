@@ -56,6 +56,7 @@ from src.api.sofascore_client import (
 )
 from src.api.tennis_abstract import get_player_ta_stats
 from src.calculations.archetypes import classify_archetype
+from src.calculations.blended_stats import get_blended_stats
 from src.calculations.confidence import calculate_confidence
 from src.calculations.props import (
     project_aces,
@@ -180,16 +181,16 @@ def _build_explanation(req: PropRequest, result: dict, lean: str,
         hand_note = ""
         if ph and oh and ph != oh:
             direction = "reduces" if hf < 1.0 else "boosts"
-            hand_note = f" Handedness ({ph} vs {oh}) {direction} ace projection x{hf:.2f}."
+            hand_note = f" Handedness ({ph} vs {oh}) {direction} ace projection times {hf:.2f}."
         parts.append(
-            f"Surface CPR {cpr} applies x{cf:.2f} court-speed factor."
-            f" Opponent return suppression x{sup:.2f}."
-            f" Opponent ace-against factor x{ag:.2f}.{hand_note}"
+            f"Surface CPR {cpr} applies times {cf:.2f} court-speed factor."
+            f" Opponent return suppression times {sup:.2f}."
+            f" Opponent ace-against factor times {ag:.2f}.{hand_note}"
         )
     elif pt == "Double Faults":
         pf = result.get("pressure_factor", 1.0)
         parts.append(
-            f"Opponent return aggression factor x{pf:.2f} -"
+            f"Opponent return aggression factor times {pf:.2f} --"
             f" {'increases' if pf > 1 else 'reduces'} second-serve pressure."
         )
     elif pt == "Total Games":
@@ -198,7 +199,7 @@ def _build_explanation(req: PropRequest, result: dict, lean: str,
         sets = result.get("expected_sets", 2.3)
         ch   = result.get("combined_hold", 72)
         parts.append(
-            f"{env} - combined hold {ch:.0f}% -> {gps:.1f} games/set "
+            f"{env} -- combined hold {ch:.0f}% gives {gps:.1f} games/set "
             f"over {sets:.1f} expected sets."
         )
     elif pt == "Break Points Won":
@@ -207,10 +208,10 @@ def _build_explanation(req: PropRequest, result: dict, lean: str,
         faced = result.get("opp_bp_faced") or 0
         base  = (conv / 100) * faced
         ta_src = result.get("conv_rate_source", "")
-        src_note = f" (TA {ta_src} data)" if ta_src else ""
+        src_note = f" ({ta_src} data)" if ta_src else ""
         parts.append(
-            f"{env} - {conv:.0f}% conversion x {faced:.1f} BPs opponent faces/match"
-            f" = {base:.1f} base projection.{src_note}"
+            f"{env} -- {conv:.0f}% conversion rate times {faced:.1f} BPs opponent faces/match"
+            f" gives {base:.1f} base projection.{src_note}"
         )
         cpr_adj = result.get("cpr_adj_pct", 0)
         if cpr_adj:
@@ -222,7 +223,7 @@ def _build_explanation(req: PropRequest, result: dict, lean: str,
         sign = "+" if edge >= 0 else ""
         parts.append(
             f"Model projects {proj:.1f} vs book line {line:.1f} "
-            f"(edge {sign}{edge:.1f}) -> {lean}."
+            f"(edge {sign}{edge:.1f}) -- {lean}."
         )
 
     return " ".join(parts)
@@ -308,13 +309,17 @@ async def prop_calculate(req: PropRequest):
             req.tour, req.player_id, req.opponent_id, surface=req.surface
         )
 
-        # Surface-first stats, fall back to All
+        # Raw Sofascore surface stats (for fallback / return stats)
         p1_surface = p1_data.get(req.surface, {}) or {}
         p1_all     = p1_data.get("All", {}) or {}
         p2_surface = p2_data.get(req.surface, {}) or {}
         p2_all     = p2_data.get("All", {}) or {}
-        p1_s = p1_surface if p1_surface.get("matches_played", 0) else p1_all
-        p2_s = p2_surface if p2_surface.get("matches_played", 0) else p2_all
+        p1_ss_raw  = p1_surface if p1_surface.get("matches_played", 0) else p1_all
+        p2_ss_raw  = p2_surface if p2_surface.get("matches_played", 0) else p2_all
+
+        # Sofascore surface logs (recent form — up to 10 stat-rich surface matches)
+        p1_ss_log = p1_data.get(f"{req.surface}_surface_log", [])
+        p2_ss_log = p2_data.get(f"{req.surface}_surface_log", [])
 
         h2h_ace_avg      = h2h_stats.get("ace")
         h2h_df_avg       = h2h_stats.get("df")
@@ -342,6 +347,24 @@ async def prop_calculate(req: PropRequest):
             _ta_safe(req.player_name),
             _ta_safe(req.opponent_name),
         )
+
+        # Build blended stats: combines TA career (25%), TA 3yr (35%),
+        # TA last-20 (25%), and Sofascore last-5 on surface (15%)
+        p1_blended = get_blended_stats(player_ta,   p1_ss_log, req.surface, req.tour)
+        p2_blended = get_blended_stats(opponent_ta, p2_ss_log, req.surface, req.tour)
+
+        # Merged stats: blended is the primary source; return stats from raw SS
+        # (blended doesn't have return stats since TA doesn't track per-match returns)
+        def _merge_with_ss(blended: dict, ss_raw: dict) -> dict:
+            merged = dict(blended)
+            for k in ("return_first_serve_pts_won", "return_second_serve_pts_won",
+                      "bp_faced_count"):
+                if merged.get(k) is None:
+                    merged[k] = ss_raw.get(k)
+            return merged
+
+        p1_s = _merge_with_ss(p1_blended, p1_ss_raw)
+        p2_s = _merge_with_ss(p2_blended, p2_ss_raw)
 
         # Run projection
         if req.prop_type == "Aces":
@@ -382,7 +405,7 @@ async def prop_calculate(req: PropRequest):
                 "note": result.get("note", "Insufficient data for this surface/prop combination."),
             }
 
-        # Confidence
+        # Confidence — enhanced with TA match counts
         p1_surf_matches = p1_data.get(f"{req.surface}_matches", [])
         p2_surf_matches = p2_data.get(f"{req.surface}_matches", [])
         has_h2h_surface = h2h_summary.get("surface_matches", 0) > 0
@@ -395,6 +418,11 @@ async def prop_calculate(req: PropRequest):
             has_h2h_surface=has_h2h_surface,
             has_h2h_other=has_h2h_other,
             court=court_for_calc,
+            ta_career_surface_matches=p1_blended.get("_ta_career_matches", 0),
+            ss_recent_surface_matches=p1_blended.get("_ss_recent_matches", 0),
+            opp_ta_career_matches=p2_blended.get("_ta_career_matches", 0),
+            p1_blended=p1_blended,
+            p2_blended=p2_blended,
         )
         confidence = conf_result["confidence"]
 
@@ -409,8 +437,22 @@ async def prop_calculate(req: PropRequest):
         player_hand   = player_ta.get("handedness")   if player_ta   else None
         opponent_hand = opponent_ta.get("handedness") if opponent_ta else None
 
+        # Handedness edge: True when one player is left-handed and the other right-handed
+        handedness_edge = (
+            bool(player_hand and opponent_hand and player_hand != opponent_hand)
+        )
+
         # Opponent ace-against (aces the opponent concedes per match as a returner)
         opponent_ace_against = opponent_ta.get("ace_against_per_match") if opponent_ta else None
+
+        # Data source transparency fields
+        p1_ta_career = p1_blended.get("_ta_career_matches", 0)
+        p2_ta_career = p2_blended.get("_ta_career_matches", 0)
+        p1_ss_recent = p1_blended.get("_ss_recent_matches", 0)
+        p2_ss_recent = p2_blended.get("_ss_recent_matches", 0)
+        p1_fallback  = p1_blended.get("_surface_fallback", False)
+        p2_fallback  = p2_blended.get("_surface_fallback", False)
+        data_quality = p1_blended.get("_data_quality", "moderate")
 
         # Build recent results strings for AI scouting context
         # Format: "W 6-3 6-4 vs Napolitano (Clay, Apr 13)"
@@ -437,6 +479,8 @@ async def prop_calculate(req: PropRequest):
             opponent_hand=opponent_hand,
             player_recent_results=p1_recent or None,
             opponent_recent_results=p2_recent or None,
+            ta_career_matches=p1_ta_career,
+            data_quality=data_quality,
         )
 
         env_key   = result.get("environment") or detect_environment(p1_s, p2_s)
@@ -460,11 +504,22 @@ async def prop_calculate(req: PropRequest):
             "opponent_stats":       p2_s,
             "player_archetype":     p1_arch,
             "opponent_archetype":   p2_arch,
-            # Tennis Abstract enrichment (None when TA unavailable)
+            # Handedness
             "player_handedness":    player_hand,
             "opponent_handedness":  opponent_hand,
+            "handedness_edge":      handedness_edge,
             "opponent_ace_against": opponent_ace_against,
+            # Data source transparency
             "ta_available":         bool(player_ta or opponent_ta),
+            "player_ta_matches":    p1_ta_career,
+            "opponent_ta_matches":  p2_ta_career,
+            "player_ss_matches":    p1_ss_recent,
+            "opponent_ss_matches":  p2_ss_recent,
+            "player_surface_fallback":   p1_fallback,
+            "opponent_surface_fallback": p2_fallback,
+            "data_quality":         data_quality,
+            # Sofascore surface log (for bar chart)
+            "sofascore_surface_log": p1_ss_log,
             "h2h_context": {
                 "total":             h2h_total,
                 "p1_wins":           h2h_summary.get("p1_wins", 0),

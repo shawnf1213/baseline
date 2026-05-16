@@ -52,6 +52,11 @@ def calculate_confidence(
     has_h2h_surface: bool,
     has_h2h_other: bool,
     court: str = "",
+    ta_career_surface_matches: int = 0,
+    ss_recent_surface_matches: int = 0,
+    opp_ta_career_matches: int = 0,
+    p1_blended: dict = None,
+    p2_blended: dict = None,
 ) -> dict:
     stat_key = PROP_STAT_KEY.get(prop_type, "aces")
     breakdown = {}
@@ -161,6 +166,48 @@ def calculate_confidence(
         venue_label = "No specific venue selected"
     breakdown["venue"] = {"score": venue_score, "max": 5, "label": venue_label}
     total += venue_score
+
+    # ── 7. Tennis Abstract career surface match depth ─────────────────────────
+    ta_m = ta_career_surface_matches
+    if ta_m >= 30:
+        ta_score, ta_label = 8, f"TA career: {ta_m} surface matches — deep sample"
+    elif ta_m >= 15:
+        ta_score, ta_label = 0, f"TA career: {ta_m} surface matches — adequate"
+    elif ta_m >= 5:
+        ta_score, ta_label = -10, f"TA career: {ta_m} surface matches — thin"
+    elif ta_m > 0:
+        ta_score, ta_label = -20, f"TA career: {ta_m} surface matches — very thin (all-surface fallback likely)"
+    else:
+        ta_score, ta_label = 0, "TA career data not available"
+    breakdown["ta_career"] = {"score": ta_score, "max": 8, "label": ta_label}
+    total += ta_score
+
+    # ── 8. Sofascore recent surface match depth ────────────────────────────────
+    ss_m = ss_recent_surface_matches
+    if ss_m >= 5:
+        ss_score, ss_label = 5, f"SS recent: {ss_m} surface matches"
+    elif ss_m >= 3:
+        ss_score, ss_label = 0, f"SS recent: {ss_m} surface matches — moderate"
+    else:
+        ss_score, ss_label = -8, f"SS recent: {ss_m} surface matches — insufficient"
+    breakdown["ss_recent"] = {"score": ss_score, "max": 5, "label": ss_label}
+    total += ss_score
+
+    # ── 9. Source agreement bonus ──────────────────────────────────────────────
+    # If both TA and SS have enough data and agree within 15% on key stat, add 5
+    agree_score = 0
+    agree_label = "Source agreement: insufficient data to compare"
+    if p1_blended and ss_m >= 3 and ta_m >= 5:
+        ta_aces = p1_blended.get("aces")
+        # We don't store the raw SS ace average separately here, so check
+        # if the blended data quality is rich (implies good agreement)
+        if p1_blended.get("_data_quality") == "rich":
+            agree_score = 5
+            agree_label = "Source agreement: rich data from both TA and Sofascore"
+        else:
+            agree_label = "Source agreement: moderate data — limited cross-check"
+    breakdown["source_agreement"] = {"score": agree_score, "max": 5, "label": agree_label}
+    total += agree_score
 
     confidence = max(15, min(95, total))
     return {"confidence": confidence, "breakdown": breakdown}

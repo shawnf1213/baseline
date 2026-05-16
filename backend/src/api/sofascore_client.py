@@ -457,54 +457,57 @@ def _fetch_event_page(player_id: int, page: int) -> list:
     return data.get("events", [])
 
 
-def _get_player_recent_events(player_id: int, max_pages: int = 8) -> list:
+def _get_player_recent_events(player_id: int, max_pages: int = 15) -> list:
     """
     Fetch player event pages in parallel batches of 3.
 
     Strategy:
-    - Batch 0 (pages 0-2): always fetch.
-    - Batch 1 (pages 3-5): always fetch (gives 5-page minimum coverage).
-    - Batch 2 (pages 6-7): fetch only if clay or grass still has < 5 valid
-      finished singles events (challenger players switch surfaces frequently).
-    - Stops early if a batch returns no events (end of history).
-    - Maximum max_pages pages total.
+    - Fetch pages 0-14 (up to 15 pages) in batches of 3.
+    - Always fetch at least 2 batches (6 pages minimum coverage).
+    - Stop when: all surfaces have >= 10 finished singles, OR end of history,
+      OR max_pages reached.
+    - Sofascore is now the RECENT FORM layer — we want depth to find surface matches.
     """
     cache_key = f"ss_events_{player_id}"
     if cache_key in st.session_state:
         return st.session_state[cache_key]
 
-    batch_schedule = [[0, 1, 2], [3, 4, 5], [6, 7]]
     all_events: list = []
     now = time.time()
 
-    for batch_idx, batch in enumerate(batch_schedule):
-        pages = [p for p in batch if p < max_pages]
-        if not pages:
+    page = 0
+    min_batches = 2      # always fetch at least 2 full batches
+    batch_num   = 0
+
+    while page < max_pages:
+        batch = [p for p in range(page, min(page + 3, max_pages))]
+        if not batch:
             break
 
-        # Fetch this batch in parallel
+        # Fetch batch in parallel
         page_results: dict = {}
-        with ThreadPoolExecutor(max_workers=len(pages)) as ex:
-            fut_map = {ex.submit(_fetch_event_page, player_id, p): p for p in pages}
+        with ThreadPoolExecutor(max_workers=len(batch)) as ex:
+            fut_map = {ex.submit(_fetch_event_page, player_id, p): p for p in batch}
             for fut in as_completed(fut_map):
                 page_results[fut_map[fut]] = fut.result()
 
-        # Merge in page-number order so events stay roughly chronological
         got_any = False
-        for p in sorted(pages):
+        for p in sorted(batch):
             evts = page_results.get(p, [])
             all_events.extend(evts)
             if evts:
                 got_any = True
 
-        if not got_any:
-            break  # Reached end of player's match history
+        page += len(batch)
+        batch_num += 1
 
-        # First two batches (pages 0-5) are always fetched — minimum 5-page coverage
-        if batch_idx < 2:
+        if not got_any:
+            break   # end of history
+
+        # After minimum coverage, check if we have 10 surface matches on each surface
+        if batch_num < min_batches:
             continue
 
-        # Batch 2 check: count finished singles per surface from all events so far
         surf_counts: dict = {}
         for e in all_events:
             ts = e.get("startTimestamp", 0) or 0
@@ -519,8 +522,8 @@ def _get_player_recent_events(player_id: int, max_pages: int = 8) -> list:
             surf = _infer_surface_from_event(e)
             surf_counts[surf] = surf_counts.get(surf, 0) + 1
 
-        # Stop only if all surfaces have adequate coverage
-        if all(surf_counts.get(s, 0) >= 5 for s in ("Hard", "Clay", "Grass")):
+        # Stop when we have 10 finished singles on ALL three main surfaces
+        if all(surf_counts.get(s, 0) >= 10 for s in ("Hard", "Clay", "Grass")):
             break
 
     st.session_state[cache_key] = all_events
@@ -657,8 +660,8 @@ def search_players(query: str, tour: str = "ATP") -> list:
 
 def get_player_stats_by_surface(player_id, tour: str = "ATP") -> dict:
     pid = int(player_id)
-    # v3: parallel page fetching + stat-only aggregation
-    cache_key = f"ss_surface_v3_{pid}"
+    # v4: deeper pagination (15 pages), sofascore_surface_log
+    cache_key = f"ss_surface_v4_{pid}"
     if cache_key in st.session_state:
         return st.session_state[cache_key]
 
@@ -802,6 +805,48 @@ def get_player_stats_by_surface(player_id, tour: str = "ATP") -> dict:
         surfaces[f"{surf}_recent_results"] = [
             _recent_result_str(m) for m in surf_matches[:5]
         ]
+
+    # Build sofascore_surface_log: last 10 stat-rich matches per surface.
+    # These are the matches with full parsed statistics (aces, DFs, BP, total_games).
+    # Used as the "recent form" layer in blended_stats.
+    def _ss_log_entry(m: dict) -> dict:
+        ts_val = m.get("timestamp", 0) or 0
+        try:
+            date_str = datetime.utcfromtimestamp(ts_val).strftime("%b %-d")
+        except Exception:
+            try:
+                date_str = datetime.utcfromtimestamp(ts_val).strftime("%b %d").lstrip("0")
+            except Exception:
+                date_str = m.get("date", "")
+        opp_parts = (m.get("opponent_name") or "Unknown").split()
+        opp_abbr = opp_parts[-1] if opp_parts else "Unknown"
+        return {
+            "date":            date_str,
+            "date_ts":         ts_val,
+            "tournament":      m.get("tournament", ""),
+            "surface":         m.get("surface", ""),
+            "opponent":        m.get("opponent_name", "Unknown"),
+            "opponent_abbr":   opp_abbr,
+            "won":             m.get("won", False),
+            "score":           m.get("score", ""),
+            "total_match_games": m.get("total_match_games"),
+            "aces":            m.get("aces"),
+            "double_faults":   m.get("double_faults"),
+            "bp_converted_count": m.get("bp_converted_count"),
+            "bp_converted":    m.get("bp_converted"),
+            "bp_faced_count":  m.get("bp_faced_count"),
+            "first_serve_pts_won": m.get("first_serve_pts_won"),
+            "second_serve_pts_won": m.get("second_serve_pts_won"),
+        }
+
+    for surf in ("Hard", "Clay", "Grass"):
+        # Use all_match_stats (not stat_matches) — we want recent form even when
+        # stats are thin, but label them so blended_stats can filter.
+        surf_stat_matches = [
+            m for m in sorted_m
+            if m.get("surface") == surf and m.get("aces") is not None
+        ]
+        surfaces[f"{surf}_surface_log"] = [_ss_log_entry(m) for m in surf_stat_matches[:10]]
 
     st.session_state[cache_key] = surfaces  # keyed as ss_surface_v3_{pid}
     return surfaces

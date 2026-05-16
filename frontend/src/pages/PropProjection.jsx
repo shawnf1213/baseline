@@ -87,21 +87,22 @@ function SectionDivider({ label }) {
 }
 
 // ── Last 5 Matches Bar Chart ────────────────────────────────────────────────
-function Last5Chart({ matches, statKey, propLine, playerName }) {
+function Last5Chart({ matches, statKey, propLine, playerName, surface }) {
   if (!matches || !statKey) return null
 
   const last5 = matches.slice(0, 5)
   if (!last5.length) return (
     <div style={{ color: 'var(--muted)', fontSize: 13, padding: '16px 0' }}>
-      No recent {statKey} data on this surface
+      No recent {surface} match data found in Sofascore history
     </div>
   )
 
-  // For Total Games: fall back to parsing the score string when total_match_games is absent
+  // Map prop stat key to sofascore_surface_log field
+  // sofascore_surface_log fields: aces, double_faults, bp_converted_count, total_match_games
   const resolveVal = (m) => {
     let v = m[statKey] ?? null
+    // For Total Games: fall back to parsing the score string if total_match_games absent
     if (v == null && statKey === 'total_match_games' && m.score) {
-      // e.g. "6-3 6-4" → (6+3) + (6+4) = 19
       const sets = m.score.trim().split(/\s+/)
       let total = 0, ok = true
       for (const s of sets) {
@@ -120,21 +121,24 @@ function Last5Chart({ matches, statKey, propLine, playerName }) {
     if (val != null && propLine > 0) {
       if (val > propLine) fill = 'var(--green)'
       else if (val < propLine) fill = 'var(--red)'
-      // exactly equal → gray #555
     }
-    // Format date: "2025-04-28" → "Apr 28"
-    const raw = m.date || m.match_date || ''
-    let label = raw
-    try {
-      const d = new Date(raw)
-      if (!isNaN(d)) label = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
-    } catch {}
+    // sofascore_surface_log already has pre-formatted date ("Apr 13") and opponent_abbr
+    const dateStr = m.date || ''
+    const opp = m.opponent_abbr || (m.opponent || '').split(' ').pop() || ''
+    const label = dateStr && opp ? `${dateStr}\nvs ${opp}` : dateStr || opp || '?'
     return { label, val: val != null ? Math.round(val * 10) / 10 : null, fill }
   }).filter(d => d.val != null)
 
+  const totalFound = matches.length
+  const countNote = totalFound < 5 ? (
+    <div style={{ color: 'var(--amber)', fontSize: 11, marginBottom: 8, fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 600 }}>
+      Only {totalFound} {surface} match{totalFound !== 1 ? 'es' : ''} found in recent history
+    </div>
+  ) : null
+
   if (!data.length) return (
     <div style={{ color: 'var(--muted)', fontSize: 13, padding: '16px 0' }}>
-      No match stat data available for this surface
+      No stat data available for this surface in recent Sofascore history
     </div>
   )
 
@@ -154,29 +158,43 @@ function Last5Chart({ matches, statKey, propLine, playerName }) {
     )
   }
 
+  // Custom X tick: split "Apr 13\nvs Darderi" onto two lines
+  const CustomTick = ({ x, y, payload }) => {
+    const parts = (payload.value || '').split('\n')
+    return (
+      <g transform={`translate(${x},${y})`}>
+        <text x={0} y={0} dy={12} textAnchor="middle" fill="var(--muted)" fontSize={10}>{parts[0]}</text>
+        {parts[1] && <text x={0} y={0} dy={24} textAnchor="middle" fill="#2a3a30" fontSize={9}>{parts[1]}</text>}
+      </g>
+    )
+  }
+
   return (
-    <div style={{ height: 160 }}>
-      <ResponsiveContainer width="100%" height="100%">
-        <BarChart data={data} barSize={40} margin={{ top: 20, right: 10, left: 0, bottom: 0 }}>
-          <CartesianGrid strokeDasharray="3 3" stroke="#1e1e1e" vertical={false} />
-          <XAxis dataKey="label" tick={{ fill: 'var(--muted)', fontSize: 11 }} axisLine={false} tickLine={false} />
-          <YAxis tick={{ fill: 'var(--muted)', fontSize: 11 }} axisLine={false} tickLine={false} />
-          <Tooltip
-            contentStyle={{ background: '#1a1a1a', border: '1px solid var(--border)', borderRadius: 6 }}
-            formatter={(v) => [v, playerName]}
-          />
-          {propLine > 0 && (
-            <CartesianGrid
-              horizontal={false} vertical={false}
-              horizontalPoints={[propLine]}
-              stroke="var(--amber)" strokeDasharray="6 3"
+    <div>
+      {countNote}
+      <div style={{ height: 170 }}>
+        <ResponsiveContainer width="100%" height="100%">
+          <BarChart data={data} barSize={40} margin={{ top: 20, right: 10, left: 0, bottom: 28 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#1e1e1e" vertical={false} />
+            <XAxis dataKey="label" tick={<CustomTick />} axisLine={false} tickLine={false} interval={0} />
+            <YAxis tick={{ fill: 'var(--muted)', fontSize: 11 }} axisLine={false} tickLine={false} />
+            <Tooltip
+              contentStyle={{ background: '#1a1a1a', border: '1px solid var(--border)', borderRadius: 6 }}
+              formatter={(v) => [v, playerName]}
             />
-          )}
-          <Bar dataKey="val" radius={[3, 3, 0, 0]} isAnimationActive shape={<CustomBar />}>
-            <LabelList dataKey="val" content={<CustomLabel />} />
-          </Bar>
-        </BarChart>
-      </ResponsiveContainer>
+            {propLine > 0 && (
+              <CartesianGrid
+                horizontal={false} vertical={false}
+                horizontalPoints={[propLine]}
+                stroke="var(--amber)" strokeDasharray="6 3"
+              />
+            )}
+            <Bar dataKey="val" radius={[3, 3, 0, 0]} isAnimationActive shape={<CustomBar />}>
+              <LabelList dataKey="val" content={<CustomLabel />} />
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
     </div>
   )
 }
@@ -615,8 +633,8 @@ export default function PropProjection({ tour }) {
                 </div>
               </motion.div>
 
-              {/* ── Last 5 bar chart ── */}
-              {result.player_surface_matches?.length > 0 && statKey && (
+              {/* ── Last 5 bar chart — uses sofascore_surface_log ── */}
+              {statKey && (
                 <motion.div variants={item}>
                   {section(`Last 5 ${surface} Matches — ${propType} (${p1?.name})`)}
                   <div style={{ background: '#0a0f0c', border: '1px solid #1a2520', borderRadius: 12, padding: '18px 18px 10px', marginBottom: 20 }}>
@@ -628,10 +646,11 @@ export default function PropProjection({ tour }) {
                       </div>
                     )}
                     <Last5Chart
-                      matches={result.player_surface_matches}
+                      matches={result.sofascore_surface_log || result.player_surface_matches || []}
                       statKey={statKey}
                       propLine={propLine}
                       playerName={p1?.name}
+                      surface={surface}
                     />
                   </div>
                 </motion.div>
@@ -666,27 +685,31 @@ export default function PropProjection({ tour }) {
                 <motion.div variants={item}>
                   <SectionDivider label="SURFACE STATS" />
 
-                  {result?.player_handedness && result?.opponent_handedness &&
-                    result.player_handedness !== result.opponent_handedness && (
+                  {/* HANDEDNESS EDGE badge — amber when a cross-handed matchup exists */}
+                  {result?.handedness_edge && (
                     <div style={{
                       display: 'flex', alignItems: 'center', gap: 10,
                       padding: '10px 14px', marginBottom: 12,
-                      background: '#00E67608', border: '1px solid #00E67622', borderRadius: 8,
+                      background: '#FFB30011', border: '1px solid #FFB30044', borderRadius: 8,
                       fontSize: 12,
                     }}>
-                      <span style={{ color: 'var(--green)', fontWeight: 700 }}>⚡ Handedness Edge</span>
-                      <span style={{ color: 'var(--muted)' }}>
-                        {p1?.name} ({result.player_handedness}) vs {p2?.name} ({result.opponent_handedness})
-                        {' — cross-handed matchup affects ace angles and serve patterns'}
+                      <span style={{ color: 'var(--amber)', fontWeight: 800, fontFamily: '"Barlow Condensed", sans-serif', fontSize: 12, letterSpacing: 1, textTransform: 'uppercase' }}>⚡ Handedness Edge</span>
+                      <span style={{ color: '#6a5a30' }}>
+                        {p1?.name} ({result.player_handedness}H) vs {p2?.name} ({result.opponent_handedness}H)
+                        {' — cross-handed matchup shifts ace angles and serve geometry'}
                       </span>
                     </div>
                   )}
 
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 20 }}>
                     {[
-                      [p1SurfaceStats, p1?.name, 'var(--white)', result?.player_handedness, null],
-                      [p2SurfaceStats, p2?.name, 'var(--muted)', result?.opponent_handedness, result?.opponent_ace_against],
-                    ].map(([s, name, nc, hand, aceAgainst], idx) => {
+                      { s: p1SurfaceStats, name: p1?.name, nc: 'var(--white)', hand: result?.player_handedness,
+                        taM: result?.player_ta_matches, ssM: result?.player_ss_matches,
+                        fallback: result?.player_surface_fallback, aceAgainst: null },
+                      { s: p2SurfaceStats, name: p2?.name, nc: 'var(--muted)', hand: result?.opponent_handedness,
+                        taM: result?.opponent_ta_matches, ssM: result?.opponent_ss_matches,
+                        fallback: result?.opponent_surface_fallback, aceAgainst: result?.opponent_ace_against },
+                    ].map(({ s, name, nc, hand, taM, ssM, fallback, aceAgainst }, idx) => {
                       const d = s || {}
                       const rows = [
                         ['Aces/Match', fmt(d.aces)],
@@ -703,9 +726,32 @@ export default function PropProjection({ tour }) {
                       }
                       return (
                         <div key={idx} style={{ background: '#0a0f0c', border: '1px solid #1a2520', borderRadius: 12, padding: '18px 20px' }}>
-                          <div style={{ fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 800, fontSize: 16, color: nc, marginBottom: 14, display: 'flex', alignItems: 'center' }}>
-                            🎾 {name}<HandBadge hand={hand} />
+                          <div style={{ fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 800, fontSize: 16, color: nc, marginBottom: 6, display: 'flex', alignItems: 'center' }}>
+                            {name}<HandBadge hand={hand} />
                           </div>
+                          {/* Data source indicators */}
+                          <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
+                            {taM != null && (
+                              <span style={{ fontSize: 9, fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 700, letterSpacing: 1, padding: '2px 6px', borderRadius: 4, background: '#0d1a10', color: '#2a4a30', border: '1px solid #1a2a1e' }}>
+                                TA {taM} career
+                              </span>
+                            )}
+                            {ssM != null && (
+                              <span style={{ fontSize: 9, fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 700, letterSpacing: 1, padding: '2px 6px', borderRadius: 4, background: '#0d1a10', color: '#2a4a30', border: '1px solid #1a2a1e' }}>
+                                SS {ssM} recent
+                              </span>
+                            )}
+                            {fallback && (
+                              <span style={{ fontSize: 9, fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 700, letterSpacing: 1, padding: '2px 6px', borderRadius: 4, background: '#1a0f00', color: '#FFB300', border: '1px solid #3a2800' }}>
+                                All-surface avg
+                              </span>
+                            )}
+                          </div>
+                          {fallback && (
+                            <div style={{ fontSize: 10, color: '#6a5020', fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 600, marginBottom: 8, letterSpacing: 0.5 }}>
+                              ⚠ Limited surface data — using all-surface average
+                            </div>
+                          )}
                           {rows.map(([lbl, val]) => (
                             <div key={lbl} style={{ display: 'flex', justifyContent: 'space-between', padding: '7px 0', borderBottom: '1px solid #0d1510', fontSize: 12 }}>
                               <span style={{ color: '#2a3a30', fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 600, letterSpacing: 0.5 }}>{lbl}</span>
