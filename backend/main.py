@@ -55,6 +55,12 @@ from src.api.sofascore_client import (
     get_h2h_stat_avg,
 )
 from src.api.tennis_abstract import get_player_ta_stats
+from src.api.sackmann import (
+    load_player_sackmann_data,
+    aggregate_sackmann_stats,
+    build_sackmann_chart_log,
+    normalize_name_for_sackmann,
+)
 from src.calculations.archetypes import classify_archetype
 from src.calculations.blended_stats import get_blended_stats
 from src.calculations.confidence import calculate_confidence
@@ -168,7 +174,10 @@ def _edge_cap(confidence: int, proj: float, line: float) -> int:
 
 
 def _build_explanation(req: PropRequest, result: dict, lean: str,
-                       proj: float, line: float, cpr: int) -> str:
+                       proj: float, line: float, cpr: int,
+                       sackmann_weight: float = 0.0,
+                       sackmann_matches: int = 0,
+                       ta_ss_matches: int = 0) -> str:
     parts = []
     pt = req.prop_type
 
@@ -234,6 +243,14 @@ def _build_explanation(req: PropRequest, result: dict, lean: str,
         if cpr_adj:
             sign = "+" if cpr_adj >= 0 else ""
             parts.append(f"Surface CPR {cpr} applies {sign}{cpr_adj:.1f}%.")
+
+    # Sackmann historical supplement note
+    if sackmann_weight > 0.05 and sackmann_matches > 0:
+        pct = round(sackmann_weight * 100)
+        parts.append(
+            f"Stats blended with {sackmann_matches}-match historical baseline "
+            f"(2015-2020, {pct}% weight) to supplement recent data."
+        )
 
     if line > 0:
         edge = proj - line
@@ -365,10 +382,41 @@ async def prop_calculate(req: PropRequest):
             _ta_safe(req.opponent_name),
         )
 
-        # Build blended stats: combines TA career (25%), TA 3yr (35%),
-        # TA last-20 (25%), and Sofascore last-5 on surface (15%)
-        p1_blended = get_blended_stats(player_ta,   p1_ss_log, req.surface, req.tour)
-        p2_blended = get_blended_stats(opponent_ta, p2_ss_log, req.surface, req.tour)
+        # Fetch Sackmann historical data (2015-2020) for both players concurrently
+        async def _sack_safe(name):
+            if not name:
+                return []
+            try:
+                norm = normalize_name_for_sackmann(name)
+                return await asyncio.wait_for(
+                    asyncio.to_thread(load_player_sackmann_data, norm, req.tour),
+                    timeout=30.0,
+                )
+            except Exception as exc:
+                logger.warning("Sackmann fetch failed for '%s': %s", name, exc)
+                return []
+
+        p1_sack_matches, p2_sack_matches = await asyncio.gather(
+            _sack_safe(req.player_name),
+            _sack_safe(req.opponent_name),
+        )
+
+        # Aggregate Sackmann stats: surface-specific first, all-surface fallback
+        p1_sack_surf = aggregate_sackmann_stats(p1_sack_matches, surface_filter=req.surface)
+        p1_sack_all  = aggregate_sackmann_stats(p1_sack_matches, surface_filter=None)
+        p2_sack_surf = aggregate_sackmann_stats(p2_sack_matches, surface_filter=req.surface)
+        p2_sack_all  = aggregate_sackmann_stats(p2_sack_matches, surface_filter=None)
+
+        # Build blended stats: TA career (25%) + TA 3yr (35%) + TA last-20 (25%)
+        # + Sofascore last-5 (15%); blended further with Sackmann 2015-2020 (10-35%)
+        p1_blended = get_blended_stats(
+            player_ta,   p1_ss_log, req.surface, req.tour,
+            sackmann_stats=p1_sack_surf, sackmann_all_stats=p1_sack_all,
+        )
+        p2_blended = get_blended_stats(
+            opponent_ta, p2_ss_log, req.surface, req.tour,
+            sackmann_stats=p2_sack_surf, sackmann_all_stats=p2_sack_all,
+        )
 
         # Merged stats: blended is the primary source; return stats from raw SS
         # (blended doesn't have return stats since TA doesn't track per-match returns)
@@ -452,6 +500,11 @@ async def prop_calculate(req: PropRequest):
         )
         confidence = conf_result["confidence"]
 
+        # Sackmann thin-data penalty (applied before sanity check)
+        sack_penalty = p1_blended.get("_confidence_penalty", 0)
+        if sack_penalty:
+            confidence = max(15, confidence + sack_penalty)  # penalty is negative
+
         # Sanity failure: projection fell outside realistic bounds → reduce confidence
         if result.get("sanity_failed"):
             confidence = max(15, confidence - 25)
@@ -480,13 +533,24 @@ async def prop_calculate(req: PropRequest):
         opponent_ace_against = opponent_ta.get("ace_against_per_match") if opponent_ta else None
 
         # Data source transparency fields
-        p1_ta_career = p1_blended.get("_ta_career_matches", 0)
-        p2_ta_career = p2_blended.get("_ta_career_matches", 0)
-        p1_ss_recent = p1_blended.get("_ss_recent_matches", 0)
-        p2_ss_recent = p2_blended.get("_ss_recent_matches", 0)
-        p1_fallback  = p1_blended.get("_surface_fallback", False)
-        p2_fallback  = p2_blended.get("_surface_fallback", False)
-        data_quality = p1_blended.get("_data_quality", "moderate")
+        p1_ta_career   = p1_blended.get("_ta_career_matches", 0)
+        p2_ta_career   = p2_blended.get("_ta_career_matches", 0)
+        p1_ss_recent   = p1_blended.get("_ss_recent_matches", 0)
+        p2_ss_recent   = p2_blended.get("_ss_recent_matches", 0)
+        p1_fallback    = p1_blended.get("_surface_fallback", False)
+        p2_fallback    = p2_blended.get("_surface_fallback", False)
+        data_quality   = p1_blended.get("_data_quality", "moderate")
+        p1_sack_count  = p1_blended.get("_sackmann_matches", 0)
+        p2_sack_count  = p2_blended.get("_sackmann_matches", 0)
+        p1_sack_weight = p1_blended.get("_sackmann_weight", 0.0)
+        data_warning   = p1_blended.get("_data_warning")
+
+        # Bar chart fallback: use Sackmann log when SS surface log is empty
+        p1_chart_log = p1_ss_log
+        chart_source  = "sofascore"
+        if not p1_ss_log and p1_sack_matches:
+            p1_chart_log = build_sackmann_chart_log(p1_sack_matches, req.surface)
+            chart_source = "sackmann"
 
         # Build recent results strings for AI scouting context
         # Format: "W 6-3 6-4 vs Napolitano (Clay, Apr 13)"
@@ -555,8 +619,14 @@ async def prop_calculate(req: PropRequest):
             # Projection quality flags
             "sanity_failed":        result.get("sanity_failed", False),
             "used_opp_tour_avg":    result.get("used_opp_tour_avg", False),
-            # Sofascore surface log (for bar chart)
-            "sofascore_surface_log": p1_ss_log,
+            "data_warning":         data_warning,
+            # Sofascore surface log (for bar chart; may fall back to Sackmann)
+            "sofascore_surface_log": p1_chart_log,
+            "chart_source":          chart_source,
+            # Sackmann historical supplement metadata
+            "player_sackmann_matches":   p1_sack_count,
+            "opponent_sackmann_matches": p2_sack_count,
+            "sackmann_weight":           p1_sack_weight,
             "h2h_context": {
                 "total":             h2h_total,
                 "p1_wins":           h2h_summary.get("p1_wins", 0),
@@ -574,7 +644,10 @@ async def prop_calculate(req: PropRequest):
                 "surface_breakdown": h2h_summary.get("surface_breakdown", {}),
             },
             "plain_english_explanation": _build_explanation(
-                req, result, lean, proj_val, req.prop_line, cpr
+                req, result, lean, proj_val, req.prop_line, cpr,
+                sackmann_weight=p1_sack_weight,
+                sackmann_matches=p1_sack_count,
+                ta_ss_matches=p1_ta_career,
             ),
             "ai_writeup": scouting,
             "raw_result": result,

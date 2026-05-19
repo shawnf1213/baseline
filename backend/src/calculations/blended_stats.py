@@ -126,20 +126,53 @@ def _weighted_avg(key: str, tiers: list, weights: list) -> Optional[float]:
     return sum(w * v for w, v in valid) / total_w
 
 
+def _sackmann_to_blended_tier(sack: Optional[dict]) -> Optional[dict]:
+    """
+    Convert aggregate_sackmann_stats output to the blended-tier format.
+    Sackmann already stores all percentages on the 0-100 scale so no conversion
+    is needed — just remap key names.
+    """
+    if not sack or sack.get("matches", 0) == 0:
+        return None
+    return {
+        "aces":                sack.get("aces"),
+        "double_faults":       sack.get("double_faults"),
+        "first_serve_pct":     sack.get("first_serve_pct"),
+        "first_serve_pts_won": sack.get("first_serve_pts_won"),
+        "second_serve_pts_won":sack.get("second_serve_pts_won"),
+        "bp_converted":        sack.get("bp_converted"),
+        "bp_saved":            sack.get("bp_saved"),
+        "return_first_serve_pts_won":  sack.get("return_first_serve_pts_won"),
+        "return_second_serve_pts_won": sack.get("return_second_serve_pts_won"),
+        "win_rate":            sack.get("win_rate"),
+        "matches":             sack.get("matches", 0),
+    }
+
+
 def get_blended_stats(
     player_ta: Optional[dict],
     sofascore_surface_log: list,
     surface: str,
     tour: str = "ATP",
+    sackmann_stats: Optional[dict] = None,
+    sackmann_all_stats: Optional[dict] = None,
 ) -> dict:
     """
-    Build a unified blended stats dict from TA career data and Sofascore recent form.
+    Build a unified blended stats dict from TA career data, Sofascore recent form,
+    and (optionally) Sackmann 2015-2020 historical data.
 
-    Returns a dict with the same keys as Sofascore surface stats (aces,
-    double_faults, first_serve_pts_won, second_serve_pts_won, bp_converted,
-    bp_faced_count, win_rate, matches_played) plus blend metadata fields
-    (_blended, _ta_career_matches, _ta_3yr_matches, _ta_last20_matches,
-    _ss_recent_matches, _surface_fallback, _data_quality).
+    Blending weights:
+      Primary (TA + SS, 2021-present): 90% if ≥10 surface matches,
+                                       80% if ≥5, 65% if ≥2, 0% if <2
+      Sackmann (2015-2020 historical): complement of primary weight
+
+    sackmann_stats     : aggregate_sackmann_stats output for this surface
+    sackmann_all_stats : aggregate_sackmann_stats output for all surfaces
+                         (used when no surface-specific Sackmann data exists)
+
+    Returns a dict with the same keys as Sofascore surface stats plus blend
+    metadata fields (_blended, _ta_career_matches, …, _sackmann_matches,
+    _sackmann_weight, _data_quality).
     """
     avg_pts = _AVG_SERVICE_PTS.get(tour, 80)
 
@@ -195,7 +228,6 @@ def get_blended_stats(
     w_last20 = 0.25
     w_ss     = 0.15 if use_ss else 0.0
 
-    # Redistribute missing tier weight proportionally
     tiers   = [career_stats, recent_3yr, last20, ss_tier if use_ss else None]
     weights = [w_career, w_3yr, w_last20, w_ss]
 
@@ -204,25 +236,91 @@ def get_blended_stats(
     ta_3yr_matches    = (recent_3yr.get("matches", 0)   if recent_3yr else 0)
     ta_last20_matches = (last20.get("matches", 0)       if last20 else 0)
 
+    # ── Sackmann historical tier ─────────────────────────────────────────────
+    # surface-specific → all-surface (adjusted) fallback
+    from src.api.sackmann import apply_surface_adjustments as _sack_adj
+    sack_source  = sackmann_stats or _sack_adj(sackmann_all_stats, surface)
+    sack_tier    = _sackmann_to_blended_tier(sack_source)
+    sack_matches = sack_source.get("matches", 0) if sack_source else 0
+
+    # Determine primary (TA+SS) vs Sackmann weight based on TA+SS coverage
+    ta_ss_count = max(ta_career_matches, ta_3yr_matches, ta_last20_matches, ss_matches)
+    if ta_ss_count >= 10:
+        primary_w, sack_w = 0.90, 0.10
+    elif ta_ss_count >= 5:
+        primary_w, sack_w = 0.80, 0.20
+    elif ta_ss_count >= 2:
+        primary_w, sack_w = 0.65, 0.35
+    else:
+        primary_w, sack_w = 0.0,  1.0
+
     # ── Blend each stat ───────────────────────────────────────────────────────
+    # Step 1: blend TA tiers into a single primary value (existing logic)
     STAT_KEYS = [
         "aces", "double_faults", "first_serve_pts_won", "second_serve_pts_won",
         "bp_converted", "win_rate",
     ]
 
     blended: dict = {}
+    primary_vals: dict = {}
     for key in STAT_KEYS:
-        blended[key] = _weighted_avg(key, tiers, weights)
+        primary_vals[key] = _weighted_avg(key, tiers, weights)
 
-    # Return stats (from Sofascore only — TA doesn't track this directly)
-    ss_all  = sofascore_surface_log[:10]
-    blended["return_first_serve_pts_won"]  = _avg_from_ss_log(ss_all, "first_serve_pts_won")
-    blended["return_second_serve_pts_won"] = None  # not in SS log
+    # Step 2: blend primary with Sackmann
+    for key in STAT_KEYS:
+        pval = primary_vals[key]
+        sval = sack_tier.get(key) if sack_tier else None
 
-    # BP faced comes from Sofascore surface log (opponent serving stats)
-    blended["bp_faced_count"] = _avg_from_ss_log(ss_all, "bp_faced_count")
+        # WIN_RATE_DEBUG — exclude 0% win rate from any source with matches > 5
+        if key == "win_rate":
+            if pval is not None and pval == 0.0 and ta_ss_count > 5:
+                logger.warning(
+                    "WIN_RATE_DEBUG | surface=%s | primary_win_rate=0.0 with "
+                    "ta_ss_count=%d — excluding from blend (likely parse error)",
+                    surface, ta_ss_count,
+                )
+                pval = None
+            if sval is not None and sval == 0.0 and sack_matches > 5:
+                logger.warning(
+                    "WIN_RATE_DEBUG | surface=%s | sackmann_win_rate=0.0 with "
+                    "matches=%d — excluding from blend",
+                    surface, sack_matches,
+                )
+                sval = None
 
-    # matches_played: use the best available career count for confidence scoring
+        if pval is not None and sval is not None:
+            blended[key] = round(pval * primary_w + sval * sack_w, 4)
+        else:
+            blended[key] = pval if pval is not None else sval
+
+    logger.info(
+        "WIN_RATE_DEBUG | surface=%s | primary_win_rate=%s | sack_win_rate=%s | "
+        "blended_win_rate=%s | ta_ss_count=%d | sack_matches=%d",
+        surface,
+        round(primary_vals.get("win_rate") or 0, 1),
+        round((sack_tier.get("win_rate") if sack_tier else None) or 0, 1),
+        round(blended.get("win_rate") or 0, 1),
+        ta_ss_count, sack_matches,
+    )
+
+    # Return stats — from Sofascore log primarily; supplement with Sackmann
+    ss_all = sofascore_surface_log[:10]
+    ret_1st = _avg_from_ss_log(ss_all, "first_serve_pts_won")
+    ret_2nd = None  # not in SS log directly
+    if ret_1st is None and sack_tier:
+        ret_1st = sack_tier.get("return_first_serve_pts_won")
+        ret_2nd = sack_tier.get("return_second_serve_pts_won")
+
+    blended["return_first_serve_pts_won"]  = ret_1st
+    blended["return_second_serve_pts_won"] = ret_2nd
+
+    # BP faced from SS log; supplement with Sackmann if empty
+    bp_faced = _avg_from_ss_log(ss_all, "bp_faced_count")
+    if bp_faced is None and sack_source:
+        bp_faced = sack_source.get("bp_faced_per_match")
+    blended["bp_faced_count"] = bp_faced
+
+    # matches_played: best available career count for confidence scoring
     all_surface_matches = max(ta_career_matches, ta_3yr_matches, ta_last20_matches)
     blended["matches_played"] = all_surface_matches or ss_matches
 
@@ -234,22 +332,36 @@ def get_blended_stats(
     else:
         data_quality = "thin"
 
+    # Confidence penalty when primary data is very thin
+    conf_penalty = -10 if ta_ss_count < 2 and sack_matches > 0 else 0
+    data_warning = (
+        f"Limited recent surface data — historical baseline (2015-2020) used"
+        if ta_ss_count < 2 and sack_matches > 0
+        else None
+    )
+
     # ── Metadata fields ───────────────────────────────────────────────────────
     blended.update({
-        "_blended":            True,
-        "_ta_career_matches":  ta_career_matches,
-        "_ta_3yr_matches":     ta_3yr_matches,
-        "_ta_last20_matches":  ta_last20_matches,
-        "_ss_recent_matches":  ss_matches,
-        "_surface_fallback":   surface_fallback,
-        "_data_quality":       data_quality,
+        "_blended":             True,
+        "_ta_career_matches":   ta_career_matches,
+        "_ta_3yr_matches":      ta_3yr_matches,
+        "_ta_last20_matches":   ta_last20_matches,
+        "_ss_recent_matches":   ss_matches,
+        "_surface_fallback":    surface_fallback,
+        "_data_quality":        data_quality,
+        "_sackmann_matches":    sack_matches,
+        "_sackmann_weight":     sack_w,
+        "_primary_weight":      primary_w,
+        "_confidence_penalty":  conf_penalty,
+        "_data_warning":        data_warning,
     })
 
     logger.info(
-        "[BLEND] surface=%s fallback=%s career=%d 3yr=%d last20=%d ss=%d quality=%s",
+        "[BLEND] surface=%s fallback=%s career=%d 3yr=%d last20=%d ss=%d "
+        "sack=%d weights=%.0f%%/%.0f%% quality=%s",
         surface, surface_fallback,
         ta_career_matches, ta_3yr_matches, ta_last20_matches, ss_matches,
-        data_quality,
+        sack_matches, primary_w * 100, sack_w * 100, data_quality,
     )
 
     return blended
