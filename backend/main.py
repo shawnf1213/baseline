@@ -66,6 +66,7 @@ from src.calculations.props import (
     generate_scouting_report,
     detect_environment,
     ENVIRONMENT_LABELS,
+    GRAND_SLAMS,
 )
 from src.constants import COURT_CPR, CPR_NEUTRAL, GENERIC_SURFACE_CPR
 
@@ -206,7 +207,7 @@ def _build_explanation(req: PropRequest, result: dict, lean: str,
         env   = ENVIRONMENT_LABELS.get(result.get("environment", "STANDARD"), "Standard")
         conv  = result.get("conv_rate_pct") or 0
         faced = result.get("opp_bp_faced") or 0
-        base  = (conv / 100) * faced
+        base  = result.get("base_proj") or (conv / 100) * faced
         ta_src = result.get("conv_rate_source", "")
         src_note = f" ({ta_src} data)" if ta_src else ""
         tour_avg_note = (
@@ -215,8 +216,20 @@ def _build_explanation(req: PropRequest, result: dict, lean: str,
         )
         parts.append(
             f"{env} -- {conv:.0f}% conversion rate times {faced:.1f} BPs opponent faces/match"
-            f" gives {base:.1f} base projection.{src_note}{tour_avg_note}"
+            f" = {base:.1f} base.{src_note}{tour_avg_note}"
         )
+        # Opportunity scaling note — only shown when multiplier is meaningful (>5%)
+        opp_mult = result.get("opp_scaling_factor", 1.0) or 1.0
+        ret_factor = result.get("returner_factor", 1.0) or 1.0
+        if opp_mult > 1.05:
+            pct = round((opp_mult - 1.0) * 100)
+            parts.append(f"Break-opportunity feedback adds {pct}% more chances.")
+        if ret_factor > 1.03:
+            pct = round((ret_factor - 1.0) * 100)
+            parts.append(f"Return dominance creates {pct}% additional BP opportunities.")
+        elif ret_factor < 0.97:
+            pct = round((1.0 - ret_factor) * 100)
+            parts.append(f"Return position reduces BP opportunities by {pct}%.")
         cpr_adj = result.get("cpr_adj_pct", 0)
         if cpr_adj:
             sign = "+" if cpr_adj >= 0 else ""
@@ -390,6 +403,12 @@ async def prop_calculate(req: PropRequest):
                 player_ta=player_ta, opponent_ta=opponent_ta,
             )
         else:  # Break Points Won
+            # Best-of-5 only for ATP at Grand Slams
+            match_fmt = (
+                "best_of_5"
+                if court_for_calc in GRAND_SLAMS and req.tour == "ATP"
+                else "best_of_3"
+            )
             result = project_break_points(
                 p1_s, p2_s,
                 h2h_bp_avg=h2h_bp_avg,
@@ -400,6 +419,7 @@ async def prop_calculate(req: PropRequest):
                 surface=req.surface,
                 tour=req.tour,
                 opp_ss_matches=p2_blended.get("_ss_recent_matches", 0),
+                match_format=match_fmt,
             )
 
         proj_val = result.get("projection")
@@ -497,7 +517,7 @@ async def prop_calculate(req: PropRequest):
             data_quality=data_quality,
         )
 
-        env_key   = result.get("environment") or detect_environment(p1_s, p2_s)
+        env_key   = result.get("environment") or detect_environment(p1_s, p2_s, surface=req.surface)
         env_label = ENVIRONMENT_LABELS.get(env_key, "Standard")
 
         # Serialise H2H DataFrames

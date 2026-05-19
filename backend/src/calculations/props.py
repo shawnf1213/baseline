@@ -442,26 +442,142 @@ def _return_pts_won(stats: dict) -> float:
     return r1 if r1 is not None else (r2 if r2 is not None else 33.0)
 
 
-def detect_environment(p1_stats: dict, p2_stats: dict) -> str:
-    """Return one of HIGH_BREAK / SERVE_DOM / RET_EDGE / WEAK_SERVE / STANDARD."""
-    p1_ret = _return_pts_won(p1_stats)
-    p2_ret = _return_pts_won(p2_stats)
-    p1_srv = _safe(p1_stats.get("first_serve_pts_won"), 72.0)
-    p2_srv = _safe(p2_stats.get("first_serve_pts_won"), 72.0)
+def _hold_rate_proxy(stats: dict) -> float:
+    """
+    Approximate service-game hold rate (0–1) from serve stats.
+    Formula: first_serve_pct × first_serve_won + (1-first_serve_pct) × second_serve_won
+    Falls back to tour-average values for any missing field.
+    """
+    sp1w = _safe(stats.get("first_serve_pts_won"),  72.0) / 100.0
+    sp2w = _safe(stats.get("second_serve_pts_won"),  50.0) / 100.0
+    fin  = _safe(stats.get("first_serve_pct"),       63.0) / 100.0
+    return fin * sp1w + (1.0 - fin) * sp2w
 
-    # Serve dominant — both hold comfortably, neither returns well
-    if p1_srv > 75 and p2_srv > 75 and p1_ret < 35 and p2_ret < 35:
-        return "SERVE_DOM"
-    # High break — neither holds reliably, both return well
-    if p1_ret > 42 and p2_ret > 42 and p1_srv < 70 and p2_srv < 70:
+
+def detect_environment(p1_stats: dict, p2_stats: dict, surface: str = "Hard") -> str:
+    """
+    Classify match environment using expected breaks per set.
+
+    Returns one of: HIGH_BREAK / SERVE_DOM / RET_EDGE / STANDARD
+    Surface is used to adjust break frequency (clay plays longer → more breaks).
+    """
+    p1_hold = _hold_rate_proxy(p1_stats)
+    p2_hold = _hold_rate_proxy(p2_stats)
+    combined_hold = (p1_hold + p2_hold) / 2.0
+
+    # Expected total breaks per set: each player's break chance × 6 service games/set
+    exp_breaks_per_set = (1.0 - p1_hold) * 6.0 + (1.0 - p2_hold) * 6.0
+
+    # Surface adjustment — clay generates ~12% more breaks, grass ~12% fewer
+    surf_break_adj = {"Clay": 1.12, "Hard": 1.0, "Grass": 0.88}
+    adj_breaks = exp_breaks_per_set * surf_break_adj.get(surface, 1.0)
+
+    if combined_hold < 0.62 or adj_breaks > 4.5:
         return "HIGH_BREAK"
-    # Returner edge — p1 returns well but faces a strong server
-    if p1_ret > 38 and p2_srv > 73:
+    elif combined_hold > 0.78 and adj_breaks < 2.5:
+        return "SERVE_DOM"
+    elif adj_breaks > 3.5:
         return "RET_EDGE"
-    # Weak serve match — p1 is a weak returner vs a weak server
-    if p1_ret < 35 and p2_srv < 65:
-        return "WEAK_SERVE"
     return "STANDARD"
+
+
+# ── Break opportunity scaling ──────────────────────────────────────────────────
+def _apply_break_opportunity_scaling(
+    base_proj: float,
+    match_format: str,
+    surface: str,
+) -> tuple:
+    """
+    Apply a dynamic multiplier to reflect the feedback loop between break frequency
+    and total BP opportunities.
+
+    More expected breaks → opponent plays more service games → more BP chances.
+
+    Returns (scaled_projection, opportunity_multiplier).
+    """
+    expected_breaks = base_proj   # base_proj IS the expected-break estimate
+
+    # Surface adjustment on base service games per match
+    if match_format == "best_of_5":
+        base_service_games = 22.0
+    else:
+        base_service_games = 13.0
+
+    surf_game_adj = {"Clay": 1.08, "Hard": 1.0, "Grass": 0.94}
+    adjusted_service_games = base_service_games * surf_game_adj.get(surface, 1.0)  # noqa: F841 (for logging)
+
+    # Graduated opportunity multiplier based on expected breaks
+    if expected_breaks < 1.0:
+        opp_mult = 1.0
+    elif expected_breaks < 2.0:
+        opp_mult = 1.0  + (expected_breaks - 1.0) * 0.08
+    elif expected_breaks < 3.0:
+        opp_mult = 1.08 + (expected_breaks - 2.0) * 0.07
+    elif expected_breaks < 4.0:
+        opp_mult = 1.15 + (expected_breaks - 3.0) * 0.07
+    else:
+        opp_mult = min(1.28, 1.22 + (expected_breaks - 4.0) * 0.03)
+
+    scaled = base_proj * opp_mult
+    logger.info(
+        "BP_SCALING | base=%.2f | expected_breaks=%.2f | "
+        "opp_mult=%.3f | scaled=%.2f | surface=%s | format=%s",
+        base_proj, expected_breaks, opp_mult, scaled, surface, match_format,
+    )
+    return scaled, opp_mult
+
+
+def _returner_dominance_factor(
+    player_stats: dict,
+    opponent_stats: dict,
+    tour: str,
+) -> float:
+    """
+    Factor in how dominant the player is as a returner against THIS specific server.
+
+    A returner who wins significantly more return points than tour average against
+    this server's serve quality will create additional deuce/BP situations.
+
+    Returns a multiplier in [0.92, 1.10].
+    """
+    TOUR_AVG_RET_1ST = {"ATP": 0.38, "WTA": 0.40}
+    TOUR_AVG_RET_2ND = {"ATP": 0.54, "WTA": 0.55}
+
+    avg_ret_1st = TOUR_AVG_RET_1ST.get(tour, 0.38)
+    avg_ret_2nd = TOUR_AVG_RET_2ND.get(tour, 0.54)
+
+    # Player return stats (as fractions)
+    p_ret1 = _safe(player_stats.get("return_first_serve_pts_won"), avg_ret_1st * 100) / 100.0
+    p_ret2 = _safe(player_stats.get("return_second_serve_pts_won"), avg_ret_2nd * 100) / 100.0
+
+    # Opponent serve-in rate (weights for 1st vs 2nd serve exposure)
+    opp_fin = _safe(opponent_stats.get("first_serve_pct"), 63.0) / 100.0
+    first_w  = opp_fin
+    second_w = 1.0 - opp_fin
+
+    return_edge_1st = (p_ret1 - avg_ret_1st) * first_w
+    return_edge_2nd = (p_ret2 - avg_ret_2nd) * second_w
+    combined_edge   = return_edge_1st + return_edge_2nd
+
+    if combined_edge > 0.08:
+        factor = 1.10
+    elif combined_edge > 0.05:
+        factor = 1.06
+    elif combined_edge > 0.02:
+        factor = 1.03
+    elif combined_edge > -0.02:
+        factor = 1.0
+    elif combined_edge > -0.05:
+        factor = 0.96
+    else:
+        factor = 0.92
+
+    logger.info(
+        "RETURNER_DOMINANCE | ret_edge_1st=%.3f | ret_edge_2nd=%.3f | "
+        "combined=%.3f | factor=%.3f",
+        return_edge_1st, return_edge_2nd, combined_edge, factor,
+    )
+    return factor
 
 
 # ---------------------------------------------------------------------------
@@ -565,7 +681,7 @@ def project_total_games(
         gps_adj = 0.0
     proj += gps_adj * exp_sets
 
-    env = detect_environment(player_stats, opponent_stats)
+    env = detect_environment(player_stats, opponent_stats, surface=surface)
 
     p_matches = player_stats.get("matches_played", 0) or 0
     o_matches = opponent_stats.get("matches_played", 0) or 0
@@ -611,6 +727,7 @@ def project_break_points(
     surface: str = "Hard",
     tour: str = "ATP",
     opp_ss_matches: int = 0,
+    match_format: str = "best_of_3",
 ) -> dict:
     """
     Project break points won by player_stats' player.
@@ -736,7 +853,17 @@ def project_break_points(
     else:
         proj = base_proj
 
-    # ── Step 3b: Handedness adjustment ───────────────────────────────────────
+    # ── Step 3b: Dynamic break-opportunity scaling (feedback loop) ───────────
+    proj, opp_scaling_factor = _apply_break_opportunity_scaling(
+        proj, match_format, surface
+    )
+
+    # ── Step 3c: Returner dominance factor ───────────────────────────────────
+    ret_factor = _returner_dominance_factor(player_stats, opponent_stats, tour)
+    proj = proj * ret_factor
+    logger.info("BP_WON_RET_DOM | ret_factor=%.3f | after=%.2f", ret_factor, proj)
+
+    # ── Step 3d: Handedness adjustment ───────────────────────────────────────
     hand_bp_factor = 1.0
     opp_hand = opponent_ta.get("handedness") if opponent_ta else None
     if opp_hand == "L" and player_ta:
@@ -788,7 +915,7 @@ def project_break_points(
             proj, tour_avg_bp * 0.30,
         )
 
-    env = detect_environment(player_stats, opponent_stats)
+    env = detect_environment(player_stats, opponent_stats, surface=surface)
 
     p1_ret = _return_pts_won(player_stats)
     p2_srv = _safe(opponent_stats.get("first_serve_pts_won"), 72.0)
@@ -802,24 +929,27 @@ def project_break_points(
         conf = min(95, conf + 5)
 
     return {
-        "projection":         round(proj, 1),
-        "lean":               "OVER" if proj > base_proj else "UNDER",
-        "confidence":         conf,
-        "conv_rate_pct":      round(conv_rate_pct, 1),
-        "conv_rate_source":   conv_rate_source,
-        "opp_bp_faced":       round(estimated_bp_opps, 1),
-        "h2h_bp_avg":         round(h2h_bp_avg, 1) if h2h_used else None,
-        "hand_bp_factor":     round(hand_bp_factor, 3),
-        "cpr_factor":         round(cpr_factor, 4),
-        "cpr_adj_pct":        round(cpr_adj * 100, 1),
-        "cpr":                cpr,
-        "p1_ret":             round(p1_ret, 1),
-        "p2_srv":             round(p2_srv, 1),
-        "environment":        env,
-        "ta_used":            ta_used,
-        "ta_surface_matches": ta_surface_matches,
-        "sanity_failed":      sanity_failed,
-        "used_opp_tour_avg":  used_opp_tour_avg,
+        "projection":           round(proj, 1),
+        "lean":                 "OVER" if proj > base_proj else "UNDER",
+        "confidence":           conf,
+        "conv_rate_pct":        round(conv_rate_pct, 1),
+        "conv_rate_source":     conv_rate_source,
+        "opp_bp_faced":         round(estimated_bp_opps, 1),
+        "base_proj":            round(base_proj, 2),
+        "opp_scaling_factor":   round(opp_scaling_factor, 3),
+        "returner_factor":      round(ret_factor, 3),
+        "h2h_bp_avg":           round(h2h_bp_avg, 1) if h2h_used else None,
+        "hand_bp_factor":       round(hand_bp_factor, 3),
+        "cpr_factor":           round(cpr_factor, 4),
+        "cpr_adj_pct":          round(cpr_adj * 100, 1),
+        "cpr":                  cpr,
+        "p1_ret":               round(p1_ret, 1),
+        "p2_srv":               round(p2_srv, 1),
+        "environment":          env,
+        "ta_used":              ta_used,
+        "ta_surface_matches":   ta_surface_matches,
+        "sanity_failed":        sanity_failed,
+        "used_opp_tour_avg":    used_opp_tour_avg,
     }
 
 
