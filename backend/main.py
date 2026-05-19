@@ -108,6 +108,12 @@ async def root():
     return {"status": "ok", "service": "Baseline Tennis API"}
 
 
+@app.get("/health")
+async def health():
+    from datetime import datetime
+    return {"status": "ok", "timestamp": datetime.utcnow().isoformat() + "Z"}
+
+
 # ---------------------------------------------------------------------------
 # Request models
 # ---------------------------------------------------------------------------
@@ -377,29 +383,50 @@ async def prop_calculate(req: PropRequest):
                 logger.warning("TA fetch failed for '%s': %s", name, exc)
                 return None
 
+        # Start Sackmann CSV tasks immediately (run while TA fetches happen)
+        # load_player_sackmann_data already has an internal 15s hard cap so
+        # asyncio.to_thread will never block longer than that.
+        def _sack_load(name: str) -> list:
+            """Sync wrapper — safe to call from to_thread; never raises."""
+            if not name:
+                return []
+            try:
+                norm = normalize_name_for_sackmann(name)
+                return load_player_sackmann_data(norm, req.tour)
+            except Exception as exc:
+                logger.warning("SACKMANN_FATAL | player=%s | %s", name, exc)
+                return []
+
+        sack_task_p1 = asyncio.create_task(
+            asyncio.to_thread(_sack_load, req.player_name)
+        )
+        sack_task_p2 = asyncio.create_task(
+            asyncio.to_thread(_sack_load, req.opponent_name)
+        )
+
+        # TA fetches run concurrently with the Sackmann tasks above
         player_ta, opponent_ta = await asyncio.gather(
             _ta_safe(req.player_name),
             _ta_safe(req.opponent_name),
         )
 
-        # Fetch Sackmann historical data (2015-2020) for both players concurrently
-        async def _sack_safe(name):
-            if not name:
-                return []
-            try:
-                norm = normalize_name_for_sackmann(name)
-                return await asyncio.wait_for(
-                    asyncio.to_thread(load_player_sackmann_data, norm, req.tour),
-                    timeout=30.0,
-                )
-            except Exception as exc:
-                logger.warning("Sackmann fetch failed for '%s': %s", name, exc)
-                return []
+        # Collect Sackmann results — give them up to 18s total from task creation.
+        # If still running, shield cancels the wait but leaves the task alive for cache.
+        try:
+            p1_sack_matches = await asyncio.wait_for(
+                asyncio.shield(sack_task_p1), timeout=18.0
+            )
+        except (asyncio.TimeoutError, Exception) as exc:
+            logger.warning("SACKMANN_SKIPPED | player=%s | %s", req.player_name, exc)
+            p1_sack_matches = []
 
-        p1_sack_matches, p2_sack_matches = await asyncio.gather(
-            _sack_safe(req.player_name),
-            _sack_safe(req.opponent_name),
-        )
+        try:
+            p2_sack_matches = await asyncio.wait_for(
+                asyncio.shield(sack_task_p2), timeout=18.0
+            )
+        except (asyncio.TimeoutError, Exception) as exc:
+            logger.warning("SACKMANN_SKIPPED | opponent=%s | %s", req.opponent_name, exc)
+            p2_sack_matches = []
 
         # Aggregate Sackmann stats: surface-specific first, all-surface fallback
         p1_sack_surf = aggregate_sackmann_stats(p1_sack_matches, surface_filter=req.surface)

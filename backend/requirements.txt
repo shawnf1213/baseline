@@ -5,3 +5,4 @@ pandas==3.0.2
 curl-cffi==0.15.0
 pydantic==2.13.4
 beautifulsoup4==4.12.3
+requests==2.32.3

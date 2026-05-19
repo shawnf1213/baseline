@@ -45,7 +45,7 @@ def normalize_name_for_sackmann(sofascore_name: str) -> str:
 def _fetch_csv(url: str) -> Optional[pd.DataFrame]:
     """Fetch a single Sackmann CSV. Returns None on any error."""
     try:
-        r = requests.get(url, timeout=20)
+        r = requests.get(url, timeout=8)
         if r.status_code == 200:
             return pd.read_csv(StringIO(r.text), low_memory=False)
         logger.debug("SACKMANN_404 | url=%s | status=%d", url, r.status_code)
@@ -175,7 +175,7 @@ def _parse_sackmann_row(row: "pd.Series", player_name: str, result: str) -> Opti
 
 
 # ── Player data loader ────────────────────────────────────────────────────────
-def load_player_sackmann_data(player_name: str, tour: str = "ATP") -> List[dict]:
+def _load_sackmann_inner(player_name: str, tour: str = "ATP") -> List[dict]:
     """
     Load all Sackmann CSV matches for player_name from 2015-2020.
     Searches both main-tour and challenger/ITF files in parallel.
@@ -256,6 +256,40 @@ def load_player_sackmann_data(player_name: str, tour: str = "ATP") -> List[dict]
 
     _PLAYER_CACHE[cache_key] = (time.time(), unique)
     return unique
+
+
+def load_player_sackmann_data(player_name: str, tour: str = "ATP") -> List[dict]:
+    """
+    Public entry point — wraps _load_sackmann_inner with a hard 15-second wall-clock
+    guard so a slow GitHub connection never hangs the prop-estimate endpoint.
+    Returns an empty list on any failure or timeout.
+    """
+    import threading
+    result: List[dict] = []
+    exc_holder: List[Exception] = []
+
+    def _run():
+        try:
+            result.extend(_load_sackmann_inner(player_name, tour))
+        except Exception as e:
+            exc_holder.append(e)
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    t.join(timeout=15)          # hard 15-second cap
+
+    if t.is_alive():
+        logger.warning(
+            "SACKMANN_TIMEOUT | player=%r tour=%s — returning empty after 15s",
+            player_name, tour,
+        )
+        return []
+
+    if exc_holder:
+        logger.error("SACKMANN_ERROR | player=%r | %s", player_name, exc_holder[0])
+        return []
+
+    return result
 
 
 # ── Surface adjustment factors (all-surface → specific surface) ───────────────
