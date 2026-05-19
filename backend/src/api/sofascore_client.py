@@ -206,11 +206,19 @@ CLAY_KEYWORDS = [
     "madrid", "rio", "buenos aires", "sao paulo", "marrakech",
     "bastad", "gstaad", "umag", "kitzbuhel", "bucharest",
     "clay", "terre battue",
-    # Challenger clay venues
+    # Challenger & ITF clay venues
     "mexico city", "bogota", "lima", "santiago", "cordoba", "cherbourg",
     "oeiras", "prostejov", "poznan", "braunschweig", "salzburg",
     "tampere", "istanbul", "casablanca", "tunis", "cairo",
     "perugia", "parma", "banja luka", "santa fe", "morelos",
+    # Additional Challenger clay venues
+    "valencia", "biella", "maia", "braga", "bagnoles", "andrezieux",
+    "leon", "guadalajara", "concepcion", "ortisei", "bergamo",
+    "lugano", "olbia", "savona", "porto", "lagos", "tlemcen",
+    "hammamet", "sfax", "monastir", "rabat", "fes", "agadir",
+    "marrakech", "algier", "cairo", "sharm", "luxor",
+    "szczecin", "bydgoszcz", "wroclaw", "krakow", "lodz",
+    "norrkoping", "bastad", "manerbio", "como", "piacenza",
 ]
 GRASS_KEYWORDS = [
     "wimbledon", "queen", "queens", "halle", "stuttgart",
@@ -248,20 +256,32 @@ _GROUND_TYPE_MAP: dict = {
 }
 
 
-def _infer_surface_from_event(event: dict) -> str:
+def _infer_surface_from_event(event: dict, log_missing: bool = False) -> str:
     """
     Try Sofascore native groundType fields first (numeric or string),
     then fall back to keyword matching on the tournament name.
-    Checks: event.groundType, tournament.groundType, tournament.uniqueTournament.groundType
-    """
-    tournament = event.get("tournament") or {}
-    unique_t = tournament.get("uniqueTournament") or {}
 
-    for gt_raw in (
+    Checks multiple field paths including Challenger-specific locations:
+      event.groundType
+      event.tournament.groundType
+      event.tournament.uniqueTournament.groundType
+      event.uniqueTournament.groundType           ← top-level (some Challenger events)
+      event.tournament.category.groundType        ← category level
+    """
+    tournament  = event.get("tournament") or {}
+    unique_t    = tournament.get("uniqueTournament") or {}
+    top_unique  = event.get("uniqueTournament") or {}   # top-level uniqueTournament (Challenger)
+    category    = tournament.get("category") or {}
+
+    candidates = (
         event.get("groundType"),
         tournament.get("groundType"),
         unique_t.get("groundType"),
-    ):
+        top_unique.get("groundType"),
+        category.get("groundType"),
+    )
+
+    for gt_raw in candidates:
         if gt_raw is None:
             continue
         if isinstance(gt_raw, int):
@@ -279,7 +299,18 @@ def _infer_surface_from_event(event: dict) -> str:
             if mapped:
                 return mapped
 
-    return _infer_surface(tournament.get("name", ""))
+    # Fell through — use keyword matching on tournament name
+    tourn_name = tournament.get("name", "")
+    surface = _infer_surface(tourn_name)
+    if log_missing:
+        logger.debug(
+            "SURFACE_FALLBACK | event_id=%s | tourn=%r | "
+            "gt_candidates=%s | inferred=%s",
+            event.get("id"), tourn_name,
+            [c for c in candidates if c is not None],
+            surface,
+        )
+    return surface
 
 
 # ---------------------------------------------------------------------------
@@ -383,9 +414,11 @@ def _parse_match_stats(stats_data: dict, event: dict, player_id: int) -> Optiona
 
     opp_team = event.get("awayTeam", {}) if side == "home" else event.get("homeTeam", {})
 
+    # NOTE: surface intentionally omitted — caller (get_player_stats_by_surface)
+    # sets surface via _infer_surface_from_event (groundType-aware) and we must
+    # not overwrite it here with the weaker keyword-only inference.
     result = {
         "won":           won,
-        "surface":       _infer_surface(event.get("tournament", {}).get("name", "")),
         "tournament":    event.get("tournament", {}).get("name", "Unknown"),
         "timestamp":     event.get("startTimestamp", 0),
         "event_id":      event.get("id"),
@@ -394,50 +427,76 @@ def _parse_match_stats(stats_data: dict, event: dict, player_id: int) -> Optiona
 
     opp_bp_faced = None
 
+    # ── Collect stat items — handle both nested (groups) and flat structures ──
+    # ATP/WTA: statistics[0].groups[n].statisticsItems
+    # Some Challenger events: statistics[0].statisticsItems  (no groups level)
+    all_items: list = []
     for group in all_period.get("groups", []):
-        for item in group.get("statisticsItems", []):
-            name_lower = item.get("name", "").lower().strip()
-            if name_lower not in STAT_MAP:
-                continue
-            internal_key, is_pct = STAT_MAP[name_lower]
+        all_items.extend(group.get("statisticsItems", []))
+    if not all_items:
+        # Flat structure fallback (Challenger / some tournament levels)
+        all_items = all_period.get("statisticsItems", [])
+        if all_items:
+            logger.debug(
+                "FLAT_STATS | event_id=%s | tourn=%r | items=%d",
+                event.get("id"),
+                event.get("tournament", {}).get("name", ""),
+                len(all_items),
+            )
 
-            if is_pct:
-                raw_str = item.get(side, "")
-                val = _parse_fraction_pct(raw_str)
-                if internal_key == "bp_saved":
-                    # Also store how many BPs the player faced on their serve (denominator)
-                    frac_m = re.match(r"(\d+)/(\d+)", str(raw_str))
-                    if frac_m:
-                        result["bp_faced_count"] = float(frac_m.group(2))
-            elif internal_key == "bp_converted_count":
-                # Sofascore returns percentage in {side}Value; extract count from fraction string
-                # e.g. "3/5 (60%)" → 3
-                raw_str = item.get(side, "")
+    for item in all_items:
+        name_lower = item.get("name", "").lower().strip()
+        if name_lower not in STAT_MAP:
+            continue
+        internal_key, is_pct = STAT_MAP[name_lower]
+
+        if is_pct:
+            raw_str = item.get(side, "")
+            val = _parse_fraction_pct(raw_str)
+            if internal_key == "bp_saved":
+                # Also store how many BPs the player faced on their serve (denominator)
                 frac_m = re.match(r"(\d+)/(\d+)", str(raw_str))
                 if frac_m:
-                    val = float(frac_m.group(1))
-                else:
-                    # plain number fallback
-                    try:
-                        val = float(str(raw_str).strip()) if raw_str else None
-                    except (ValueError, TypeError):
-                        val = None
+                    result["bp_faced_count"] = float(frac_m.group(2))
+        elif internal_key == "bp_converted_count":
+            # Sofascore returns "3/5 (60%)" — extract numerator count
+            raw_str = item.get(side, "")
+            frac_m = re.match(r"(\d+)/(\d+)", str(raw_str))
+            if frac_m:
+                val = float(frac_m.group(1))
             else:
-                val = item.get(f"{side}Value")
-                if val is not None:
-                    try:
-                        val = float(val)
-                    except (ValueError, TypeError):
-                        val = None
-
+                try:
+                    val = float(str(raw_str).strip()) if raw_str else None
+                except (ValueError, TypeError):
+                    val = None
+        else:
+            val = item.get(f"{side}Value")
             if val is not None:
-                result[internal_key] = val
+                try:
+                    val = float(val)
+                except (ValueError, TypeError):
+                    val = None
 
-            if name_lower == "break points saved":
-                opp_raw = item.get(opp_side, "")
-                m = re.match(r"(\d+)/(\d+)", str(opp_raw))
-                if m:
-                    opp_bp_faced = float(m.group(2))
+        if val is not None:
+            result[internal_key] = val
+
+        if name_lower == "break points saved":
+            opp_raw = item.get(opp_side, "")
+            m = re.match(r"(\d+)/(\d+)", str(opp_raw))
+            if m:
+                opp_bp_faced = float(m.group(2))
+
+    # If no stat items were parsed at all, return None — caller will skip this match
+    stat_keys = {"aces", "double_faults", "bp_converted_count", "first_serve_pts_won"}
+    if not any(k in result for k in stat_keys):
+        logger.warning(
+            "STATS_NO_KEYS | event_id=%s | tourn=%r | all_items=%d | "
+            "returning None (match excluded from surface log)",
+            event.get("id"),
+            event.get("tournament", {}).get("name", ""),
+            len(all_items),
+        )
+        return None
 
     bp_conv_count = result.get("bp_converted_count")
     if bp_conv_count is not None and opp_bp_faced and opp_bp_faced > 0:
@@ -457,16 +516,20 @@ def _fetch_event_page(player_id: int, page: int) -> list:
     return data.get("events", [])
 
 
-def _get_player_recent_events(player_id: int, max_pages: int = 15) -> list:
+TARGET_SURFACE_MATCHES = 10
+MAX_PAGES_DEFAULT      = 12
+
+
+def _get_player_recent_events(player_id: int, max_pages: int = MAX_PAGES_DEFAULT) -> list:
     """
     Fetch player event pages in parallel batches of 3.
 
     Strategy:
-    - Fetch pages 0-14 (up to 15 pages) in batches of 3.
+    - Fetch pages 0-11 (up to 12 pages) in batches of 3.
     - Always fetch at least 2 batches (6 pages minimum coverage).
-    - Stop when: all surfaces have >= 10 finished singles, OR end of history,
-      OR max_pages reached.
-    - Sofascore is now the RECENT FORM layer — we want depth to find surface matches.
+    - Stop when: all surfaces have >= TARGET_SURFACE_MATCHES finished singles,
+      OR end of history, OR max_pages reached.
+    - PAGE_SCAN lines logged for each batch so Railway shows pagination progress.
     """
     cache_key = f"ss_events_{player_id}"
     if cache_key in st.session_state:
@@ -494,6 +557,28 @@ def _get_player_recent_events(player_id: int, max_pages: int = 15) -> list:
         got_any = False
         for p in sorted(batch):
             evts = page_results.get(p, [])
+
+            # PAGE_SCAN: count finished singles on each surface for this page
+            surface_this_page: dict = {}
+            for e in evts:
+                ts = e.get("startTimestamp", 0) or 0
+                if ts and ts > now:
+                    continue
+                if e.get("status", {}).get("type", "") not in ("finished", "ended"):
+                    continue
+                ht = e.get("homeTeam", {}).get("name", "")
+                at = e.get("awayTeam", {}).get("name", "")
+                if "/" in ht or "/" in at:
+                    continue
+                surf = _infer_surface_from_event(e)
+                surface_this_page[surf] = surface_this_page.get(surf, 0) + 1
+
+            logger.info(
+                "PAGE_SCAN | player_id=%s | page=%d | total_events=%d | "
+                "surface_counts=%s",
+                player_id, p, len(evts), surface_this_page,
+            )
+
             all_events.extend(evts)
             if evts:
                 got_any = True
@@ -502,9 +587,11 @@ def _get_player_recent_events(player_id: int, max_pages: int = 15) -> list:
         batch_num += 1
 
         if not got_any:
+            logger.info("PAGE_SCAN | player_id=%s | empty page at batch %d, stopping",
+                        player_id, batch_num)
             break   # end of history
 
-        # After minimum coverage, check if we have 10 surface matches on each surface
+        # After minimum coverage, check if we have TARGET_SURFACE_MATCHES on each surface
         if batch_num < min_batches:
             continue
 
@@ -522,8 +609,15 @@ def _get_player_recent_events(player_id: int, max_pages: int = 15) -> list:
             surf = _infer_surface_from_event(e)
             surf_counts[surf] = surf_counts.get(surf, 0) + 1
 
-        # Stop when we have 10 finished singles on ALL three main surfaces
-        if all(surf_counts.get(s, 0) >= 10 for s in ("Hard", "Clay", "Grass")):
+        logger.info(
+            "PAGE_SCAN | player_id=%s | cumulative_surface_counts=%s | pages_fetched=%d",
+            player_id, surf_counts, page,
+        )
+
+        # Stop when we have TARGET_SURFACE_MATCHES finished singles on ALL three surfaces
+        if all(surf_counts.get(s, 0) >= TARGET_SURFACE_MATCHES for s in ("Hard", "Clay", "Grass")):
+            logger.info("PAGE_SCAN | player_id=%s | target %d reached on all surfaces, stopping",
+                        player_id, TARGET_SURFACE_MATCHES)
             break
 
     st.session_state[cache_key] = all_events
@@ -660,17 +754,15 @@ def search_players(query: str, tour: str = "ATP") -> list:
 
 def get_player_stats_by_surface(player_id, tour: str = "ATP") -> dict:
     pid = int(player_id)
-    # v4: deeper pagination (15 pages), sofascore_surface_log
-    cache_key = f"ss_surface_v4_{pid}"
+    # v5: 12-page max, surface overwrite fix, EVENT_DEBUG logging
+    cache_key = f"ss_surface_v5_{pid}"
     if cache_key in st.session_state:
         return st.session_state[cache_key]
 
     now = time.time()
-    # Fetch up to 8 pages in parallel batches; continues past page 5 if
-    # clay or grass coverage is thin (handles challenger players).
-    events = _get_player_recent_events(pid, max_pages=8)
+    events = _get_player_recent_events(pid, max_pages=MAX_PAGES_DEFAULT)
 
-    # Filter to finished singles events
+    # Filter to finished singles events; log surface detection for debugging
     valid: list = []
     for event in events:
         ts = event.get("startTimestamp", 0) or 0
@@ -683,6 +775,29 @@ def get_player_stats_by_surface(player_id, tour: str = "ATP") -> dict:
         if "/" in ht or "/" in at:
             continue
         valid.append(event)
+
+    # EVENT_DEBUG: log tournament → surface mapping for first 20 events so we
+    # can confirm Challenger events are detected with the right surface.
+    for event in valid[:20]:
+        tournament  = event.get("tournament") or {}
+        unique_t    = tournament.get("uniqueTournament") or {}
+        top_unique  = event.get("uniqueTournament") or {}
+        category    = tournament.get("category") or {}
+        surf_detected = _infer_surface_from_event(event, log_missing=False)
+        logger.info(
+            "EVENT_DEBUG | id=%s | name=%r | "
+            "gt_event=%s | gt_tourn=%s | gt_uniq=%s | gt_top_uniq=%s | gt_cat=%s | "
+            "category_id=%s | surface=%s",
+            event.get("id"),
+            tournament.get("name", ""),
+            event.get("groundType"),
+            tournament.get("groundType"),
+            unique_t.get("groundType"),
+            top_unique.get("groundType"),
+            category.get("groundType"),
+            category.get("id"),
+            surf_detected,
+        )
 
     # Fetch stats for the most recent 50 matches in parallel
     event_ids = [e.get("id", 0) for e in valid[:50]]
@@ -736,6 +851,10 @@ def get_player_stats_by_surface(player_id, tour: str = "ATP") -> dict:
         if stats_data:
             parsed = _parse_match_stats(stats_data, event, pid)
             if parsed:
+                # _parse_match_stats intentionally excludes "surface" from its
+                # return dict to avoid overwriting the groundType-aware detection
+                # already stored in base["surface"] via _infer_surface_from_event.
+                # Any remaining overlap (won, tournament, etc.) is idempotent.
                 base.update(parsed)
                 has_stats = True
 
@@ -840,15 +959,29 @@ def get_player_stats_by_surface(player_id, tour: str = "ATP") -> dict:
         }
 
     for surf in ("Hard", "Clay", "Grass"):
-        # Use all_match_stats (not stat_matches) — we want recent form even when
-        # stats are thin, but label them so blended_stats can filter.
+        # Strict inclusion: only add matches where the stats API returned at least
+        # aces AND bp_converted_count.  This excludes matches where the stats fetch
+        # failed (aces would be None) and matches with only partial data.
+        # A genuine 0 value (player hit 0 aces / won 0 BPs) is still included.
         surf_stat_matches = [
             m for m in sorted_m
-            if m.get("surface") == surf and m.get("aces") is not None
+            if m.get("surface") == surf
+            and m.get("aces") is not None
+            and m.get("bp_converted_count") is not None
         ]
+        skipped = sum(
+            1 for m in sorted_m
+            if m.get("surface") == surf
+            and not (m.get("aces") is not None and m.get("bp_converted_count") is not None)
+        )
+        if skipped:
+            logger.info(
+                "SURFACE_LOG | surface=%s | included=%d | skipped_no_stats=%d",
+                surf, len(surf_stat_matches), skipped,
+            )
         surfaces[f"{surf}_surface_log"] = [_ss_log_entry(m) for m in surf_stat_matches[:10]]
 
-    st.session_state[cache_key] = surfaces  # keyed as ss_surface_v3_{pid}
+    st.session_state[cache_key] = surfaces
     return surfaces
 
 
