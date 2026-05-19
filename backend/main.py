@@ -209,9 +209,13 @@ def _build_explanation(req: PropRequest, result: dict, lean: str,
         base  = (conv / 100) * faced
         ta_src = result.get("conv_rate_source", "")
         src_note = f" ({ta_src} data)" if ta_src else ""
+        tour_avg_note = (
+            " Opponent BP-faced data thin -- tour average used as baseline."
+            if result.get("used_opp_tour_avg") else ""
+        )
         parts.append(
             f"{env} -- {conv:.0f}% conversion rate times {faced:.1f} BPs opponent faces/match"
-            f" gives {base:.1f} base projection.{src_note}"
+            f" gives {base:.1f} base projection.{src_note}{tour_avg_note}"
         )
         cpr_adj = result.get("cpr_adj_pct", 0)
         if cpr_adj:
@@ -394,6 +398,8 @@ async def prop_calculate(req: PropRequest):
                 player_ta=player_ta,
                 opponent_ta=opponent_ta,
                 surface=req.surface,
+                tour=req.tour,
+                opp_ss_matches=p2_blended.get("_ss_recent_matches", 0),
             )
 
         proj_val = result.get("projection")
@@ -425,6 +431,14 @@ async def prop_calculate(req: PropRequest):
             p2_blended=p2_blended,
         )
         confidence = conf_result["confidence"]
+
+        # Sanity failure: projection fell outside realistic bounds → reduce confidence
+        if result.get("sanity_failed"):
+            confidence = max(15, confidence - 25)
+            logger.warning(
+                "Sanity check failed for %s %s — confidence reduced to %d",
+                req.prop_type, proj_val, confidence,
+            )
 
         lean = _resolve_lean(proj_val, req.prop_line, result.get("lean", ""))
         confidence = _edge_cap(confidence, proj_val, req.prop_line)
@@ -518,6 +532,9 @@ async def prop_calculate(req: PropRequest):
             "player_surface_fallback":   p1_fallback,
             "opponent_surface_fallback": p2_fallback,
             "data_quality":         data_quality,
+            # Projection quality flags
+            "sanity_failed":        result.get("sanity_failed", False),
+            "used_opp_tour_avg":    result.get("used_opp_tour_avg", False),
             # Sofascore surface log (for bar chart)
             "sofascore_surface_log": p1_ss_log,
             "h2h_context": {

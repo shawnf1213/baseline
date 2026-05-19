@@ -579,16 +579,33 @@ export default function PropProjection({ tour }) {
                   </div>
                 )}
 
+                {/* Sanity-failure / tour-average fallback warning */}
+                {hasProjection && (result.sanity_failed || result.used_opp_tour_avg) && (
+                  <div style={{ padding: '10px 14px', background: '#FFB30011', border: '1px solid #FFB30044', borderRadius: 8, marginBottom: 14, fontSize: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{ color: '#FFB300', fontWeight: 800, fontFamily: '"Barlow Condensed", sans-serif', letterSpacing: 1 }}>⚠ LIMITED DATA</span>
+                    <span style={{ color: '#6a5a30' }}>
+                      {result.sanity_failed
+                        ? 'Projection outside normal bounds — confidence reduced. '
+                        : ''}
+                      {result.used_opp_tour_avg
+                        ? `Opponent has limited surface data — tour average used for BP faced per match.`
+                        : ''}
+                    </span>
+                  </div>
+                )}
+
                 {/* Three static projection cards */}
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginBottom: 20 }}>
 
                   {/* Model Projection */}
-                  <div style={{ ...STATIC_CARD_STYLE, borderTop: '2px solid #00e676' }}>
+                  <div style={{ ...STATIC_CARD_STYLE, borderTop: `2px solid ${result.sanity_failed ? '#FFB300' : '#00e676'}` }}>
                     <div style={STATIC_LABEL_STYLE}>Model Projection</div>
                     {hasProjection ? (
                       <>
                         <div style={{
-                          fontSize: 64, fontWeight: 900, color: '#00e676', lineHeight: 1,
+                          fontSize: 64, fontWeight: 900,
+                          color: result.sanity_failed ? '#FFB300' : '#00e676',
+                          lineHeight: 1,
                           fontFamily: '"Barlow Condensed", sans-serif',
                         }}>
                           <NumberFlow value={result.model_projection} format={{ minimumFractionDigits: 1, maximumFractionDigits: 1 }} />

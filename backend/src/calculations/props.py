@@ -1,7 +1,121 @@
+import logging
+
 from src.constants import COURT_CPR, CPR_NEUTRAL, ATP_TOUR_AVERAGES
+
+logger = logging.getLogger(__name__)
 
 # Tour-average aces faced per match — used to normalise opponent ace-against rate
 _TOUR_AVG_ACE_AGAINST = {"ATP": 5.5, "WTA": 3.0}
+
+# ── Tour-average stats by surface ─────────────────────────────────────────────
+# Used as fallback when opponent has < 3 SS matches on this surface.
+TOUR_AVG_BY_SURFACE = {
+    "ATP": {
+        "Clay": {
+            "bp_faced_per_match": 9.8,
+            "bp_saved_pct":       62.0,
+            "first_serve_pct":    62.0,
+            "first_serve_won":    69.0,
+            "second_serve_won":   50.0,
+            "aces_per_match":     3.2,
+            "df_per_match":       2.1,
+        },
+        "Hard": {
+            "bp_faced_per_match": 8.2,
+            "bp_saved_pct":       64.0,
+            "first_serve_pct":    63.0,
+            "first_serve_won":    72.0,
+            "second_serve_won":   52.0,
+            "aces_per_match":     4.8,
+            "df_per_match":       1.8,
+        },
+        "Grass": {
+            "bp_faced_per_match": 7.1,
+            "bp_saved_pct":       68.0,
+            "first_serve_pct":    65.0,
+            "first_serve_won":    76.0,
+            "second_serve_won":   54.0,
+            "aces_per_match":     6.2,
+            "df_per_match":       1.6,
+        },
+    },
+    "WTA": {
+        "Clay": {
+            "bp_faced_per_match": 10.4,
+            "bp_saved_pct":       58.0,
+            "first_serve_pct":    60.0,
+            "first_serve_won":    65.0,
+            "second_serve_won":   47.0,
+            "aces_per_match":     1.2,
+            "df_per_match":       2.8,
+        },
+        "Hard": {
+            "bp_faced_per_match": 9.1,
+            "bp_saved_pct":       60.0,
+            "first_serve_pct":    61.0,
+            "first_serve_won":    67.0,
+            "second_serve_won":   48.0,
+            "aces_per_match":     1.8,
+            "df_per_match":       2.5,
+        },
+        "Grass": {
+            "bp_faced_per_match": 7.8,
+            "bp_saved_pct":       63.0,
+            "first_serve_pct":    63.0,
+            "first_serve_won":    70.0,
+            "second_serve_won":   50.0,
+            "aces_per_match":     2.1,
+            "df_per_match":       2.2,
+        },
+    },
+}
+
+def _tour_avg(tour: str, surface: str) -> dict:
+    """Return tour-average stat dict for a given tour and surface."""
+    t = TOUR_AVG_BY_SURFACE.get(tour, TOUR_AVG_BY_SURFACE["ATP"])
+    return t.get(surface, t["Hard"])
+
+# ── Sanity bounds ─────────────────────────────────────────────────────────────
+PROJECTION_SANITY_BOUNDS = {
+    "Break Points Won": {
+        "ATP": {"min": 1.5, "max": 12.0},
+        "WTA": {"min": 1.5, "max": 14.0},
+    },
+    "Aces": {
+        "ATP": {"min": 0.5, "max": 18.0},
+        "WTA": {"min": 0.2, "max": 8.0},
+    },
+    "Double Faults": {
+        "ATP": {"min": 0.3, "max": 8.0},
+        "WTA": {"min": 0.3, "max": 10.0},
+    },
+    "Total Games": {
+        "ATP": {"min": 14.0, "max": 39.0},
+        "WTA": {"min": 12.0, "max": 39.0},
+    },
+}
+
+
+def sanity_check_projection(prop_type: str, projection: float,
+                             tour: str, player_name: str,
+                             surface: str) -> bool:
+    """
+    Return True if projection is within realistic bounds, False if it fails.
+    Logs a warning on failure. Caller should apply a tour-average fallback
+    or flag the result when this returns False.
+    """
+    bounds = PROJECTION_SANITY_BOUNDS.get(prop_type, {}).get(tour, {})
+    if not bounds:
+        return True
+    if projection < bounds["min"] or projection > bounds["max"]:
+        logger.warning(
+            "SANITY_FAIL | player=%s | prop=%s | surface=%s | tour=%s | "
+            "projection=%.2f outside [%.1f, %.1f]",
+            player_name, prop_type, surface, tour,
+            projection, bounds["min"], bounds["max"],
+        )
+        return False
+    return True
 
 # Tour-average first-serve points won % — used for TA opponent suppression
 _TOUR_AVG_FIRST_WON = {"ATP": 72.0, "WTA": 65.0}
@@ -495,12 +609,59 @@ def project_break_points(
     player_ta: dict = None,
     opponent_ta: dict = None,
     surface: str = "Hard",
+    tour: str = "ATP",
+    opp_ss_matches: int = 0,
 ) -> dict:
+    """
+    Project break points won by player_stats' player.
+
+    Key inputs
+    ----------
+    opp_ss_matches : int
+        How many Sofascore surface matches back the opponent's bp_faced_count
+        was computed over. When < 3, the number is too noisy and we fall back
+        to the tour-average BP-faced rate for this surface.
+    """
     ta_used = False
     ta_surface_matches = 0
+    used_opp_tour_avg  = False
+
+    logger.info(
+        "BP_WON_START | player=%s | opp=%s | surface=%s | tour=%s | "
+        "opp_ss_matches=%d | raw_opp_bp_faced=%s",
+        player_stats.get("player_name", "?"),
+        opponent_stats.get("player_name", "?"),
+        surface, tour, opp_ss_matches,
+        opponent_stats.get("bp_faced_count"),
+    )
 
     # ── Step 1: Opportunity pool — opponent BPs faced per match on serve ──────
-    opp_bp_faced = opponent_stats.get("bp_faced_count")
+    raw_opp_bp_faced = opponent_stats.get("bp_faced_count")
+    tour_avg_bp = _tour_avg(tour, surface)["bp_faced_per_match"]
+
+    # Minimum credible floor: 60% of tour average for this surface
+    min_credible_bp = tour_avg_bp * 0.60
+
+    if (
+        raw_opp_bp_faced is None
+        or raw_opp_bp_faced == 0
+        or opp_ss_matches < 3
+        or raw_opp_bp_faced < min_credible_bp
+    ):
+        # Opponent sample too thin — use tour-average BP faced per match
+        estimated_bp_opps = tour_avg_bp
+        used_opp_tour_avg = True
+        logger.info(
+            "BP_WON_FALLBACK | reason=%s | raw=%.2f | opp_ss_matches=%d | "
+            "tour_avg=%.2f | surface=%s",
+            "thin_sample" if opp_ss_matches < 3 else "below_floor",
+            raw_opp_bp_faced or 0.0, opp_ss_matches,
+            tour_avg_bp, surface,
+        )
+    else:
+        estimated_bp_opps = raw_opp_bp_faced
+        logger.info("BP_WON_OPP_BP | bp_faced=%.2f (from %d SS matches)",
+                    estimated_bp_opps, opp_ss_matches)
 
     # ── Step 2: Player conversion rate — TA surface bp_conv_pct as primary ───
     conv_rate_source = ""
@@ -529,43 +690,39 @@ def project_break_points(
     # Sofascore fallback conv rate
     ss_conv_rate = player_stats.get("bp_converted")
 
-    # Determine estimated_bp_opportunities from opponent's bp_saved_pct if available
-    if opp_ta_surf and opp_ta_surf.get("bp_saved_pct") is not None and opp_bp_faced:
-        # Use opp bp_saved_pct to refine opp_bp_faced estimate
-        # No override needed — opp_bp_faced from Sofascore is already per-match
-        estimated_bp_opps = opp_bp_faced
-    else:
-        estimated_bp_opps = opp_bp_faced
-
-    if not estimated_bp_opps or estimated_bp_opps == 0:
-        return {"projection": None, "lean": None, "confidence": 0,
-                "note": "Insufficient break-point-faced data for opponent on this surface.",
-                "ta_used": ta_used, "ta_surface_matches": ta_surface_matches}
-
     # Determine final conversion rate: blend TA player + TA opponent or fall back
     if ta_conv_rate is not None and opp_ta_conv is not None:
-        # Both available: weight equally (both describe this specific matchup)
         conv_rate_pct = (ta_conv_rate + opp_ta_conv) / 2
         conv_rate_source = f"TA blend {surface}"
     elif ta_conv_rate is not None:
         conv_rate_pct = ta_conv_rate
     elif opp_ta_surf and opp_ta_surf.get("bp_conv_pct") is not None and opp_ta_surf.get("matches", 0) >= 5:
-        # Legacy path: use opponent's bp_conv_pct as it was before
         conv_rate_pct = opp_ta_surf["bp_conv_pct"]
         conv_rate_source = f"TA opp {surface}"
         ta_used = True
         ta_surface_matches = opp_ta_surf.get("matches", 0) or 0
     else:
         conv_rate_pct = ss_conv_rate
-        conv_rate_source = ""
+        conv_rate_source = "SS"
+
+    logger.info(
+        "BP_WON_CONV | conv_rate_pct=%s | source=%s | ta_conv=%s | opp_ta_conv=%s | ss_conv=%s",
+        conv_rate_pct, conv_rate_source, ta_conv_rate, opp_ta_conv, ss_conv_rate,
+    )
 
     if not conv_rate_pct or conv_rate_pct == 0:
         return {"projection": None, "lean": None, "confidence": 0,
                 "note": "No break point conversion data available for this surface.",
-                "ta_used": ta_used, "ta_surface_matches": ta_surface_matches}
+                "ta_used": ta_used, "ta_surface_matches": ta_surface_matches,
+                "sanity_failed": False, "used_opp_tour_avg": used_opp_tour_avg}
 
     # ── Step 3: Base projection ───────────────────────────────────────────────
-    ta_proj = (conv_rate_pct / 100) * estimated_bp_opps
+    base_proj = (conv_rate_pct / 100) * estimated_bp_opps
+    logger.info(
+        "BP_WON_BASE | conv_pct=%.1f | bp_opps=%.2f | base=%.2f | "
+        "tour_avg_used=%s",
+        conv_rate_pct, estimated_bp_opps, base_proj, used_opp_tour_avg,
+    )
 
     # ── Sofascore recency blend: 75% TA, 25% Sofascore ───────────────────────
     p_matches = player_stats.get("matches_played", 0) or 0
@@ -573,9 +730,11 @@ def project_break_points(
 
     if ta_used and ss_conv_rate and ss_conv_rate > 0 and p_matches >= 3:
         ss_proj = (ss_conv_rate / 100) * estimated_bp_opps
-        proj = 0.75 * ta_proj + 0.25 * ss_proj
+        proj = 0.75 * base_proj + 0.25 * ss_proj
+        logger.info("BP_WON_SS_BLEND | ta_proj=%.2f | ss_proj=%.2f | blended=%.2f",
+                    base_proj, ss_proj, proj)
     else:
-        proj = ta_proj
+        proj = base_proj
 
     # ── Step 3b: Handedness adjustment ───────────────────────────────────────
     hand_bp_factor = 1.0
@@ -592,11 +751,16 @@ def project_break_points(
             hand_bp_factor = max(0.85, min(1.15, ratio))
 
     proj = proj * hand_bp_factor
+    logger.info("BP_WON_HAND | opp_hand=%s | hand_factor=%.3f | after=%.2f",
+                opp_hand, hand_bp_factor, proj)
 
     # ── Step 4: H2H blend at 30% if ≥ 3 H2H surface matches ─────────────────
     h2h_used = h2h_bp_avg is not None and h2h_bp_avg > 0 and h2h_match_count >= 3
     if h2h_used:
+        proj_before_h2h = proj
         proj = proj * 0.70 + h2h_bp_avg * 0.30
+        logger.info("BP_WON_H2H | h2h_avg=%.2f | before=%.2f | after=%.2f",
+                    h2h_bp_avg, proj_before_h2h, proj)
 
     # ── Step 5: CPR surface adjustment ±5% ───────────────────────────────────
     cpr = cpr_override if cpr_override is not None else CPR_NEUTRAL
@@ -607,7 +771,22 @@ def project_break_points(
     else:
         cpr_adj = 0.0
     cpr_factor = 1.0 + cpr_adj
+    proj_before_cpr = proj
     proj = proj * cpr_factor
+    logger.info("BP_WON_CPR | cpr=%d | cpr_adj=%.3f | before=%.2f | final=%.2f",
+                cpr, cpr_adj, proj_before_cpr, proj)
+
+    # ── Sanity check ─────────────────────────────────────────────────────────
+    sanity_ok = sanity_check_projection(
+        "Break Points Won", proj, tour,
+        player_stats.get("player_name", "?"), surface,
+    )
+    sanity_failed = not sanity_ok
+    if sanity_failed:
+        logger.warning(
+            "BP_WON_SANITY_FAIL | proj=%.2f | clamping to tour floor %.1f",
+            proj, tour_avg_bp * 0.30,
+        )
 
     env = detect_environment(player_stats, opponent_stats)
 
@@ -623,22 +802,24 @@ def project_break_points(
         conf = min(95, conf + 5)
 
     return {
-        "projection":        round(proj, 1),
-        "lean":              "OVER" if proj > (conv_rate_pct / 100) * estimated_bp_opps else "UNDER",
-        "confidence":        conf,
-        "conv_rate_pct":     round(conv_rate_pct, 1),
-        "conv_rate_source":  conv_rate_source,
-        "opp_bp_faced":      round(estimated_bp_opps, 1),
-        "h2h_bp_avg":        round(h2h_bp_avg, 1) if h2h_used else None,
-        "hand_bp_factor":    round(hand_bp_factor, 3),
-        "cpr_factor":        round(cpr_factor, 4),
-        "cpr_adj_pct":       round(cpr_adj * 100, 1),
-        "cpr":               cpr,
-        "p1_ret":            round(p1_ret, 1),
-        "p2_srv":            round(p2_srv, 1),
-        "environment":       env,
-        "ta_used":           ta_used,
+        "projection":         round(proj, 1),
+        "lean":               "OVER" if proj > base_proj else "UNDER",
+        "confidence":         conf,
+        "conv_rate_pct":      round(conv_rate_pct, 1),
+        "conv_rate_source":   conv_rate_source,
+        "opp_bp_faced":       round(estimated_bp_opps, 1),
+        "h2h_bp_avg":         round(h2h_bp_avg, 1) if h2h_used else None,
+        "hand_bp_factor":     round(hand_bp_factor, 3),
+        "cpr_factor":         round(cpr_factor, 4),
+        "cpr_adj_pct":        round(cpr_adj * 100, 1),
+        "cpr":                cpr,
+        "p1_ret":             round(p1_ret, 1),
+        "p2_srv":             round(p2_srv, 1),
+        "environment":        env,
+        "ta_used":            ta_used,
         "ta_surface_matches": ta_surface_matches,
+        "sanity_failed":      sanity_failed,
+        "used_opp_tour_avg":  used_opp_tour_avg,
     }
 
 
