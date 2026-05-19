@@ -61,6 +61,13 @@ from src.api.sackmann import (
     build_sackmann_chart_log,
     normalize_name_for_sackmann,
 )
+from src.unified_data import (
+    normalize_sofascore_match,
+    normalize_sackmann_match,
+    merge_and_deduplicate,
+    aggregate_unified_stats,
+    build_unified_chart_log,
+)
 from src.calculations.archetypes import classify_archetype
 from src.calculations.blended_stats import get_blended_stats
 from src.calculations.confidence import calculate_confidence
@@ -434,6 +441,25 @@ async def prop_calculate(req: PropRequest):
         p2_sack_surf = aggregate_sackmann_stats(p2_sack_matches, surface_filter=req.surface)
         p2_sack_all  = aggregate_sackmann_stats(p2_sack_matches, surface_filter=None)
 
+        # ── Unified match pool (Sofascore + Sackmann, deduplicated) ──────────
+        # Normalise every source into a common schema, merge, then filter.
+        # Used for: match count, win rate display, bar chart.
+        # Projection stats still come from get_blended_stats (TA+SS+Sackmann blend).
+        p1_ss_all = p1_data.get("all_matches", [])
+        p2_ss_all = p2_data.get("all_matches", [])
+
+        p1_unified = merge_and_deduplicate(
+            [normalize_sofascore_match(m) for m in p1_ss_all],
+            [normalize_sackmann_match(m) for m in p1_sack_matches],
+        )
+        p2_unified = merge_and_deduplicate(
+            [normalize_sofascore_match(m) for m in p2_ss_all],
+            [normalize_sackmann_match(m) for m in p2_sack_matches],
+        )
+
+        p1_unified_surf = aggregate_unified_stats(p1_unified, surface_filter=req.surface)
+        p2_unified_surf = aggregate_unified_stats(p2_unified, surface_filter=req.surface)
+
         # Build blended stats: TA career (25%) + TA 3yr (35%) + TA last-20 (25%)
         # + Sofascore last-5 (15%); blended further with Sackmann 2015-2020 (10-35%)
         p1_blended = get_blended_stats(
@@ -457,6 +483,14 @@ async def prop_calculate(req: PropRequest):
 
         p1_s = _merge_with_ss(p1_blended, p1_ss_raw)
         p2_s = _merge_with_ss(p2_blended, p2_ss_raw)
+
+        # Override matches_played with unified pool count when it's higher.
+        # This ensures challenger players (whose SS stats API fails) show the
+        # correct match count from all sources rather than 0 or undercount.
+        if p1_unified_surf and p1_unified_surf["matches"] > p1_s.get("matches_played", 0):
+            p1_s["matches_played"] = p1_unified_surf["matches"]
+        if p2_unified_surf and p2_unified_surf["matches"] > p2_s.get("matches_played", 0):
+            p2_s["matches_played"] = p2_unified_surf["matches"]
 
         # Run projection
         if req.prop_type == "Aces":
@@ -572,38 +606,35 @@ async def prop_calculate(req: PropRequest):
         p1_sack_weight = p1_blended.get("_sackmann_weight", 0.0)
         data_warning   = p1_blended.get("_data_warning")
 
-        # Bar chart fallback chain (for challenger players whose stats fail):
-        # Tier 1: surface-specific stat-rich SS log (normal case)
-        # Tier 2: surface-specific all-matches chart log (stat-poor entries included)
-        # Tier 3: all-surface combined chart log (most recent matches, any surface)
-        # Tier 4: Sackmann historical log (2015-2020)
-        p1_chart_log = p1_ss_log
+        # ── Bar chart: use unified pool (SS + Sackmann merged + deduped) ────────
+        # build_unified_chart_log returns surface-filtered matches newest-first.
+        # Matches with has_stats=False appear as N/A gray bars — this correctly
+        # shows challenger players (e.g. Collignon) who have match results but
+        # whose stats API fails.  Sackmann 2015-2020 fills in older stat bars.
+        p1_chart_log  = build_unified_chart_log(p1_unified, req.surface)
         chart_source  = "sofascore"
 
-        if not p1_chart_log:
-            p1_chart_log = p1_data.get(f"{req.surface}_chart_log", [])
-            if p1_chart_log:
-                chart_source = "sofascore_all"
-                logger.info("CHART_FALLBACK | player=%s | using %s_chart_log (%d entries)",
-                            req.player_name, req.surface, len(p1_chart_log))
+        if p1_chart_log:
+            # Classify source for frontend label
+            top5_sources = {m.get("source") for m in p1_chart_log[:5]}
+            has_surf_ss  = any(
+                m.get("source") == "sofascore" and
+                (m.get("surface") or "").lower() == req.surface.lower()
+                for m in p1_chart_log[:5]
+            )
+            if has_surf_ss:
+                chart_source = "sofascore"       # SS surface matches present
+            elif "sofascore" in top5_sources:
+                chart_source = "sofascore_all"   # SS but different surface
+            else:
+                chart_source = "sackmann"        # Sackmann only
+        else:
+            chart_source = "sofascore"
 
-        if not p1_chart_log:
-            # Combine all surfaces, sort newest first
-            all_surfs: list = []
-            for surf in ("Hard", "Clay", "Grass"):
-                all_surfs.extend(p1_data.get(f"{surf}_chart_log", []))
-            all_surfs.sort(key=lambda m: m.get("date_ts", 0), reverse=True)
-            if all_surfs:
-                p1_chart_log = all_surfs[:10]
-                chart_source = "sofascore_all"
-                logger.info("CHART_FALLBACK | player=%s | using all_surface_chart_log (%d entries)",
-                            req.player_name, len(p1_chart_log))
-
-        if not p1_chart_log and p1_sack_matches:
-            p1_chart_log = build_sackmann_chart_log(p1_sack_matches, req.surface)
-            chart_source = "sackmann"
-            logger.info("CHART_FALLBACK | player=%s | using sackmann_chart_log (%d entries)",
-                        req.player_name, len(p1_chart_log))
+        logger.info(
+            "CHART_UNIFIED | player=%s | surface=%s | chart_entries=%d | source=%s",
+            req.player_name, req.surface, len(p1_chart_log), chart_source,
+        )
 
         # Build recent results strings for AI scouting context
         # Format: "W 6-3 6-4 vs Napolitano (Clay, Apr 13)"
@@ -680,6 +711,13 @@ async def prop_calculate(req: PropRequest):
             "player_sackmann_matches":   p1_sack_count,
             "opponent_sackmann_matches": p2_sack_count,
             "sackmann_weight":           p1_sack_weight,
+            # Unified pool metadata (Sofascore + Sackmann merged)
+            "player_unified_matches":    p1_unified_surf["matches"]    if p1_unified_surf else 0,
+            "player_unified_win_rate":   p1_unified_surf["win_rate"]   if p1_unified_surf else None,
+            "player_unified_sources":    p1_unified_surf["sources"]    if p1_unified_surf else [],
+            "opponent_unified_matches":  p2_unified_surf["matches"]    if p2_unified_surf else 0,
+            "opponent_unified_win_rate": p2_unified_surf["win_rate"]   if p2_unified_surf else None,
+            "opponent_unified_sources":  p2_unified_surf["sources"]    if p2_unified_surf else [],
             "h2h_context": {
                 "total":             h2h_total,
                 "p1_wins":           h2h_summary.get("p1_wins", 0),
