@@ -265,13 +265,15 @@ def _infer_surface_from_event(event: dict, log_missing: bool = False) -> str:
       event.groundType
       event.tournament.groundType
       event.tournament.uniqueTournament.groundType
-      event.uniqueTournament.groundType           ← top-level (some Challenger events)
+      event.uniqueTournament.groundType           ← top-level (Challenger events)
       event.tournament.category.groundType        ← category level
+      event.uniqueTournament.groundTypeEnum       ← enum string (some Challenger events)
+      event.tournament.uniqueTournament.groundTypeEnum
     """
-    tournament  = event.get("tournament") or {}
-    unique_t    = tournament.get("uniqueTournament") or {}
-    top_unique  = event.get("uniqueTournament") or {}   # top-level uniqueTournament (Challenger)
-    category    = tournament.get("category") or {}
+    tournament = event.get("tournament") or {}
+    unique_t   = tournament.get("uniqueTournament") or {}
+    top_unique = event.get("uniqueTournament") or {}
+    category   = tournament.get("category") or {}
 
     candidates = (
         event.get("groundType"),
@@ -279,6 +281,9 @@ def _infer_surface_from_event(event: dict, log_missing: bool = False) -> str:
         unique_t.get("groundType"),
         top_unique.get("groundType"),
         category.get("groundType"),
+        # groundTypeEnum — additional field path used in some Challenger events
+        unique_t.get("groundTypeEnum"),
+        top_unique.get("groundTypeEnum"),
     )
 
     for gt_raw in candidates:
@@ -289,6 +294,13 @@ def _infer_surface_from_event(event: dict, log_missing: bool = False) -> str:
             if mapped:
                 return mapped
         elif isinstance(gt_raw, str):
+            # Try integer parse first — Sofascore sometimes sends "1"/"2"/"3" as strings
+            try:
+                mapped = _GROUND_TYPE_MAP.get(int(gt_raw))
+                if mapped:
+                    return mapped
+            except (ValueError, TypeError):
+                pass
             mapped = _GROUND_TYPE_MAP.get(gt_raw.lower())
             if mapped:
                 return mapped
@@ -299,8 +311,12 @@ def _infer_surface_from_event(event: dict, log_missing: bool = False) -> str:
             if mapped:
                 return mapped
 
-    # Fell through — use keyword matching on tournament name
-    tourn_name = tournament.get("name", "")
+    # Fell through — keyword matching on all available name fields
+    tourn_name = " ".join(filter(None, [
+        tournament.get("name", ""),
+        unique_t.get("name", ""),
+        top_unique.get("name", ""),
+    ]))
     surface = _infer_surface(tourn_name)
     if log_missing:
         logger.debug(
@@ -980,6 +996,19 @@ def get_player_stats_by_surface(player_id, tour: str = "ATP") -> dict:
                 surf, len(surf_stat_matches), skipped,
             )
         surfaces[f"{surf}_surface_log"] = [_ss_log_entry(m) for m in surf_stat_matches[:10]]
+
+    # Per-surface chart log: ALL matches (stat-rich AND stat-poor) for bar chart.
+    # Distinct from {surf}_surface_log which only contains stat-rich matches used
+    # for blended stats.  For challenger players (Sofascore stats API fails),
+    # this ensures the bar chart can still display match results (won/score/date)
+    # even when individual stat values are None.
+    for surf in ("Hard", "Clay", "Grass"):
+        surf_all = [m for m in sorted_m if m.get("surface") == surf]
+        surfaces[f"{surf}_chart_log"] = [_ss_log_entry(m) for m in surf_all[:10]]
+
+    # All-surface chart log: most recent 10 matches across all surfaces combined.
+    # Used as final Sofascore fallback when surface-specific chart log is also empty.
+    surfaces["all_surface_chart_log"] = [_ss_log_entry(m) for m in sorted_m[:10]]
 
     st.session_state[cache_key] = surfaces
     return surfaces

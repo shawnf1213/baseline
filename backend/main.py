@@ -572,12 +572,38 @@ async def prop_calculate(req: PropRequest):
         p1_sack_weight = p1_blended.get("_sackmann_weight", 0.0)
         data_warning   = p1_blended.get("_data_warning")
 
-        # Bar chart fallback: use Sackmann log when SS surface log is empty
+        # Bar chart fallback chain (for challenger players whose stats fail):
+        # Tier 1: surface-specific stat-rich SS log (normal case)
+        # Tier 2: surface-specific all-matches chart log (stat-poor entries included)
+        # Tier 3: all-surface combined chart log (most recent matches, any surface)
+        # Tier 4: Sackmann historical log (2015-2020)
         p1_chart_log = p1_ss_log
         chart_source  = "sofascore"
-        if not p1_ss_log and p1_sack_matches:
+
+        if not p1_chart_log:
+            p1_chart_log = p1_data.get(f"{req.surface}_chart_log", [])
+            if p1_chart_log:
+                chart_source = "sofascore_all"
+                logger.info("CHART_FALLBACK | player=%s | using %s_chart_log (%d entries)",
+                            req.player_name, req.surface, len(p1_chart_log))
+
+        if not p1_chart_log:
+            # Combine all surfaces, sort newest first
+            all_surfs: list = []
+            for surf in ("Hard", "Clay", "Grass"):
+                all_surfs.extend(p1_data.get(f"{surf}_chart_log", []))
+            all_surfs.sort(key=lambda m: m.get("date_ts", 0), reverse=True)
+            if all_surfs:
+                p1_chart_log = all_surfs[:10]
+                chart_source = "sofascore_all"
+                logger.info("CHART_FALLBACK | player=%s | using all_surface_chart_log (%d entries)",
+                            req.player_name, len(p1_chart_log))
+
+        if not p1_chart_log and p1_sack_matches:
             p1_chart_log = build_sackmann_chart_log(p1_sack_matches, req.surface)
             chart_source = "sackmann"
+            logger.info("CHART_FALLBACK | player=%s | using sackmann_chart_log (%d entries)",
+                        req.player_name, len(p1_chart_log))
 
         # Build recent results strings for AI scouting context
         # Format: "W 6-3 6-4 vs Napolitano (Clay, Apr 13)"

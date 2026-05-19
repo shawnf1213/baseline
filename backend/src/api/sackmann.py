@@ -214,13 +214,21 @@ def _load_sackmann_inner(player_name: str, tour: str = "ATP") -> List[dict]:
     name_lower = sackmann_name.lower()
 
     for url, df in dfs.items():
+        fname = url.split("/")[-1]
         if df is None or df.empty:
+            logger.warning("SACKMANN_FILE_FAILED | url=%s", fname)
             continue
         if "winner_name" not in df.columns or "loser_name" not in df.columns:
+            logger.warning("SACKMANN_FILE_NO_COLS | url=%s | cols=%s", fname, list(df.columns)[:10])
             continue
 
         won_mask  = df["winner_name"].str.lower().str.contains(name_lower, na=False, regex=False)
         lost_mask = df["loser_name" ].str.lower().str.contains(name_lower, na=False, regex=False)
+        player_rows = won_mask.sum() + lost_mask.sum()
+        logger.info(
+            "SACKMANN_FILE | file=%s | total_rows=%d | player=%r | player_rows=%d",
+            fname, len(df), sackmann_name, player_rows,
+        )
 
         for _, row in df[won_mask ].iterrows():
             m = _parse_sackmann_row(row, sackmann_name, "W")

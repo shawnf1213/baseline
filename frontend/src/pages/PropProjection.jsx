@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, useMemo } from 'react'
 import { motion, AnimatePresence } from 'motion/react'
 import NumberFlow from '@number-flow/react'
 import {
@@ -13,7 +13,7 @@ import LeanBadge from '../components/LeanBadge'
 import ConfidenceGauge from '../components/ConfidenceGauge'
 import SurfaceBadge from '../components/SurfaceBadge'
 import { calcProp, fetchStats } from '../utils/api'
-import { COURTS_BY_SURFACE, fmt, fmtPct } from '../utils/constants'
+import { TOURNAMENT_CONFIG, fmt, fmtPct } from '../utils/constants'
 
 const PROP_TYPES = ['Aces', 'Double Faults', 'Total Games', 'Break Points Won']
 const SURFACES   = ['Hard', 'Clay', 'Grass']
@@ -87,18 +87,17 @@ function SectionDivider({ label }) {
 }
 
 // ── Last 5 Matches Bar Chart ────────────────────────────────────────────────
-function Last5Chart({ matches, statKey, propLine, playerName, surface }) {
+function Last5Chart({ matches, statKey, propLine, playerName, surface, chartSource }) {
   if (!matches || !statKey) return null
 
   const last5 = matches.slice(0, 5)
   if (!last5.length) return (
     <div style={{ color: 'var(--muted)', fontSize: 13, padding: '16px 0' }}>
-      No recent {surface} match data found in Sofascore history
+      No recent match data found in history
     </div>
   )
 
   // Map prop stat key to sofascore_surface_log field
-  // sofascore_surface_log fields: aces, double_faults, bp_converted_count, total_match_games
   const resolveVal = (m) => {
     let v = m[statKey] ?? null
     // For Total Games: fall back to parsing the score string if total_match_games absent
@@ -115,45 +114,63 @@ function Last5Chart({ matches, statKey, propLine, playerName, surface }) {
     return v
   }
 
+  // Build data including NA entries (challenger matches with no stats)
   const data = last5.map(m => {
     const val = resolveVal(m)
+    const isNA = val == null
     let fill = '#555'
-    if (val != null && propLine > 0) {
-      if (val > propLine) fill = 'var(--green)'
-      else if (val < propLine) fill = 'var(--red)'
+    if (!isNA && propLine > 0) {
+      fill = val > propLine ? 'var(--green)' : val < propLine ? 'var(--red)' : '#555'
     }
-    // sofascore_surface_log already has pre-formatted date ("Apr 13") and opponent_abbr
     const dateStr = m.date || ''
     const opp = m.opponent_abbr || (m.opponent || '').split(' ').pop() || ''
     const label = dateStr && opp ? `${dateStr}\nvs ${opp}` : dateStr || opp || '?'
-    return { label, val: val != null ? Math.round(val * 10) / 10 : null, fill }
-  }).filter(d => d.val != null)
+    // NA bars use a tiny stub value so Recharts renders them; real display is via CustomBar
+    return { label, val: isNA ? 0 : Math.round(val * 10) / 10, fill, isNA }
+  })
 
-  const totalFound = matches.length
-  const countNote = totalFound < 5 ? (
+  const hasAnyStat  = data.some(d => !d.isNA)
+  const totalFound  = matches.length
+  const isAllSurf   = chartSource === 'sofascore_all'
+  const isSackmann  = chartSource === 'sackmann'
+
+  const countNote = (totalFound < 5 && !isAllSurf) ? (
     <div style={{ color: 'var(--amber)', fontSize: 11, marginBottom: 8, fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 600 }}>
       Only {totalFound} {surface} match{totalFound !== 1 ? 'es' : ''} found in recent history
     </div>
   ) : null
 
-  if (!data.length) return (
-    <div style={{ color: 'var(--muted)', fontSize: 13, padding: '16px 0' }}>
-      No stat data available for this surface in recent Sofascore history
+  const sourceNote = (isAllSurf || isSackmann) ? (
+    <div style={{ color: 'var(--amber)', fontSize: 11, marginBottom: 8, fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 600 }}>
+      {isSackmann ? 'Historical data (2015-2020) — Sofascore not available' : `No ${surface} stat data — showing all-surface matches`}
     </div>
-  )
+  ) : null
 
-  // Custom bar with colored fill per entry
+  // Custom bar: NA entries render a small gray stub
   const CustomBar = (props) => {
     const { x, y, width, height, index } = props
-    return <rect x={x} y={y} width={width} height={height} fill={data[index]?.fill || '#555'} rx={3} />
+    const d = data[index]
+    if (d?.isNA) {
+      const stubH = 6
+      return <rect x={x} y={y - stubH} width={width} height={stubH} fill="#1e2e24" rx={3} />
+    }
+    return <rect x={x} y={y} width={width} height={height} fill={d?.fill || '#555'} rx={3} />
   }
 
-  // Custom label above bar
+  // Custom label: show "N/A" for NA entries, numeric value otherwise
   const CustomLabel = (props) => {
-    const { x, y, width, value } = props
+    const { x, y, width, index } = props
+    const d = data[index]
+    if (d?.isNA) {
+      return (
+        <text x={x + width / 2} y={y - 14} textAnchor="middle" fill="#2a3a30" fontSize={10} fontWeight={700}>
+          N/A
+        </text>
+      )
+    }
     return (
       <text x={x + width / 2} y={y - 5} textAnchor="middle" fill="var(--white)" fontSize={11} fontWeight={700}>
-        {value}
+        {d?.val}
       </text>
     )
   }
@@ -169,9 +186,40 @@ function Last5Chart({ matches, statKey, propLine, playerName, surface }) {
     )
   }
 
+  if (!hasAnyStat) {
+    // All entries are NA — show matches list with W/L results but no bar values
+    return (
+      <div>
+        {sourceNote || countNote}
+        <div style={{ color: 'var(--muted)', fontSize: 12, padding: '8px 0' }}>
+          Match stats not available for these events — results only:
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          {last5.map((m, i) => {
+            const won = m.won
+            const dateStr = m.date || ''
+            const opp = m.opponent_abbr || (m.opponent || '').split(' ').pop() || '?'
+            const score = m.score || ''
+            const surf = m.surface || ''
+            return (
+              <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--muted)' }}>
+                <span style={{ fontWeight: 700, color: won ? 'var(--green)' : 'var(--red)', minWidth: 14 }}>
+                  {won ? 'W' : 'L'}
+                </span>
+                <span>{dateStr} vs {opp}</span>
+                {score && <span style={{ color: '#2a3a30' }}>{score}</span>}
+                {surf && surf !== surface && <span style={{ color: '#2a3a30', fontSize: 10 }}>({surf})</span>}
+              </div>
+            )
+          })}
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div>
-      {countNote}
+      {sourceNote || countNote}
       <div style={{ height: 170 }}>
         <ResponsiveContainer width="100%" height="100%">
           <BarChart data={data} barSize={40} margin={{ top: 20, right: 10, left: 0, bottom: 28 }}>
@@ -180,7 +228,7 @@ function Last5Chart({ matches, statKey, propLine, playerName, surface }) {
             <YAxis tick={{ fill: 'var(--muted)', fontSize: 11 }} axisLine={false} tickLine={false} />
             <Tooltip
               contentStyle={{ background: '#1a1a1a', border: '1px solid var(--border)', borderRadius: 6 }}
-              formatter={(v) => [v, playerName]}
+              formatter={(v, _, { payload }) => [payload?.isNA ? 'N/A' : v, playerName]}
             />
             {propLine > 0 && (
               <CartesianGrid
@@ -373,7 +421,17 @@ export default function PropProjection({ tour }) {
     fetchStats(String(p2.id), tour, p2.name || '').then(s => setP2PrefetchStats(s)).catch(() => {})
   }, [p1?.id, p2?.id, tour])
 
-  const courts = ['None', ...(COURTS_BY_SURFACE[surface] || [])]
+  // Tour-aware + surface-aware tournament list
+  const tourKey = tour === 'WTA' ? 'WTA' : 'ATP'
+  const courts = useMemo(() => {
+    const list = TOURNAMENT_CONFIG[tourKey]?.[surface] || []
+    return ['None', ...list.map(t => t.name)]
+  }, [tourKey, surface])
+
+  // Reset court when tour changes (surface change already resets in onChange handler)
+  useEffect(() => {
+    setCourt('None')
+  }, [tour])
 
   const currentPair = p1 && p2 ? `${p1.id}-${p2.id}` : null
   const hasNewPair  = currentPair !== ranFor
@@ -650,10 +708,18 @@ export default function PropProjection({ tour }) {
                 </div>
               </motion.div>
 
-              {/* ── Last 5 bar chart — uses sofascore_surface_log ── */}
+              {/* ── Last 5 bar chart — uses sofascore_surface_log with fallback chain ── */}
               {statKey && (
                 <motion.div variants={item}>
-                  {section(`Last 5 ${surface} Matches — ${propType} (${p1?.name})`)}
+                  {(() => {
+                    const src = result.chart_source || 'sofascore'
+                    const surfLabel = src === 'sofascore_all'
+                      ? 'All Surfaces'
+                      : src === 'sackmann'
+                      ? `${surface} (Historical)`
+                      : surface
+                    return section(`Last 5 ${surfLabel} Matches — ${propType} (${p1?.name})`)
+                  })()}
                   <div style={{ background: '#0a0f0c', border: '1px solid #1a2520', borderRadius: 12, padding: '18px 18px 10px', marginBottom: 20 }}>
                     {propLine > 0 && (
                       <div style={{ display: 'flex', gap: 16, marginBottom: 12, fontSize: 11 }}>
@@ -668,6 +734,7 @@ export default function PropProjection({ tour }) {
                       propLine={propLine}
                       playerName={p1?.name}
                       surface={surface}
+                      chartSource={result.chart_source || 'sofascore'}
                     />
                   </div>
                 </motion.div>
