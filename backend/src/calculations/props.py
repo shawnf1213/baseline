@@ -523,17 +523,16 @@ def _apply_break_opportunity_scaling(
     surf_game_adj = {"Clay": 1.08, "Hard": 1.0, "Grass": 0.94}
     adjusted_service_games = base_service_games * surf_game_adj.get(surface, 1.0)  # noqa: F841 (for logging)
 
-    # Graduated opportunity multiplier based on expected breaks
-    if expected_breaks < 1.0:
+    # Graduated opportunity multiplier — capped at +5% to avoid over-inflation.
+    # The base projection already encodes BP-faced rate through estimated_bp_opps;
+    # this small adjustment only reflects the marginal feedback that more breaks
+    # = more service games = fractionally more BP chances.
+    if expected_breaks < 2.0:
         opp_mult = 1.0
-    elif expected_breaks < 2.0:
-        opp_mult = 1.0  + (expected_breaks - 1.0) * 0.08
-    elif expected_breaks < 3.0:
-        opp_mult = 1.08 + (expected_breaks - 2.0) * 0.07
     elif expected_breaks < 4.0:
-        opp_mult = 1.15 + (expected_breaks - 3.0) * 0.07
+        opp_mult = 1.0 + (expected_breaks - 2.0) * 0.015   # +1.5% per break above 2
     else:
-        opp_mult = min(1.28, 1.22 + (expected_breaks - 4.0) * 0.03)
+        opp_mult = min(1.05, 1.03 + (expected_breaks - 4.0) * 0.01)
 
     scaled = base_proj * opp_mult
     logger.info(
@@ -773,28 +772,29 @@ def project_break_points(
     raw_opp_bp_faced = opponent_stats.get("bp_faced_count")
     tour_avg_bp = _tour_avg(tour, surface)["bp_faced_per_match"]
 
-    # Minimum credible floor: 60% of tour average for this surface
-    min_credible_bp = tour_avg_bp * 0.60
+    # Minimum credible floor: 50% of tour average for this surface.
+    # NOTE: opp_ss_matches (last-5 recent stat count) is intentionally NOT used
+    # as a fallback trigger here — bp_faced_count is already blended from career
+    # + 3yr + last-20 tiers in blended_stats, so it's reliable even when the
+    # player has few *recent* matches on this surface (e.g. Wawrinka on clay).
+    min_credible_bp = tour_avg_bp * 0.50
 
     if (
         raw_opp_bp_faced is None
         or raw_opp_bp_faced == 0
-        or opp_ss_matches < 3
         or raw_opp_bp_faced < min_credible_bp
     ):
-        # Opponent sample too thin — use tour-average BP faced per match
+        # bp_faced genuinely missing or implausibly low — fall back to tour avg
         estimated_bp_opps = tour_avg_bp
         used_opp_tour_avg = True
         logger.info(
-            "BP_WON_FALLBACK | reason=%s | raw=%.2f | opp_ss_matches=%d | "
-            "tour_avg=%.2f | surface=%s",
-            "thin_sample" if opp_ss_matches < 3 else "below_floor",
-            raw_opp_bp_faced or 0.0, opp_ss_matches,
-            tour_avg_bp, surface,
+            "BP_WON_FALLBACK | reason=missing_or_below_floor | raw=%s | "
+            "opp_ss_matches=%d | tour_avg=%.2f | surface=%s",
+            raw_opp_bp_faced, opp_ss_matches, tour_avg_bp, surface,
         )
     else:
         estimated_bp_opps = raw_opp_bp_faced
-        logger.info("BP_WON_OPP_BP | bp_faced=%.2f (from %d SS matches)",
+        logger.info("BP_WON_OPP_BP | bp_faced=%.2f (opp_ss_recent=%d career-blended)",
                     estimated_bp_opps, opp_ss_matches)
 
     # ── Step 2: Player conversion rate — TA surface bp_conv_pct as primary ───
