@@ -256,23 +256,40 @@ def project_aces(
             if surface == "Grass"
             else _HAND_ACE_FACTORS_CLAY_HARD
         )
-        vs_key  = "vs_left" if opp_hand == "L" else "vs_right"
-        vs_data = (player_ta.get(vs_key) or {}) if player_ta else {}
-        vs_spw  = vs_data.get("serve_pts_won")
-        overall_spw = player_ta.get("first_serve_pts_won") if player_ta else None
+        # Try TA handedness splits first (ace_pct vs lefties/righties)
+        ta_splits   = (player_ta.get("handedness_splits") or {}) if player_ta else {}
+        vs_key      = "vs_left" if opp_hand == "L" else "vs_right"
+        vs_split    = ta_splits.get(vs_key) or {}
+        vs_ace_pct  = vs_split.get("ace_pct")
 
-        if vs_spw and overall_spw and overall_spw > 0:
-            ratio = vs_spw / overall_spw
-            hand_factor = max(0.85, min(1.20, ratio))
+        # Also check legacy vs_left/vs_right keys (old format)
+        if vs_ace_pct is None:
+            vs_data = (player_ta.get(vs_key) or {}) if player_ta else {}
+            vs_spw  = vs_data.get("serve_pts_won")
+            overall_spw = player_ta.get("first_serve_pts_won") if player_ta else None
+            if vs_spw and overall_spw and overall_spw > 0:
+                ratio = vs_spw / overall_spw
+                hand_factor = max(0.85, min(1.20, ratio))
+            else:
+                hand_factor = factor_table.get((player_hand, opp_hand), 1.0)
         else:
-            hand_factor = factor_table.get((player_hand, opp_hand), 1.0)
+            # Use TA handedness ace_pct vs tour-average ace_pct on this surface
+            ta_surf_stats = (player_ta.get("surface_stats") or {}).get(surface) or {}
+            overall_ace_pct = ta_surf_stats.get("ace_pct") or (player_ta.get("surface_stats") or {}).get("All", {}).get("ace_pct")
+            if overall_ace_pct and overall_ace_pct > 0:
+                ratio = vs_ace_pct / overall_ace_pct
+                hand_factor = max(0.80, min(1.25, ratio))
+            else:
+                hand_factor = factor_table.get((player_hand, opp_hand), 1.0)
 
-    # ── L4: Opponent ace-against (TA blended with Sofascore) ─────────────────
+    # ── L4: Opponent ace-against (SS primary, TA secondary) ──────────────────
     ace_against_factor = 1.0
     opp_ace_against = None
-    # Sofascore ace-against
-    ss_opp_ace_against = None
-    if opponent_ta:
+    # SS ace-against (from opp_aces field computed in sofascore_client) — injected
+    # into opponent_stats by main.py before reaching here.
+    ss_opp_ace_against = opponent_stats.get("ace_against_per_match")
+    # TA ace_against as fallback
+    if ss_opp_ace_against is None and opponent_ta:
         ss_opp_ace_against = opponent_ta.get("ace_against_per_match")
     # TA ace_pct for opponent is their own ace rate (correlated with server quality)
     # Use it as a proxy for how many aces they face

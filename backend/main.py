@@ -460,19 +460,29 @@ async def prop_calculate(req: PropRequest):
         p1_unified_surf = aggregate_unified_stats(p1_unified, surface_filter=req.surface)
         p2_unified_surf = aggregate_unified_stats(p2_unified, surface_filter=req.surface)
 
-        # Build blended stats: TA career (25%) + TA 3yr (35%) + TA last-20 (25%)
-        # + Sofascore last-5 (15%); blended further with Sackmann 2015-2020 (10-35%)
+        # Build blended stats: SS all-time (25%) + SS 3yr (35%) + SS last-20 (25%)
+        # + SS last-5 (15%).  TA is enrichment only — not blended into stats.
+        # Sackmann used as low-priority supplement when SS career data is thin.
         p1_blended = get_blended_stats(
-            player_ta,   p1_ss_log, req.surface, req.tour,
+            p1_data, p1_ss_log, req.surface, req.tour,
+            player_ta=player_ta,
             sackmann_stats=p1_sack_surf, sackmann_all_stats=p1_sack_all,
         )
         p2_blended = get_blended_stats(
-            opponent_ta, p2_ss_log, req.surface, req.tour,
+            p2_data, p2_ss_log, req.surface, req.tour,
+            player_ta=opponent_ta,
             sackmann_stats=p2_sack_surf, sackmann_all_stats=p2_sack_all,
         )
 
-        # Merged stats: blended is the primary source; return stats from raw SS
-        # (blended doesn't have return stats since TA doesn't track per-match returns)
+        # Inject SS ace-against-per-match into blended dicts so project_aces
+        # can use it directly from opponent_stats without TA dependency.
+        p1_ss_ace_ag = p1_data.get(f"{req.surface}_ace_against_per_match")
+        p2_ss_ace_ag = p2_data.get(f"{req.surface}_ace_against_per_match")
+        if p2_ss_ace_ag is not None:
+            p2_blended["ace_against_per_match"] = p2_ss_ace_ag
+
+        # Merged stats: blended is the primary source; return stats already
+        # include return stats from the SS tiers in get_blended_stats.
         def _merge_with_ss(blended: dict, ss_raw: dict) -> dict:
             merged = dict(blended)
             for k in ("return_first_serve_pts_won", "return_second_serve_pts_won",

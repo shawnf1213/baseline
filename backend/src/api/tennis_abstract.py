@@ -198,10 +198,15 @@ def _extract_soup_from_jsfrags(js_text: str):
 
 def _parse_career_splits_soup(soup) -> dict:
     """
-    Parse the career-splits table for per-surface serve statistics.
-    Returns dict keyed by surface ("Hard", "Clay", "Grass") with
-    matches, ace_pct, df_pct, first_in_pct, first_won_pct, second_won_pct.
-    bp_saved_pct is left None (populated separately from recent-results).
+    Parse the career-splits table for per-surface serve statistics AND
+    handedness splits (vs. Lefties / vs. Righties).
+
+    Returns dict keyed by surface ("Hard", "Clay", "Grass") plus handedness
+    splits under key "handedness_splits":
+      {
+        "vs_left":  {"ace_pct", "bp_saved_pct", "first_won_pct", "matches"},
+        "vs_right": {...},
+      }
     """
     t = soup.find("table", id="career-splits")
     if not t:
@@ -215,16 +220,19 @@ def _parse_career_splits_soup(soup) -> dict:
     h = {v: i for i, v in enumerate(headers)}
 
     surface_map = {"Hard": "Hard", "Clay": "Clay", "Grass": "Grass"}
+    # Labels TA uses for handedness splits (case-insensitive checked below)
+    lefty_labels  = {"vs. lefties", "vs lefties", "vs. left", "lefties"}
+    righty_labels = {"vs. righties", "vs righties", "vs. right", "righties"}
+
     stats = {}
+    handedness_splits: dict = {}
 
     for row in rows[1:]:
         cells = [c.get_text(strip=True) for c in row.find_all(["th", "td"])]
         if not cells:
             continue
-        split = cells[0]
-        if split not in surface_map:
-            continue
-        surf = surface_map[split]
+        split_label = cells[0].strip()
+        split_lower = split_label.lower()
 
         def pct(key, _cells=cells, _h=h):
             idx = _h.get(key)
@@ -238,17 +246,40 @@ def _parse_career_splits_soup(soup) -> dict:
         except (ValueError, TypeError):
             n_matches = 0
 
-        stats[surf] = {
-            "matches":        n_matches,
-            "ace_pct":        pct("A%"),
-            "df_pct":         pct("DF%"),
-            "first_in_pct":   pct("1stIn"),
-            "first_won_pct":  pct("1st%"),
-            "second_won_pct": pct("2nd%"),
-            "bp_saved_pct":   None,   # filled by _enrich_bpsaved_soup
-            "bp_conv_pct":    None,   # computed from opponent's bp_saved_pct in props.py
-        }
+        if split_label in surface_map:
+            surf = surface_map[split_label]
+            stats[surf] = {
+                "matches":        n_matches,
+                "ace_pct":        pct("A%"),
+                "df_pct":         pct("DF%"),
+                "first_in_pct":   pct("1stIn"),
+                "first_won_pct":  pct("1st%"),
+                "second_won_pct": pct("2nd%"),
+                "bp_saved_pct":   None,   # filled by _enrich_bpsaved_soup
+                "bp_conv_pct":    None,
+            }
+        elif split_lower in lefty_labels:
+            bp_sv = pct("BPSvd") or pct("BP Svd")
+            handedness_splits["vs_left"] = {
+                "matches":       n_matches,
+                "ace_pct":       pct("A%"),
+                "first_won_pct": pct("1st%"),
+                "bp_saved_pct":  bp_sv,
+                "bp_conv_pct":   round(100 - bp_sv, 1) if bp_sv is not None else None,
+            }
+        elif split_lower in righty_labels:
+            bp_sv = pct("BPSvd") or pct("BP Svd")
+            handedness_splits["vs_right"] = {
+                "matches":       n_matches,
+                "ace_pct":       pct("A%"),
+                "first_won_pct": pct("1st%"),
+                "bp_saved_pct":  bp_sv,
+                "bp_conv_pct":   round(100 - bp_sv, 1) if bp_sv is not None else None,
+            }
 
+    if handedness_splits:
+        logger.info("[TA] handedness_splits: %s", list(handedness_splits.keys()))
+    stats["handedness_splits"] = handedness_splits
     return stats
 
 
@@ -755,9 +786,24 @@ def _aggregate_matches(matches: list) -> dict:
 # Main parse function
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _compute_ace_against_from_matches(matches: list) -> dict:
+    """
+    Compute ace-against-per-match per surface from TA match rows.
+
+    TA match rows don't directly expose opponent aces, so this is a best-effort
+    approximation: players with lower BPSvd tend to face more aces (opponents
+    serve more dominantly against them). We return None per surface if sample
+    is too small — SS ace_against_per_match (computed from opp_aces field) is
+    the preferred source.
+    """
+    # TA match rows don't have opponent ace counts — return empty dict.
+    # The Sofascore ace_against_per_match computed from opp_aces is used instead.
+    return {}
+
+
 def _parse_html(html: str, ta_name: str) -> dict:
     """Extract player metadata and raw match array from the main static HTML."""
-    handedness = _extract_handedness(html)
+    handedness  = _extract_handedness(html)
     rank_splits = _extract_rank_splits_html(html)
 
     # Extract raw match array from embedded JS variable
@@ -767,8 +813,12 @@ def _parse_html(html: str, ta_name: str) -> dict:
     # Build surface stats from raw matches (used if jsfrags unavailable)
     surface_stats_from_matches = _aggregate_matches(matches) if matches else {}
 
-    # Build rich multi-tier stats
+    # Build rich multi-tier stats (legacy; kept for backward compat)
     rich_stats = _build_rich_stats(matches) if matches else {}
+
+    # Handedness splits — populated from jsfrags career-splits table
+    # (not available from plain HTML without the jsfrags file)
+    handedness_splits: dict = {}
 
     logger.info(
         "[TA] %s parsed: hand=%s  match_rows=%d  surfaces=%s",
@@ -777,34 +827,43 @@ def _parse_html(html: str, ta_name: str) -> dict:
     )
 
     return {
-        "handedness":    handedness,
-        "matches":       matches,
-        "surface_stats": surface_stats_from_matches,   # may be overridden by jsfrags
-        "rich_stats":    rich_stats,
-        "career_splits": [],
-        "mcp_serve":     [],
-        "mcp_return":    [],
-        "h2h_records":   [],
-        "rank_splits":   rank_splits,
-        "_source":       "curl_cffi_html_table",
+        "handedness":        handedness,
+        "handedness_splits": handedness_splits,   # vs_left / vs_right (from jsfrags)
+        "ace_against_per_match": None,            # computed from SS opp_aces; placeholder
+        "matches":           matches,
+        "surface_stats":     surface_stats_from_matches,
+        "rich_stats":        rich_stats,
+        "career_splits":     [],
+        "mcp_serve":         [],
+        "mcp_return":        [],
+        "h2h_records":       [],
+        "rank_splits":       rank_splits,
+        "_source":           "curl_cffi_html_table",
     }
 
 
 def _parse_jsfrags(js_text: str, ta_name: str) -> dict:
-    """Parse surface stats from the jsfrags JS file HTML tables."""
+    """Parse surface stats and handedness splits from the jsfrags JS file."""
     soup = _extract_soup_from_jsfrags(js_text)
     if not soup:
         return {}
 
-    surface_stats = _parse_career_splits_soup(soup)
+    surface_stats = _parse_career_splits_soup(soup)  # now includes handedness_splits key
     _enrich_bpsaved_soup(soup, surface_stats)
     rank_splits   = _parse_rank_splits_soup(soup)
 
+    # Pull out the handedness splits extracted by the updated career_splits parser
+    handedness_splits = surface_stats.pop("handedness_splits", {})
+
     logger.info(
-        "[TA] %s jsfrags: surfaces=%s  rank_splits=%s",
-        ta_name, list(surface_stats.keys()), rank_splits,
+        "[TA] %s jsfrags: surfaces=%s  handedness_splits=%s  rank_splits=%s",
+        ta_name, list(surface_stats.keys()), list(handedness_splits.keys()), rank_splits,
     )
-    return {"surface_stats": surface_stats, "rank_splits": rank_splits}
+    return {
+        "surface_stats":     surface_stats,
+        "handedness_splits": handedness_splits,
+        "rank_splits":       rank_splits,
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -861,10 +920,10 @@ async def get_player_ta_stats(
                 break
 
     if data is None:
-        data = {"handedness": None, "matches": [], "surface_stats": {},
-                "rich_stats": {}, "career_splits": [], "mcp_serve": [],
-                "mcp_return": [], "h2h_records": [], "rank_splits": {},
-                "_source": "curl_cffi_html_table"}
+        data = {"handedness": None, "handedness_splits": {}, "ace_against_per_match": None,
+                "matches": [], "surface_stats": {}, "rich_stats": {},
+                "career_splits": [], "mcp_serve": [], "mcp_return": [],
+                "h2h_records": [], "rank_splits": {}, "_source": "curl_cffi_html_table"}
 
     # Merge jsfrags surface stats into data (jsfrags career-splits table is more
     # reliable for lifetime aggregates than the raw match array averages).
@@ -881,6 +940,10 @@ async def get_player_ta_stats(
             data["surface_stats"] = jf_ss
         if jf.get("rank_splits"):
             data["rank_splits"] = jf["rank_splits"]
+        # Merge handedness splits from jsfrags career-splits table
+        if jf.get("handedness_splits"):
+            data["handedness_splits"] = jf["handedness_splits"]
+            logger.info("[TA] %s handedness_splits=%s", ta_name, list(jf["handedness_splits"].keys()))
 
     # Ensure rich_stats is present (built from raw match rows in _parse_html)
     if not data.get("rich_stats") and data.get("matches"):

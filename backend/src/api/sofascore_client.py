@@ -374,6 +374,51 @@ STAT_MAP = {
 
 THREE_YEARS_SECS = 3 * 365 * 24 * 3600
 
+# Years considered "recent 3-year window" — updated each calendar year
+_RECENT_YEARS = {2023, 2024, 2025, 2026}
+
+def _year_from_ts(ts: int) -> int:
+    """Extract 4-digit year from Unix timestamp, or 0 if unknown."""
+    if not ts:
+        return 0
+    try:
+        return datetime.utcfromtimestamp(ts).year
+    except Exception:
+        return 0
+
+
+# Stat keys used for per-match averages in _agg_split
+_SPLIT_NUMERIC_KEYS = [
+    "aces", "double_faults", "first_serve_pct",
+    "first_serve_pts_won", "second_serve_pts_won",
+    "return_first_serve_pts_won", "return_second_serve_pts_won",
+    "bp_converted", "bp_saved", "total_match_games",
+    "bp_converted_count", "bp_faced_count",
+]
+
+
+def _agg_split(all_m: list, stat_m: list) -> dict:
+    """
+    Split aggregation: win_rate uses all_m (all finished matches including
+    stat-poor ones), stat averages use stat_m (only stat-rich matches).
+
+    This ensures win rate reflects real match outcomes even for Challenger
+    events where Sofascore's stats API returns empty data.
+    """
+    if not all_m and not stat_m:
+        return {"matches_played": 0, "stat_matches": 0}
+    wins = sum(1 for m in all_m if m.get("won", False))
+    result: dict = {
+        "matches_played": len(all_m),
+        "stat_matches":   len(stat_m),
+        "wins":           wins,
+        "win_rate":       round(wins / len(all_m) * 100, 2) if all_m else 0,
+    }
+    for key in _SPLIT_NUMERIC_KEYS:
+        vals = [m[key] for m in stat_m if key in m and m[key] is not None]
+        result[key] = round(sum(vals) / len(vals), 4) if vals else None
+    return result
+
 
 def _build_score_str(event: dict) -> str:
     home_sc = event.get("homeScore", {})
@@ -496,6 +541,15 @@ def _parse_match_stats(stats_data: dict, event: dict, player_id: int) -> Optiona
         if val is not None:
             result[internal_key] = val
 
+        # Capture opponent aces so we can compute ace-against-per-match from SS data
+        if name_lower == "aces":
+            opp_ace_val = item.get(f"{opp_side}Value")
+            if opp_ace_val is not None:
+                try:
+                    result["opp_aces"] = float(opp_ace_val)
+                except (ValueError, TypeError):
+                    pass
+
         if name_lower == "break points saved":
             opp_raw = item.get(opp_side, "")
             m = re.match(r"(\d+)/(\d+)", str(opp_raw))
@@ -532,34 +586,31 @@ def _fetch_event_page(player_id: int, page: int) -> list:
     return data.get("events", [])
 
 
-TARGET_SURFACE_MATCHES = 10
-MAX_PAGES_DEFAULT      = 12
+MAX_PAGES_DEFAULT = 50    # fetch up to 50 pages (~500 events) — covers full career history
 
 
 def _get_player_recent_events(player_id: int, max_pages: int = MAX_PAGES_DEFAULT) -> list:
     """
-    Fetch player event pages in parallel batches of 3.
+    Fetch ALL available pages of a player's event history in parallel batches of 5.
 
     Strategy:
-    - Fetch pages 0-11 (up to 12 pages) in batches of 3.
-    - Always fetch at least 2 batches (6 pages minimum coverage).
-    - Stop when: all surfaces have >= TARGET_SURFACE_MATCHES finished singles,
-      OR end of history, OR max_pages reached.
-    - PAGE_SCAN lines logged for each batch so Railway shows pagination progress.
+    - Fetch pages in batches of 5 concurrently.
+    - Stop only when a batch returns no events (end of history) or max_pages reached.
+    - No early-stop on surface match count — we want the full career history so
+      all-time surface aggregations are accurate.
+    - PAGE_SCAN lines logged per batch so Railway shows pagination progress.
     """
-    cache_key = f"ss_events_{player_id}"
+    cache_key = f"ss_events_v2_{player_id}"
     if cache_key in st.session_state:
         return st.session_state[cache_key]
 
     all_events: list = []
     now = time.time()
-
     page = 0
-    min_batches = 2      # always fetch at least 2 full batches
-    batch_num   = 0
+    batch_num = 0
 
     while page < max_pages:
-        batch = [p for p in range(page, min(page + 3, max_pages))]
+        batch = list(range(page, min(page + 5, max_pages)))
         if not batch:
             break
 
@@ -573,8 +624,6 @@ def _get_player_recent_events(player_id: int, max_pages: int = MAX_PAGES_DEFAULT
         got_any = False
         for p in sorted(batch):
             evts = page_results.get(p, [])
-
-            # PAGE_SCAN: count finished singles on each surface for this page
             surface_this_page: dict = {}
             for e in evts:
                 ts = e.get("startTimestamp", 0) or 0
@@ -590,11 +639,9 @@ def _get_player_recent_events(player_id: int, max_pages: int = MAX_PAGES_DEFAULT
                 surface_this_page[surf] = surface_this_page.get(surf, 0) + 1
 
             logger.info(
-                "PAGE_SCAN | player_id=%s | page=%d | total_events=%d | "
-                "surface_counts=%s",
+                "PAGE_SCAN | player_id=%s | page=%d | total_events=%d | surface_counts=%s",
                 player_id, p, len(evts), surface_this_page,
             )
-
             all_events.extend(evts)
             if evts:
                 got_any = True
@@ -603,38 +650,16 @@ def _get_player_recent_events(player_id: int, max_pages: int = MAX_PAGES_DEFAULT
         batch_num += 1
 
         if not got_any:
-            logger.info("PAGE_SCAN | player_id=%s | empty page at batch %d, stopping",
-                        player_id, batch_num)
+            logger.info(
+                "PAGE_SCAN | player_id=%s | empty batch at batch=%d page=%d — end of history",
+                player_id, batch_num, page,
+            )
             break   # end of history
 
-        # After minimum coverage, check if we have TARGET_SURFACE_MATCHES on each surface
-        if batch_num < min_batches:
-            continue
-
-        surf_counts: dict = {}
-        for e in all_events:
-            ts = e.get("startTimestamp", 0) or 0
-            if ts and ts > now:
-                continue
-            if e.get("status", {}).get("type", "") not in ("finished", "ended"):
-                continue
-            ht = e.get("homeTeam", {}).get("name", "")
-            at = e.get("awayTeam", {}).get("name", "")
-            if "/" in ht or "/" in at:
-                continue
-            surf = _infer_surface_from_event(e)
-            surf_counts[surf] = surf_counts.get(surf, 0) + 1
-
         logger.info(
-            "PAGE_SCAN | player_id=%s | cumulative_surface_counts=%s | pages_fetched=%d",
-            player_id, surf_counts, page,
+            "PAGE_SCAN | player_id=%s | cumulative_events=%d | batches_fetched=%d",
+            player_id, len(all_events), batch_num,
         )
-
-        # Stop when we have TARGET_SURFACE_MATCHES finished singles on ALL three surfaces
-        if all(surf_counts.get(s, 0) >= TARGET_SURFACE_MATCHES for s in ("Hard", "Clay", "Grass")):
-            logger.info("PAGE_SCAN | player_id=%s | target %d reached on all surfaces, stopping",
-                        player_id, TARGET_SURFACE_MATCHES)
-            break
 
     st.session_state[cache_key] = all_events
     return all_events
@@ -770,8 +795,8 @@ def search_players(query: str, tour: str = "ATP") -> list:
 
 def get_player_stats_by_surface(player_id, tour: str = "ATP") -> dict:
     pid = int(player_id)
-    # v5: 12-page max, surface overwrite fix, EVENT_DEBUG logging
-    cache_key = f"ss_surface_v5_{pid}"
+    # v6: full-history pagination, SS aggregation tiers, ace-against extraction
+    cache_key = f"ss_surface_v6_{pid}"
     if cache_key in st.session_state:
         return st.session_state[cache_key]
 
@@ -1009,6 +1034,43 @@ def get_player_stats_by_surface(player_id, tour: str = "ATP") -> dict:
     # All-surface chart log: most recent 10 matches across all surfaces combined.
     # Used as final Sofascore fallback when surface-specific chart log is also empty.
     surfaces["all_surface_chart_log"] = [_ss_log_entry(m) for m in sorted_m[:10]]
+
+    # ── New SS aggregation tiers (for blended_stats) ─────────────────────────
+    # Build all_time, recent_3yr, and last_20 tiers for each surface (and All).
+    # all_m  = ALL matches on that surface (for win_rate denominator)
+    # stat_m = only stat-rich matches on that surface (for stat averages)
+    # sorted newest-first already.
+    for surf_label in (None, "Hard", "Clay", "Grass"):
+        label = surf_label or "All"
+        all_m  = [m for m in all_match_stats
+                  if surf_label is None or m.get("surface") == surf_label]
+        stat_m = [m for m in stat_matches
+                  if surf_label is None or m.get("surface") == surf_label]
+
+        # 3-year window: 2023-present
+        all_m_3yr  = [m for m in all_m  if _year_from_ts(m.get("timestamp", 0)) in _RECENT_YEARS]
+        stat_m_3yr = [m for m in stat_m if _year_from_ts(m.get("timestamp", 0)) in _RECENT_YEARS]
+
+        # Last 20 stat-rich matches on this surface
+        stat_m_20 = stat_m[:20]
+
+        surfaces[f"{label}_all_time_stats"]   = _agg_split(all_m, stat_m)
+        surfaces[f"{label}_recent_3yr_stats"]  = _agg_split(all_m_3yr, stat_m_3yr)
+        surfaces[f"{label}_last_20"]           = _agg_split(stat_m_20, stat_m_20)
+
+        logger.info(
+            "SS_TIERS | surface=%s | all_time=%d/%d | 3yr=%d/%d | last20=%d",
+            label,
+            len(all_m), len(stat_m),
+            len(all_m_3yr), len(stat_m_3yr),
+            len(stat_m_20),
+        )
+
+        # Ace-against: average of opponent aces per match (from opp_aces field)
+        ace_ag_vals = [m["opp_aces"] for m in stat_m if m.get("opp_aces") is not None]
+        surfaces[f"{label}_ace_against_per_match"] = (
+            round(sum(ace_ag_vals) / len(ace_ag_vals), 2) if ace_ag_vals else None
+        )
 
     st.session_state[cache_key] = surfaces
     return surfaces
