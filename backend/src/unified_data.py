@@ -289,23 +289,29 @@ def aggregate_unified_stats(
 
 def build_unified_chart_log(
     pool: List[dict],
-    surface: str,
+    surface: Optional[str] = None,
     limit: int = 10,
 ) -> List[dict]:
     """
-    Build a chart-log-compatible list from the unified pool filtered to `surface`.
+    Build a chart-log-compatible list from the unified pool.
 
-    The output format mirrors sofascore `{surf}_surface_log` so the existing
-    Last5Chart frontend component works without modification.
+    When surface is None (default), returns the last `limit` matches across
+    ALL surfaces — used for the "Last 5 Matches" bar chart which shows whether
+    the prop line was met regardless of surface.
+
+    When surface is provided, filters to that surface only (legacy behaviour).
 
     Stat fields are None for matches where has_stats=False — the frontend
     renders gray N/A stubs for those bars, preserving win/loss information.
     """
-    sl = surface.lower()
-    surf_matches = [
-        m for m in pool
-        if (m.get("surface") or "").lower() == sl
-    ][:limit]
+    if surface:
+        sl = surface.lower()
+        surf_matches = [
+            m for m in pool
+            if (m.get("surface") or "").lower() == sl
+        ][:limit]
+    else:
+        surf_matches = pool[:limit]
 
     out: List[dict] = []
     for m in surf_matches:

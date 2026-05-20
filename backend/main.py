@@ -616,34 +616,18 @@ async def prop_calculate(req: PropRequest):
         p1_sack_weight = p1_blended.get("_sackmann_weight", 0.0)
         data_warning   = p1_blended.get("_data_warning")
 
-        # ── Bar chart: use unified pool (SS + Sackmann merged + deduped) ────────
-        # build_unified_chart_log returns surface-filtered matches newest-first.
-        # Matches with has_stats=False appear as N/A gray bars — this correctly
-        # shows challenger players (e.g. Collignon) who have match results but
-        # whose stats API fails.  Sackmann 2015-2020 fills in older stat bars.
-        p1_chart_log  = build_unified_chart_log(p1_unified, req.surface)
-        chart_source  = "sofascore"
-
-        if p1_chart_log:
-            # Classify source for frontend label
-            top5_sources = {m.get("source") for m in p1_chart_log[:5]}
-            has_surf_ss  = any(
-                m.get("source") == "sofascore" and
-                (m.get("surface") or "").lower() == req.surface.lower()
-                for m in p1_chart_log[:5]
-            )
-            if has_surf_ss:
-                chart_source = "sofascore"       # SS surface matches present
-            elif "sofascore" in top5_sources:
-                chart_source = "sofascore_all"   # SS but different surface
-            else:
-                chart_source = "sackmann"        # Sackmann only
-        else:
-            chart_source = "sofascore"
+        # ── Bar chart: last 5 matches overall (any surface) ─────────────────────
+        # Shows the 5 most recent matches regardless of surface so the user can
+        # see whether the prop line was met in recent form, not just on the
+        # selected surface.  Matches with has_stats=False render as N/A gray bars.
+        p1_chart_log = build_unified_chart_log(p1_unified)   # no surface filter
+        chart_source = "sofascore" if any(
+            m.get("source") == "sofascore" for m in p1_chart_log[:5]
+        ) else "sackmann"
 
         logger.info(
-            "CHART_UNIFIED | player=%s | surface=%s | chart_entries=%d | source=%s",
-            req.player_name, req.surface, len(p1_chart_log), chart_source,
+            "CHART_UNIFIED | player=%s | chart_entries=%d | source=%s",
+            req.player_name, len(p1_chart_log), chart_source,
         )
 
         # Build recent results strings for AI scouting context

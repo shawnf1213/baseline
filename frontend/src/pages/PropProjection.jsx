@@ -135,15 +135,15 @@ function Last5Chart({ matches, statKey, propLine, playerName, surface, chartSour
   const isAllSurf   = chartSource === 'sofascore_all'
   const isSackmann  = chartSource === 'sackmann'
 
-  const countNote = (totalFound < 5 && !isAllSurf) ? (
+  const countNote = totalFound < 5 ? (
     <div style={{ color: 'var(--amber)', fontSize: 11, marginBottom: 8, fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 600 }}>
-      Only {totalFound} {surface} match{totalFound !== 1 ? 'es' : ''} found in recent history
+      Only {totalFound} match{totalFound !== 1 ? 'es' : ''} found in recent history
     </div>
   ) : null
 
-  const sourceNote = (isAllSurf || isSackmann) ? (
+  const sourceNote = isSackmann ? (
     <div style={{ color: 'var(--amber)', fontSize: 11, marginBottom: 8, fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 600 }}>
-      {isSackmann ? 'Historical data (2015-2020) — Sofascore not available' : `No ${surface} stat data — showing all-surface matches`}
+      Historical data (2015–2020) — Sofascore not available
     </div>
   ) : null
 
@@ -709,18 +709,10 @@ export default function PropProjection({ tour }) {
                 </div>
               </motion.div>
 
-              {/* ── Last 5 bar chart — uses sofascore_surface_log with fallback chain ── */}
+              {/* ── Last 5 Matches bar chart (any surface) ── */}
               {statKey && (
                 <motion.div variants={item}>
-                  {(() => {
-                    const src = result.chart_source || 'sofascore'
-                    const surfLabel = src === 'sofascore_all'
-                      ? 'All Surfaces'
-                      : src === 'sackmann'
-                      ? `${surface} (Historical)`
-                      : surface
-                    return section(`Last 5 ${surfLabel} Matches — ${propType} (${p1?.name})`)
-                  })()}
+                  {section(`Last 5 Matches — ${propType} (${p1?.name})`)}
                   <div style={{ background: '#0a0f0c', border: '1px solid #1a2520', borderRadius: 12, padding: '18px 18px 10px', marginBottom: 20 }}>
                     {propLine > 0 && (
                       <div style={{ display: 'flex', gap: 16, marginBottom: 12, fontSize: 11 }}>
