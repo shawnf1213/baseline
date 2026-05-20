@@ -1037,26 +1037,28 @@ def get_player_stats_by_surface(player_id, tour: str = "ATP") -> dict:
 
     # ── New SS aggregation tiers (for blended_stats) ─────────────────────────
     # Build all_time, recent_3yr, and last_20 tiers for each surface (and All).
-    # all_m  = ALL matches on that surface (for win_rate denominator)
-    # stat_m = only stat-rich matches on that surface (for stat averages)
-    # sorted newest-first already.
+    # Uses sorted_m (newest-first) so that stat_m[:20] captures the most recent
+    # 20 stat-rich matches rather than the oldest 20 from the raw iteration order.
+    _stat_ids = {id(m) for m in stat_matches}   # O(1) lookup — same objects in sorted_m
+
     for surf_label in (None, "Hard", "Clay", "Grass"):
         label = surf_label or "All"
-        all_m  = [m for m in all_match_stats
+        all_m  = [m for m in sorted_m
                   if surf_label is None or m.get("surface") == surf_label]
-        stat_m = [m for m in stat_matches
-                  if surf_label is None or m.get("surface") == surf_label]
+        stat_m = [m for m in sorted_m
+                  if (surf_label is None or m.get("surface") == surf_label)
+                  and id(m) in _stat_ids]
 
         # 3-year window: 2023-present
         all_m_3yr  = [m for m in all_m  if _year_from_ts(m.get("timestamp", 0)) in _RECENT_YEARS]
         stat_m_3yr = [m for m in stat_m if _year_from_ts(m.get("timestamp", 0)) in _RECENT_YEARS]
 
-        # Last 20 stat-rich matches on this surface
+        # Last 20 stat-rich matches on this surface (newest-first = most recent 20)
         stat_m_20 = stat_m[:20]
 
-        surfaces[f"{label}_all_time_stats"]   = _agg_split(all_m, stat_m)
-        surfaces[f"{label}_recent_3yr_stats"]  = _agg_split(all_m_3yr, stat_m_3yr)
-        surfaces[f"{label}_last_20"]           = _agg_split(stat_m_20, stat_m_20)
+        surfaces[f"{label}_all_time_stats"]  = _agg_split(all_m, stat_m)
+        surfaces[f"{label}_recent_3yr_stats"] = _agg_split(all_m_3yr, stat_m_3yr)
+        surfaces[f"{label}_last_20"]          = _agg_split(stat_m_20, stat_m_20)
 
         logger.info(
             "SS_TIERS | surface=%s | all_time=%d/%d | 3yr=%d/%d | last20=%d",
@@ -1071,6 +1073,14 @@ def get_player_stats_by_surface(player_id, tour: str = "ATP") -> dict:
         surfaces[f"{label}_ace_against_per_match"] = (
             round(sum(ace_ag_vals) / len(ace_ag_vals), 2) if ace_ag_vals else None
         )
+
+    # Summary log: confirms tier keys were built and shows match counts per surface.
+    # If Railway shows all zeros here, the surface detection or event fetch failed.
+    tier_summary = {
+        lbl: surfaces.get(f"{lbl}_all_time_stats", {}).get("matches_played", 0)
+        for lbl in ("All", "Hard", "Clay", "Grass")
+    }
+    logger.info("SS_TIERS_BUILT | pid=%d | all_time_matches=%s", pid, tier_summary)
 
     st.session_state[cache_key] = surfaces
     return surfaces

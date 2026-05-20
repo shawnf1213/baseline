@@ -185,6 +185,15 @@ def get_blended_stats(
     all_time_matches = (surf_all_time or {}).get("matches_played", 0)
     surface_fallback = all_time_matches < 10
 
+    # ── Diagnostic: log tier key presence so Railway shows if old code is running ──
+    _tier_key_present = f"{surface}_all_time_stats" in (player_ss_data or {})
+    logger.info(
+        "[BLEND_INPUT] surface=%s | %s_all_time_key_present=%s | "
+        "all_time_matches=%d | surface_fallback=%s | ssdata_keys=%s",
+        surface, surface, _tier_key_present, all_time_matches, surface_fallback,
+        sorted(k for k in (player_ss_data or {}) if "_all_time_stats" in k),
+    )
+
     if surface_fallback:
         # Fall back to all-surface tiers with surface adjustment
         surf_all_time = (player_ss_data or {}).get("All_all_time_stats")
@@ -217,6 +226,34 @@ def get_blended_stats(
     ss_career_matches  = (tier1["matches"] if tier1 else 0)
     ss_3yr_matches     = (tier2["matches"] if tier2 else 0)
     ss_last20_matches  = (tier3["matches"] if tier3 else 0)
+
+    # ── Tier diagnostic ───────────────────────────────────────────────────────
+    logger.info(
+        "[BLEND_TIERS] surface=%s | tier1=%s | tier2=%s | tier3=%s | tier4=%s | "
+        "ss_career=%d",
+        surface,
+        tier1["matches"] if tier1 else "NONE",
+        tier2["matches"] if tier2 else "NONE",
+        tier3["matches"] if tier3 else "NONE",
+        tier4["matches"] if tier4 else "NONE",
+        ss_career_matches,
+    )
+
+    # ── Fallback: tier keys missing (old sofascore_client still running) ──────
+    # If ss_career_matches is still 0 after tier extraction, try reading the
+    # old _agg()-format surface dict that the previous code always populated.
+    # This prevents the "TA 0 career" badge appearing due to a stale deployment.
+    if ss_career_matches == 0 and player_ss_data:
+        _old_surf = player_ss_data.get(surface) or {}
+        _old_all  = player_ss_data.get("All") or {}
+        _old_n = _old_surf.get("matches_played") or _old_all.get("matches_played") or 0
+        if _old_n > 0:
+            logger.warning(
+                "[BLEND_FALLBACK] New tier keys missing — old-format matches_played=%d "
+                "used for surface=%s. Old sofascore_client may still be running.",
+                _old_n, surface,
+            )
+            ss_career_matches = _old_n
 
     # ── Blend each stat ───────────────────────────────────────────────────────
     STAT_KEYS = [
