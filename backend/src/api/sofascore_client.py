@@ -950,13 +950,13 @@ def get_player_stats_by_surface(player_id, tour: str = "ATP") -> dict:
         ts_val    = m.get("timestamp", 0) or 0
         if ts_val:
             try:
-                dt = datetime.utcfromtimestamp(ts_val)
-                date_str = dt.strftime("%b %-d")   # "Apr 13"
+                dt       = datetime.utcfromtimestamp(ts_val)
+                cur_year = datetime.utcnow().year
+                date_str = dt.strftime("%b") + " " + str(dt.day)
+                if dt.year != cur_year:
+                    date_str += f" '{str(dt.year)[2:]}"   # e.g. "May 26 '25"
             except Exception:
-                try:
-                    date_str = dt.strftime("%b %d").lstrip("0")
-                except Exception:
-                    date_str = m.get("date", "")
+                date_str = m.get("date", "")
         tourn = m.get("tournament", "")
         return f"{result_ch} {score} vs {opp} ({tourn}, {date_str})" if date_str else f"{result_ch} {score} vs {opp} ({tourn})"
 
@@ -972,12 +972,13 @@ def get_player_stats_by_surface(player_id, tour: str = "ATP") -> dict:
     def _ss_log_entry(m: dict) -> dict:
         ts_val = m.get("timestamp", 0) or 0
         try:
-            date_str = datetime.utcfromtimestamp(ts_val).strftime("%b %-d")
+            dt       = datetime.utcfromtimestamp(ts_val)
+            cur_year = datetime.utcnow().year
+            date_str = dt.strftime("%b") + " " + str(dt.day)
+            if dt.year != cur_year:
+                date_str += f" '{str(dt.year)[2:]}"   # e.g. "May 26 '25"
         except Exception:
-            try:
-                date_str = datetime.utcfromtimestamp(ts_val).strftime("%b %d").lstrip("0")
-            except Exception:
-                date_str = m.get("date", "")
+            date_str = m.get("date", "")
         opp_parts = (m.get("opponent_name") or "Unknown").split()
         opp_abbr = opp_parts[-1] if opp_parts else "Unknown"
         return {

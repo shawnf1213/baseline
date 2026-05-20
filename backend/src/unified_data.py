@@ -56,7 +56,12 @@ def _norm_opp(name: str) -> str:
 
 
 def _fmt_date_display(date_str: str, ts: int = 0) -> str:
-    """Format 'YYYY-MM-DD' (or Unix timestamp) into chart display string 'Apr 13'."""
+    """
+    Format 'YYYY-MM-DD' (or Unix timestamp) into chart display string 'Apr 13'.
+    Appends a 2-digit year suffix when the match is not from the current year,
+    e.g. 'May 26 '25' — prevents confusion when the month/day alone looks like
+    a future date (e.g. Roland Garros 2025 matches appearing in a 2026 session).
+    """
     try:
         if date_str and len(date_str) >= 10:
             dt = datetime.strptime(date_str[:10], "%Y-%m-%d")
@@ -64,8 +69,12 @@ def _fmt_date_display(date_str: str, ts: int = 0) -> str:
             dt = datetime.utcfromtimestamp(ts)
         else:
             return date_str or ""
+        current_year = datetime.utcnow().year
         # Cross-platform day-without-zero (%-d Linux, %#d Windows — use str(day) instead)
-        return dt.strftime("%b") + " " + str(dt.day)
+        label = dt.strftime("%b") + " " + str(dt.day)
+        if dt.year != current_year:
+            label += f" '{str(dt.year)[2:]}"   # e.g. "May 26 '25"
+        return label
     except Exception:
         return date_str or ""
 

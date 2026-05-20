@@ -90,7 +90,8 @@ function SectionDivider({ label }) {
 function Last5Chart({ matches, statKey, propLine, playerName, surface, chartSource }) {
   if (!matches || !statKey) return null
 
-  const last5 = matches.slice(0, 5)
+  // Backend sends newest-first; reverse to chronological (oldest left → newest right)
+  const last5 = matches.slice(0, 5).reverse()
   if (!last5.length) return (
     <div style={{ color: 'var(--muted)', fontSize: 13, padding: '16px 0' }}>
       No recent match data found in history
