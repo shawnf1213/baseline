@@ -521,18 +521,27 @@ async def prop_calculate(req: PropRequest):
         if p2_unified_surf and p2_unified_surf["matches"] > p2_s.get("matches_played", 0):
             p2_s["matches_played"] = p2_unified_surf["matches"]
 
+        # Best-of-5 for ATP at Grand Slams — determined once, used by all projectors
+        match_fmt = (
+            "best_of_5"
+            if court_for_calc in GRAND_SLAMS and req.tour == "ATP"
+            else "best_of_3"
+        )
+
         # Run projection
         if req.prop_type == "Aces":
             result = project_aces(
                 p1_s, p2_s, court_for_calc, h2h_ace_avg, cpr_override=cpr,
                 player_ta=player_ta, opponent_ta=opponent_ta,
                 tour=req.tour, surface=req.surface,
+                match_format=match_fmt,
             )
         elif req.prop_type == "Double Faults":
             result = project_double_faults(
                 p1_s, p2_s, h2h_df_avg,
                 player_ta=player_ta, opponent_ta=opponent_ta,
                 tour=req.tour, surface=req.surface,
+                match_format=match_fmt,
             )
         elif req.prop_type == "Total Games":
             result = project_total_games(
@@ -541,12 +550,6 @@ async def prop_calculate(req: PropRequest):
                 player_ta=player_ta, opponent_ta=opponent_ta,
             )
         else:  # Break Points Won
-            # Best-of-5 only for ATP at Grand Slams
-            match_fmt = (
-                "best_of_5"
-                if court_for_calc in GRAND_SLAMS and req.tour == "ATP"
-                else "best_of_3"
-            )
             result = project_break_points(
                 p1_s, p2_s,
                 h2h_bp_avg=h2h_bp_avg,

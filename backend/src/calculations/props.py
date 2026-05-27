@@ -76,42 +76,54 @@ def _tour_avg(tour: str, surface: str) -> dict:
     return t.get(surface, t["Hard"])
 
 # ── Sanity bounds ─────────────────────────────────────────────────────────────
+# "ATP_GS" key is used when match_format == "best_of_5" (ATP Grand Slams).
+# BO5 max is higher because men can win more BPs across 5 sets.
 PROJECTION_SANITY_BOUNDS = {
     "Break Points Won": {
-        "ATP": {"min": 1.5, "max": 12.0},
-        "WTA": {"min": 1.5, "max": 14.0},
+        "ATP":    {"min": 1.5, "max": 12.0},
+        "ATP_GS": {"min": 2.0, "max": 18.0},  # best-of-5 Grand Slam
+        "WTA":    {"min": 1.5, "max": 14.0},
     },
     "Aces": {
-        "ATP": {"min": 0.5, "max": 18.0},
-        "WTA": {"min": 0.2, "max": 8.0},
+        "ATP":    {"min": 0.5, "max": 18.0},
+        "ATP_GS": {"min": 0.5, "max": 26.0},  # BO5 allows higher ace totals
+        "WTA":    {"min": 0.2, "max": 8.0},
     },
     "Double Faults": {
-        "ATP": {"min": 0.3, "max": 8.0},
-        "WTA": {"min": 0.3, "max": 10.0},
+        "ATP":    {"min": 0.3, "max": 8.0},
+        "ATP_GS": {"min": 0.3, "max": 12.0},
+        "WTA":    {"min": 0.3, "max": 10.0},
     },
     "Total Games": {
-        "ATP": {"min": 14.0, "max": 39.0},
-        "WTA": {"min": 12.0, "max": 39.0},
+        "ATP":    {"min": 14.0, "max": 39.0},
+        "ATP_GS": {"min": 20.0, "max": 55.0},  # BO5 range
+        "WTA":    {"min": 12.0, "max": 39.0},
     },
 }
 
 
 def sanity_check_projection(prop_type: str, projection: float,
                              tour: str, player_name: str,
-                             surface: str) -> bool:
+                             surface: str,
+                             match_format: str = "best_of_3") -> bool:
     """
     Return True if projection is within realistic bounds, False if it fails.
     Logs a warning on failure. Caller should apply a tour-average fallback
     or flag the result when this returns False.
+
+    Uses ATP_GS bounds when match_format == "best_of_5" (Grand Slam men's).
     """
-    bounds = PROJECTION_SANITY_BOUNDS.get(prop_type, {}).get(tour, {})
+    prop_bounds = PROJECTION_SANITY_BOUNDS.get(prop_type, {})
+    # Select the right key: Grand Slam ATP → ATP_GS, otherwise tour as-is
+    bound_key = "ATP_GS" if (tour == "ATP" and match_format == "best_of_5") else tour
+    bounds = prop_bounds.get(bound_key) or prop_bounds.get(tour, {})
     if not bounds:
         return True
     if projection < bounds["min"] or projection > bounds["max"]:
         logger.warning(
             "SANITY_FAIL | player=%s | prop=%s | surface=%s | tour=%s | "
-            "projection=%.2f outside [%.1f, %.1f]",
-            player_name, prop_type, surface, tour,
+            "format=%s | projection=%.2f outside [%.1f, %.1f]",
+            player_name, prop_type, surface, tour, match_format,
             projection, bounds["min"], bounds["max"],
         )
         return False
@@ -120,8 +132,13 @@ def sanity_check_projection(prop_type: str, projection: float,
 # Tour-average first-serve points won % — used for TA opponent suppression
 _TOUR_AVG_FIRST_WON = {"ATP": 72.0, "WTA": 65.0}
 
-# Average service points per match by tour
-_AVG_SERVICE_PTS = {"ATP": 80, "WTA": 70}
+# Average service points per match by tour and format.
+# ATP best-of-3: ~80 sp/player; best-of-5 (Grand Slam): ~115 sp/player.
+# WTA is always best-of-3.
+_AVG_SERVICE_PTS = {
+    "ATP": {"best_of_3": 80, "best_of_5": 115},
+    "WTA": {"best_of_3": 70, "best_of_5": 70},
+}
 
 # Handedness matchup ace factors (server_hand, returner_hand) -> factor
 #
@@ -182,6 +199,7 @@ def project_aces(
     opponent_ta: dict = None,
     tour: str = "ATP",
     surface: str = "Hard",
+    match_format: str = "best_of_3",
 ) -> dict:
     """
     5-layer ace projection model:
@@ -191,18 +209,31 @@ def project_aces(
       L4 — opponent ace-against (TA ace_pct blended with Sofascore ace-against)
       L5 — surface/court CPR (court pace rating)
     """
-    avg_service_pts = _AVG_SERVICE_PTS.get(tour, 80)
+    # BO5 Grand Slams have ~115 service points vs ~80 for BO3 tours.
+    # Use the correct denominator when converting ace% → aces/match.
+    _sp_map = _AVG_SERVICE_PTS.get(tour, {"best_of_3": 80, "best_of_5": 80})
+    avg_service_pts = _sp_map.get(match_format, _sp_map["best_of_3"])
     ta_used = False
     ta_surface_matches = 0
 
     # ── L1: Base ace rate — TA surface stats preferred ────────────────────────
-    sofascore_base = _safe(player_stats.get("aces"))
+    sofascore_base_raw = _safe(player_stats.get("aces"))
+    # Sofascore blended data is a per-match average over mixed BO3 + BO5 matches.
+    # Scale up modestly for Grand Slam BO5 projection (partial correction).
+    _bo5_ace_ss_scale = BO5_SS_SCALE.get(surface, 1.30)
+    sofascore_base = (
+        sofascore_base_raw * _bo5_ace_ss_scale
+        if match_format == "best_of_5" and tour == "ATP"
+        else sofascore_base_raw
+    )
+
     ta_base = None
     ta_surf = None
     if player_ta:
         ta_surf = player_ta.get("surface_stats", {}).get(surface)
     if ta_surf and ta_surf.get("ace_pct") is not None:
         ace_pct = ta_surf["ace_pct"]
+        # avg_service_pts is already set to 115 for BO5 — this is the primary fix
         ta_base = (ace_pct / 100) * avg_service_pts
         ta_used = True
         ta_surface_matches = ta_surf.get("matches", 0) or 0
@@ -364,19 +395,32 @@ def project_double_faults(
     opponent_ta: dict = None,
     tour: str = "ATP",
     surface: str = "Hard",
+    match_format: str = "best_of_3",
 ) -> dict:
-    avg_service_pts = _AVG_SERVICE_PTS.get(tour, 80)
+    # BO5 Grand Slams have ~115 service points vs ~80 for BO3 tours.
+    _sp_map = _AVG_SERVICE_PTS.get(tour, {"best_of_3": 80, "best_of_5": 80})
+    avg_service_pts = _sp_map.get(match_format, _sp_map["best_of_3"])
+
     ta_used = False
     ta_surface_matches = 0
 
     # ── Base DF rate: TA surface stats preferred ──────────────────────────────
-    sofascore_base = _safe(player_stats.get("double_faults"))
+    sofascore_base_raw = _safe(player_stats.get("double_faults"))
+    # Scale Sofascore blended average for BO5 (partial correction for mixed data)
+    _bo5_df_ss_scale = BO5_SS_SCALE.get(surface, 1.30)
+    sofascore_base = (
+        sofascore_base_raw * _bo5_df_ss_scale
+        if match_format == "best_of_5" and tour == "ATP"
+        else sofascore_base_raw
+    )
+
     ta_base = None
     ta_surf = None
     if player_ta:
         ta_surf = player_ta.get("surface_stats", {}).get(surface)
     if ta_surf and ta_surf.get("df_pct") is not None:
         df_pct = ta_surf["df_pct"]
+        # avg_service_pts is already 115 for BO5 — the primary scaling mechanism
         ta_base = (df_pct / 100) * avg_service_pts
         ta_used = True
         ta_surface_matches = ta_surf.get("matches", 0) or 0
@@ -437,6 +481,37 @@ def project_double_faults(
 
 
 GRAND_SLAMS = {"Australian Open", "US Open", "Roland Garros", "Wimbledon"}
+
+# ---------------------------------------------------------------------------
+# Best-of-5 (Grand Slam) break-point scaling
+# ---------------------------------------------------------------------------
+# ATP men's Grand Slams are played best-of-5 sets.  The per-match BP volume is
+# ~1.5× higher than on the regular tour (best-of-3).  Two tables are needed:
+#
+#   BO5_TOUR_AVG_BP  — used when the tour-average fallback fires at a GS
+#                      (replaces the BO3-calibrated TOUR_AVG_BY_SURFACE values)
+#
+#   BO5_SS_SCALE     — partial upward scale applied to Sofascore blended data
+#                      at a GS.  The blended average mixes BO3 + BO5 matches so
+#                      a full 1.5× would over-inflate; ~1.30 is a conservative
+#                      but meaningful correction.
+#
+# Ratios derived from historical ATP Grand Slam BP averages:
+#   Hard  8.2 → 12.5  (×1.52)   Australian Open, US Open
+#   Clay  9.8 → 14.5  (×1.48)   Roland Garros
+#   Grass 7.1 → 10.5  (×1.48)   Wimbledon
+BO5_TOUR_AVG_BP = {
+    "ATP": {
+        "Hard":  12.5,
+        "Clay":  14.5,
+        "Grass": 10.5,
+    }
+}
+BO5_SS_SCALE = {
+    "Hard":  1.30,
+    "Clay":  1.28,
+    "Grass": 1.30,
+}
 
 # ---------------------------------------------------------------------------
 # Match environment detection
@@ -505,34 +580,31 @@ def _apply_break_opportunity_scaling(
     surface: str,
 ) -> tuple:
     """
-    Apply a dynamic multiplier to reflect the feedback loop between break frequency
-    and total BP opportunities.
+    Apply a small dynamic multiplier reflecting the feedback loop between
+    break frequency and total BP opportunities (more breaks → more service
+    games played → marginally more BP chances).
 
-    More expected breaks → opponent plays more service games → more BP chances.
+    NOTE: Grand Slam BO5 scaling of the *opportunity pool* (estimated_bp_opps)
+    is applied earlier in project_break_points, before base_proj is computed.
+    This function handles only the within-match feedback loop, which is small
+    and format-agnostic after the opportunity pool has been correctly sized.
 
     Returns (scaled_projection, opportunity_multiplier).
     """
     expected_breaks = base_proj   # base_proj IS the expected-break estimate
 
-    # Surface adjustment on base service games per match
-    if match_format == "best_of_5":
-        base_service_games = 22.0
-    else:
-        base_service_games = 13.0
-
-    surf_game_adj = {"Clay": 1.08, "Hard": 1.0, "Grass": 0.94}
-    adjusted_service_games = base_service_games * surf_game_adj.get(surface, 1.0)  # noqa: F841 (for logging)
-
     # Graduated opportunity multiplier — capped at +5% to avoid over-inflation.
     # The base projection already encodes BP-faced rate through estimated_bp_opps;
-    # this small adjustment only reflects the marginal feedback that more breaks
+    # this adjustment reflects the marginal feedback that more breaks
     # = more service games = fractionally more BP chances.
     if expected_breaks < 2.0:
         opp_mult = 1.0
     elif expected_breaks < 4.0:
         opp_mult = 1.0 + (expected_breaks - 2.0) * 0.015   # +1.5% per break above 2
+    elif expected_breaks < 8.0:
+        opp_mult = min(1.05, 1.03 + (expected_breaks - 4.0) * 0.005)
     else:
-        opp_mult = min(1.05, 1.03 + (expected_breaks - 4.0) * 0.01)
+        opp_mult = 1.05  # cap at +5%
 
     scaled = base_proj * opp_mult
     logger.info(
@@ -786,17 +858,41 @@ def project_break_points(
         or raw_opp_bp_faced < min_credible_bp
     ):
         # bp_faced genuinely missing or implausibly low — fall back to tour avg
-        estimated_bp_opps = tour_avg_bp
+        if match_format == "best_of_5" and tour == "ATP":
+            # Use GS-calibrated tour average (BO3 values under-count by ~50%)
+            gs_avg = BO5_TOUR_AVG_BP.get(tour, {}).get(surface, tour_avg_bp * 1.50)
+            estimated_bp_opps = gs_avg
+            logger.info(
+                "BP_WON_FALLBACK | reason=missing_or_below_floor | raw=%s | "
+                "opp_ss_matches=%d | gs_tour_avg=%.2f | surface=%s | format=best_of_5",
+                raw_opp_bp_faced, opp_ss_matches, gs_avg, surface,
+            )
+        else:
+            estimated_bp_opps = tour_avg_bp
+            logger.info(
+                "BP_WON_FALLBACK | reason=missing_or_below_floor | raw=%s | "
+                "opp_ss_matches=%d | tour_avg=%.2f | surface=%s",
+                raw_opp_bp_faced, opp_ss_matches, tour_avg_bp, surface,
+            )
         used_opp_tour_avg = True
-        logger.info(
-            "BP_WON_FALLBACK | reason=missing_or_below_floor | raw=%s | "
-            "opp_ss_matches=%d | tour_avg=%.2f | surface=%s",
-            raw_opp_bp_faced, opp_ss_matches, tour_avg_bp, surface,
-        )
     else:
         estimated_bp_opps = raw_opp_bp_faced
         logger.info("BP_WON_OPP_BP | bp_faced=%.2f (opp_ss_recent=%d career-blended)",
                     estimated_bp_opps, opp_ss_matches)
+
+    # ── BO5 scaling: Grand Slam men's matches produce ~1.5× more BP chances ──
+    # The Sofascore blended data averages BO3 + BO5 matches.  When projecting a
+    # Grand Slam (BO5), we apply a partial upward scale (~1.30×) to the
+    # opportunity pool to reflect the format correctly.
+    # The tour-avg fallback is handled above with a dedicated GS value.
+    if match_format == "best_of_5" and tour == "ATP" and not used_opp_tour_avg:
+        bo5_scale = BO5_SS_SCALE.get(surface, 1.30)
+        estimated_bp_opps_pre = estimated_bp_opps
+        estimated_bp_opps = estimated_bp_opps * bo5_scale
+        logger.info(
+            "BP_WON_BO5_SCALE | pre=%.2f | bo5_scale=%.2f | post=%.2f | surface=%s",
+            estimated_bp_opps_pre, bo5_scale, estimated_bp_opps, surface,
+        )
 
     # ── Step 2: Player conversion rate — TA surface bp_conv_pct as primary ───
     conv_rate_source = ""
@@ -925,6 +1021,7 @@ def project_break_points(
     sanity_ok = sanity_check_projection(
         "Break Points Won", proj, tour,
         player_stats.get("player_name", "?"), surface,
+        match_format=match_format,
     )
     sanity_failed = not sanity_ok
     if sanity_failed:
