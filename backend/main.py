@@ -550,8 +550,21 @@ async def prop_calculate(req: PropRequest):
                 player_ta=player_ta, opponent_ta=opponent_ta,
             )
         else:  # Break Points Won
+            # All-surface stats for Step 9 sanity check — pull directly from
+            # SS all-time all-surface tier (no re-blending needed; just need
+            # bp_converted% and bp_faced_count as a neutral reference).
+            _p1_all_at = p1_data.get("All_all_time_stats") or {}
+            p1_all_ref = {
+                "bp_converted":  _p1_all_at.get("bp_conv_pct"),
+                "bp_faced_count": _p1_all_at.get("bp_faced_count"),
+            }
+            # Supplement with TA all-surface if SS is missing
+            if not p1_all_ref["bp_converted"] and player_ta:
+                _ta_all = (player_ta.get("surface_stats") or {}).get("All") or {}
+                p1_all_ref["bp_converted"] = _ta_all.get("bp_conv_pct")
             result = project_break_points(
                 p1_s, p2_s,
+                player_all_stats=p1_all_ref,
                 h2h_bp_avg=h2h_bp_avg,
                 cpr_override=cpr,
                 h2h_match_count=h2h_surf_matches,
@@ -561,6 +574,7 @@ async def prop_calculate(req: PropRequest):
                 tour=req.tour,
                 opp_ss_matches=p2_blended.get("_ss_recent_matches", 0),
                 match_format=match_fmt,
+                court=court_for_calc,
             )
 
         proj_val = result.get("projection")

@@ -628,6 +628,33 @@ export default function PropProjection({ tour }) {
         />
       </div>
 
+      {/* Match Format badge — auto-set for ATP Grand Slams, display only */}
+      {propType === 'Break Points Won' && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
+          {['Best of 3', 'Best of 5'].map(fmt => {
+            const isGS = court !== 'None' && [
+              'Australian Open','US Open','Roland Garros','Wimbledon',
+            ].includes(court)
+            const activeFormat = isGS && tour === 'ATP' ? 'Best of 5' : 'Best of 3'
+            const isActive = fmt === activeFormat
+            return (
+              <div key={fmt} style={{
+                padding: '5px 14px', borderRadius: 8,
+                fontFamily: '"Barlow Condensed", sans-serif',
+                fontWeight: 800, fontSize: 11, letterSpacing: 1.5,
+                textTransform: 'uppercase',
+                background: isActive ? (fmt === 'Best of 5' ? '#001a40' : '#0a0f0c') : 'transparent',
+                color: isActive ? (fmt === 'Best of 5' ? '#6b9fff' : '#4a6a50') : '#1a2520',
+                border: `1px solid ${isActive ? (fmt === 'Best of 5' ? '#2a3d5a' : '#1a2520') : '#0d1510'}`,
+              }}>{fmt}{isActive && fmt === 'Best of 5' && <span style={{ marginLeft: 6, fontSize: 9, color: '#6b9fff' }}>AUTO</span>}</div>
+            )
+          })}
+          <span style={{ fontSize: 10, color: '#1a3a25', fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 600 }}>
+            ATP Grand Slams auto-set to BO5 · affects projection scale
+          </span>
+        </div>
+      )}
+
       {/* Run button — Phase 9: motion button with scale effects */}
       <motion.button
         whileHover={p1 && p2 && !loading ? { scale: 1.01 } : {}}
@@ -827,18 +854,49 @@ export default function PropProjection({ tour }) {
                         fallback: result?.opponent_surface_fallback, aceAgainst: result?.opponent_ace_against },
                     ].map(({ s, name, nc, hand, taM, ssM, fallback, aceAgainst }, idx) => {
                       const d = s || {}
-                      const rows = [
-                        ['Aces/Match', fmt(d.aces)],
-                        ['DFs/Match', fmt(d.double_faults)],
-                        ['1st Srv Won', fmtPct(d.first_serve_pts_won)],
-                        ['2nd Srv Won', fmtPct(d.second_serve_pts_won)],
-                        ['Ret Pts Won (1st)', fmtPct(d.return_first_serve_pts_won)],
-                        ['BP Converted', fmtPct(d.bp_converted)],
-                        ['Win Rate', fmtPct(d.win_rate)],
-                        ['Matches', d.matches_played || '—'],
-                      ]
-                      if (idx === 1 && aceAgainst != null) {
-                        rows.splice(1, 0, ['Aces Conceded/Match', fmt(aceAgainst)])
+                      // ── BP-specific bidirectional stats (Step 8) ──────────
+                      const isBPProp = propType === 'Break Points Won'
+                      let rows
+                      if (isBPProp && idx === 0) {
+                        // Selected player — show returner view
+                        rows = [
+                          ['BP Conv Rate', result?.conv_rate_pct != null ? `${result.conv_rate_pct.toFixed(0)}%` : fmtPct(d.bp_converted)],
+                          ['BP Opps Created/Match', result?.player_bp_opps_per_match != null ? fmt(result.player_bp_opps_per_match) : '—'],
+                          ['BP Won/Match (est)', result?.player_bp_won_per_match != null ? fmt(result.player_bp_won_per_match) : '—'],
+                          ['Ret Pts Won (1st)', fmtPct(d.return_first_serve_pts_won)],
+                          ['Ret Pts Won (2nd)', fmtPct(d.return_second_serve_pts_won)],
+                          ['Win Rate', fmtPct(d.win_rate)],
+                          ['Matches', d.matches_played || '—'],
+                        ]
+                      } else if (isBPProp && idx === 1) {
+                        // Opponent — show server view
+                        const serveTier = result?.opp_serve_tier
+                        const serveTierColor = { Elite: '#ff4444', Good: '#f5a623', Weak: '#00e676' }[serveTier] || '#4a6a50'
+                        rows = [
+                          ['BP Faced/Match', result?.opp_bp_faced != null ? fmt(result.opp_bp_faced) : fmt(d.bp_faced_count)],
+                          ['Hold Rate (est)', result?.opp_hold_rate_pct != null ? `${result.opp_hold_rate_pct.toFixed(0)}%` : '—'],
+                          ['Serve Quality', serveTier
+                            ? <span style={{ color: serveTierColor, fontWeight: 800 }}>{serveTier}</span>
+                            : '—'],
+                          ['1st Srv Won', fmtPct(d.first_serve_pts_won)],
+                          ['2nd Srv Won', fmtPct(d.second_serve_pts_won)],
+                          ['BP Saved', fmtPct(d.bp_saved)],
+                          ['Matches', d.matches_played || '—'],
+                        ]
+                      } else {
+                        rows = [
+                          ['Aces/Match', fmt(d.aces)],
+                          ['DFs/Match', fmt(d.double_faults)],
+                          ['1st Srv Won', fmtPct(d.first_serve_pts_won)],
+                          ['2nd Srv Won', fmtPct(d.second_serve_pts_won)],
+                          ['Ret Pts Won (1st)', fmtPct(d.return_first_serve_pts_won)],
+                          ['BP Converted', fmtPct(d.bp_converted)],
+                          ['Win Rate', fmtPct(d.win_rate)],
+                          ['Matches', d.matches_played || '—'],
+                        ]
+                        if (idx === 1 && aceAgainst != null) {
+                          rows.splice(1, 0, ['Aces Conceded/Match', fmt(aceAgainst)])
+                        }
                       }
                       return (
                         <div key={idx} style={{ background: '#0a0f0c', border: '1px solid #1a2520', borderRadius: 12, padding: '18px 20px' }}>
@@ -868,12 +926,18 @@ export default function PropProjection({ tour }) {
                               ⚠ Limited surface data — using all-surface average
                             </div>
                           )}
-                          {rows.map(([lbl, val]) => (
-                            <div key={lbl} style={{ display: 'flex', justifyContent: 'space-between', padding: '7px 0', borderBottom: '1px solid #0d1510', fontSize: 12 }}>
-                              <span style={{ color: '#2a3a30', fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 600, letterSpacing: 0.5 }}>{lbl}</span>
-                              <span style={{ fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 700, fontSize: 14, color: statColor(lbl, val) || '#4a6a50' }}>{val}</span>
-                            </div>
-                          ))}
+                          {rows.map(([lbl, val]) => {
+                            const isNode = val != null && typeof val === 'object' && val.$$typeof
+                            return (
+                              <div key={lbl} style={{ display: 'flex', justifyContent: 'space-between', padding: '7px 0', borderBottom: '1px solid #0d1510', fontSize: 12 }}>
+                                <span style={{ color: '#2a3a30', fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 600, letterSpacing: 0.5 }}>{lbl}</span>
+                                {isNode
+                                  ? <span style={{ fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 700, fontSize: 14 }}>{val}</span>
+                                  : <span style={{ fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 700, fontSize: 14, color: statColor(lbl, val) || '#4a6a50' }}>{val}</span>
+                                }
+                              </div>
+                            )
+                          })}
                         </div>
                       )
                     })}

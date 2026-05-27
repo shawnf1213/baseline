@@ -807,6 +807,7 @@ def project_total_games(
 def project_break_points(
     player_stats: dict,
     opponent_stats: dict,
+    player_all_stats: dict = None,   # all-surface blended stats (Step 9 sanity)
     h2h_bp_avg: float = None,
     cpr_override: int = None,
     h2h_match_count: int = 0,
@@ -816,278 +817,364 @@ def project_break_points(
     tour: str = "ATP",
     opp_ss_matches: int = 0,
     match_format: str = "best_of_3",
+    court: str = "",
 ) -> dict:
     """
-    Project break points won by player_stats' player.
+    Bidirectional break points won projection model.
 
-    Key inputs
-    ----------
-    opp_ss_matches : int
-        How many Sofascore surface matches back the opponent's bp_faced_count
-        was computed over. When < 3, the number is too noisy and we fall back
-        to the tour-average BP-faced rate for this surface.
+    Formula (Step 7):
+      projected_bp_won =
+          opportunities_created          (Step 1: opp BP faced per match on surface)
+        × conversion_rate                (Step 2: player BP conv% on surface, blended)
+        × serve_quality_adj              (Step 3: opponent hold rate modifier)
+        × momentum_factor                (Step 4: break-back effect)
+        × bo_scale                       (Step 5: 1.6 for BO5, 1.0 for BO3)
+        × surface_calibration            (Step 6: surface-specific + CPR)
+
+    Grand Slam BO5 only fires when match_format == "best_of_5" (ATP only).
     """
     ta_used = False
     ta_surface_matches = 0
     used_opp_tour_avg  = False
 
+    is_bo5 = (match_format == "best_of_5" and tour == "ATP")
+    bo_scale = 1.6 if is_bo5 else 1.0
+
+    player_name = player_stats.get("player_name", "?")
+    opp_name    = opponent_stats.get("player_name", "?")
+
     logger.info(
-        "BP_WON_START | player=%s | opp=%s | surface=%s | tour=%s | "
-        "opp_ss_matches=%d | raw_opp_bp_faced=%s",
-        player_stats.get("player_name", "?"),
-        opponent_stats.get("player_name", "?"),
-        surface, tour, opp_ss_matches,
-        opponent_stats.get("bp_faced_count"),
+        "BP_BIDIR_START | player=%s | opp=%s | surface=%s | tour=%s | "
+        "format=%s | bo_scale=%.1f | raw_opp_bp_faced=%s | court=%s",
+        player_name, opp_name, surface, tour,
+        match_format, bo_scale,
+        opponent_stats.get("bp_faced_count"), court or "generic",
     )
 
-    # ── Step 1: Opportunity pool — opponent BPs faced per match on serve ──────
+    # ─────────────────────────────────────────────────────────────────────────
+    # STEP 1 — Opportunity pool: opponent BP faced per match on this surface
+    # ─────────────────────────────────────────────────────────────────────────
+    # raw_opp_bp_faced is the blended Sofascore per-match average from career
+    # data.  It is NOT pre-scaled for BO5 — bo_scale handles that in Step 5.
     raw_opp_bp_faced = opponent_stats.get("bp_faced_count")
-    tour_avg_bp = _tour_avg(tour, surface)["bp_faced_per_match"]
+    tour_avg_bp      = _tour_avg(tour, surface)["bp_faced_per_match"]
+    min_credible_bp  = tour_avg_bp * 0.25
 
-    # Minimum credible floor: 25% of tour average for this surface.
-    # bp_faced_count is now blended from all 4 SS tiers in blended_stats, so
-    # it's reliable for any player with > 0 stat matches. This floor only catches
-    # genuinely implausible values (near-zero) that would indicate a parse error.
-    # NOTE: opp_ss_matches (last-5 recent stat count) is intentionally NOT used
-    # as a fallback trigger here.
-    min_credible_bp = tour_avg_bp * 0.25
-
-    if (
-        raw_opp_bp_faced is None
-        or raw_opp_bp_faced == 0
-        or raw_opp_bp_faced < min_credible_bp
-    ):
-        # bp_faced genuinely missing or implausibly low — fall back to tour avg
-        if match_format == "best_of_5" and tour == "ATP":
-            # Use GS-calibrated tour average (BO3 values under-count by ~50%)
-            gs_avg = BO5_TOUR_AVG_BP.get(tour, {}).get(surface, tour_avg_bp * 1.50)
-            estimated_bp_opps = gs_avg
-            logger.info(
-                "BP_WON_FALLBACK | reason=missing_or_below_floor | raw=%s | "
-                "opp_ss_matches=%d | gs_tour_avg=%.2f | surface=%s | format=best_of_5",
-                raw_opp_bp_faced, opp_ss_matches, gs_avg, surface,
-            )
-        else:
-            estimated_bp_opps = tour_avg_bp
-            logger.info(
-                "BP_WON_FALLBACK | reason=missing_or_below_floor | raw=%s | "
-                "opp_ss_matches=%d | tour_avg=%.2f | surface=%s",
-                raw_opp_bp_faced, opp_ss_matches, tour_avg_bp, surface,
-            )
+    if raw_opp_bp_faced is None or raw_opp_bp_faced < min_credible_bp:
+        estimated_bp_opps = tour_avg_bp
         used_opp_tour_avg = True
+        logger.info(
+            "BP_BIDIR_OPP | fallback=tour_avg | raw=%s | tour_avg=%.2f | surface=%s",
+            raw_opp_bp_faced, tour_avg_bp, surface,
+        )
     else:
         estimated_bp_opps = raw_opp_bp_faced
-        logger.info("BP_WON_OPP_BP | bp_faced=%.2f (opp_ss_recent=%d career-blended)",
-                    estimated_bp_opps, opp_ss_matches)
-
-    # ── BO5 scaling: Grand Slam men's matches produce ~1.5× more BP chances ──
-    # The Sofascore blended data averages BO3 + BO5 matches.  When projecting a
-    # Grand Slam (BO5), we apply a partial upward scale (~1.30×) to the
-    # opportunity pool to reflect the format correctly.
-    # The tour-avg fallback is handled above with a dedicated GS value.
-    if match_format == "best_of_5" and tour == "ATP" and not used_opp_tour_avg:
-        bo5_scale = BO5_SS_SCALE.get(surface, 1.30)
-        estimated_bp_opps_pre = estimated_bp_opps
-        estimated_bp_opps = estimated_bp_opps * bo5_scale
         logger.info(
-            "BP_WON_BO5_SCALE | pre=%.2f | bo5_scale=%.2f | post=%.2f | surface=%s",
-            estimated_bp_opps_pre, bo5_scale, estimated_bp_opps, surface,
+            "BP_BIDIR_OPP | bp_faced=%.2f | opp_ss_recent=%d",
+            estimated_bp_opps, opp_ss_matches,
         )
 
-    # ── Step 2: Player conversion rate — TA surface bp_conv_pct as primary ───
+    # ─────────────────────────────────────────────────────────────────────────
+    # STEP 2 — Player BP conversion rate on this surface
+    # Blend: 65% SS (recent-weighted tiers) + 35% TA career surface (if ≥ 5 matches)
+    # ─────────────────────────────────────────────────────────────────────────
     conv_rate_source = ""
     player_ta_surf = None
-    opp_ta_surf    = None
 
     if player_ta:
         player_ta_surf = player_ta.get("surface_stats", {}).get(surface)
-    if opponent_ta:
-        surf_stats = opponent_ta.get("surface_stats", {})
-        opp_ta_surf = surf_stats.get(surface) or surf_stats.get("All")
 
-    # Primary: player's own TA bp_conv_pct on this surface
-    ta_conv_rate = None
-    if player_ta_surf and player_ta_surf.get("bp_conv_pct") is not None and player_ta_surf.get("matches", 0) >= 5:
-        ta_conv_rate = player_ta_surf["bp_conv_pct"]
-        ta_used = True
+    ta_conv_pct = None
+    if (player_ta_surf
+            and player_ta_surf.get("bp_conv_pct") is not None
+            and player_ta_surf.get("matches", 0) >= 5):
+        ta_conv_pct       = player_ta_surf["bp_conv_pct"]
+        ta_used           = True
         ta_surface_matches = player_ta_surf.get("matches", 0) or 0
-        conv_rate_source = f"TA player {surface}"
 
-    # Secondary: opponent's TA bp_conv_pct (what returners convert against them)
-    opp_ta_conv = None
-    if opp_ta_surf and opp_ta_surf.get("bp_conv_pct") is not None and opp_ta_surf.get("matches", 0) >= 5:
-        opp_ta_conv = opp_ta_surf["bp_conv_pct"]
+    ss_conv_pct = player_stats.get("bp_converted")   # already 4-tier blended
 
-    # Sofascore fallback conv rate
-    ss_conv_rate = player_stats.get("bp_converted")
-
-    # Determine final conversion rate: blend TA player + TA opponent or fall back
-    if ta_conv_rate is not None and opp_ta_conv is not None:
-        conv_rate_pct = (ta_conv_rate + opp_ta_conv) / 2
-        conv_rate_source = f"TA blend {surface}"
-    elif ta_conv_rate is not None:
-        conv_rate_pct = ta_conv_rate
-    elif opp_ta_surf and opp_ta_surf.get("bp_conv_pct") is not None and opp_ta_surf.get("matches", 0) >= 5:
-        conv_rate_pct = opp_ta_surf["bp_conv_pct"]
-        conv_rate_source = f"TA opp {surface}"
-        ta_used = True
-        ta_surface_matches = opp_ta_surf.get("matches", 0) or 0
-    else:
-        conv_rate_pct = ss_conv_rate
+    if ta_conv_pct is not None and ss_conv_pct and ss_conv_pct > 0:
+        conv_rate_pct    = 0.35 * ta_conv_pct + 0.65 * ss_conv_pct
+        conv_rate_source = f"TA(35%)+SS(65%) {surface}"
+    elif ta_conv_pct is not None:
+        conv_rate_pct    = ta_conv_pct
+        conv_rate_source = f"TA {surface}"
+    elif ss_conv_pct and ss_conv_pct > 0:
+        conv_rate_pct    = ss_conv_pct
         conv_rate_source = "SS"
+    else:
+        conv_rate_pct    = None
+        conv_rate_source = "none"
 
     logger.info(
-        "BP_WON_CONV | conv_rate_pct=%s | source=%s | ta_conv=%s | opp_ta_conv=%s | ss_conv=%s",
-        conv_rate_pct, conv_rate_source, ta_conv_rate, opp_ta_conv, ss_conv_rate,
+        "BP_BIDIR_CONV | conv_rate_pct=%s | source=%s | ta=%s | ss=%s",
+        conv_rate_pct, conv_rate_source, ta_conv_pct, ss_conv_pct,
     )
 
-    if not conv_rate_pct or conv_rate_pct == 0:
-        return {"projection": None, "lean": None, "confidence": 0,
-                "note": "No break point conversion data available for this surface.",
-                "ta_used": ta_used, "ta_surface_matches": ta_surface_matches,
-                "sanity_failed": False, "used_opp_tour_avg": used_opp_tour_avg}
-
-    # ── Step 3: Base projection ───────────────────────────────────────────────
-    base_proj = (conv_rate_pct / 100) * estimated_bp_opps
-    logger.info(
-        "BP_WON_BASE | conv_pct=%.1f | bp_opps=%.2f | base=%.2f | "
-        "tour_avg_used=%s",
-        conv_rate_pct, estimated_bp_opps, base_proj, used_opp_tour_avg,
-    )
-
-    # ── Sofascore recency blend: 75% TA, 25% Sofascore ───────────────────────
     p_matches = player_stats.get("matches_played", 0) or 0
     o_matches = opponent_stats.get("matches_played", 0) or 0
 
-    if ta_used and ss_conv_rate and ss_conv_rate > 0 and p_matches >= 3:
-        ss_proj = (ss_conv_rate / 100) * estimated_bp_opps
-        proj = 0.75 * base_proj + 0.25 * ss_proj
-        logger.info("BP_WON_SS_BLEND | ta_proj=%.2f | ss_proj=%.2f | blended=%.2f",
-                    base_proj, ss_proj, proj)
-    else:
-        proj = base_proj
+    if not conv_rate_pct:
+        return {
+            "projection": None, "lean": None, "confidence": 0,
+            "note": "No break point conversion data available for this surface.",
+            "ta_used": ta_used, "ta_surface_matches": ta_surface_matches,
+            "sanity_failed": False, "used_opp_tour_avg": used_opp_tour_avg,
+            "match_format": match_format,
+        }
 
-    # ── Step 3b: Dynamic break-opportunity scaling (feedback loop) ───────────
-    proj, opp_scaling_factor = _apply_break_opportunity_scaling(
-        proj, match_format, surface
+    # ─────────────────────────────────────────────────────────────────────────
+    # STEP 3 — Serve quality adjustment: opponent hold rate
+    # Derived from first/second serve stats via _hold_rate_proxy.
+    # Thresholds calibrated to service-game hold-rate equivalents:
+    #   proxy > 0.70  ≈ 85 %+ hold  → Elite   → reduce opps by 15 %
+    #   0.63–0.70     ≈ 75–85 % hold → Good    → no change
+    #   < 0.63        ≈ < 75 % hold  → Weak    → increase opps by 10 %
+    # ─────────────────────────────────────────────────────────────────────────
+    opp_hold_proxy = _hold_rate_proxy(opponent_stats)   # fraction of srv pts won
+    if opp_hold_proxy > 0.70:
+        serve_quality_adj = 0.85
+        opp_serve_tier    = "Elite"
+    elif opp_hold_proxy >= 0.63:
+        serve_quality_adj = 1.00
+        opp_serve_tier    = "Good"
+    else:
+        serve_quality_adj = 1.10
+        opp_serve_tier    = "Weak"
+
+    logger.info(
+        "BP_BIDIR_SRV_QUAL | opp_hold_proxy=%.3f | tier=%s | adj=%.2f",
+        opp_hold_proxy, opp_serve_tier, serve_quality_adj,
     )
 
-    # ── Step 3c: Returner dominance factor ───────────────────────────────────
-    ret_factor = _returner_dominance_factor(player_stats, opponent_stats, tour)
-    proj = proj * ret_factor
-    logger.info("BP_WON_RET_DOM | ret_factor=%.3f | after=%.2f", ret_factor, proj)
+    # ─────────────────────────────────────────────────────────────────────────
+    # STEP 4 — Momentum factor: break-back effect
+    # expected_breaks_against ≈ how many times the player gets broken per match.
+    # Each expected break raises the player's subsequent BP opportunity rate
+    # by ~10 % (midpoint of the 8–12 % spec range), capped at +25 %.
+    # ─────────────────────────────────────────────────────────────────────────
+    opp_conv_pct     = opponent_stats.get("bp_converted") or 0.0
+    player_bp_faced  = _safe(player_stats.get("bp_faced_count"), tour_avg_bp)
+    # Scale by bo_scale so momentum reflects the actual match length being projected.
+    expected_breaks_against = (opp_conv_pct / 100.0) * player_bp_faced * bo_scale
+    momentum_factor = min(1.25, 1.0 + expected_breaks_against * 0.10)
 
-    # ── Step 3d: Handedness adjustment ───────────────────────────────────────
+    logger.info(
+        "BP_BIDIR_MOMENTUM | opp_conv=%.1f%% | player_bp_faced=%.2f | "
+        "bo_scale=%.1f | exp_breaks_against=%.2f | momentum=%.3f",
+        opp_conv_pct, player_bp_faced, bo_scale, expected_breaks_against, momentum_factor,
+    )
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # STEP 5 — Best-of-5 scaling (bo_scale already set above: 1.6 or 1.0)
+    # bo_scale is applied as a multiplicative term in the final formula.
+    # ─────────────────────────────────────────────────────────────────────────
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # STEP 6 — Surface calibration + CPR
+    #
+    # Clay:  longer rallies → servers recover more → fewer converts.  ×0.92
+    # Hard:  baseline.  ×1.0
+    # Grass: fewer opps but higher conversion when they arise.
+    #        Handled by: conv_rate ×1.05, opp_opps ×0.85 → net ×0.8925
+    # CPR:   slow courts suppress BP conversion (servers have more recovery time);
+    #        fast courts amplify it.  Each 10-point deviation from neutral = ±3 %.
+    # ─────────────────────────────────────────────────────────────────────────
+    grass_conv_boost = 1.0
+    grass_opp_shrink = 1.0
+    if surface == "Clay":
+        surface_cal = 0.92
+    elif surface == "Grass":
+        grass_conv_boost = 1.05
+        grass_opp_shrink = 0.85
+        surface_cal      = 1.0   # both adjustments applied separately below
+    else:
+        surface_cal = 1.00
+
+    # Court pace (CPR) calibration — affects BP conversion only
+    cpr = cpr_override if cpr_override is not None else CPR_NEUTRAL
+    cpr_delta = (cpr - CPR_NEUTRAL) / 10.0   # positive = faster
+    cpr_factor = 1.0 + cpr_delta * 0.03      # ±3% per 10-pt deviation
+    cpr_factor = max(0.90, min(1.10, cpr_factor))   # clip at ±10%
+
+    logger.info(
+        "BP_BIDIR_SURFACE | surface=%s | surface_cal=%.2f | "
+        "grass_conv=%.2f | grass_opp=%.2f | cpr=%d | cpr_factor=%.3f",
+        surface, surface_cal, grass_conv_boost, grass_opp_shrink,
+        cpr, cpr_factor,
+    )
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # STEP 7 — Combined formula
+    #
+    # projected_bp_won = opportunities_created
+    #                  × conversion_rate
+    #                  × serve_quality_adj
+    #                  × momentum_factor
+    #                  × bo_scale
+    #                  × surface_calibration
+    #
+    # Grass applies separate adjustments to opportunity count and conv rate.
+    # CPR adjusts the final product (applies as additional surface calibration).
+    # ─────────────────────────────────────────────────────────────────────────
+    effective_opps     = estimated_bp_opps * grass_opp_shrink
+    effective_conv_pct = conv_rate_pct * grass_conv_boost
+
+    proj = (
+        effective_opps
+        * (effective_conv_pct / 100.0)
+        * serve_quality_adj
+        * momentum_factor
+        * bo_scale
+        * surface_cal
+        * cpr_factor
+    )
+
+    logger.info(
+        "BP_BIDIR_FORMULA | opps=%.2f | conv=%.1f%% | srv_qual=%.2f | "
+        "momentum=%.3f | bo_scale=%.1f | surf_cal=%.2f | cpr_fac=%.3f | proj=%.2f",
+        effective_opps, effective_conv_pct, serve_quality_adj,
+        momentum_factor, bo_scale, surface_cal, cpr_factor, proj,
+    )
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # STEP 8 — Handedness adjustment (carry-over from prior model)
+    # ─────────────────────────────────────────────────────────────────────────
     hand_bp_factor = 1.0
     opp_hand = opponent_ta.get("handedness") if opponent_ta else None
     if opp_hand == "L" and player_ta:
         vs_left_bp = player_ta.get("vs_left", {}).get("bp_converted")
         if vs_left_bp and conv_rate_pct > 0:
-            ratio = vs_left_bp / conv_rate_pct
-            hand_bp_factor = max(0.85, min(1.15, ratio))
+            hand_bp_factor = max(0.88, min(1.12, vs_left_bp / conv_rate_pct))
     elif opp_hand == "R" and player_ta:
         vs_right_bp = player_ta.get("vs_right", {}).get("bp_converted")
         if vs_right_bp and conv_rate_pct > 0:
-            ratio = vs_right_bp / conv_rate_pct
-            hand_bp_factor = max(0.85, min(1.15, ratio))
-
+            hand_bp_factor = max(0.88, min(1.12, vs_right_bp / conv_rate_pct))
     proj = proj * hand_bp_factor
-    logger.info("BP_WON_HAND | opp_hand=%s | hand_factor=%.3f | after=%.2f",
+    logger.info("BP_BIDIR_HAND | opp_hand=%s | hand_factor=%.3f | after=%.2f",
                 opp_hand, hand_bp_factor, proj)
 
-    # ── Step 3e: Match environment factor ────────────────────────────────────
-    # detect_environment already applies surface adjustments internally:
-    #   Clay  +12% break rate → more likely HIGH_BREAK / RET_EDGE
-    #   Grass −12% break rate → more likely SERVE_DOM
-    # So this factor compounds meaningfully with the surface's inherent break tendency.
-    #
-    # Factors are intentionally modest — the opportunity pool (estimated_bp_opps)
-    # already encodes the surface's base break rate via tour averages.
-    # The environment factor captures the SPECIFIC matchup dynamic on top of that.
+    # Match environment — still computed and returned for UI display
     env = detect_environment(player_stats, opponent_stats, surface=surface)
-    _ENV_BP_FACTORS = {
-        "HIGH_BREAK": 1.10,  # many break chances + pressure → inflated conversion
-        "RET_EDGE":   1.05,  # returner advantage → more deuce situations
-        "STANDARD":   1.00,  # no adjustment
-        "SERVE_DOM":  0.92,  # servers dominant → far fewer chances, harder to convert
-    }
-    env_factor = _ENV_BP_FACTORS.get(env, 1.00)
-    proj_before_env = proj
-    proj = proj * env_factor
-    logger.info(
-        "BP_WON_ENV | env=%s | env_factor=%.3f | before=%.2f | after=%.2f | surface=%s",
-        env, env_factor, proj_before_env, proj, surface,
-    )
 
-    # ── Step 4: H2H blend at 30% if ≥ 3 H2H surface matches ─────────────────
+    # ─────────────────────────────────────────────────────────────────────────
+    # H2H blend — 25 % weight if ≥ 3 H2H surface matches
+    # ─────────────────────────────────────────────────────────────────────────
     h2h_used = h2h_bp_avg is not None and h2h_bp_avg > 0 and h2h_match_count >= 3
     if h2h_used:
-        proj_before_h2h = proj
-        proj = proj * 0.70 + h2h_bp_avg * 0.30
-        logger.info("BP_WON_H2H | h2h_avg=%.2f | before=%.2f | after=%.2f",
-                    h2h_bp_avg, proj_before_h2h, proj)
+        proj_pre_h2h = proj
+        proj = proj * 0.75 + h2h_bp_avg * 0.25
+        logger.info("BP_BIDIR_H2H | h2h_avg=%.2f | before=%.2f | after=%.2f",
+                    h2h_bp_avg, proj_pre_h2h, proj)
 
-    # ── Step 5: CPR surface adjustment ±5% ───────────────────────────────────
-    cpr = cpr_override if cpr_override is not None else CPR_NEUTRAL
-    if cpr <= 28:
-        cpr_adj = -(28 - cpr) / (28 - 20) * 0.05
-    elif cpr >= 43:
-        cpr_adj = (cpr - 43) / (50 - 43) * 0.05
-    else:
-        cpr_adj = 0.0
-    cpr_factor = 1.0 + cpr_adj
-    proj_before_cpr = proj
-    proj = proj * cpr_factor
-    logger.info("BP_WON_CPR | cpr=%d | cpr_adj=%.3f | before=%.2f | final=%.2f",
-                cpr, cpr_adj, proj_before_cpr, proj)
+    # ─────────────────────────────────────────────────────────────────────────
+    # STEP 9 — All-surface sanity check
+    # If surface projection < 60 % of player's all-surface reference, blend
+    # 30 % toward the all-surface estimate to prevent outlier projections.
+    # ─────────────────────────────────────────────────────────────────────────
+    all_surface_blended = False
+    all_surface_ref = None
+    if player_all_stats:
+        all_conv_pct = player_all_stats.get("bp_converted")
+        all_bp_faced = player_all_stats.get("bp_faced_count") or _tour_avg(tour, "Hard")["bp_faced_per_match"]
+        if all_conv_pct and all_conv_pct > 0:
+            # All-surface reference: use actual all-surface avg (no BO5/surface adj)
+            all_surface_ref = (all_conv_pct / 100.0) * all_bp_faced
+            if proj < all_surface_ref * 0.60:
+                proj_pre_sanity = proj
+                proj = proj * 0.70 + all_surface_ref * 0.30
+                all_surface_blended = True
+                logger.info(
+                    "BP_BIDIR_ALL_SURF | surface_proj=%.2f < 60%% of all_surface_ref=%.2f"
+                    " → blending to %.2f",
+                    proj_pre_sanity, all_surface_ref, proj,
+                )
 
-    # ── Sanity check ─────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────────
+    # Sanity bounds (format-aware)
+    # ─────────────────────────────────────────────────────────────────────────
     sanity_ok = sanity_check_projection(
-        "Break Points Won", proj, tour,
-        player_stats.get("player_name", "?"), surface,
+        "Break Points Won", proj, tour, player_name, surface,
         match_format=match_format,
     )
     sanity_failed = not sanity_ok
     if sanity_failed:
-        logger.warning(
-            "BP_WON_SANITY_FAIL | proj=%.2f | clamping to tour floor %.1f",
-            proj, tour_avg_bp * 0.30,
-        )
-
-    p1_ret = _return_pts_won(player_stats)
-    p2_srv = _safe(opponent_stats.get("first_serve_pts_won"), 72.0)
+        logger.warning("BP_BIDIR_SANITY_FAIL | proj=%.2f", proj)
 
     conf = _confidence(p_matches, o_matches, h2h_used)
-
-    # ── Confidence adjustment for TA sample size ──────────────────────────────
     if ta_used and ta_surface_matches < 20:
         conf = max(0, conf - 8)
     elif ta_used and ta_surface_matches > 50:
         conf = min(95, conf + 5)
 
+    # ─────────────────────────────────────────────────────────────────────────
+    # STEP 10 — Verification logging (component breakdown)
+    # ─────────────────────────────────────────────────────────────────────────
+    logger.info(
+        "BP_BIDIR_FINAL | player=%s | surface=%s | format=%s | "
+        "opps=%.2f | conv_pct=%.1f | srv_qual=%.2f | momentum=%.3f | "
+        "bo_scale=%.1f | surf_cal=%.2f | cpr_fac=%.3f | hand=%.3f | "
+        "h2h_used=%s | all_blend=%s | PROJECTION=%.2f",
+        player_name, surface, match_format,
+        effective_opps, effective_conv_pct, serve_quality_adj, momentum_factor,
+        bo_scale, surface_cal, cpr_factor, hand_bp_factor,
+        h2h_used, all_surface_blended, proj,
+    )
+    if is_bo5 and proj < 4.0:
+        logger.warning(
+            "BP_BIDIR_LOW_GS | player=%s | surface=%s | proj=%.2f — "
+            "below 4.0 floor for elite returner at Grand Slam; check each component above",
+            player_name, surface, proj,
+        )
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Return — includes all components for frontend display (Step 8)
+    # ─────────────────────────────────────────────────────────────────────────
+    p1_ret = _return_pts_won(player_stats)
+    p2_srv = _safe(opponent_stats.get("first_serve_pts_won"), 72.0)
+
     return {
-        "projection":           round(proj, 1),
-        "lean":                 "OVER" if proj > base_proj else "UNDER",
-        "confidence":           conf,
-        "conv_rate_pct":        round(conv_rate_pct, 1),
-        "conv_rate_source":     conv_rate_source,
-        "opp_bp_faced":         round(estimated_bp_opps, 1),
-        "base_proj":            round(base_proj, 2),
-        "opp_scaling_factor":   round(opp_scaling_factor, 3),
-        "returner_factor":      round(ret_factor, 3),
-        "h2h_bp_avg":           round(h2h_bp_avg, 1) if h2h_used else None,
-        "hand_bp_factor":       round(hand_bp_factor, 3),
-        "cpr_factor":           round(cpr_factor, 4),
-        "cpr_adj_pct":          round(cpr_adj * 100, 1),
-        "cpr":                  cpr,
-        "p1_ret":               round(p1_ret, 1),
-        "p2_srv":               round(p2_srv, 1),
-        "environment":          env,
-        "environment_factor":   round(env_factor, 3),
-        "ta_used":              ta_used,
-        "ta_surface_matches":   ta_surface_matches,
-        "sanity_failed":        sanity_failed,
-        "used_opp_tour_avg":    used_opp_tour_avg,
+        "projection":            round(proj, 1),
+        "lean":                  "OVER" if proj > (effective_conv_pct / 100.0) * effective_opps else "UNDER",
+        "confidence":            conf,
+        # Conversion rate
+        "conv_rate_pct":         round(conv_rate_pct, 1),
+        "conv_rate_source":      conv_rate_source,
+        # Opportunity pool
+        "opp_bp_faced":          round(estimated_bp_opps, 1),
+        "used_opp_tour_avg":     used_opp_tour_avg,
+        # Formula components
+        "serve_quality_adj":     round(serve_quality_adj, 3),
+        "opp_serve_tier":        opp_serve_tier,
+        "opp_hold_proxy":        round(opp_hold_proxy, 3),
+        "momentum_factor":       round(momentum_factor, 3),
+        "expected_breaks_against": round(expected_breaks_against, 2),
+        "bo_scale":              bo_scale,
+        "match_format":          match_format,
+        "surface_calibration":   round(surface_cal, 3),
+        "cpr_factor":            round(cpr_factor, 4),
+        "cpr":                   cpr,
+        "hand_bp_factor":        round(hand_bp_factor, 3),
+        # Display stats (Step 8)
+        "player_bp_won_per_match":  round((conv_rate_pct / 100.0) * estimated_bp_opps, 1),
+        "player_bp_opps_per_match": round(estimated_bp_opps, 1),
+        "opp_hold_rate_pct":        round(opp_hold_proxy * 100, 1),
+        # Environment
+        "environment":           env,
+        # H2H
+        "h2h_bp_avg":            round(h2h_bp_avg, 1) if h2h_used else None,
+        # Sanity / quality flags
+        "sanity_failed":         sanity_failed,
+        "all_surface_blended":   all_surface_blended,
+        "all_surface_ref":       round(all_surface_ref, 2) if all_surface_ref else None,
+        # TA metadata
+        "ta_used":               ta_used,
+        "ta_surface_matches":    ta_surface_matches,
+        # Legacy fields kept for backward compat
+        "base_proj":             round((effective_conv_pct / 100.0) * effective_opps, 2),
+        "p1_ret":                round(p1_ret, 1),
+        "p2_srv":                round(p2_srv, 1),
     }
 
 
@@ -1290,19 +1377,41 @@ def generate_scouting_report(
             sentences.append(return_note)
 
     elif prop_type == "Break Points Won":
-        conv  = projection.get("conv_rate_pct", 0) or 0
-        faced = projection.get("opp_bp_faced", 0) or 0
+        conv       = projection.get("conv_rate_pct", 0) or 0
+        faced      = projection.get("opp_bp_faced", 0) or 0
+        serve_tier = projection.get("opp_serve_tier", "")
+        bo_scale   = projection.get("bo_scale", 1.0) or 1.0
+        momentum   = projection.get("momentum_factor", 1.0) or 1.0
+        fmt_label  = "best-of-5" if bo_scale >= 1.5 else "best-of-3"
+
+        serve_tier_note = {
+            "Elite": f"{o_last} is an elite server — opportunities will be limited even for good returners.",
+            "Good":  f"{o_last} holds at a solid rate, so each opportunity will count.",
+            "Weak":  f"{o_last} struggles to hold serve, which inflates the opportunity pool significantly.",
+        }.get(serve_tier, "")
+
+        momentum_note = (
+            f" Momentum models add {(momentum - 1) * 100:.0f}% for the break-back effect across {fmt_label}."
+            if momentum > 1.02 else ""
+        )
+
         recent_note = f" {player_name} recently: {p_recent_ref}." if p_recent_ref and not thin_data else ""
         sentences.append(
-            f"{player_name} is converting around {conv:.0f}% of break point chances on {surface}"
-            f" and {o_last} gives up roughly {faced:.1f} BP opportunities per match on serve.{recent_note}"
+            f"{player_name} converts around {conv:.0f}% of break point chances on {surface}"
+            f" and {o_last} gives up roughly {faced:.1f} BP opportunities per {fmt_label} match on serve."
+            f"{recent_note}"
         )
+        if serve_tier_note and not thin_data:
+            sentences.append(serve_tier_note + momentum_note)
+        elif momentum_note and not thin_data:
+            sentences.append(momentum_note.strip())
+
         speed_note = (
             "Fast courts shrink break-point volume — serves are harder to get back."
             if court_is_fast else
-            "Slow clay inflates break chances, especially in longer rallies."
+            "Slow clay gives servers more recovery time per point, which suppresses conversion rates even when opportunities exist."
             if court_is_slow and surface == "Clay" else
-            f"{court_desc} is a medium-pace court — nothing extreme on either side."
+            f"{court_desc} is a medium-pace court — nothing extreme either way."
         )
         if not thin_data:
             sentences.append(speed_note)
