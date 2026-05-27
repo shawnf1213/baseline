@@ -378,7 +378,20 @@ export default function SurfaceAnalyzer({ tour }) {
 
       {error && <div style={{ color: 'var(--red)', padding: 20 }}>Error: {error}</div>}
 
-      {stats && !loading && (
+      {stats && !loading && (() => {
+        // Compute days since last match from the most recent match timestamp
+        const lastMatchTs = stats.all_matches?.[0]?.timestamp
+        const lastMatchDate = lastMatchTs ? new Date(lastMatchTs * 1000) : null
+        const daysSinceLast = lastMatchDate
+          ? Math.floor((Date.now() - lastMatchDate.getTime()) / 86400000)
+          : null
+        const lastMatchLabel = lastMatchDate
+          ? lastMatchDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+          : null
+        const isStale = daysSinceLast != null && daysSinceLast > 7
+        const isInactive = daysSinceLast != null && daysSinceLast > 21
+
+        return (
         <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4 }}>
           {/* Header */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8, flexWrap: 'wrap' }}>
@@ -389,7 +402,35 @@ export default function SurfaceAnalyzer({ tour }) {
               </span>
             )}
             <HandBadge hand={stats.ta_stats?.handedness} />
+            {lastMatchLabel && (
+              <span style={{
+                fontSize: 10, fontWeight: 700, fontFamily: '"Barlow Condensed", sans-serif',
+                letterSpacing: 1, padding: '3px 10px', borderRadius: 6,
+                background: isStale ? '#1a1000' : '#0a0f0c',
+                color: isStale ? '#f5a623' : '#888',
+                border: `1px solid ${isStale ? '#5a3800' : '#1a2520'}`,
+              }}>
+                Last match: {lastMatchLabel}
+              </span>
+            )}
           </div>
+
+          {/* Inactivity warning — shown when last match was > 21 days ago */}
+          {isInactive && (
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 8,
+              background: '#1a1000', border: '1px solid #5a3800',
+              borderRadius: 8, padding: '8px 14px', marginBottom: 12,
+            }}>
+              <span style={{ fontSize: 14 }}>⚠</span>
+              <span style={{
+                fontSize: 11, fontWeight: 700, color: '#f5a623',
+                fontFamily: '"Barlow Condensed", sans-serif', letterSpacing: 0.5,
+              }}>
+                Player may be inactive or injured — last match was {daysSinceLast} days ago
+              </span>
+            </div>
+          )}
 
           {section('Form (last 10)')}
           {/* ── Change 9: FormDots with glow ── */}
@@ -434,7 +475,8 @@ export default function SurfaceAnalyzer({ tour }) {
           {section('Match History')}
           <MatchHistory allMatches={stats.all_matches || []} />
         </motion.div>
-      )}
+        )
+      })()}
     </div>
   )
 }

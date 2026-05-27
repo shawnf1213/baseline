@@ -40,6 +40,7 @@ HEADERS = {
     "Accept-Language": "en-US,en;q=0.9",
     "Referer": "https://www.sofascore.com/",
     "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
 }
 
 # ---------------------------------------------------------------------------
@@ -598,11 +599,22 @@ def _get_player_recent_events(player_id: int, max_pages: int = MAX_PAGES_DEFAULT
     - Stop only when a batch returns no events (end of history) or max_pages reached.
     - No early-stop on surface match count — we want the full career history so
       all-time surface aggregations are accurate.
+    - Cache key is bucketed to a 2-hour window so stale data never persists longer
+      than 2 hours without a fresh Sofascore fetch.
     - PAGE_SCAN lines logged per batch so Railway shows pagination progress.
     """
-    cache_key = f"ss_events_v2_{player_id}"
+    # 2-hour time bucket: forces a fresh fetch every 2 hours regardless of process age.
+    # int(time.time()) // 7200 advances by 1 every 7200 seconds (2 hours).
+    _bucket = int(time.time()) // 7200
+    cache_key = f"ss_events_v2_{player_id}_{_bucket}"
     if cache_key in st.session_state:
+        logger.info("EVENTS_CACHE_HIT | player_id=%s | bucket=%s", player_id, _bucket)
         return st.session_state[cache_key]
+
+    # Rotate proxy port before fetching fresh events — avoids serving cached
+    # responses from a sticky port that may have been seeded on an earlier date.
+    logger.info("EVENTS_FETCH | player_id=%s | bucket=%s | rotating proxy port", player_id, _bucket)
+    _new_session(force_port=True)
 
     all_events: list = []
     now = time.time()
@@ -660,6 +672,25 @@ def _get_player_recent_events(player_id: int, max_pages: int = MAX_PAGES_DEFAULT
             "PAGE_SCAN | player_id=%s | cumulative_events=%d | batches_fetched=%d",
             player_id, len(all_events), batch_num,
         )
+
+    # Diagnostic: log the most recent match date found and total events fetched.
+    finished_events = [
+        e for e in all_events
+        if e.get("status", {}).get("type", "") in ("finished", "ended")
+        and e.get("startTimestamp", 0)
+    ]
+    if finished_events:
+        most_recent_ts = max(e.get("startTimestamp", 0) for e in finished_events)
+        try:
+            most_recent_date = datetime.utcfromtimestamp(most_recent_ts).strftime("%Y-%m-%d")
+        except Exception:
+            most_recent_date = "unknown"
+        logger.info(
+            "EVENTS_FETCHED | player_id=%s | total_events=%d | finished=%d | most_recent_date=%s | bucket=%s",
+            player_id, len(all_events), len(finished_events), most_recent_date, _bucket,
+        )
+    else:
+        logger.warning("EVENTS_FETCHED | player_id=%s | no finished events found | total=%d", player_id, len(all_events))
 
     st.session_state[cache_key] = all_events
     return all_events
@@ -795,9 +826,13 @@ def search_players(query: str, tour: str = "ATP") -> list:
 
 def get_player_stats_by_surface(player_id, tour: str = "ATP") -> dict:
     pid = int(player_id)
-    # v6: full-history pagination, SS aggregation tiers, ace-against extraction
-    cache_key = f"ss_surface_v6_{pid}"
+    # v6: full-history pagination, SS aggregation tiers, ace-against extraction.
+    # Cache key includes the same 2-hour bucket as the events cache so surface stats
+    # are rebuilt whenever the events cache refreshes — never stale > 2 hours.
+    _bucket = int(time.time()) // 7200
+    cache_key = f"ss_surface_v6_{pid}_{_bucket}"
     if cache_key in st.session_state:
+        logger.info("SURFACE_CACHE_HIT | pid=%s | bucket=%s", pid, _bucket)
         return st.session_state[cache_key]
 
     now = time.time()

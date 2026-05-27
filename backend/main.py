@@ -121,6 +121,25 @@ async def health():
     return {"status": "ok", "timestamp": datetime.utcnow().isoformat() + "Z"}
 
 
+@app.get("/api/cache/clear")
+async def cache_clear():
+    """
+    Flush all Sofascore player data from the in-process session_state cache.
+    Clears ss_surface_v6_*, ss_events_v2_*, and ss_stats_* keys.
+    After clearing, the next player request will trigger a fresh Sofascore fetch.
+    """
+    ss = _st_mock.session_state
+    cleared_keys = [k for k in list(ss.keys()) if k.startswith(("ss_", "ss_stats_"))]
+    for k in cleared_keys:
+        del ss[k]
+    logger.info("CACHE_CLEARED | removed %d keys", len(cleared_keys))
+    return {
+        "status": "cleared",
+        "keys_removed": len(cleared_keys),
+        "keys": cleared_keys,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Request models
 # ---------------------------------------------------------------------------
