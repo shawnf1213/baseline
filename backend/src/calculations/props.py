@@ -514,6 +514,26 @@ BO5_SS_SCALE = {
 }
 
 # ---------------------------------------------------------------------------
+# Surface-specific BP scale factors for match format.
+#
+#   best_of_5 (ATP Grand Slams only):
+#     Clay  1.60 — Roland Garros: slowest surface, most break opportunities,
+#                  longest rallies, highest BP volume per set
+#     Hard  1.50 — Australian Open / US Open: moderate pace, solid BP volume
+#     Grass 1.40 — Wimbledon: fastest surface, serve dominates, fewest breaks
+#                  even in a BO5 setting
+#
+#   best_of_3 (all other tour events):
+#     Clay  1.08 — slower surface means more deuce games and BP opportunities
+#     Hard  1.00 — baseline reference
+#     Grass 0.93 — serve dominates, points shorter, fewer service game breaks
+# ---------------------------------------------------------------------------
+SURFACE_FORMAT_BP_SCALE = {
+    "best_of_5": {"Clay": 1.60, "Hard": 1.50, "Grass": 1.40},
+    "best_of_3": {"Clay": 1.08, "Hard": 1.00, "Grass": 0.93},
+}
+
+# ---------------------------------------------------------------------------
 # Match environment detection
 # ---------------------------------------------------------------------------
 ENVIRONMENT_LABELS = {
@@ -838,7 +858,8 @@ def project_break_points(
     used_opp_tour_avg  = False
 
     is_bo5 = (match_format == "best_of_5" and tour == "ATP")
-    bo_scale = 1.6 if is_bo5 else 1.0
+    _fmt_key = "best_of_5" if is_bo5 else "best_of_3"
+    bo_scale = SURFACE_FORMAT_BP_SCALE[_fmt_key].get(surface, 1.50 if is_bo5 else 1.00)
 
     player_name = player_stats.get("player_name", "?")
     opp_name    = opponent_stats.get("player_name", "?")
