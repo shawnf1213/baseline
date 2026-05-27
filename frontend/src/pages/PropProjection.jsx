@@ -54,6 +54,16 @@ const STATIC_LABEL_STYLE = {
   marginBottom: 8,
 }
 
+// Animation variants — defined at module level so Vite/ESBuild can tree-shake safely
+const ANIMATION_CONTAINER = {
+  hidden: { opacity: 0 },
+  show: { opacity: 1, transition: { staggerChildren: 0.08 } },
+}
+const ANIMATION_ITEM = {
+  hidden: { opacity: 0, y: 16 },
+  show: { opacity: 1, y: 0, transition: { duration: 0.3, ease: 'easeOut' } },
+}
+
 // ── Change 3: stat color helper ─────────────────────────────────────────────
 function statColor(label, value) {
   const v = parseFloat(value)
@@ -488,6 +498,24 @@ export default function PropProjection({ tour }) {
     || p2PrefetchStats?.All
     || null
 
+  // Env color — computed at component level (used in results block)
+  const envColor = ENV_COLORS[result?.environment] || '#888'
+
+  // Inactivity warnings — computed at component level (not in IIFE inside JSX)
+  const inactivityWarnings = useMemo(() => {
+    const warnings = []
+    const check = (player, stats) => {
+      if (!player || !stats?.all_matches?.length) return
+      const ts = stats.all_matches[0]?.timestamp
+      if (!ts) return
+      const days = Math.floor((Date.now() - ts * 1000) / 86400000)
+      if (days > 21) warnings.push({ name: player.name, days })
+    }
+    check(p1, p1PrefetchStats)
+    check(p2, p2PrefetchStats)
+    return warnings
+  }, [p1, p2, p1PrefetchStats, p2PrefetchStats])
+
   // Render-time diagnostics
   if (result) {
     console.log('[BASELINE] 🎨 Render — projection:', result.model_projection,
@@ -513,38 +541,25 @@ export default function PropProjection({ tour }) {
       </div>
 
       {/* Inactivity warnings — shown when a selected player hasn't played in > 21 days */}
-      {(p1PrefetchStats || p2PrefetchStats) && (() => {
-        const warnings = []
-        const checkPlayer = (player, stats) => {
-          if (!player || !stats?.all_matches?.length) return
-          const ts = stats.all_matches[0]?.timestamp
-          if (!ts) return
-          const days = Math.floor((Date.now() - ts * 1000) / 86400000)
-          if (days > 21) warnings.push({ name: player.name, days })
-        }
-        checkPlayer(p1, p1PrefetchStats)
-        checkPlayer(p2, p2PrefetchStats)
-        if (!warnings.length) return null
-        return (
-          <div style={{ marginBottom: 14 }}>
-            {warnings.map((w, i) => (
-              <div key={i} style={{
-                display: 'flex', alignItems: 'center', gap: 8,
-                background: '#1a1000', border: '1px solid #5a3800',
-                borderRadius: 8, padding: '7px 14px', marginBottom: 6,
+      {inactivityWarnings.length > 0 && (
+        <div style={{ marginBottom: 14 }}>
+          {inactivityWarnings.map((w, i) => (
+            <div key={i} style={{
+              display: 'flex', alignItems: 'center', gap: 8,
+              background: '#1a1000', border: '1px solid #5a3800',
+              borderRadius: 8, padding: '7px 14px', marginBottom: 6,
+            }}>
+              <span style={{ fontSize: 13 }}>⚠</span>
+              <span style={{
+                fontSize: 11, fontWeight: 700, color: '#f5a623',
+                fontFamily: '"Barlow Condensed", sans-serif', letterSpacing: 0.5,
               }}>
-                <span style={{ fontSize: 13 }}>⚠</span>
-                <span style={{
-                  fontSize: 11, fontWeight: 700, color: '#f5a623',
-                  fontFamily: '"Barlow Condensed", sans-serif', letterSpacing: 0.5,
-                }}>
-                  {w.name} may be inactive or injured — last match was {w.days} days ago
-                </span>
-              </div>
-            ))}
-          </div>
-        )
-      })()}
+                {w.name} may be inactive or injured — last match was {w.days} days ago
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* Match Setup */}
       {section('Match Setup')}
@@ -647,21 +662,11 @@ export default function PropProjection({ tour }) {
 
       {/* Phase 2: stagger variants */}
       <AnimatePresence>
-        {result && !loading && (() => {
-          const container = {
-            hidden: { opacity: 0 },
-            show: { opacity: 1, transition: { staggerChildren: 0.08 } },
-          }
-          const item = {
-            hidden: { opacity: 0, y: 16 },
-            show: { opacity: 1, y: 0, transition: { duration: 0.3, ease: 'easeOut' } },
-          }
-          const envColor = ENV_COLORS[result.environment] || '#888'
-          return (
-            <motion.div key="results" variants={container} initial="hidden" animate="show" exit={{ opacity: 0 }}>
+        {result && !loading && (
+            <motion.div key="results" variants={ANIMATION_CONTAINER} initial="hidden" animate="show" exit={{ opacity: 0 }}>
 
               {/* ── Projection cards ── */}
-              <motion.div variants={item}>
+              <motion.div variants={ANIMATION_ITEM}>
                 <SectionDivider label="PROJECTION" />
 
                 {/* Null-projection banner */}
@@ -745,7 +750,7 @@ export default function PropProjection({ tour }) {
 
               {/* ── Last 5 Matches bar chart (any surface) ── */}
               {statKey && (
-                <motion.div variants={item}>
+                <motion.div variants={ANIMATION_ITEM}>
                   {section(`Last 5 Matches — ${propType} (${p1?.name})`)}
                   <div style={{ background: '#0a0f0c', border: '1px solid #1a2520', borderRadius: 12, padding: '18px 18px 10px', marginBottom: 20 }}>
                     {propLine > 0 && (
@@ -769,7 +774,7 @@ export default function PropProjection({ tour }) {
 
               {/* ── Environment badge — Phase 8: motion pulse dot ── */}
               {result.environment && (
-                <motion.div variants={item} style={{ marginBottom: 16 }}>
+                <motion.div variants={ANIMATION_ITEM} style={{ marginBottom: 16 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '14px 18px', background: '#0a0f0c', border: '1px solid #1a2520', borderRadius: 12 }}>
                     <span style={{ fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 700, fontSize: 9, letterSpacing: 2, textTransform: 'uppercase', color: '#2a3a30' }}>Match Environment</span>
                     <span style={{
@@ -793,7 +798,7 @@ export default function PropProjection({ tour }) {
 
               {/* ── Stat comparison ── */}
               {(p1SurfaceStats || p2SurfaceStats) && (
-                <motion.div variants={item}>
+                <motion.div variants={ANIMATION_ITEM}>
                   <SectionDivider label="SURFACE STATS" />
 
                   {/* HANDEDNESS EDGE badge — amber when a cross-handed matchup exists */}
@@ -878,7 +883,7 @@ export default function PropProjection({ tour }) {
 
               {/* ── H2H context ── */}
               {result.h2h_context && (result.h2h_context.total > 0 || result.h2h_context.total === 0) && (
-                <motion.div variants={item}>
+                <motion.div variants={ANIMATION_ITEM}>
                   {section(`H2H Context`)}
                   <div style={{ background: '#0a0f0c', border: '1px solid #1a2520', borderRadius: 12, padding: '18px 20px', marginBottom: 16 }}>
                     {result.h2h_context.total === 0 ? (
@@ -923,7 +928,7 @@ export default function PropProjection({ tour }) {
 
               {/* ── Model explanation ── */}
               {result.plain_english_explanation && (
-                <motion.div variants={item}>
+                <motion.div variants={ANIMATION_ITEM}>
                   <SectionDivider label="MODEL EXPLANATION" />
                   <div style={{
                     borderLeft: '3px solid #00e676',
@@ -944,7 +949,7 @@ export default function PropProjection({ tour }) {
 
               {/* ── AI scouting report ── */}
               {result.ai_writeup && (
-                <motion.div variants={item}>
+                <motion.div variants={ANIMATION_ITEM}>
                   <SectionDivider label="AI SCOUTING REPORT" />
                   <div style={{ background: '#080d09', border: '1px solid #1a2520', borderRadius: 12, padding: '22px 24px', position: 'relative', marginBottom: 16 }}>
                     <span style={{
@@ -964,13 +969,12 @@ export default function PropProjection({ tour }) {
               )}
 
               {/* ── Confidence breakdown ── */}
-              <motion.div variants={item}>
+              <motion.div variants={ANIMATION_ITEM}>
                 <ConfidenceBreakdown breakdown={result.confidence_breakdown} />
               </motion.div>
 
             </motion.div>
-          )
-        })()}
+        )}
       </AnimatePresence>
     </div>
   )
