@@ -995,6 +995,30 @@ def project_break_points(
     logger.info("BP_WON_HAND | opp_hand=%s | hand_factor=%.3f | after=%.2f",
                 opp_hand, hand_bp_factor, proj)
 
+    # ── Step 3e: Match environment factor ────────────────────────────────────
+    # detect_environment already applies surface adjustments internally:
+    #   Clay  +12% break rate → more likely HIGH_BREAK / RET_EDGE
+    #   Grass −12% break rate → more likely SERVE_DOM
+    # So this factor compounds meaningfully with the surface's inherent break tendency.
+    #
+    # Factors are intentionally modest — the opportunity pool (estimated_bp_opps)
+    # already encodes the surface's base break rate via tour averages.
+    # The environment factor captures the SPECIFIC matchup dynamic on top of that.
+    env = detect_environment(player_stats, opponent_stats, surface=surface)
+    _ENV_BP_FACTORS = {
+        "HIGH_BREAK": 1.10,  # many break chances + pressure → inflated conversion
+        "RET_EDGE":   1.05,  # returner advantage → more deuce situations
+        "STANDARD":   1.00,  # no adjustment
+        "SERVE_DOM":  0.92,  # servers dominant → far fewer chances, harder to convert
+    }
+    env_factor = _ENV_BP_FACTORS.get(env, 1.00)
+    proj_before_env = proj
+    proj = proj * env_factor
+    logger.info(
+        "BP_WON_ENV | env=%s | env_factor=%.3f | before=%.2f | after=%.2f | surface=%s",
+        env, env_factor, proj_before_env, proj, surface,
+    )
+
     # ── Step 4: H2H blend at 30% if ≥ 3 H2H surface matches ─────────────────
     h2h_used = h2h_bp_avg is not None and h2h_bp_avg > 0 and h2h_match_count >= 3
     if h2h_used:
@@ -1030,8 +1054,6 @@ def project_break_points(
             proj, tour_avg_bp * 0.30,
         )
 
-    env = detect_environment(player_stats, opponent_stats, surface=surface)
-
     p1_ret = _return_pts_won(player_stats)
     p2_srv = _safe(opponent_stats.get("first_serve_pts_won"), 72.0)
 
@@ -1061,6 +1083,7 @@ def project_break_points(
         "p1_ret":               round(p1_ret, 1),
         "p2_srv":               round(p2_srv, 1),
         "environment":          env,
+        "environment_factor":   round(env_factor, 3),
         "ta_used":              ta_used,
         "ta_surface_matches":   ta_surface_matches,
         "sanity_failed":        sanity_failed,
