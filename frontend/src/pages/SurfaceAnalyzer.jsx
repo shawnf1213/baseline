@@ -354,6 +354,18 @@ export default function SurfaceAnalyzer({ tour }) {
   const [activeSurface, setActiveSurface] = useState('Hard')
   const { stats, loading, error } = usePlayerStats(player?.id, tour, player?.name || '')
 
+  // Inactivity / freshness — computed at component level (not in IIFE)
+  const lastMatchTs    = stats?.all_matches?.[0]?.timestamp || 0
+  const lastMatchDate  = lastMatchTs > 0 ? new Date(lastMatchTs * 1000) : null
+  const daysSinceLast  = lastMatchDate
+    ? Math.floor((Date.now() - lastMatchDate.getTime()) / 86400000)
+    : null
+  const lastMatchLabel = lastMatchDate
+    ? lastMatchDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+    : null
+  const isStale    = daysSinceLast != null && daysSinceLast > 7
+  const isInactive = daysSinceLast != null && daysSinceLast > 21
+
   const section = (title) => (
     <div style={{ display: 'flex', alignItems: 'center', gap: 16, margin: '20px 0 12px' }}>
       <div style={{ flex: 1, height: 1, background: '#0d1510' }} />
@@ -378,20 +390,7 @@ export default function SurfaceAnalyzer({ tour }) {
 
       {error && <div style={{ color: 'var(--red)', padding: 20 }}>Error: {error}</div>}
 
-      {stats && !loading && (() => {
-        // Compute days since last match from the most recent match timestamp
-        const lastMatchTs = stats.all_matches?.[0]?.timestamp
-        const lastMatchDate = lastMatchTs ? new Date(lastMatchTs * 1000) : null
-        const daysSinceLast = lastMatchDate
-          ? Math.floor((Date.now() - lastMatchDate.getTime()) / 86400000)
-          : null
-        const lastMatchLabel = lastMatchDate
-          ? lastMatchDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
-          : null
-        const isStale = daysSinceLast != null && daysSinceLast > 7
-        const isInactive = daysSinceLast != null && daysSinceLast > 21
-
-        return (
+      {stats && !loading && (
         <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4 }}>
           {/* Header */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8, flexWrap: 'wrap' }}>
@@ -475,8 +474,7 @@ export default function SurfaceAnalyzer({ tour }) {
           {section('Match History')}
           <MatchHistory allMatches={stats.all_matches || []} />
         </motion.div>
-        )
-      })()}
+      )}
     </div>
   )
 }

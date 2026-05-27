@@ -531,6 +531,19 @@ def _parse_match_stats(stats_data: dict, event: dict, player_id: int) -> Optiona
                     val = float(str(raw_str).strip()) if raw_str else None
                 except (ValueError, TypeError):
                     val = None
+
+            # Dual-source bp_faced_count extraction:
+            # Primary:   "Break Points Saved" denominator (set above when is_pct)
+            # Secondary: "Break Points Converted" OPPONENT denominator.
+            #   The opponent's BP conversion fraction is "N/M" where M = BPs
+            #   the opponent had on return = BPs the PLAYER faced on serve.
+            #   This covers matches where BP Saved is returned as a plain
+            #   percentage string ("60%") instead of a fraction ("3/5 (60%)").
+            if "bp_faced_count" not in result:
+                opp_conv_raw = item.get(opp_side, "")
+                opp_frac = re.match(r"(\d+)/(\d+)", str(opp_conv_raw))
+                if opp_frac:
+                    result["bp_faced_count"] = float(opp_frac.group(2))
         else:
             val = item.get(f"{side}Value")
             if val is not None:
