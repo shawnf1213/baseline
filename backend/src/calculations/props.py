@@ -772,12 +772,13 @@ def project_break_points(
     raw_opp_bp_faced = opponent_stats.get("bp_faced_count")
     tour_avg_bp = _tour_avg(tour, surface)["bp_faced_per_match"]
 
-    # Minimum credible floor: 50% of tour average for this surface.
+    # Minimum credible floor: 25% of tour average for this surface.
+    # bp_faced_count is now blended from all 4 SS tiers in blended_stats, so
+    # it's reliable for any player with > 0 stat matches. This floor only catches
+    # genuinely implausible values (near-zero) that would indicate a parse error.
     # NOTE: opp_ss_matches (last-5 recent stat count) is intentionally NOT used
-    # as a fallback trigger here — bp_faced_count is already blended from career
-    # + 3yr + last-20 tiers in blended_stats, so it's reliable even when the
-    # player has few *recent* matches on this surface (e.g. Wawrinka on clay).
-    min_credible_bp = tour_avg_bp * 0.50
+    # as a fallback trigger here.
+    min_credible_bp = tour_avg_bp * 0.25
 
     if (
         raw_opp_bp_faced is None

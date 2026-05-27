@@ -512,6 +512,40 @@ export default function PropProjection({ tour }) {
         }} />
       </div>
 
+      {/* Inactivity warnings — shown when a selected player hasn't played in > 21 days */}
+      {(p1PrefetchStats || p2PrefetchStats) && (() => {
+        const warnings = []
+        const checkPlayer = (player, stats) => {
+          if (!player || !stats?.all_matches?.length) return
+          const ts = stats.all_matches[0]?.timestamp
+          if (!ts) return
+          const days = Math.floor((Date.now() - ts * 1000) / 86400000)
+          if (days > 21) warnings.push({ name: player.name, days })
+        }
+        checkPlayer(p1, p1PrefetchStats)
+        checkPlayer(p2, p2PrefetchStats)
+        if (!warnings.length) return null
+        return (
+          <div style={{ marginBottom: 14 }}>
+            {warnings.map((w, i) => (
+              <div key={i} style={{
+                display: 'flex', alignItems: 'center', gap: 8,
+                background: '#1a1000', border: '1px solid #5a3800',
+                borderRadius: 8, padding: '7px 14px', marginBottom: 6,
+              }}>
+                <span style={{ fontSize: 13 }}>⚠</span>
+                <span style={{
+                  fontSize: 11, fontWeight: 700, color: '#f5a623',
+                  fontFamily: '"Barlow Condensed", sans-serif', letterSpacing: 0.5,
+                }}>
+                  {w.name} may be inactive or injured — last match was {w.days} days ago
+                </span>
+              </div>
+            ))}
+          </div>
+        )
+      })()}
+
       {/* Match Setup */}
       {section('Match Setup')}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 16 }}>

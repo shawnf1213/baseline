@@ -146,6 +146,8 @@ def _sackmann_to_blended_tier(sack: Optional[dict]) -> Optional[dict]:
         "return_second_serve_pts_won": sack.get("return_second_serve_pts_won"),
         "win_rate":            sack.get("win_rate"),
         "matches":             sack.get("matches", 0),
+        # bp_faced_per_match stored as bp_faced_count for unified blending
+        "bp_faced_count":      sack.get("bp_faced_per_match"),
     }
 
 
@@ -256,9 +258,13 @@ def get_blended_stats(
             ss_career_matches = _old_n
 
     # ── Blend each stat ───────────────────────────────────────────────────────
+    # bp_faced_count is included so it receives the same 4-tier weighted blending
+    # as other stats. Previously it was only read from the surface_log or tier1
+    # alone, which caused it to be None for players where bp_saved was returned
+    # in percentage-only format (no fraction denominator) by Sofascore.
     STAT_KEYS = [
         "aces", "double_faults", "first_serve_pts_won", "second_serve_pts_won",
-        "bp_converted", "win_rate",
+        "bp_converted", "win_rate", "bp_faced_count",
     ]
 
     blended: dict = {}
@@ -329,17 +335,19 @@ def get_blended_stats(
     blended["return_first_serve_pts_won"]  = ret_1st
     blended["return_second_serve_pts_won"] = ret_2nd
 
-    bp_faced = _avg_from_ss_log(ss_all, "bp_faced_count")
-    if bp_faced is None and tier1:
-        bp_faced = tier1.get("bp_faced_count")
-    if bp_faced is None and sack_tier:
+    # bp_faced_count is now blended through STAT_KEYS (4-tier weighted average).
+    # If all SS tiers returned None (very thin data), try Sackmann as last resort.
+    if blended.get("bp_faced_count") is None:
         try:
             from src.api.sackmann import apply_surface_adjustments as _sack_adj
-            sack_source = sackmann_stats or _sack_adj(sackmann_all_stats, surface)
-            bp_faced = (sack_source or {}).get("bp_faced_per_match")
+            sack_source = sackmann_stats or (
+                _sack_adj(sackmann_all_stats, surface) if sackmann_all_stats else None
+            )
+            bp_fallback = (sack_source or {}).get("bp_faced_per_match")
+            if bp_fallback:
+                blended["bp_faced_count"] = bp_fallback
         except Exception:
             pass
-    blended["bp_faced_count"] = bp_faced
 
     # matches_played: career match count for confidence scoring
     blended["matches_played"] = ss_career_matches or ss_3yr_matches or ss_last20_matches
