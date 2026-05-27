@@ -288,13 +288,14 @@ def get_blended_stats(
             ss_career_matches = _old_n
 
     # ── Blend each stat ───────────────────────────────────────────────────────
-    # bp_faced_count is included so it receives the same 4-tier weighted blending
-    # as other stats. Previously it was only read from the surface_log or tier1
-    # alone, which caused it to be None for players where bp_saved was returned
-    # in percentage-only format (no fraction denominator) by Sofascore.
+    # bp_faced_count      — SERVE stat: avg BPs player faces on own serve per match
+    # return_bp_opportunities — RETURN stat: avg BP opps player creates as returner
+    # return_bp_converted  — RETURN stat: avg BPs player wins as returner
+    # All receive the same 4-tier weighted blending.
     STAT_KEYS = [
         "aces", "double_faults", "first_serve_pts_won", "second_serve_pts_won",
         "bp_converted", "win_rate", "bp_faced_count",
+        "return_bp_opportunities", "return_bp_converted",  # return-side raw counts
     ]
 
     blended: dict = {}
@@ -379,8 +380,39 @@ def get_blended_stats(
         except Exception:
             pass
 
-    # matches_played: career match count for confidence scoring
+    # matches_played: surface-specific career match count for confidence scoring
     blended["matches_played"] = ss_career_matches or ss_3yr_matches or ss_last20_matches
+    # Explicit surface match count (same as matches_played for the selected surface)
+    blended["surface_matches"] = ss_career_matches
+
+    # ── Overall (all-surface) BP stats ────────────────────────────────────────
+    # Exposed alongside surface-specific stats so the projection layer and UI can
+    # blend surface-specific with overall without a second API call.
+    #
+    # FIELD GUIDE (never confuse these):
+    #   overall_bp_converted        — return conversion rate overall (returner stat)
+    #   overall_bp_opportunities    — avg BP opps created per match as returner overall
+    #   overall_return_bp_converted — avg BPs won per match as returner overall
+    #   overall_bp_faced_count      — avg BPs faced on OWN SERVE per match overall (serve stat)
+    #   overall_matches_played      — total career matches with stats
+    _all_at = (player_ss_data or {}).get("All_all_time_stats") or {}
+    blended["overall_bp_converted"]        = _all_at.get("bp_converted")           # return conv % overall
+    blended["overall_bp_opportunities"]    = _all_at.get("return_bp_opportunities") # avg return BP opps overall
+    blended["overall_return_bp_converted"] = _all_at.get("return_bp_converted")     # avg BPs won returning overall
+    blended["overall_bp_faced_count"]      = _all_at.get("bp_faced_count")          # serve stat overall
+    blended["overall_matches_played"]      = _all_at.get("matches_played", 0) or 0
+
+    logger.info(
+        "[BLEND_OVERALL] surface=%s | surf_conv=%.1f%% | surf_opps=%.2f | "
+        "overall_conv=%.1f%% | overall_opps=%.2f | surf_n=%d | overall_n=%d",
+        surface,
+        blended.get("bp_converted") or 0.0,
+        blended.get("return_bp_opportunities") or 0.0,
+        blended.get("overall_bp_converted") or 0.0,
+        blended.get("overall_bp_opportunities") or 0.0,
+        ss_career_matches,
+        blended.get("overall_matches_played") or 0,
+    )
 
     # ── Data quality flag ──────────────────────────────────────────────────────
     if ss_career_matches >= 20 and not surface_fallback:

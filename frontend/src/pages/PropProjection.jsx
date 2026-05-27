@@ -823,6 +823,33 @@ export default function PropProjection({ tour }) {
                 </motion.div>
               )}
 
+              {/* ── Break Points momentum breakdown (BP prop only) ── */}
+              {propType === 'Break Points Won' && result?.bp_base_proj != null && (
+                <motion.div variants={ANIMATION_ITEM}>
+                  <SectionDivider label="BREAK POINT BREAKDOWN" />
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 16 }}>
+                    {[
+                      ['Base Projection', result.bp_base_proj?.toFixed(2)],
+                      ['Opp Proj BP Won', result.bp_opp_projected?.toFixed(2), '#f5a623'],
+                      [`Momentum Bonus (${result.match_format === 'best_of_5' ? 'BO5' : 'BO3'} ${surface})`,
+                        result.bp_momentum_bonus != null ? `+${result.bp_momentum_bonus.toFixed(3)}` : '—',
+                        '#00e676'],
+                      ['Final Projection', result.model_projection?.toFixed(1), '#00e676'],
+                    ].map(([lbl, val, col]) => (
+                      <div key={lbl} style={{ background: '#0a0f0c', border: '1px solid #1a2520', borderRadius: 10, padding: '12px 14px' }}>
+                        <div style={{ fontFamily: '"Barlow Condensed", sans-serif', fontSize: 9, fontWeight: 700, letterSpacing: 1.5, textTransform: 'uppercase', color: '#2a4a30', marginBottom: 4 }}>{lbl}</div>
+                        <div style={{ fontFamily: '"Barlow Condensed", sans-serif', fontSize: 22, fontWeight: 900, color: col || '#4a6a50' }}>{val ?? '—'}</div>
+                      </div>
+                    ))}
+                  </div>
+                  {result.match_format === 'best_of_5' && (
+                    <div style={{ fontSize: 10, color: '#2a4a30', fontFamily: '"Barlow Condensed", sans-serif', marginBottom: 14, padding: '6px 10px', background: '#0d1a10', borderRadius: 6 }}>
+                      BO5 momentum ×{result.bp_bo5_momentum_mult?.toFixed(2)} · {surface} surface mult ×{result.bp_surf_momentum_mult?.toFixed(2)}
+                    </div>
+                  )}
+                </motion.div>
+              )}
+
               {/* ── Stat comparison ── */}
               {(p1SurfaceStats || p2SurfaceStats) && (
                 <motion.div variants={ANIMATION_ITEM}>
@@ -854,33 +881,63 @@ export default function PropProjection({ tour }) {
                         fallback: result?.opponent_surface_fallback, aceAgainst: result?.opponent_ace_against },
                     ].map(({ s, name, nc, hand, taM, ssM, fallback, aceAgainst }, idx) => {
                       const d = s || {}
-                      // ── BP-specific bidirectional stats (Step 8) ──────────
+                      // ── BP-specific bidirectional stats ───────────────────
                       const isBPProp = propType === 'Break Points Won'
+                      // Surface label for column headers (e.g. "Clay", "Hard")
+                      const surfLabel = surface || 'Surf'
                       let rows
                       if (isBPProp && idx === 0) {
-                        // Selected player — show returner view
+                        // Selected player — returner view with surface vs overall
+                        const surfConv    = result?.bp_surf_conv_pct
+                        const overallConv = result?.bp_overall_conv_pct
+                        const blendedConv = result?.bp_blended_conv_pct ?? result?.conv_rate_pct
+                        const surfN       = result?.bp_surf_conv_sample ?? d.matches_played
+                        const overallN    = result?.bp_overall_conv_sample
+                        const surfOnlyFlag = result?.bp_surf_only_flag
                         rows = [
-                          ['BP Conv Rate', result?.conv_rate_pct != null ? `${result.conv_rate_pct.toFixed(0)}%` : fmtPct(d.bp_converted)],
-                          ['BP Opps Created/Match', result?.player_bp_opps_per_match != null ? fmt(result.player_bp_opps_per_match) : '—'],
-                          ['BP Won/Match (est)', result?.player_bp_won_per_match != null ? fmt(result.player_bp_won_per_match) : '—'],
+                          [`Conv (${surfLabel})`,
+                            surfConv != null
+                              ? <span style={{ color: surfOnlyFlag ? '#f5a623' : '#4a6a50' }}>
+                                  {surfConv.toFixed(0)}%
+                                  {surfN != null && <span style={{ fontSize: 9, color: '#4a6a50', marginLeft: 4 }}>{surfN}m</span>}
+                                </span>
+                              : '—'],
+                          ['Conv (Overall)',
+                            overallConv != null
+                              ? <span style={{ color: '#4a6a50' }}>
+                                  {overallConv.toFixed(0)}%
+                                  {overallN != null && <span style={{ fontSize: 9, color: '#4a6a50', marginLeft: 4 }}>{overallN}m</span>}
+                                </span>
+                              : '—'],
+                          ['Conv (Blended)', blendedConv != null ? `${blendedConv.toFixed(0)}%` : '—'],
+                          [`BP Opps (${surfLabel})`, result?.surf_opp_bp_faced != null ? fmt(result.surf_opp_bp_faced) : '—'],
+                          ['BP Opps (Overall)', result?.overall_opp_bp_faced != null ? fmt(result.overall_opp_bp_faced) : '—'],
                           ['Ret Pts Won (1st)', fmtPct(d.return_first_serve_pts_won)],
-                          ['Ret Pts Won (2nd)', fmtPct(d.return_second_serve_pts_won)],
-                          ['Win Rate', fmtPct(d.win_rate)],
                           ['Matches', d.matches_played || '—'],
                         ]
                       } else if (isBPProp && idx === 1) {
-                        // Opponent — show server view
+                        // Opponent — server view with surface vs overall
                         const serveTier = result?.opp_serve_tier
                         const serveTierColor = { Elite: '#ff4444', Good: '#f5a623', Weak: '#00e676' }[serveTier] || '#4a6a50'
+                        const oppSurfN = result?.bp_opp_surf_sample ?? d.matches_played
                         rows = [
-                          ['BP Faced/Match', result?.opp_bp_faced != null ? fmt(result.opp_bp_faced) : fmt(d.bp_faced_count)],
+                          [`BP Faced (${surfLabel})`,
+                            result?.bp_surf_opp_faced != null
+                              ? <span style={{ color: '#4a6a50' }}>
+                                  {fmt(result.bp_surf_opp_faced)}
+                                  {oppSurfN != null && <span style={{ fontSize: 9, color: '#4a6a50', marginLeft: 4 }}>{oppSurfN}m</span>}
+                                </span>
+                              : fmt(d.bp_faced_count)],
+                          ['BP Faced (Overall)',
+                            result?.bp_overall_opp_faced != null ? fmt(result.bp_overall_opp_faced) : '—'],
+                          ['Opp BP Won (proj)', result?.bp_opp_projected != null
+                            ? <span style={{ color: '#f5a623', fontWeight: 700 }}>{fmt(result.bp_opp_projected)}</span>
+                            : '—'],
                           ['Hold Rate (est)', result?.opp_hold_rate_pct != null ? `${result.opp_hold_rate_pct.toFixed(0)}%` : '—'],
                           ['Serve Quality', serveTier
                             ? <span style={{ color: serveTierColor, fontWeight: 800 }}>{serveTier}</span>
                             : '—'],
                           ['1st Srv Won', fmtPct(d.first_serve_pts_won)],
-                          ['2nd Srv Won', fmtPct(d.second_serve_pts_won)],
-                          ['BP Saved', fmtPct(d.bp_saved)],
                           ['Matches', d.matches_played || '—'],
                         ]
                       } else {

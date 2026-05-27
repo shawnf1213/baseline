@@ -521,11 +521,14 @@ async def prop_calculate(req: PropRequest):
         if p2_unified_surf and p2_unified_surf["matches"] > p2_s.get("matches_played", 0):
             p2_s["matches_played"] = p2_unified_surf["matches"]
 
-        # Best-of-5 for ATP at Grand Slams — determined once, used by all projectors
-        match_fmt = (
-            "best_of_5"
-            if court_for_calc in GRAND_SLAMS and req.tour == "ATP"
-            else "best_of_3"
+        # ── Match format: strict rules, logged for every request ────────────────
+        # ATP Grand Slams only → best_of_5. ALL WTA events → best_of_3 (no
+        # exceptions; WTA Grand Slams are NEVER BO5).  All ATP non-GS → best_of_3.
+        _is_atp_gs = court_for_calc in GRAND_SLAMS and req.tour == "ATP"
+        match_fmt  = "best_of_5" if _is_atp_gs else "best_of_3"
+        logger.info(
+            "MATCH_FORMAT | court=%s | tour=%s | is_atp_gs=%s | match_fmt=%s",
+            court_for_calc or "generic", req.tour, _is_atp_gs, match_fmt,
         )
 
         # Run projection
@@ -550,25 +553,31 @@ async def prop_calculate(req: PropRequest):
                 player_ta=player_ta, opponent_ta=opponent_ta,
             )
         else:  # Break Points Won
-            # All-surface stats for Step 9 sanity check — pull directly from
-            # SS all-time all-surface tier (no re-blending needed; just need
-            # bp_converted% and bp_faced_count as a neutral reference).
+            # All-surface player stats for Step 9 sanity check
             _p1_all_at = p1_data.get("All_all_time_stats") or {}
             p1_all_ref = {
-                # Return stats (returner perspective — used in conversion rate):
-                "bp_converted":            _p1_all_at.get("bp_converted"),        # all-surface return conv %
-                "return_bp_opportunities": _p1_all_at.get("return_bp_opportunities"),  # avg BP opps per match as returner
-                "return_bp_converted":     _p1_all_at.get("return_bp_converted"),  # avg BPs won per match as returner
-                # Serve stat (kept for reference; must NOT be used as conversion denominator):
-                "bp_faced_count":          _p1_all_at.get("bp_faced_count"),       # avg BPs faced on own serve
+                "bp_converted":            _p1_all_at.get("bp_converted"),
+                "return_bp_opportunities": _p1_all_at.get("return_bp_opportunities"),
+                "return_bp_converted":     _p1_all_at.get("return_bp_converted"),
+                "bp_faced_count":          _p1_all_at.get("bp_faced_count"),
             }
-            # Supplement with TA all-surface conversion rate if SS is missing
             if not p1_all_ref["bp_converted"] and player_ta:
                 _ta_all = (player_ta.get("surface_stats") or {}).get("All") or {}
                 p1_all_ref["bp_converted"] = _ta_all.get("bp_conv_pct")
+
+            # All-surface opponent stats (for opponent opportunity blending)
+            _p2_all_at = p2_data.get("All_all_time_stats") or {}
+            p2_all_ref = {
+                "bp_converted":            _p2_all_at.get("bp_converted"),
+                "return_bp_opportunities": _p2_all_at.get("return_bp_opportunities"),
+                "bp_faced_count":          _p2_all_at.get("bp_faced_count"),
+                "matches_played":          _p2_all_at.get("matches_played", 0),
+            }
+
             result = project_break_points(
                 p1_s, p2_s,
                 player_all_stats=p1_all_ref,
+                opponent_all_stats=p2_all_ref,
                 h2h_bp_avg=h2h_bp_avg,
                 cpr_override=cpr,
                 h2h_match_count=h2h_surf_matches,
@@ -738,6 +747,23 @@ async def prop_calculate(req: PropRequest):
             "sanity_failed":        result.get("sanity_failed", False),
             "used_opp_tour_avg":    result.get("used_opp_tour_avg", False),
             "data_warning":         data_warning,
+            # Break Points — surface vs overall breakdown + momentum (BP prop only)
+            "bp_surf_conv_pct":      result.get("surf_conv_pct"),
+            "bp_overall_conv_pct":   result.get("overall_conv_pct"),
+            "bp_blended_conv_pct":   result.get("conv_rate_pct"),
+            "bp_surf_opp_faced":     result.get("surf_opp_bp_faced"),
+            "bp_overall_opp_faced":  result.get("overall_opp_bp_faced"),
+            "bp_blended_opp_faced":  result.get("opp_bp_faced"),
+            "bp_surf_conv_sample":   result.get("surf_conv_sample"),
+            "bp_overall_conv_sample": result.get("overall_conv_sample"),
+            "bp_opp_surf_sample":    result.get("opp_surf_sample"),
+            "bp_surf_only_flag":     result.get("surf_only_flag", False),
+            "bp_opp_projected":      result.get("opp_projected_bp_won"),
+            "bp_momentum_bonus":     result.get("momentum_bonus"),
+            "bp_surf_momentum_mult": result.get("surface_momentum_mult"),
+            "bp_bo5_momentum_mult":  result.get("bo5_momentum_mult"),
+            "bp_base_proj":          result.get("base_proj"),
+            "match_format":          result.get("match_format", match_fmt),
             # Sofascore surface log (for bar chart; may fall back to Sackmann)
             "sofascore_surface_log": p1_chart_log,
             "chart_source":          chart_source,

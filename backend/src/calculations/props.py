@@ -534,6 +534,19 @@ SURFACE_FORMAT_BP_SCALE = {
 }
 
 # ---------------------------------------------------------------------------
+# Break-back momentum model constants
+#
+# Each opponent break statistically increases the broken player's urgency to
+# break back immediately — clay produces the largest effect (longer rallies,
+# more deuce games = more windows), grass the smallest (short points).
+#
+# _BO5_MOMENTUM_MULT amplifies the bonus in 5-set matches because momentum
+# swings compound across more sets.
+# ---------------------------------------------------------------------------
+_SURFACE_MOMENTUM_MULT = {"Clay": 0.28, "Hard": 0.25, "Grass": 0.20}
+_BO5_MOMENTUM_MULT     = 1.15
+
+# ---------------------------------------------------------------------------
 # Match environment detection
 # ---------------------------------------------------------------------------
 ENVIRONMENT_LABELS = {
@@ -828,6 +841,7 @@ def project_break_points(
     player_stats: dict,
     opponent_stats: dict,
     player_all_stats: dict = None,   # all-surface blended stats (Step 9 sanity)
+    opponent_all_stats: dict = None, # all-surface opponent stats (opportunity blending)
     h2h_bp_avg: float = None,
     cpr_override: int = None,
     h2h_match_count: int = 0,
@@ -873,31 +887,65 @@ def project_break_points(
     )
 
     # ─────────────────────────────────────────────────────────────────────────
-    # STEP 1 — Opportunity pool: opponent BP faced per match on this surface
+    # STEP 1 — Opportunity pool: opponent BP faced per match (serve stat)
+    #
+    # "Opponent BP faced" = BPs the opponent faces on their serve per match
+    # = break point opportunities the PLAYER creates as a returner.
+    # This is bp_faced_count (serve stat) — never return_bp_opportunities.
+    #
+    # Blending: surface-specific + overall, weighted by opponent surface sample.
+    #   ≥ 10 surface matches  → 65 % surface + 35 % overall
+    #   5 – 9 surface matches → 40 % surface + 60 % overall
+    #   < 5  surface matches  → overall only
     # ─────────────────────────────────────────────────────────────────────────
-    # raw_opp_bp_faced is the blended Sofascore per-match average from career
-    # data.  It is NOT pre-scaled for BO5 — bo_scale handles that in Step 5.
-    raw_opp_bp_faced = opponent_stats.get("bp_faced_count")
-    tour_avg_bp      = _tour_avg(tour, surface)["bp_faced_per_match"]
-    min_credible_bp  = tour_avg_bp * 0.25
+    raw_opp_bp_faced    = opponent_stats.get("bp_faced_count")         # surface-specific serve stat
+    overall_opp_bp_faced = opponent_stats.get("overall_bp_faced_count") # all-surface serve stat
+    tour_avg_bp         = _tour_avg(tour, surface)["bp_faced_per_match"]
+    min_credible_bp     = tour_avg_bp * 0.25
+    opp_surf_sample     = (opponent_stats.get("surface_matches", 0)
+                           or opponent_stats.get("matches_played", 0) or 0)
 
-    if raw_opp_bp_faced is None or raw_opp_bp_faced < min_credible_bp:
+    surf_credible    = raw_opp_bp_faced is not None and raw_opp_bp_faced >= min_credible_bp
+    overall_credible = overall_opp_bp_faced is not None and overall_opp_bp_faced >= min_credible_bp
+
+    opp_opps_tier = "tour_avg"
+    if surf_credible and overall_credible:
+        if opp_surf_sample >= 10:
+            estimated_bp_opps = 0.65 * raw_opp_bp_faced + 0.35 * overall_opp_bp_faced
+            opp_opps_tier = f"65/35 n={opp_surf_sample}"
+        elif opp_surf_sample >= 5:
+            estimated_bp_opps = 0.40 * raw_opp_bp_faced + 0.60 * overall_opp_bp_faced
+            opp_opps_tier = f"40/60 n={opp_surf_sample}"
+        else:
+            estimated_bp_opps = overall_opp_bp_faced
+            opp_opps_tier = f"overall_only n={opp_surf_sample}"
+    elif surf_credible:
+        estimated_bp_opps = raw_opp_bp_faced
+        opp_opps_tier = "surface_only"
+    elif overall_credible:
+        estimated_bp_opps = overall_opp_bp_faced
+        opp_opps_tier = "overall_fallback"
+    else:
         estimated_bp_opps = tour_avg_bp
         used_opp_tour_avg = True
-        logger.info(
-            "BP_BIDIR_OPP | fallback=tour_avg | raw=%s | tour_avg=%.2f | surface=%s",
-            raw_opp_bp_faced, tour_avg_bp, surface,
-        )
-    else:
-        estimated_bp_opps = raw_opp_bp_faced
-        logger.info(
-            "BP_BIDIR_OPP | bp_faced=%.2f | opp_ss_recent=%d",
-            estimated_bp_opps, opp_ss_matches,
-        )
+
+    logger.info(
+        "BP_BIDIR_OPP | surf_raw=%s | overall=%s | opp_surf_n=%d | "
+        "tier=%s | estimated_opps=%.2f | tour_avg=%.2f",
+        raw_opp_bp_faced, overall_opp_bp_faced, opp_surf_sample,
+        opp_opps_tier, estimated_bp_opps, tour_avg_bp,
+    )
 
     # ─────────────────────────────────────────────────────────────────────────
-    # STEP 2 — Player BP conversion rate on this surface
-    # Blend: 65% SS (recent-weighted tiers) + 35% TA career surface (if ≥ 5 matches)
+    # STEP 2 — Player BP conversion rate
+    #
+    # 2a. Surface+Overall SS blend (sample-size weighted):
+    #   ≥ 10 surface matches  → 65 % surface + 35 % overall
+    #   5 – 9 surface matches → 40 % surface + 60 % overall
+    #   < 5  surface matches  → overall only (flag for UI)
+    #
+    # 2b. Then blend with Tennis Abstract (35 % TA + 65 % SS blend from 2a)
+    #     if ≥ 5 TA surface matches available.
     # ─────────────────────────────────────────────────────────────────────────
     conv_rate_source = ""
     player_ta_surf = None
@@ -909,28 +957,66 @@ def project_break_points(
     if (player_ta_surf
             and player_ta_surf.get("bp_conv_pct") is not None
             and player_ta_surf.get("matches", 0) >= 5):
-        ta_conv_pct       = player_ta_surf["bp_conv_pct"]
-        ta_used           = True
+        ta_conv_pct        = player_ta_surf["bp_conv_pct"]
+        ta_used            = True
         ta_surface_matches = player_ta_surf.get("matches", 0) or 0
 
-    ss_conv_pct = player_stats.get("bp_converted")   # already 4-tier blended
+    # 2a — Surface+overall SS blend
+    ss_surf_conv    = player_stats.get("bp_converted")           # surface-specific sum/sum rate
+    ss_overall_conv = player_stats.get("overall_bp_converted")   # all-surface sum/sum rate
+    surf_sample     = (player_stats.get("surface_matches", 0)
+                       or player_stats.get("matches_played", 0) or 0)
+    overall_sample  = player_stats.get("overall_matches_played", 0) or 0
 
+    surf_only_flag = False   # raised when surface sample < 5 → UI can show warning
+
+    if ss_surf_conv and ss_overall_conv:
+        if surf_sample >= 10:
+            ss_conv_pct   = 0.65 * ss_surf_conv + 0.35 * ss_overall_conv
+            conv_surf_tier = f"SS:65/35 surf_n={surf_sample}"
+        elif surf_sample >= 5:
+            ss_conv_pct   = 0.40 * ss_surf_conv + 0.60 * ss_overall_conv
+            conv_surf_tier = f"SS:40/60 surf_n={surf_sample}"
+        else:
+            ss_conv_pct   = ss_overall_conv
+            conv_surf_tier = f"SS:overall_only surf_n={surf_sample}"
+            surf_only_flag = True
+    elif ss_surf_conv:
+        ss_conv_pct   = ss_surf_conv
+        conv_surf_tier = "SS:surface_only"
+    elif ss_overall_conv:
+        ss_conv_pct   = ss_overall_conv
+        conv_surf_tier = "SS:overall_only"
+        surf_only_flag = True
+    else:
+        ss_conv_pct   = None
+        conv_surf_tier = "SS:none"
+
+    # 2b — TA blend (TA 35% + SS blend 65%)
     if ta_conv_pct is not None and ss_conv_pct and ss_conv_pct > 0:
         conv_rate_pct    = 0.35 * ta_conv_pct + 0.65 * ss_conv_pct
-        conv_rate_source = f"TA(35%)+SS(65%) {surface}"
+        conv_rate_source = f"TA(35%)+{conv_surf_tier}"
     elif ta_conv_pct is not None:
         conv_rate_pct    = ta_conv_pct
         conv_rate_source = f"TA {surface}"
     elif ss_conv_pct and ss_conv_pct > 0:
         conv_rate_pct    = ss_conv_pct
-        conv_rate_source = "SS"
+        conv_rate_source = conv_surf_tier
     else:
         conv_rate_pct    = None
         conv_rate_source = "none"
 
     logger.info(
-        "BP_BIDIR_CONV | conv_rate_pct=%s | source=%s | ta=%s | ss=%s",
-        conv_rate_pct, conv_rate_source, ta_conv_pct, ss_conv_pct,
+        "BP_BIDIR_CONV | conv_rate_pct=%s | source=%s | "
+        "ss_surf=%.1f%% | ss_overall=%.1f%% | surf_n=%d | ta=%.1f%% | "
+        "surf_tier=%s",
+        conv_rate_pct,
+        conv_rate_source,
+        ss_surf_conv or 0.0,
+        ss_overall_conv or 0.0,
+        surf_sample,
+        ta_conv_pct or 0.0,
+        conv_surf_tier,
     )
 
     # ── Diagnostic: validate return-stat vs serve-stat separation ─────────────
@@ -998,21 +1084,71 @@ def project_break_points(
     )
 
     # ─────────────────────────────────────────────────────────────────────────
-    # STEP 4 — Momentum factor: break-back effect
-    # expected_breaks_against ≈ how many times the player gets broken per match.
-    # Each expected break raises the player's subsequent BP opportunity rate
-    # by ~10 % (midpoint of the 8–12 % spec range), capped at +25 %.
+    # STEP 4 — Break-back momentum (additive bonus model)
+    #
+    # Logic: every time the opponent breaks the player, the player's urgency
+    # to break back immediately increases — this is measurable and surface-
+    # dependent.  Instead of a multiplicative factor on the base projection,
+    # we compute the opponent's projected BP won and add a surface-calibrated
+    # bonus to the player's projection.
+    #
+    # opponent_projected_bp_won:
+    #   = opp_conv_rate_blended × player_bp_faced_blended × bo_scale
+    #   (simplified — no recursive full formula; no serve-quality correction)
+    #
+    # momentum_bonus = opp_proj_bp × surface_mult × bo5_mult   (additive)
+    #
+    # Surface multipliers: Clay 0.28 | Hard 0.25 | Grass 0.20
+    # BO5 amplifier:       × 1.15 (more sets = more momentum swing cycles)
     # ─────────────────────────────────────────────────────────────────────────
-    opp_conv_pct     = opponent_stats.get("bp_converted") or 0.0
-    player_bp_faced  = _safe(player_stats.get("bp_faced_count"), tour_avg_bp)
-    # Scale by bo_scale so momentum reflects the actual match length being projected.
-    expected_breaks_against = (opp_conv_pct / 100.0) * player_bp_faced * bo_scale
-    momentum_factor = min(1.25, 1.0 + expected_breaks_against * 0.10)
+
+    # Opponent conversion rate — surface+overall blend
+    opp_surf_conv    = opponent_stats.get("bp_converted") or 0.0
+    opp_overall_conv = opponent_stats.get("overall_bp_converted") or opp_surf_conv
+    opp_sample       = (opponent_stats.get("surface_matches", 0)
+                        or opponent_stats.get("matches_played", 0) or 0)
+
+    if opp_surf_conv and opp_overall_conv:
+        if opp_sample >= 10:
+            opp_blended_conv = 0.65 * opp_surf_conv + 0.35 * opp_overall_conv
+        elif opp_sample >= 5:
+            opp_blended_conv = 0.40 * opp_surf_conv + 0.60 * opp_overall_conv
+        else:
+            opp_blended_conv = opp_overall_conv
+    else:
+        opp_blended_conv = opp_surf_conv or opp_overall_conv or 0.0
+
+    # Player BP faced on own serve — opponent's opportunity pool (surface+overall blend)
+    player_bp_faced_surf    = _safe(player_stats.get("bp_faced_count"), tour_avg_bp)
+    player_bp_faced_overall = player_stats.get("overall_bp_faced_count") or player_bp_faced_surf
+    player_surf_n           = (player_stats.get("surface_matches", 0)
+                               or player_stats.get("matches_played", 0) or 0)
+
+    if player_bp_faced_surf and player_bp_faced_overall:
+        if player_surf_n >= 10:
+            player_bp_faced_blended = 0.65 * player_bp_faced_surf + 0.35 * player_bp_faced_overall
+        elif player_surf_n >= 5:
+            player_bp_faced_blended = 0.40 * player_bp_faced_surf + 0.60 * player_bp_faced_overall
+        else:
+            player_bp_faced_blended = player_bp_faced_overall
+    else:
+        player_bp_faced_blended = player_bp_faced_surf
+
+    # Opponent projected BP won (simplified — scales with bo_scale for BO5)
+    opp_projected_bp_won = (opp_blended_conv / 100.0) * player_bp_faced_blended * bo_scale
+
+    # Break-back momentum bonus (additive, surface + format calibrated)
+    surface_momentum_mult = _SURFACE_MOMENTUM_MULT.get(surface, 0.25)
+    bo5_momentum_mult     = _BO5_MOMENTUM_MULT if is_bo5 else 1.0
+    momentum_bonus        = opp_projected_bp_won * surface_momentum_mult * bo5_momentum_mult
 
     logger.info(
-        "BP_BIDIR_MOMENTUM | opp_conv=%.1f%% | player_bp_faced=%.2f | "
-        "bo_scale=%.1f | exp_breaks_against=%.2f | momentum=%.3f",
-        opp_conv_pct, player_bp_faced, bo_scale, expected_breaks_against, momentum_factor,
+        "BP_MOMENTUM_BREAKBACK | opp_surf_conv=%.1f%% | opp_overall_conv=%.1f%% | "
+        "opp_blended_conv=%.1f%% | opp_n=%d | player_bp_faced_blended=%.2f | "
+        "opp_proj_bp=%.2f | surf_mult=%.2f | bo5_mult=%.2f | momentum_bonus=%.3f",
+        opp_surf_conv, opp_overall_conv, opp_blended_conv, opp_sample,
+        player_bp_faced_blended, opp_projected_bp_won,
+        surface_momentum_mult, bo5_momentum_mult, momentum_bonus,
     )
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -1057,46 +1193,54 @@ def project_break_points(
     # ─────────────────────────────────────────────────────────────────────────
     # STEP 7 — Combined formula
     #
-    # projected_bp_won = opportunities_created
-    #                  × conversion_rate
-    #                  × serve_quality_adj
-    #                  × momentum_factor
-    #                  × bo_scale
-    #                  × surface_calibration
+    # base_proj = opportunities_created
+    #           × conversion_rate
+    #           × serve_quality_adj
+    #           × bo_scale
+    #           × surface_calibration
+    #           × cpr_factor
     #
-    # Grass applies separate adjustments to opportunity count and conv rate.
-    # CPR adjusts the final product (applies as additional surface calibration).
+    # proj = base_proj + momentum_bonus   (break-back bonus is ADDITIVE)
+    #
+    # Grass: separate adjustments to opportunity count (×0.85) and conv rate
+    # (×1.05).  CPR: ±3% per 10-point deviation from neutral.
     # ─────────────────────────────────────────────────────────────────────────
     effective_opps     = estimated_bp_opps * grass_opp_shrink
     effective_conv_pct = conv_rate_pct * grass_conv_boost
 
-    proj = (
+    base_proj = (
         effective_opps
         * (effective_conv_pct / 100.0)
         * serve_quality_adj
-        * momentum_factor
         * bo_scale
         * surface_cal
         * cpr_factor
     )
+    proj = base_proj + momentum_bonus
 
     raw_proj = proj   # before handedness / H2H adjustments — used in diagnostic
     logger.info(
         "BP_BIDIR_FORMULA | opps=%.2f | conv=%.1f%% | srv_qual=%.2f | "
-        "momentum=%.3f | bo_scale=%.1f | surf_cal=%.2f | cpr_fac=%.3f | proj=%.2f",
+        "bo_scale=%.2f | surf_cal=%.2f | cpr_fac=%.3f | "
+        "base_proj=%.2f | momentum_bonus=%.3f | proj=%.2f",
         effective_opps, effective_conv_pct, serve_quality_adj,
-        momentum_factor, bo_scale, surface_cal, cpr_factor, proj,
+        bo_scale, surface_cal, cpr_factor,
+        base_proj, momentum_bonus, proj,
     )
-    # ── Step 4 diagnostic: full matchup breakdown ─────────────────────────────
+    # ── Step 7 GS diagnostic: full Sinner-style matchup breakdown ─────────────
     logger.info(
-        "BP_MATCHUP_DIAG | %s vs %s | surface=%s | format=%s | "
-        "player_ret_conv=%.1f%% | opp_bp_faced_per_match=%.2f | "
-        "bo_scale=%.2f (surface=%s format=%s) | raw_proj=%.2f",
+        "BP_GS_DIAGNOSTIC | %s vs %s | surface=%s | format=%s | "
+        "player_surf_conv=%.1f%% | player_overall_conv=%.1f%% | blended_conv=%.1f%% | "
+        "opp_surf_bp_faced=%.2f | opp_overall_bp_faced=%.2f | blended_opps=%.2f | "
+        "bo_scale=%.2f | surf_cal=%.2f | cpr_fac=%.3f | "
+        "opp_proj_bp_won=%.2f | surf_momentum_mult=%.2f | bo5_momentum_mult=%.2f | "
+        "momentum_bonus=%.3f | base_proj=%.2f | raw_proj_with_momentum=%.2f",
         player_name, opp_name, surface, match_format,
-        conv_rate_pct or 0.0,
-        estimated_bp_opps,
-        bo_scale, surface, match_format,
-        raw_proj,
+        ss_surf_conv or 0.0, ss_overall_conv or 0.0, conv_rate_pct or 0.0,
+        raw_opp_bp_faced or 0.0, overall_opp_bp_faced or 0.0, estimated_bp_opps,
+        bo_scale, surface_cal, cpr_factor,
+        opp_projected_bp_won, surface_momentum_mult, bo5_momentum_mult,
+        momentum_bonus, base_proj, proj,
     )
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -1181,18 +1325,21 @@ def project_break_points(
     # ─────────────────────────────────────────────────────────────────────────
     logger.info(
         "BP_BIDIR_FINAL | player=%s | surface=%s | format=%s | "
-        "opps=%.2f | conv_pct=%.1f | srv_qual=%.2f | momentum=%.3f | "
-        "bo_scale=%.1f | surf_cal=%.2f | cpr_fac=%.3f | hand=%.3f | "
+        "opps=%.2f | conv_pct=%.1f | srv_qual=%.2f | "
+        "bo_scale=%.2f | surf_cal=%.2f | cpr_fac=%.3f | hand=%.3f | "
+        "base_proj=%.2f | momentum_bonus=%.3f | opp_proj_bp=%.2f | "
         "h2h_used=%s | all_blend=%s | PROJECTION=%.2f",
         player_name, surface, match_format,
-        effective_opps, effective_conv_pct, serve_quality_adj, momentum_factor,
+        effective_opps, effective_conv_pct, serve_quality_adj,
         bo_scale, surface_cal, cpr_factor, hand_bp_factor,
+        base_proj, momentum_bonus, opp_projected_bp_won,
         h2h_used, all_surface_blended, proj,
     )
-    if is_bo5 and proj < 4.0:
+    if is_bo5 and proj < 4.5:
         logger.warning(
             "BP_BIDIR_LOW_GS | player=%s | surface=%s | proj=%.2f — "
-            "below 4.0 floor for elite returner at Grand Slam; check each component above",
+            "below 4.5 for Grand Slam; check surface conv rate, opp BP faced, "
+            "bo_scale, and momentum_bonus above",
             player_name, surface, proj,
         )
 
@@ -1204,43 +1351,54 @@ def project_break_points(
 
     return {
         "projection":            round(proj, 1),
-        "lean":                  "OVER" if proj > (effective_conv_pct / 100.0) * effective_opps else "UNDER",
+        "lean":                  "OVER" if proj > base_proj else "UNDER",
         "confidence":            conf,
-        # Conversion rate
-        "conv_rate_pct":         round(conv_rate_pct, 1),
+        # ── Conversion rate ──────────────────────────────────────────────────
+        "conv_rate_pct":         round(conv_rate_pct, 1),   # final blended rate used
         "conv_rate_source":      conv_rate_source,
-        # Opportunity pool
-        "opp_bp_faced":          round(estimated_bp_opps, 1),
+        "surf_conv_pct":         round(ss_surf_conv, 1) if ss_surf_conv else None,    # surface-only
+        "overall_conv_pct":      round(ss_overall_conv, 1) if ss_overall_conv else None,  # overall
+        "surf_conv_sample":      surf_sample,      # player surface match count
+        "overall_conv_sample":   overall_sample,   # player overall match count
+        "surf_only_flag":        surf_only_flag,   # True when < 5 surface matches
+        # ── Opportunity pool (opponent BP faced on serve) ────────────────────
+        "opp_bp_faced":          round(estimated_bp_opps, 1),   # blended opps used
+        "surf_opp_bp_faced":     round(raw_opp_bp_faced, 1) if raw_opp_bp_faced else None,
+        "overall_opp_bp_faced":  round(overall_opp_bp_faced, 1) if overall_opp_bp_faced else None,
+        "opp_surf_sample":       opp_surf_sample,
         "used_opp_tour_avg":     used_opp_tour_avg,
-        # Formula components
+        # ── Formula components ───────────────────────────────────────────────
         "serve_quality_adj":     round(serve_quality_adj, 3),
         "opp_serve_tier":        opp_serve_tier,
         "opp_hold_proxy":        round(opp_hold_proxy, 3),
-        "momentum_factor":       round(momentum_factor, 3),
-        "expected_breaks_against": round(expected_breaks_against, 2),
         "bo_scale":              bo_scale,
         "match_format":          match_format,
         "surface_calibration":   round(surface_cal, 3),
         "cpr_factor":            round(cpr_factor, 4),
         "cpr":                   cpr,
         "hand_bp_factor":        round(hand_bp_factor, 3),
-        # Display stats (Step 8)
+        # ── Break-back momentum (additive) ───────────────────────────────────
+        "base_proj":             round(base_proj, 2),
+        "opp_projected_bp_won":  round(opp_projected_bp_won, 2),
+        "momentum_bonus":        round(momentum_bonus, 3),
+        "surface_momentum_mult": surface_momentum_mult,
+        "bo5_momentum_mult":     bo5_momentum_mult,
+        # ── Display stats ────────────────────────────────────────────────────
         "player_bp_won_per_match":  round((conv_rate_pct / 100.0) * estimated_bp_opps, 1),
         "player_bp_opps_per_match": round(estimated_bp_opps, 1),
         "opp_hold_rate_pct":        round(opp_hold_proxy * 100, 1),
-        # Environment
+        # ── Environment ──────────────────────────────────────────────────────
         "environment":           env,
-        # H2H
+        # ── H2H ──────────────────────────────────────────────────────────────
         "h2h_bp_avg":            round(h2h_bp_avg, 1) if h2h_used else None,
-        # Sanity / quality flags
+        # ── Sanity / quality flags ────────────────────────────────────────────
         "sanity_failed":         sanity_failed,
         "all_surface_blended":   all_surface_blended,
         "all_surface_ref":       round(all_surface_ref, 2) if all_surface_ref else None,
-        # TA metadata
+        # ── TA metadata ──────────────────────────────────────────────────────
         "ta_used":               ta_used,
         "ta_surface_matches":    ta_surface_matches,
-        # Legacy fields kept for backward compat
-        "base_proj":             round((effective_conv_pct / 100.0) * effective_opps, 2),
+        # ── Raw display ──────────────────────────────────────────────────────
         "p1_ret":                round(p1_ret, 1),
         "p2_srv":                round(p2_srv, 1),
     }
