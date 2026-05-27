@@ -388,13 +388,17 @@ def _year_from_ts(ts: int) -> int:
         return 0
 
 
-# Stat keys used for per-match averages in _agg_split
+# Stat keys used for per-match averages in _agg_split.
+# NOTE: bp_converted is NOT averaged here — _agg_split overrides it with a
+# proper sum/sum calculation from return_bp_converted / return_bp_opportunities.
 _SPLIT_NUMERIC_KEYS = [
     "aces", "double_faults", "first_serve_pct",
     "first_serve_pts_won", "second_serve_pts_won",
     "return_first_serve_pts_won", "return_second_serve_pts_won",
-    "bp_converted", "bp_saved", "total_match_games",
+    "bp_saved", "total_match_games",
     "bp_converted_count", "bp_faced_count",
+    # return-side raw counts (stored per match; aggregated via sum/sum in _agg_split)
+    "return_bp_opportunities", "return_bp_converted",
 ]
 
 
@@ -405,6 +409,11 @@ def _agg_split(all_m: list, stat_m: list) -> dict:
 
     This ensures win rate reflects real match outcomes even for Challenger
     events where Sofascore's stats API returns empty data.
+
+    IMPORTANT — bp_converted is calculated via sum/sum (total BPs the player
+    converted as returner ÷ total BP opportunities the player created as
+    returner), NOT as an average of per-match rates.  This prevents bias from
+    matches with very few opportunities.
     """
     if not all_m and not stat_m:
         return {"matches_played": 0, "stat_matches": 0}
@@ -418,6 +427,27 @@ def _agg_split(all_m: list, stat_m: list) -> dict:
     for key in _SPLIT_NUMERIC_KEYS:
         vals = [m[key] for m in stat_m if key in m and m[key] is not None]
         result[key] = round(sum(vals) / len(vals), 4) if vals else None
+
+    # ── bp_converted: sum/sum from raw return-side counts ────────────────────
+    # Pair matches that have BOTH return_bp_converted and return_bp_opportunities.
+    # This gives the true career conversion rate on the surface, not an average
+    # of per-match rates (which is biased by match-to-match opportunity variance).
+    _bp_pairs = [
+        (m["return_bp_converted"], m["return_bp_opportunities"])
+        for m in stat_m
+        if m.get("return_bp_converted") is not None
+        and m.get("return_bp_opportunities") is not None
+        and m["return_bp_opportunities"] > 0
+    ]
+    if _bp_pairs:
+        _total_conv = sum(c for c, _ in _bp_pairs)
+        _total_opps = sum(o for _, o in _bp_pairs)
+        if _total_opps > 0:
+            result["bp_converted"]          = round(_total_conv / _total_opps * 100, 4)
+            result["return_bp_converted"]   = round(_total_conv / len(_bp_pairs), 4)
+            result["return_bp_opportunities"] = round(_total_opps / len(_bp_pairs), 4)
+            result["bp_converted_count"]    = round(_total_conv / len(_bp_pairs), 4)
+
     return result
 
 
@@ -521,24 +551,30 @@ def _parse_match_stats(stats_data: dict, event: dict, player_id: int) -> Optiona
                 if frac_m:
                     result["bp_faced_count"] = float(frac_m.group(2))
         elif internal_key == "bp_converted_count":
-            # Sofascore returns "3/5 (60%)" — extract numerator count
+            # Sofascore "Break Points Converted" for the player's side:
+            #   "3/5 (60%)"  →  group(1)=3  converted as RETURNER  (attacking stat)
+            #                    group(2)=5  opportunities created as RETURNER
+            #
+            # These are RETURN stats.  Never mix with bp_faced_count which is
+            # a SERVE stat (BPs the player faces on their own serve).
             raw_str = item.get(side, "")
             frac_m = re.match(r"(\d+)/(\d+)", str(raw_str))
             if frac_m:
                 val = float(frac_m.group(1))
+                # Store raw return counts separately so _agg_split can sum them.
+                result["return_bp_converted"]     = float(frac_m.group(1))
+                result["return_bp_opportunities"] = float(frac_m.group(2))
             else:
                 try:
                     val = float(str(raw_str).strip()) if raw_str else None
                 except (ValueError, TypeError):
                     val = None
 
-            # Dual-source bp_faced_count extraction:
-            # Primary:   "Break Points Saved" denominator (set above when is_pct)
-            # Secondary: "Break Points Converted" OPPONENT denominator.
-            #   The opponent's BP conversion fraction is "N/M" where M = BPs
-            #   the opponent had on return = BPs the PLAYER faced on serve.
-            #   This covers matches where BP Saved is returned as a plain
-            #   percentage string ("60%") instead of a fraction ("3/5 (60%)").
+            # Secondary serve-side bp_faced_count extraction:
+            # "Break Points Converted" OPPONENT denominator = BPs opponent had on
+            # return = BPs the PLAYER faced on their OWN serve.  This is a serve
+            # stat and must never be used as the conversion-rate denominator.
+            # It covers matches where "Break Points Saved" is a plain "%" string.
             if "bp_faced_count" not in result:
                 opp_conv_raw = item.get(opp_side, "")
                 opp_frac = re.match(r"(\d+)/(\d+)", str(opp_conv_raw))
@@ -582,11 +618,36 @@ def _parse_match_stats(stats_data: dict, event: dict, player_id: int) -> Optiona
         )
         return None
 
+    # ── Per-match BP conversion rate (return stat) ───────────────────────────
+    # Denominator priority:
+    #   1. return_bp_opportunities  — extracted directly from player's "Break
+    #      Points Converted" fraction denominator (most accurate).
+    #   2. opp_bp_faced             — from opponent's "Break Points Saved"
+    #      denominator; numerically identical to (1) in a consistent match.
+    #
+    # NEVER divide by bp_faced_count (player's serve stat) or return_games
+    # (number of return service games).  Those are completely different stats
+    # and using them as the denominator would produce a meaningless rate.
     bp_conv_count = result.get("bp_converted_count")
-    if bp_conv_count is not None and opp_bp_faced and opp_bp_faced > 0:
-        result["bp_converted"] = bp_conv_count / opp_bp_faced * 100
-    elif bp_conv_count is not None and result.get("return_games") and result["return_games"] > 0:
-        result["bp_converted"] = bp_conv_count / result["return_games"] * 100
+    ret_opps      = result.get("return_bp_opportunities")
+    denom         = ret_opps if (ret_opps is not None and ret_opps > 0) \
+                    else (opp_bp_faced if (opp_bp_faced and opp_bp_faced > 0) else None)
+
+    if bp_conv_count is not None and denom is not None:
+        result["bp_converted"] = bp_conv_count / denom * 100
+        # Ensure return_bp_opportunities is stored even when extracted via opp_bp_faced
+        if ret_opps is None:
+            result["return_bp_opportunities"] = denom
+        logger.debug(
+            "BP_CONV_RATE | event_id=%s | converted=%.0f | opps=%.0f | rate=%.1f%%",
+            result.get("event_id"), bp_conv_count, denom,
+            result["bp_converted"],
+        )
+    else:
+        logger.debug(
+            "BP_CONV_RATE_SKIP | event_id=%s | bp_conv_count=%s | ret_opps=%s | opp_bp_faced=%s",
+            result.get("event_id"), bp_conv_count, ret_opps, opp_bp_faced,
+        )
 
     return result
 
@@ -1041,11 +1102,15 @@ def get_player_stats_by_surface(player_id, tour: str = "ATP") -> dict:
             "total_match_games": m.get("total_match_games"),
             "aces":            m.get("aces"),
             "double_faults":   m.get("double_faults"),
-            "bp_converted_count": m.get("bp_converted_count"),
-            "bp_converted":    m.get("bp_converted"),
-            "bp_faced_count":  m.get("bp_faced_count"),
-            "first_serve_pts_won": m.get("first_serve_pts_won"),
-            "second_serve_pts_won": m.get("second_serve_pts_won"),
+            "bp_converted_count":    m.get("bp_converted_count"),
+            "bp_converted":          m.get("bp_converted"),
+            # Return-side raw counts (NOT serve stats):
+            "return_bp_converted":    m.get("return_bp_converted"),    # BPs won as returner
+            "return_bp_opportunities": m.get("return_bp_opportunities"), # BPs created as returner
+            # Serve-side raw count (NEVER use as conversion-rate denominator):
+            "bp_faced_count":        m.get("bp_faced_count"),   # BPs faced on own serve
+            "first_serve_pts_won":   m.get("first_serve_pts_won"),
+            "second_serve_pts_won":  m.get("second_serve_pts_won"),
         }
 
     for surf in ("Hard", "Clay", "Grass"):

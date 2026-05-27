@@ -79,18 +79,27 @@ def _ss_tier_to_blended(
         "first_serve_pct":             ss_stats.get("first_serve_pct"),
         "first_serve_pts_won":         ss_stats.get("first_serve_pts_won"),
         "second_serve_pts_won":        ss_stats.get("second_serve_pts_won"),
-        "bp_converted":                _p("bp_converted"),
+        # Return stats (RETURNER perspective — used in BP conversion rate):
+        "bp_converted":                _p("bp_converted"),            # return conv % (sum/sum)
+        "return_bp_converted":         ss_stats.get("return_bp_converted"),   # avg BPs won per match as returner
+        "return_bp_opportunities":     ss_stats.get("return_bp_opportunities"), # avg BP opps per match as returner
+        # Serve stat (NOT the conversion denominator):
+        "bp_faced_count":              ss_stats.get("bp_faced_count"),  # avg BPs faced on own serve
         "bp_saved":                    ss_stats.get("bp_saved"),
         "return_first_serve_pts_won":  ss_stats.get("return_first_serve_pts_won"),
         "return_second_serve_pts_won": ss_stats.get("return_second_serve_pts_won"),
         "win_rate":                    ss_stats.get("win_rate"),
         "matches":                     ss_stats.get("matches_played", 0),
-        "bp_faced_count":              ss_stats.get("bp_faced_count"),
     }
 
 
 def _ss_log5_to_blended(ss_log: list) -> Optional[dict]:
-    """Convert last-5 Sofascore surface log entries to the blended format."""
+    """Convert last-5 Sofascore surface log entries to the blended format.
+
+    bp_converted is computed via sum/sum (total return BPs converted divided by
+    total return BP opportunities across the 5 matches), not as an average of
+    per-match rates.  This is the same method used in _agg_split.
+    """
     last5 = ss_log[:5]
     if len(last5) < 3:
         return None  # not enough for a meaningful contribution
@@ -99,16 +108,37 @@ def _ss_log5_to_blended(ss_log: list) -> Optional[dict]:
         vals = [m[key] for m in last5 if m.get(key) is not None]
         return sum(vals) / len(vals) if vals else None
 
+    # sum/sum for bp_converted — only using matches that have both raw counts
+    _bp_pairs = [
+        (m["return_bp_converted"], m["return_bp_opportunities"])
+        for m in last5
+        if m.get("return_bp_converted") is not None
+        and m.get("return_bp_opportunities") is not None
+        and m["return_bp_opportunities"] > 0
+    ]
+    if _bp_pairs:
+        _total_conv = sum(c for c, _ in _bp_pairs)
+        _total_opps = sum(o for _, o in _bp_pairs)
+        bp_conv_rate = (_total_conv / _total_opps * 100) if _total_opps > 0 else None
+    else:
+        # Fallback: average of pre-computed per-match rates (already correct formula,
+        # just less accurate than sum/sum when opportunity counts vary widely)
+        bp_conv_rate = avg("bp_converted")
+
     wins = sum(1 for m in last5 if m.get("won", False))
     return {
-        "aces":                   avg("aces"),
-        "double_faults":          avg("double_faults"),
-        "first_serve_pts_won":    avg("first_serve_pts_won"),
-        "second_serve_pts_won":   avg("second_serve_pts_won"),
-        "bp_converted":           avg("bp_converted"),
-        "bp_faced_count":         avg("bp_faced_count"),
-        "win_rate":               wins / len(last5) * 100 if last5 else None,
-        "matches":                len(last5),
+        "aces":                      avg("aces"),
+        "double_faults":             avg("double_faults"),
+        "first_serve_pts_won":       avg("first_serve_pts_won"),
+        "second_serve_pts_won":      avg("second_serve_pts_won"),
+        # Return stats — bp_converted is sum/sum, not average-of-rates:
+        "bp_converted":              bp_conv_rate,
+        "return_bp_converted":       avg("return_bp_converted"),      # avg BPs won per match as returner
+        "return_bp_opportunities":   avg("return_bp_opportunities"),   # avg BP opps per match as returner
+        # Serve stat (never the conversion denominator):
+        "bp_faced_count":            avg("bp_faced_count"),   # avg BPs faced on own serve
+        "win_rate":                  wins / len(last5) * 100 if last5 else None,
+        "matches":                   len(last5),
     }
 
 

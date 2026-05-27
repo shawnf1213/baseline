@@ -555,10 +555,14 @@ async def prop_calculate(req: PropRequest):
             # bp_converted% and bp_faced_count as a neutral reference).
             _p1_all_at = p1_data.get("All_all_time_stats") or {}
             p1_all_ref = {
-                "bp_converted":  _p1_all_at.get("bp_conv_pct"),
-                "bp_faced_count": _p1_all_at.get("bp_faced_count"),
+                # Return stats (returner perspective — used in conversion rate):
+                "bp_converted":            _p1_all_at.get("bp_converted"),        # all-surface return conv %
+                "return_bp_opportunities": _p1_all_at.get("return_bp_opportunities"),  # avg BP opps per match as returner
+                "return_bp_converted":     _p1_all_at.get("return_bp_converted"),  # avg BPs won per match as returner
+                # Serve stat (kept for reference; must NOT be used as conversion denominator):
+                "bp_faced_count":          _p1_all_at.get("bp_faced_count"),       # avg BPs faced on own serve
             }
-            # Supplement with TA all-surface if SS is missing
+            # Supplement with TA all-surface conversion rate if SS is missing
             if not p1_all_ref["bp_converted"] and player_ta:
                 _ta_all = (player_ta.get("surface_stats") or {}).get("All") or {}
                 p1_all_ref["bp_converted"] = _ta_all.get("bp_conv_pct")

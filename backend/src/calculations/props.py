@@ -933,6 +933,34 @@ def project_break_points(
         conv_rate_pct, conv_rate_source, ta_conv_pct, ss_conv_pct,
     )
 
+    # ── Diagnostic: validate return-stat vs serve-stat separation ─────────────
+    # These values are logged at INFO level so they always appear in Railway logs.
+    # Return stats (used in conversion rate):
+    _ret_conv_raw = player_stats.get("return_bp_converted")    # avg BPs won per match as returner
+    _ret_opps_raw = player_stats.get("return_bp_opportunities") # avg BP opps per match as returner
+    # Serve stat (must NEVER be used as conversion-rate denominator):
+    _srv_faced    = player_stats.get("bp_faced_count")          # avg BPs faced per match on own serve
+    logger.info(
+        "BP_STAT_AUDIT | player=%s | surface=%s | "
+        "return_bp_converted_per_match=%s | return_bp_opps_per_match=%s | "
+        "serve_bp_faced_per_match=%s | ss_conv_rate=%.1f%% | "
+        "[VERIFY: conv_rate must equal return_bp_converted/return_bp_opps; "
+        "bp_faced_count is a SERVE stat and is NOT the denominator]",
+        player_name, surface,
+        f"{_ret_conv_raw:.2f}" if _ret_conv_raw is not None else "None",
+        f"{_ret_opps_raw:.2f}" if _ret_opps_raw is not None else "None",
+        f"{_srv_faced:.2f}" if _srv_faced is not None else "None",
+        ss_conv_pct or 0.0,
+    )
+    if _ret_opps_raw and _ret_conv_raw and _ret_opps_raw > 0:
+        _direct_rate = _ret_conv_raw / _ret_opps_raw * 100
+        logger.info(
+            "BP_STAT_AUDIT_RATE | player=%s | direct_rate_from_raw=%.1f%% | "
+            "blended_conv_rate=%.1f%% | delta=%.1f%%",
+            player_name, _direct_rate, conv_rate_pct or 0.0,
+            abs((_direct_rate) - (conv_rate_pct or 0.0)),
+        )
+
     p_matches = player_stats.get("matches_played", 0) or 0
     o_matches = opponent_stats.get("matches_played", 0) or 0
 
@@ -1052,11 +1080,23 @@ def project_break_points(
         * cpr_factor
     )
 
+    raw_proj = proj   # before handedness / H2H adjustments — used in diagnostic
     logger.info(
         "BP_BIDIR_FORMULA | opps=%.2f | conv=%.1f%% | srv_qual=%.2f | "
         "momentum=%.3f | bo_scale=%.1f | surf_cal=%.2f | cpr_fac=%.3f | proj=%.2f",
         effective_opps, effective_conv_pct, serve_quality_adj,
         momentum_factor, bo_scale, surface_cal, cpr_factor, proj,
+    )
+    # ── Step 4 diagnostic: full matchup breakdown ─────────────────────────────
+    logger.info(
+        "BP_MATCHUP_DIAG | %s vs %s | surface=%s | format=%s | "
+        "player_ret_conv=%.1f%% | opp_bp_faced_per_match=%.2f | "
+        "bo_scale=%.2f (surface=%s format=%s) | raw_proj=%.2f",
+        player_name, opp_name, surface, match_format,
+        conv_rate_pct or 0.0,
+        estimated_bp_opps,
+        bo_scale, surface, match_format,
+        raw_proj,
     )
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -1098,10 +1138,17 @@ def project_break_points(
     all_surface_ref = None
     if player_all_stats:
         all_conv_pct = player_all_stats.get("bp_converted")
-        all_bp_faced = player_all_stats.get("bp_faced_count") or _tour_avg(tour, "Hard")["bp_faced_per_match"]
+        # Use return_bp_opportunities (avg BP opps the player creates as RETURNER per match)
+        # as the opportunity denominator.  NEVER use bp_faced_count here — that is a
+        # SERVE stat (BPs the player faces on their own serve) and has no role in
+        # projecting BPs the player WINS as a returner.
+        all_bp_opps = (
+            player_all_stats.get("return_bp_opportunities")
+            or _tour_avg(tour, "Hard")["bp_faced_per_match"]   # tour avg serves as proxy
+        )
         if all_conv_pct and all_conv_pct > 0:
             # All-surface reference: use actual all-surface avg (no BO5/surface adj)
-            all_surface_ref = (all_conv_pct / 100.0) * all_bp_faced
+            all_surface_ref = (all_conv_pct / 100.0) * all_bp_opps
             if proj < all_surface_ref * 0.60:
                 proj_pre_sanity = proj
                 proj = proj * 0.70 + all_surface_ref * 0.30
