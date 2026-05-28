@@ -543,7 +543,9 @@ SURFACE_FORMAT_BP_SCALE = {
 # _BO5_MOMENTUM_MULT amplifies the bonus in 5-set matches because momentum
 # swings compound across more sets.
 # ---------------------------------------------------------------------------
-_SURFACE_MOMENTUM_MULT = {"Clay": 0.28, "Hard": 0.25, "Grass": 0.20}
+_SURFACE_MOMENTUM_MULT = {"Clay": 0.15, "Hard": 0.25, "Grass": 0.20}
+# Clay reduced from 0.28: when both players lose serve often (WTA clay), opp_proj_bp
+# is itself large, making the 0.28 bonus additive ~1.2–1.5 breaks — far too much.
 _BO5_MOMENTUM_MULT     = 1.15
 
 # ---------------------------------------------------------------------------
@@ -1031,6 +1033,20 @@ def project_break_points(
         conv_rate_pct    = None
         conv_rate_source = "none"
 
+    # ── Conversion rate cap ───────────────────────────────────────────────────
+    # Prevent TA enrichment from inflating conv_rate_pct beyond what any player
+    # sustains in practice.  Elite WTA clay returner (Swiatek): ~55%.
+    # Elite ATP clay returner (Alcaraz, Sinner): ~50%.
+    _CONV_RATE_CAP = {"WTA": 52.0, "ATP": 50.0}
+    if conv_rate_pct is not None:
+        _cap = _CONV_RATE_CAP.get(tour, 52.0)
+        if conv_rate_pct > _cap:
+            logger.info(
+                "BP_C3_CAP | player=%s | raw=%.1f%% → cap=%.1f%% (tour=%s)",
+                player_name, conv_rate_pct, _cap, tour,
+            )
+            conv_rate_pct = _cap
+
     # Stat audit — verify return vs serve stat separation
     _ret_conv_raw = player_stats.get("return_bp_converted")
     _ret_opps_raw = player_stats.get("return_bp_opportunities")
@@ -1062,20 +1078,31 @@ def project_break_points(
     # ═════════════════════════════════════════════════════════════════════════
     # COMPONENT 4 — Serve quality adjustment (opponent hold rate)
     #
+    # Only applied when C1 is the tour-average fallback (no player-specific
+    # bp_faced data).  When C1 IS player-specific, the opponent's serve
+    # weakness is already reflected in their actual bp_faced count — applying
+    # C4 on top double-counts it.
+    #
     # hold_proxy > 0.70  ≈ >85% service game hold  → Elite  → 0.85
     # 0.63 – 0.70        ≈ 65–85%                  → Good   → 1.00
     # < 0.63             ≈ <65%                     → Weak   → 1.10
     # ═════════════════════════════════════════════════════════════════════════
     opp_hold_proxy = _hold_rate_proxy(opponent_stats)
-    if opp_hold_proxy > 0.70:
-        c4_serve_qual  = 0.85
-        opp_serve_tier = "Elite"
-    elif opp_hold_proxy >= 0.63:
-        c4_serve_qual  = 1.00
-        opp_serve_tier = "Good"
+    if used_opp_tour_avg:
+        # C1 is the generic tour average → adjust for this player's serve quality
+        if opp_hold_proxy > 0.70:
+            c4_serve_qual  = 0.85
+            opp_serve_tier = "Elite(tour_avg_C1)"
+        elif opp_hold_proxy >= 0.63:
+            c4_serve_qual  = 1.00
+            opp_serve_tier = "Good(tour_avg_C1)"
+        else:
+            c4_serve_qual  = 1.10
+            opp_serve_tier = "Weak(tour_avg_C1)"
     else:
-        c4_serve_qual  = 1.10
-        opp_serve_tier = "Weak"
+        # C1 is player-specific bp_faced — serve weakness already in C1; no C4 adjustment
+        c4_serve_qual  = 1.00
+        opp_serve_tier = f"Neutral(player_C1,proxy={opp_hold_proxy:.2f})"
 
     logger.info(
         "BP_C4 | opp=%s | hold_proxy=%.3f | tier=%s | c4=%.2f",
@@ -1214,9 +1241,14 @@ def project_break_points(
     else:
         c3_opp = opp_surf_conv_raw or opp_overall_conv_raw or 40.0  # tour avg fallback
 
-    # C4_opp: player's serve quality (player is now serving)
-    player_hold_proxy = _hold_rate_proxy(player_stats)
-    c4_opp = 0.85 if player_hold_proxy > 0.70 else (1.10 if player_hold_proxy < 0.63 else 1.00)
+    # C4_opp: player's serve quality — conditional on same rule as main C4.
+    # Only adjust when c1_opp_persp came from the tour-average fallback.
+    player_hold_proxy   = _hold_rate_proxy(player_stats)
+    player_bp_is_actual = player_stats.get("bp_faced_count") is not None
+    if player_bp_is_actual:
+        c4_opp = 1.00   # serve weakness already embedded in c1_opp_persp
+    else:
+        c4_opp = 0.85 if player_hold_proxy > 0.70 else (1.10 if player_hold_proxy < 0.63 else 1.00)
 
     # C5_opp: opponent's player-specific surface adjustment — disabled (same
     # rationale as player C5: C3_opp 60/40 blend already captures surface specialization)
