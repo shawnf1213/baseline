@@ -1085,19 +1085,22 @@ def project_break_points(
     # ═════════════════════════════════════════════════════════════════════════
     # COMPONENT 5 — Player-specific surface adjustment
     #
-    # Player side: (surface_conv - overall_conv) in percentage points.
-    # Example: clay 48%, overall 44% → delta = +4pp → factor 1.04.
-    # Clamped to ±20pp before applying.  Range: [0.85, 1.20].
+    # DISABLED: C3 already applies a 60/40 surface/overall blend, which
+    # captures surface specialization in the conversion rate itself.  Adding a
+    # multiplicative delta factor from the same two fields (surf_conv, overall_conv)
+    # double-counts the clay/grass advantage for specialists and pushes the
+    # effective conversion rate above the player's actual surface-specific rate.
     #
-    # Opponent side: their surface bp_faced vs overall is already captured in
-    # C1 by using the raw surface stat.  Logged for transparency.
+    # C5 is kept in the return dict for logging and backward compatibility but
+    # is pinned to 1.0 — it applies no adjustment to the projection.
     # ═════════════════════════════════════════════════════════════════════════
-    c5_surf_adj       = 1.0
+    c5_surf_adj       = 1.0   # disabled — see note above
     player_surf_delta = 0.0
 
     if ss_surf_conv and ss_overall_conv and ss_overall_conv > 0:
         player_surf_delta = max(-20.0, min(20.0, ss_surf_conv - ss_overall_conv))
-        c5_surf_adj = max(0.85, min(1.20, 1.0 + player_surf_delta / 100.0))
+        # c5_surf_adj would be max(0.85, min(1.20, 1.0 + player_surf_delta / 100.0))
+        # but is intentionally left at 1.0 to avoid double-counting C3's blend.
 
     # Opponent surface tendency for logging (already embedded in C1)
     opp_surf_delta_log = 0.0
@@ -1215,11 +1218,9 @@ def project_break_points(
     player_hold_proxy = _hold_rate_proxy(player_stats)
     c4_opp = 0.85 if player_hold_proxy > 0.70 else (1.10 if player_hold_proxy < 0.63 else 1.00)
 
-    # C5_opp: opponent's player-specific surface adjustment
+    # C5_opp: opponent's player-specific surface adjustment — disabled (same
+    # rationale as player C5: C3_opp 60/40 blend already captures surface specialization)
     c5_opp = 1.0
-    if opp_surf_conv_raw and opp_overall_conv_raw and opp_overall_conv_raw > 0:
-        opp_delta = max(-20.0, min(20.0, opp_surf_conv_raw - opp_overall_conv_raw))
-        c5_opp = max(0.85, min(1.20, 1.0 + opp_delta / 100.0))
 
     # C6_opp: CPR modifier from opponent's perspective (on Grass: use PLAYER's serve quality)
     c6_opp = 1.0
