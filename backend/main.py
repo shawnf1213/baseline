@@ -556,10 +556,12 @@ async def prop_calculate(req: PropRequest):
             # All-surface player stats for Step 9 sanity check
             _p1_all_at = p1_data.get("All_all_time_stats") or {}
             p1_all_ref = {
-                "bp_converted":            _p1_all_at.get("bp_converted"),
-                "return_bp_opportunities": _p1_all_at.get("return_bp_opportunities"),
-                "return_bp_converted":     _p1_all_at.get("return_bp_converted"),
-                "bp_faced_count":          _p1_all_at.get("bp_faced_count"),
+                "bp_converted":                _p1_all_at.get("bp_converted"),
+                "return_bp_opportunities":     _p1_all_at.get("return_bp_opportunities"),
+                "return_bp_converted":         _p1_all_at.get("return_bp_converted"),
+                "bp_faced_count":              _p1_all_at.get("bp_faced_count"),
+                "return_first_serve_pts_won":  _p1_all_at.get("return_first_serve_pts_won"),
+                "return_second_serve_pts_won": _p1_all_at.get("return_second_serve_pts_won"),
             }
             if not p1_all_ref["bp_converted"] and player_ta:
                 _ta_all = (player_ta.get("surface_stats") or {}).get("All") or {}
@@ -568,10 +570,12 @@ async def prop_calculate(req: PropRequest):
             # All-surface opponent stats (for opponent opportunity blending)
             _p2_all_at = p2_data.get("All_all_time_stats") or {}
             p2_all_ref = {
-                "bp_converted":            _p2_all_at.get("bp_converted"),
-                "return_bp_opportunities": _p2_all_at.get("return_bp_opportunities"),
-                "bp_faced_count":          _p2_all_at.get("bp_faced_count"),
-                "matches_played":          _p2_all_at.get("matches_played", 0),
+                "bp_converted":                _p2_all_at.get("bp_converted"),
+                "return_bp_opportunities":     _p2_all_at.get("return_bp_opportunities"),
+                "bp_faced_count":              _p2_all_at.get("bp_faced_count"),
+                "matches_played":              _p2_all_at.get("matches_played", 0),
+                "return_first_serve_pts_won":  _p2_all_at.get("return_first_serve_pts_won"),
+                "return_second_serve_pts_won": _p2_all_at.get("return_second_serve_pts_won"),
             }
 
             result = project_break_points(
