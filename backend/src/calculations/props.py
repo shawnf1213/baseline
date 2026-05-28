@@ -893,10 +893,12 @@ def project_break_points(
     # = break point opportunities the PLAYER creates as a returner.
     # This is bp_faced_count (serve stat) — never return_bp_opportunities.
     #
-    # Blending: surface-specific + overall, weighted by opponent surface sample.
-    #   ≥ 10 surface matches  → 65 % surface + 35 % overall
-    #   5 – 9 surface matches → 40 % surface + 60 % overall
-    #   < 5  surface matches  → overall only
+    # Per-match average already accounts for however many sets the match lasted.
+    # NEVER divide or multiply by sets — BO3/BO5 scaling is handled separately
+    # via bo_scale (the SURFACE_FORMAT_BP_SCALE multiplier).
+    #
+    # Blending: fixed 60% surface + 40% overall at all times regardless of
+    # sample size.  Confidence score (not weights) adjusts for thin samples.
     # ─────────────────────────────────────────────────────────────────────────
     raw_opp_bp_faced    = opponent_stats.get("bp_faced_count")         # surface-specific serve stat
     overall_opp_bp_faced = opponent_stats.get("overall_bp_faced_count") # all-surface serve stat
@@ -910,15 +912,9 @@ def project_break_points(
 
     opp_opps_tier = "tour_avg"
     if surf_credible and overall_credible:
-        if opp_surf_sample >= 10:
-            estimated_bp_opps = 0.65 * raw_opp_bp_faced + 0.35 * overall_opp_bp_faced
-            opp_opps_tier = f"65/35 n={opp_surf_sample}"
-        elif opp_surf_sample >= 5:
-            estimated_bp_opps = 0.40 * raw_opp_bp_faced + 0.60 * overall_opp_bp_faced
-            opp_opps_tier = f"40/60 n={opp_surf_sample}"
-        else:
-            estimated_bp_opps = overall_opp_bp_faced
-            opp_opps_tier = f"overall_only n={opp_surf_sample}"
+        # Fixed 60/40 blend — weights never shift with sample size
+        estimated_bp_opps = 0.60 * raw_opp_bp_faced + 0.40 * overall_opp_bp_faced
+        opp_opps_tier = f"60/40 n={opp_surf_sample}"
     elif surf_credible:
         estimated_bp_opps = raw_opp_bp_faced
         opp_opps_tier = "surface_only"
@@ -939,10 +935,9 @@ def project_break_points(
     # ─────────────────────────────────────────────────────────────────────────
     # STEP 2 — Player BP conversion rate
     #
-    # 2a. Surface+Overall SS blend (sample-size weighted):
-    #   ≥ 10 surface matches  → 65 % surface + 35 % overall
-    #   5 – 9 surface matches → 40 % surface + 60 % overall
-    #   < 5  surface matches  → overall only (flag for UI)
+    # 2a. Surface+Overall SS blend — fixed 60% surface / 40% overall always.
+    #     Weights never shift with sample size; confidence score adjusts instead.
+    #     surf_only_flag raised for UI warning when surf_sample < 5 (thin data).
     #
     # 2b. Then blend with Tennis Abstract (35 % TA + 65 % SS blend from 2a)
     #     if ≥ 5 TA surface matches available.
@@ -971,16 +966,11 @@ def project_break_points(
     surf_only_flag = False   # raised when surface sample < 5 → UI can show warning
 
     if ss_surf_conv and ss_overall_conv:
-        if surf_sample >= 10:
-            ss_conv_pct   = 0.65 * ss_surf_conv + 0.35 * ss_overall_conv
-            conv_surf_tier = f"SS:65/35 surf_n={surf_sample}"
-        elif surf_sample >= 5:
-            ss_conv_pct   = 0.40 * ss_surf_conv + 0.60 * ss_overall_conv
-            conv_surf_tier = f"SS:40/60 surf_n={surf_sample}"
-        else:
-            ss_conv_pct   = ss_overall_conv
-            conv_surf_tier = f"SS:overall_only surf_n={surf_sample}"
-            surf_only_flag = True
+        # Fixed 60/40 blend at all times — confidence score adjusts for thin samples
+        ss_conv_pct    = 0.60 * ss_surf_conv + 0.40 * ss_overall_conv
+        conv_surf_tier = f"SS:60/40 surf_n={surf_sample}"
+        if surf_sample < 5:
+            surf_only_flag = True   # thin surface data — flag for UI warning
     elif ss_surf_conv:
         ss_conv_pct   = ss_surf_conv
         conv_surf_tier = "SS:surface_only"
@@ -1109,12 +1099,8 @@ def project_break_points(
                         or opponent_stats.get("matches_played", 0) or 0)
 
     if opp_surf_conv and opp_overall_conv:
-        if opp_sample >= 10:
-            opp_blended_conv = 0.65 * opp_surf_conv + 0.35 * opp_overall_conv
-        elif opp_sample >= 5:
-            opp_blended_conv = 0.40 * opp_surf_conv + 0.60 * opp_overall_conv
-        else:
-            opp_blended_conv = opp_overall_conv
+        # Fixed 60/40 blend matches the opportunity pool and conversion rate approach
+        opp_blended_conv = 0.60 * opp_surf_conv + 0.40 * opp_overall_conv
     else:
         opp_blended_conv = opp_surf_conv or opp_overall_conv or 0.0
 
@@ -1125,12 +1111,8 @@ def project_break_points(
                                or player_stats.get("matches_played", 0) or 0)
 
     if player_bp_faced_surf and player_bp_faced_overall:
-        if player_surf_n >= 10:
-            player_bp_faced_blended = 0.65 * player_bp_faced_surf + 0.35 * player_bp_faced_overall
-        elif player_surf_n >= 5:
-            player_bp_faced_blended = 0.40 * player_bp_faced_surf + 0.60 * player_bp_faced_overall
-        else:
-            player_bp_faced_blended = player_bp_faced_overall
+        # Fixed 60/40 blend — consistent with all other surface/overall blends
+        player_bp_faced_blended = 0.60 * player_bp_faced_surf + 0.40 * player_bp_faced_overall
     else:
         player_bp_faced_blended = player_bp_faced_surf
 
@@ -1159,23 +1141,41 @@ def project_break_points(
     # ─────────────────────────────────────────────────────────────────────────
     # STEP 6 — Surface calibration + CPR
     #
-    # Clay:  longer rallies → servers recover more → fewer converts.  ×0.92
-    # Hard:  baseline.  ×1.0
-    # Grass: fewer opps but higher conversion when they arise.
-    #        Handled by: conv_rate ×1.05, opp_opps ×0.85 → net ×0.8925
-    # CPR:   slow courts suppress BP conversion (servers have more recovery time);
-    #        fast courts amplify it.  Each 10-point deviation from neutral = ±3 %.
+    # Clay:  Slower ball speed + higher bounce = two competing forces.
+    #        Returner advantage (more time to set up angles) slightly outweighs
+    #        server recovery advantage.  Net effect: +2% for returners.  ×1.02
+    #
+    # Grass: Fast flat movement makes even weak second serves difficult to attack.
+    #        Suppression is dictated by the opponent server's first-serve quality:
+    #          opp 1st-serve pts won > 75%  → -10% suppression (dominant serve)
+    #          opp 1st-serve pts won 65-75% → -5%  suppression (solid serve)
+    #          opp 1st-serve pts won < 65%  → no suppression (weak serve)
+    #        Grass does NOT inherently boost conversion — serve quality does.
+    #
+    # Hard:  Baseline.  ×1.0
+    #
+    # CPR:   Fast courts amplify BP conversion (server under pressure sooner);
+    #        slow courts reduce it (more recovery time per point).
+    #        Each 10-point deviation from neutral CPR = ±3%.
     # ─────────────────────────────────────────────────────────────────────────
+    # grass_conv_boost and grass_opp_shrink are kept at 1.0 (no separate grass
+    # multipliers — all grass calibration flows through surface_cal only).
     grass_conv_boost = 1.0
     grass_opp_shrink = 1.0
+
     if surface == "Clay":
-        surface_cal = 0.92
+        surface_cal = 1.02   # net +2%: returner angle advantage > server recovery on clay
     elif surface == "Grass":
-        grass_conv_boost = 1.05
-        grass_opp_shrink = 0.85
-        surface_cal      = 1.0   # both adjustments applied separately below
+        # Suppression driven by opponent's actual serve quality on grass
+        opp_fs_won_pct = _safe(opponent_stats.get("first_serve_pts_won"), 72.0)
+        if opp_fs_won_pct > 75:
+            surface_cal = 0.90   # dominant server: -10% (midpoint of -8 to -12%)
+        elif opp_fs_won_pct >= 65:
+            surface_cal = 0.95   # solid server: -5% (midpoint of -4 to -6%)
+        else:
+            surface_cal = 1.00   # weak serve negates grass surface advantage
     else:
-        surface_cal = 1.00
+        surface_cal = 1.00   # Hard: baseline
 
     # Court pace (CPR) calibration — affects BP conversion only
     cpr = cpr_override if cpr_override is not None else CPR_NEUTRAL
@@ -1183,27 +1183,35 @@ def project_break_points(
     cpr_factor = 1.0 + cpr_delta * 0.03      # ±3% per 10-pt deviation
     cpr_factor = max(0.90, min(1.10, cpr_factor))   # clip at ±10%
 
+    # Log the full surface calibration breakdown for each match
+    _grass_supp_note = ""
+    if surface == "Grass":
+        _opp_fsw = _safe(opponent_stats.get("first_serve_pts_won"), 72.0)
+        _supp_tier = "dominant(-10%)" if _opp_fsw > 75 else "solid(-5%)" if _opp_fsw >= 65 else "weak(0%)"
+        _grass_supp_note = f" | grass_opp_1stWon={_opp_fsw:.1f}% tier={_supp_tier}"
+
     logger.info(
-        "BP_BIDIR_SURFACE | surface=%s | surface_cal=%.2f | "
-        "grass_conv=%.2f | grass_opp=%.2f | cpr=%d | cpr_factor=%.3f",
-        surface, surface_cal, grass_conv_boost, grass_opp_shrink,
+        "BP_BIDIR_SURFACE | surface=%s | surface_cal=%.3f%s | "
+        "grass_conv_boost=%.2f | grass_opp_shrink=%.2f | cpr=%d | cpr_factor=%.3f",
+        surface, surface_cal, _grass_supp_note,
+        grass_conv_boost, grass_opp_shrink,
         cpr, cpr_factor,
     )
 
     # ─────────────────────────────────────────────────────────────────────────
     # STEP 7 — Combined formula
     #
-    # base_proj = opportunities_created
-    #           × conversion_rate
+    # base_proj = opportunities_created          (per-match, NOT per-set)
+    #           × conversion_rate                (60/40 surface/overall blend)
     #           × serve_quality_adj
-    #           × bo_scale
-    #           × surface_calibration
-    #           × cpr_factor
+    #           × bo_scale                       (1.6 Clay BO5, 1.0 Hard BO3, …)
+    #           × surface_calibration            (Clay +2%, Grass per serve quality)
+    #           × cpr_factor                     (±3% per 10-pt CPR deviation)
     #
-    # proj = base_proj + momentum_bonus   (break-back bonus is ADDITIVE)
+    # proj = base_proj + momentum_bonus          (break-back bonus is ADDITIVE)
     #
-    # Grass: separate adjustments to opportunity count (×0.85) and conv rate
-    # (×1.05).  CPR: ±3% per 10-point deviation from neutral.
+    # grass_conv_boost and grass_opp_shrink are both 1.0 — all grass calibration
+    # flows through surface_cal (based on opp first-serve quality).
     # ─────────────────────────────────────────────────────────────────────────
     effective_opps     = estimated_bp_opps * grass_opp_shrink
     effective_conv_pct = conv_rate_pct * grass_conv_boost
@@ -1227,20 +1235,33 @@ def project_break_points(
         bo_scale, surface_cal, cpr_factor,
         base_proj, momentum_bonus, proj,
     )
-    # ── Step 7 GS diagnostic: full Sinner-style matchup breakdown ─────────────
+    # ── Step 7 GS diagnostic: full per-component breakdown ────────────────────
+    # CORRECTION 1: estimated_bp_opps is pure per-match average (no set multiply)
+    # CORRECTION 2: surface_cal for Clay is 1.02 (net returner edge, not suppress)
+    # CORRECTION 3: surface_cal for Grass driven by opp serve quality (not fixed boost)
+    # CORRECTION 4: all blends fixed at 60/40 (not sample-size-tiered)
+    _opp_fs_for_log = _safe(opponent_stats.get("first_serve_pts_won"), 72.0) if surface == "Grass" else 0.0
     logger.info(
         "BP_GS_DIAGNOSTIC | %s vs %s | surface=%s | format=%s | "
-        "player_surf_conv=%.1f%% | player_overall_conv=%.1f%% | blended_conv=%.1f%% | "
-        "opp_surf_bp_faced=%.2f | opp_overall_bp_faced=%.2f | blended_opps=%.2f | "
-        "bo_scale=%.2f | surf_cal=%.2f | cpr_fac=%.3f | "
+        "[BLEND:60/40_FIXED] player_surf_conv=%.1f%%(n=%d) | player_overall_conv=%.1f%% | blended_conv=%.1f%% | "
+        "opp_surf_bp_faced_perMatch=%.2f(n=%d) | opp_overall_bp_faced=%.2f | blended_opps=%.2f | "
+        "[CORRECTION1:no_set_multiply] bo_scale=%.2f | "
+        "[CORRECTION2_3] surf_cal=%.3f(Clay+2%%orGrassServeQual|opp_1stWon=%.1f%%) | cpr_fac=%.3f | "
+        "serve_qual_adj=%.2f | opp_serve_tier=%s | "
+        "opp_blended_conv=%.1f%% | player_bp_faced_blended=%.2f | "
         "opp_proj_bp_won=%.2f | surf_momentum_mult=%.2f | bo5_momentum_mult=%.2f | "
-        "momentum_bonus=%.3f | base_proj=%.2f | raw_proj_with_momentum=%.2f",
+        "momentum_bonus=%.3f | base_proj=%.2f | raw_proj_with_momentum=%.2f | "
+        "[CONF] surf_sample=%d",
         player_name, opp_name, surface, match_format,
-        ss_surf_conv or 0.0, ss_overall_conv or 0.0, conv_rate_pct or 0.0,
-        raw_opp_bp_faced or 0.0, overall_opp_bp_faced or 0.0, estimated_bp_opps,
-        bo_scale, surface_cal, cpr_factor,
+        ss_surf_conv or 0.0, surf_sample, ss_overall_conv or 0.0, conv_rate_pct or 0.0,
+        raw_opp_bp_faced or 0.0, opp_surf_sample, overall_opp_bp_faced or 0.0, estimated_bp_opps,
+        bo_scale,
+        surface_cal, _opp_fs_for_log, cpr_factor,
+        serve_quality_adj, opp_serve_tier,
+        opp_blended_conv, player_bp_faced_blended,
         opp_projected_bp_won, surface_momentum_mult, bo5_momentum_mult,
         momentum_bonus, base_proj, proj,
+        surf_sample,
     )
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -1319,6 +1340,20 @@ def project_break_points(
         conf = max(0, conf - 8)
     elif ta_used and ta_surface_matches > 50:
         conf = min(95, conf + 5)
+
+    # BP-specific confidence adjustment based on player surface match count.
+    # Weights stay fixed at 60/40 — only confidence reflects thin samples.
+    if surf_sample < 5:
+        conf = max(0, conf - 20)
+    elif surf_sample < 10:       # 5 – 9 matches
+        conf = max(0, conf - 10)
+    elif surf_sample >= 20:
+        conf = min(95, conf + 5)
+    # 10 – 19 surface matches: no change
+    logger.info(
+        "BP_BIDIR_CONF | surf_sample=%d | ta_surf_matches=%d | conf=%d",
+        surf_sample, ta_surface_matches, conf,
+    )
 
     # ─────────────────────────────────────────────────────────────────────────
     # STEP 10 — Verification logging (component breakdown)
