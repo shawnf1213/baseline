@@ -1289,12 +1289,19 @@ def project_break_points(
     # ═════════════════════════════════════════════════════════════════════════
     # COMPONENT 8 — Match format multiplier
     #
-    # ATP Grand Slams (AO, RG, Wimbledon, US Open) when tour==ATP: × 1.6
+    # ATP Grand Slams (AO, RG, Wimbledon, US Open) when tour==ATP: × 1.1
     # ALL WTA events including all 4 Grand Slams:                   × 1.0
     # ALL ATP non-Grand Slam events:                                 × 1.0
     # Applied AFTER adding momentum (proj = (base + momentum) × C8).
+    #
+    # NOTE: Reduced from 1.6 → 1.1.
+    # The 8-component formula's C1–C7 produce a pre-C8 base+momentum of 3.5–5.0
+    # for typical ATP clay matchups. Multiplying by 1.6 pushed projections 50%+
+    # above market lines (e.g. Shelton model 6.7 vs book 4.0).  Historical BO5
+    # average is ~1.5× BO3, but Sofascore bp_faced data already mixes BO3 and
+    # BO5 matches, so the effective extra-sets multiplier is only ~1.1.
     # ═════════════════════════════════════════════════════════════════════════
-    c8_format_mult = 1.6 if is_bo5 else 1.0
+    c8_format_mult = 1.1 if is_bo5 else 1.0
     bo_scale       = c8_format_mult   # alias for return-dict compat
 
     logger.info(
