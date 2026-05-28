@@ -867,8 +867,8 @@ def project_break_points(
 
       proj = (base + C7_momentum_bonus) × C8(format_mult)
 
-    C8 = 1.6 for ATP Grand Slams (BO5) only.  ALL WTA = 1.0 always.
-    Momentum is additive BEFORE the format multiplier.
+    C8 = 1.0 for ALL matches — Sofascore per-match bp_faced already embeds
+    the BO5 effect for GS players.  Momentum is additive BEFORE C8.
     """
     ta_used = False
     ta_surface_matches = 0
@@ -909,8 +909,21 @@ def project_break_points(
     min_credible_bp      = tour_avg_bp * 0.25
 
     if raw_opp_bp_faced is not None and raw_opp_bp_faced >= min_credible_bp:
-        c1_opp_bp_faced = raw_opp_bp_faced
-        c1_source       = f"surface(n={opp_surf_sample})"
+        # Credibility-weight small surface samples toward tour average.
+        # A player with 2-3 clay matches can have a wildly unrepresentative
+        # bp_faced stat (e.g. 17/match from three bad outings) that inflates C1.
+        # Shrink toward tour_avg_bp proportional to sample size.
+        surf_n = opp_surf_sample or 0
+        if surf_n >= 10:
+            raw_weight = 1.00
+        elif surf_n >= 5:
+            raw_weight = 0.75
+        elif surf_n >= 3:
+            raw_weight = 0.55
+        else:
+            raw_weight = 0.35   # heavy shrinkage for ≤ 2 matches
+        c1_opp_bp_faced = raw_weight * raw_opp_bp_faced + (1.0 - raw_weight) * tour_avg_bp
+        c1_source       = f"surface_blended(n={surf_n},w={raw_weight:.0%})"
     elif overall_opp_bp_faced is not None and overall_opp_bp_faced >= min_credible_bp:
         c1_opp_bp_faced = overall_opp_bp_faced
         c1_source       = "overall_fallback"
@@ -1037,7 +1050,7 @@ def project_break_points(
     # Prevent TA enrichment from inflating conv_rate_pct beyond what any player
     # sustains in practice.  Elite WTA clay returner (Swiatek): ~55%.
     # Elite ATP clay returner (Alcaraz, Sinner): ~50%.
-    _CONV_RATE_CAP = {"WTA": 52.0, "ATP": 50.0}
+    _CONV_RATE_CAP = {"WTA": 52.0, "ATP": 45.0}
     if conv_rate_pct is not None:
         _cap = _CONV_RATE_CAP.get(tour, 52.0)
         if conv_rate_pct > _cap:
@@ -1294,14 +1307,13 @@ def project_break_points(
     # ALL ATP non-Grand Slam events:                                 × 1.0
     # Applied AFTER adding momentum (proj = (base + momentum) × C8).
     #
-    # NOTE: Reduced from 1.6 → 1.1.
-    # The 8-component formula's C1–C7 produce a pre-C8 base+momentum of 3.5–5.0
-    # for typical ATP clay matchups. Multiplying by 1.6 pushed projections 50%+
-    # above market lines (e.g. Shelton model 6.7 vs book 4.0).  Historical BO5
-    # average is ~1.5× BO3, but Sofascore bp_faced data already mixes BO3 and
-    # BO5 matches, so the effective extra-sets multiplier is only ~1.1.
+    # NOTE: Reduced from 1.6 → 1.1 → 1.0.
+    # Sofascore bp_faced_count is a per-MATCH average; for ATP GS players whose
+    # career data includes both BO3 and BO5 matches, the BO5 effect is already
+    # embedded in C1. Applying any multiplier > 1.0 double-counts the format
+    # and consistently over-predicts vs market lines.
     # ═════════════════════════════════════════════════════════════════════════
-    c8_format_mult = 1.1 if is_bo5 else 1.0
+    c8_format_mult = 1.0  # same for all formats — BO5 effect embedded in C1
     bo_scale       = c8_format_mult   # alias for return-dict compat
 
     logger.info(
