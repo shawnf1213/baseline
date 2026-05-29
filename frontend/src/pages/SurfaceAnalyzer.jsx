@@ -184,7 +184,7 @@ function WinRateSparkline({ matches }) {
           <YAxis domain={[0, 100]} tick={{ fill: 'var(--muted)', fontSize: 11 }} />
           <Tooltip
             formatter={v => [`${v}%`, 'Win Rate']}
-            contentStyle={{ background: 'rgba(8, 13, 9, 0.95)', border: '1px solid var(--card-border)', borderRadius: 8, backdropFilter: 'blur(10px)' }}
+            contentStyle={{ background: 'rgba(8, 13, 9, 0.95)', border: '1px solid var(--card-border)', borderRadius: 8 }}
           />
           <Line type="monotone" dataKey="wr"
             stroke="url(#sa-line)" strokeWidth={3}

@@ -356,8 +356,7 @@ export default function PropProjection({ tour }) {
           <label style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.1em', display: 'block', marginBottom: 8, fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 700 }}>Court / Tournament</label>
           <select value={court} onChange={e => setCourt(e.target.value)} style={{
             width: '100%', padding: '12px 14px',
-            background: 'rgba(255, 255, 255, 0.025)',
-            backdropFilter: 'blur(10px)',
+            background: 'rgba(14, 24, 18, 0.55)',
             border: '1px solid var(--card-border)', borderRadius: 12,
             color: 'var(--white)',
             fontFamily: '"Barlow Condensed", sans-serif', fontSize: 14, fontWeight: 600,

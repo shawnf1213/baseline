@@ -5,12 +5,12 @@
   --bg-core:   #050a05;
   --bg-mid:    #0a1410;
   --bg-glow:   #0d1a0d;
-  --bg:        #060809; /* legacy fallback */
+  --bg:        #060809;
 
-  /* Surfaces */
+  /* Surfaces — semi-transparent darks (no blur needed for the look) */
   --card:           #0a0f0c;
-  --card-glass:     rgba(255, 255, 255, 0.03);
-  --card-glass-hi:  rgba(255, 255, 255, 0.05);
+  --card-glass:     rgba(14, 24, 18, 0.55);
+  --card-glass-hi:  rgba(20, 32, 24, 0.7);
   --card-border:        rgba(0, 230, 118, 0.12);
   --card-border-hover:  rgba(0, 230, 118, 0.35);
   --border: #1a2520;
@@ -20,17 +20,17 @@
   --green-mid:    #00E676;
   --green-dim:    #00A854;
   --green-glow:   rgba(0, 230, 118, 0.15);
-  --green:        #00E676;  /* legacy alias */
+  --green:        #00E676;
 
   /* Reds */
   --red-bright: #FF3B5C;
   --red-mid:    #FF4444;
   --red-glow:   rgba(255, 68, 68, 0.15);
-  --red:        #FF4444;    /* legacy alias */
+  --red:        #FF4444;
 
   /* Amber */
   --amber-bright: #FFD60A;
-  --amber:        #FFB300;  /* legacy alias */
+  --amber:        #FFB300;
 
   /* Surface tints */
   --hard-blue:  #6b9fff;
@@ -44,7 +44,9 @@
 
 *, *::before, *::after { box-sizing: border-box; }
 
-html { background: var(--bg-core); }
+html {
+  background: var(--bg-core);
+}
 
 body {
   margin: 0;
@@ -53,34 +55,24 @@ body {
   -webkit-font-smoothing: antialiased;
   min-height: 100vh;
 
-  /* Layered background: radial green glow + tennis-court grid + noise */
-  background:
-    /* noise overlay (SVG fractal noise) */
-    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.06 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>"),
-    /* horizontal grid lines */
-    repeating-linear-gradient(0deg, transparent 0, transparent 59px, rgba(15, 31, 15, 0.55) 59px, rgba(15, 31, 15, 0.55) 60px),
-    /* vertical grid lines */
-    repeating-linear-gradient(90deg, transparent 0, transparent 59px, rgba(15, 31, 15, 0.55) 59px, rgba(15, 31, 15, 0.55) 60px),
-    /* center glow radial gradient */
-    radial-gradient(ellipse at center top, #0d1a0d 0%, #080d08 40%, #050a05 100%);
-  background-attachment: fixed;
+  /* SINGLE LAYER static gradient — no fixed attachment, no noise SVG, no
+     repeating grids. Drastically cheaper than layered fixed backgrounds.
+     The "tennis court" look is conveyed by the green/dark palette. */
+  background: radial-gradient(ellipse 80% 60% at 50% 0%, #0d1a0d 0%, #080d08 50%, #050a05 100%);
 }
 
 #root { min-height: 100vh; position: relative; }
 
-/* ─── Custom scrollbar — thin green ─────────────────────────── */
+/* ─── Scrollbar — thin green ───────────────────────────────── */
 ::-webkit-scrollbar { width: 4px; height: 4px; }
 ::-webkit-scrollbar-track { background: rgba(5, 10, 5, 0.6); }
 ::-webkit-scrollbar-thumb {
-  background: linear-gradient(180deg, var(--green-bright), var(--green-dim));
+  background: var(--green-mid);
   border-radius: 4px;
 }
-::-webkit-scrollbar-thumb:hover {
-  background: var(--green-bright);
-  box-shadow: 0 0 6px var(--green-glow);
-}
+::-webkit-scrollbar-thumb:hover { background: var(--green-bright); }
 
-/* ─── Tables ─────────────────────────────────────────────── */
+/* ─── Tables ───────────────────────────────────────────────── */
 .baseline-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .baseline-table th {
   text-align: left; padding: 10px 16px;
@@ -94,16 +86,12 @@ body {
   border-bottom: 1px solid rgba(13, 21, 16, 0.8);
   font-size: 13px;
 }
-.baseline-table tr:nth-child(even) td {
-  background: rgba(0, 230, 118, 0.02);
-}
-.baseline-table tr:hover td {
-  background: rgba(0, 230, 118, 0.06);
-}
+.baseline-table tr:nth-child(even) td { background: rgba(0, 230, 118, 0.025); }
+.baseline-table tr:hover td { background: rgba(0, 230, 118, 0.06); }
 
 input, select, button { font-family: inherit; }
 
-/* ─── Animations ────────────────────────────────────────── */
+/* ─── Animations ───────────────────────────────────────────── */
 @keyframes pulse {
   0%, 100% { opacity: 1; transform: scale(1); }
   50% { opacity: 0.4; transform: scale(0.85); }
@@ -128,26 +116,23 @@ input, select, button { font-family: inherit; }
   0%   { transform: rotate(0deg); }
   100% { transform: rotate(360deg); }
 }
-@keyframes breath {
-  0%, 100% { transform: scale(1); opacity: 1; }
-  50% { transform: scale(1.05); opacity: 0.9; }
-}
 
-/* ─── Reusable utility classes ──────────────────────────── */
+/* ─── glass-card — CHEAP "glass" without backdrop-filter ────────
+   Previously used backdrop-filter: blur(10px) on every card, which
+   forced one full-screen composite per card per frame and tanked perf.
+   The same visual effect is achieved with a semi-transparent dark
+   background + a subtle green border + a single box-shadow. ─── */
 .glass-card {
   background: var(--card-glass);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
   border: 1px solid var(--card-border);
   border-radius: 16px;
-  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(0, 230, 118, 0.05);
-  transition: border-color 250ms ease, box-shadow 250ms ease, transform 250ms ease;
-  will-change: transform;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.35);
+  transition: border-color 200ms ease, box-shadow 200ms ease, transform 200ms ease;
 }
 .glass-card:hover {
   border-color: var(--card-border-hover);
-  box-shadow: 0 6px 32px rgba(0, 0, 0, 0.5), 0 0 20px var(--green-glow), 0 0 0 1px rgba(0, 230, 118, 0.1);
-  transform: translateY(-4px);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45), 0 0 14px rgba(0, 230, 118, 0.08);
+  transform: translateY(-2px);
 }
 
 .skel {
@@ -157,10 +142,7 @@ input, select, button { font-family: inherit; }
   border-radius: 8px;
 }
 
-.btn-press {
-  transition: transform 120ms ease, box-shadow 200ms ease;
-  will-change: transform;
-}
+.btn-press { transition: transform 120ms ease; }
 .btn-press:active { transform: scale(0.97); }
 
 .scan-line-bar {
@@ -170,7 +152,7 @@ input, select, button { font-family: inherit; }
   height: 1px;
   width: 30%;
   background: linear-gradient(90deg, transparent, var(--green-bright), transparent);
-  animation: scan-line 4s linear infinite;
+  animation: scan-line 5s linear infinite;
   pointer-events: none;
 }
 
@@ -179,19 +161,23 @@ input, select, button { font-family: inherit; }
   border-radius: 50%;
   background: var(--green-bright);
   animation: pulse 1.6s ease-in-out infinite;
-  box-shadow: 0 0 10px var(--green-bright);
+  box-shadow: 0 0 6px var(--green-bright);
 }
 
-/* ─── Mobile reductions ─────────────────────────────────── */
+/* ─── Mobile reductions ────────────────────────────────────── */
 @media (max-width: 720px) {
-  body {
-    background:
-      repeating-linear-gradient(0deg, transparent 0, transparent 59px, rgba(15, 31, 15, 0.3) 59px, rgba(15, 31, 15, 0.3) 60px),
-      repeating-linear-gradient(90deg, transparent 0, transparent 59px, rgba(15, 31, 15, 0.3) 59px, rgba(15, 31, 15, 0.3) 60px),
-      radial-gradient(ellipse at center top, #0d1a0d 0%, #050a05 100%);
-  }
   .glass-card:hover {
-    box-shadow: 0 4px 18px rgba(0, 0, 0, 0.4), 0 0 8px rgba(0, 230, 118, 0.08);
+    transform: none;
+    box-shadow: 0 4px 18px rgba(0, 0, 0, 0.35);
   }
-  .live-dot { box-shadow: 0 0 6px var(--green-bright); }
+  .live-dot { box-shadow: none; }
+}
+
+/* Respect user accessibility preference for reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
 }

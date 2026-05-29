@@ -73,8 +73,7 @@ function TourToggle({ tour, setTour }) {
       display: 'flex',
       gap: 6,
       padding: 4,
-      background: 'rgba(255, 255, 255, 0.025)',
-      backdropFilter: 'blur(10px)',
+      background: 'rgba(14, 24, 18, 0.5)',
       border: '1px solid var(--card-border)',
       borderRadius: 999,
     }}>
@@ -227,14 +226,12 @@ export default function App() {
       {/* Decorative ambient orbs — CSS-only, desktop only */}
       {isDesktop && <SplineAccent />}
 
-      {/* Nav — glassmorphism header */}
+      {/* Nav — solid dark with subtle green border (no backdrop-filter for perf) */}
       <nav style={{
         position: 'sticky',
         top: 0,
         zIndex: 100,
-        background: 'rgba(0, 0, 0, 0.6)',
-        backdropFilter: 'blur(20px)',
-        WebkitBackdropFilter: 'blur(20px)',
+        background: 'rgba(5, 10, 5, 0.92)',
         borderBottom: '1px solid rgba(0, 230, 118, 0.18)',
       }}>
         {/* Top strip — 80px tall */}

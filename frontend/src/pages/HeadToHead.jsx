@@ -49,7 +49,7 @@ function TimelineChart({ matches }) {
           <YAxis domain={[-0.2, 1.2]} hide />
           <ReferenceLine y={0.5} stroke="rgba(255,255,255,0.08)" strokeDasharray="4 4" />
           <Tooltip
-            contentStyle={{ background: 'rgba(8, 13, 9, 0.95)', border: '1px solid var(--card-border)', borderRadius: 8, backdropFilter: 'blur(10px)' }}
+            contentStyle={{ background: 'rgba(8, 13, 9, 0.95)', border: '1px solid var(--card-border)', borderRadius: 8 }}
             formatter={(v, _, p) => [v === 1 ? 'Win' : 'Loss', `${p.payload.date} vs ${p.payload.opp}`]}
           />
           <Line dataKey="win"

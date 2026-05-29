@@ -72,26 +72,15 @@ export default function PlayerSearch({ tour, onSelect, label = 'Search player…
           onClick={clear}
           style={{
             position: 'relative',
-            background: 'rgba(0, 230, 118, 0.04)',
-            backdropFilter: 'blur(10px)',
+            background: 'rgba(14, 32, 22, 0.7)',
             border: '1px solid rgba(0, 230, 118, 0.45)',
             borderRadius: 14,
             padding: '16px 18px',
             cursor: 'pointer',
-            boxShadow: '0 0 24px rgba(0, 230, 118, 0.15), 0 4px 18px rgba(0,0,0,0.4)',
+            boxShadow: '0 0 18px rgba(0, 230, 118, 0.12), 0 4px 14px rgba(0,0,0,0.35)',
             overflow: 'hidden',
           }}
         >
-          {/* Slowly rotating gradient border accent */}
-          <div style={{
-            position: 'absolute', inset: -2, borderRadius: 16,
-            background: 'conic-gradient(from 0deg, transparent 0deg, var(--green-bright) 90deg, transparent 180deg, var(--green-mid) 270deg, transparent 360deg)',
-            filter: 'blur(8px)',
-            opacity: 0.35,
-            animation: 'rotate-border 8s linear infinite',
-            pointerEvents: 'none',
-            zIndex: 0,
-          }} />
           <div style={{ position: 'relative', zIndex: 1 }}>
             <div style={{ fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 800, fontSize: 9, letterSpacing: 3, textTransform: 'uppercase', color: 'var(--green-bright)', marginBottom: 6 }}>{label}</div>
             <div style={{ fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 900, fontSize: 24, color: '#fff', letterSpacing: 0.5, lineHeight: 1.1 }}>
@@ -138,8 +127,7 @@ export default function PlayerSearch({ tour, onSelect, label = 'Search player…
               style={{
                 width: '100%', boxSizing: 'border-box',
                 padding: '14px 38px 14px 42px',
-                background: 'rgba(255, 255, 255, 0.025)',
-                backdropFilter: 'blur(10px)',
+                background: 'rgba(14, 24, 18, 0.55)',
                 border: `1px solid ${focused ? 'var(--card-border-hover)' : 'var(--card-border)'}`,
                 borderRadius: 14,
                 color: 'var(--white)',
@@ -148,8 +136,8 @@ export default function PlayerSearch({ tour, onSelect, label = 'Search player…
                 fontWeight: 600,
                 letterSpacing: 1,
                 outline: 'none',
-                boxShadow: focused ? '0 0 18px rgba(0, 230, 118, 0.15)' : 'none',
-                transition: 'border-color 220ms ease, box-shadow 220ms ease',
+                boxShadow: focused ? '0 0 14px rgba(0, 230, 118, 0.12)' : 'none',
+                transition: 'border-color 200ms ease, box-shadow 200ms ease',
               }}
             />
             {loading && (
@@ -171,13 +159,12 @@ export default function PlayerSearch({ tour, onSelect, label = 'Search player…
                 style={{
                   position: 'absolute', top: '100%', left: 0, right: 0,
                   zIndex: 1000,
-                  background: 'rgba(8, 13, 9, 0.95)',
-                  backdropFilter: 'blur(16px)',
+                  background: 'rgba(8, 13, 9, 0.97)',
                   border: '1px solid var(--card-border)',
                   borderRadius: 12,
                   marginTop: 6,
                   overflow: 'hidden',
-                  boxShadow: '0 18px 40px rgba(0, 0, 0, 0.7), 0 0 20px rgba(0, 230, 118, 0.05)',
+                  boxShadow: '0 12px 28px rgba(0, 0, 0, 0.6)',
                 }}
               >
                 {loading ? (
