@@ -740,11 +740,18 @@ export default function PropProjection({ tour }) {
                   {[
                     { s: p1SurfaceStats, name: p1?.name, hand: result?.player_handedness,
                       taM: result?.player_ta_matches, ssM: result?.player_ss_matches,
-                      fallback: result?.player_surface_fallback, aceAgainst: null },
+                      fallback: result?.player_surface_fallback, aceAgainst: null,
+                      recentTier:    result?.player_ta_recent_tier,
+                      recentMatches: result?.player_ta_recent_matches,
+                      recentWarn:    result?.player_ta_recent_warning },
                     { s: p2SurfaceStats, name: p2?.name, hand: result?.opponent_handedness,
                       taM: result?.opponent_ta_matches, ssM: result?.opponent_ss_matches,
-                      fallback: result?.opponent_surface_fallback, aceAgainst: result?.opponent_ace_against },
-                  ].map(({ s, name, hand, taM, ssM, fallback, aceAgainst }, idx) => {
+                      fallback: result?.opponent_surface_fallback, aceAgainst: result?.opponent_ace_against,
+                      recentTier:    result?.opponent_ta_recent_tier,
+                      recentMatches: result?.opponent_ta_recent_matches,
+                      recentWarn:    result?.opponent_ta_recent_warning },
+                  ].map(({ s, name, hand, taM, ssM, fallback, aceAgainst,
+                          recentTier, recentMatches, recentWarn }, idx) => {
                     const d = s || {}
                     const isBPProp = propType === 'Break Points Won'
                     const surfLabel = surface || 'Surf'
@@ -825,9 +832,15 @@ export default function PropProjection({ tour }) {
                           {name}<HandBadge hand={hand} />
                         </div>
                         <div style={{ display: 'flex', gap: 8, marginBottom: 14, flexWrap: 'wrap' }}>
-                          {taM != null && (
+                          {/* Recent-window chip — replaces TA CAREER */}
+                          {recentTier === '52w' && recentMatches > 0 && (
                             <span style={{ fontSize: 9, fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 800, letterSpacing: 1.5, padding: '3px 8px', borderRadius: 999, background: 'rgba(0, 230, 118, 0.08)', color: 'var(--green-mid)', border: '1px solid rgba(0, 230, 118, 0.2)' }}>
-                              TA {taM} CAREER
+                              LAST 52 WEEKS: {recentMatches} MATCHES
+                            </span>
+                          )}
+                          {recentTier === '2yr' && recentMatches > 0 && (
+                            <span style={{ fontSize: 9, fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 800, letterSpacing: 1.5, padding: '3px 8px', borderRadius: 999, background: 'rgba(255, 179, 0, 0.08)', color: 'var(--amber)', border: '1px solid rgba(255, 179, 0, 0.3)' }}>
+                              LAST 2 YEARS: {recentMatches} MATCHES
                             </span>
                           )}
                           {ssM != null && (
@@ -841,6 +854,34 @@ export default function PropProjection({ tour }) {
                             </span>
                           )}
                         </div>
+
+                        {/* Recent-data warnings */}
+                        {recentWarn === 'limited' && (
+                          <div style={{
+                            fontSize: 11, color: 'var(--amber)',
+                            fontFamily: '"Barlow Condensed", sans-serif',
+                            fontWeight: 700, letterSpacing: 0.5,
+                            padding: '6px 10px', borderRadius: 8,
+                            background: 'rgba(255, 179, 0, 0.06)',
+                            border: '1px solid rgba(255, 179, 0, 0.3)',
+                            marginBottom: 10,
+                          }}>
+                            ⚠ Limited recent surface data — fewer than 5 matches in last 52 weeks
+                          </div>
+                        )}
+                        {recentWarn === 'insufficient' && (
+                          <div style={{
+                            fontSize: 11, color: 'var(--red-bright)',
+                            fontFamily: '"Barlow Condensed", sans-serif',
+                            fontWeight: 700, letterSpacing: 0.5,
+                            padding: '6px 10px', borderRadius: 8,
+                            background: 'rgba(255, 68, 68, 0.06)',
+                            border: '1px solid rgba(255, 68, 68, 0.3)',
+                            marginBottom: 10,
+                          }}>
+                            ⚠ Insufficient recent data — projection confidence is low
+                          </div>
+                        )}
                         {rows.map(([lbl, val], rowIdx) => {
                           const isNode = val != null && typeof val === 'object' && val.$$typeof
                           return (

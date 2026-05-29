@@ -159,6 +159,46 @@ def _weighted_avg(key: str, tiers: list, weights: list) -> Optional[float]:
     return sum(w * v for w, v in valid) / total_w
 
 
+# ── Tennis Abstract recent-window tier (for Prop Projection tab) ─────────────
+# Converts a TA `_agg_ta_matches`-shape dict (last_52_weeks or last_2yr) into
+# the same blended-tier shape the SS tiers use. Stat keys we can fill from TA:
+#   aces           ← ace_pct × ~80 service points per match
+#   double_faults  ← df_pct × ~80
+#   first_serve_pts_won  ← first_won_pct
+#   second_serve_pts_won ← second_won_pct
+#   bp_converted   ← bp_conv_pct
+#   bp_saved       ← bp_saved_pct
+#   win_rate       ← win_rate
+# Return-side raw counts and bp_faced_count are NOT available from TA — they
+# stay None and the SS tiers fill them.
+_TA_AVG_SP_PER_MATCH = {"ATP": 80.0, "WTA": 70.0}
+
+
+def _ta_recent_to_blended_tier(ta_stats: Optional[dict], tour: str = "ATP") -> Optional[dict]:
+    if not ta_stats or not ta_stats.get("matches"):
+        return None
+    sp = _TA_AVG_SP_PER_MATCH.get(tour, 80.0)
+    ace_pct = ta_stats.get("ace_pct")
+    df_pct  = ta_stats.get("df_pct")
+    return {
+        "aces":                  (ace_pct / 100.0) * sp if ace_pct is not None else None,
+        "double_faults":         (df_pct  / 100.0) * sp if df_pct  is not None else None,
+        "first_serve_pct":       ta_stats.get("first_in_pct"),
+        "first_serve_pts_won":   ta_stats.get("first_won_pct"),
+        "second_serve_pts_won":  ta_stats.get("second_won_pct"),
+        "bp_converted":          ta_stats.get("bp_conv_pct"),
+        "bp_saved":              ta_stats.get("bp_saved_pct"),
+        # Return-side counts and bp_faced_count are not derivable from TA
+        "return_bp_converted":         None,
+        "return_bp_opportunities":     None,
+        "return_first_serve_pts_won":  None,
+        "return_second_serve_pts_won": None,
+        "bp_faced_count":              None,
+        "win_rate":              ta_stats.get("win_rate"),
+        "matches":               ta_stats.get("matches", 0),
+    }
+
+
 # ── Sackmann compatibility helpers (kept for backward compat) ─────────────────
 
 def _sackmann_to_blended_tier(sack: Optional[dict]) -> Optional[dict]:
@@ -188,9 +228,11 @@ def get_blended_stats(
     sofascore_surface_log: list,
     surface: str,
     tour: str = "ATP",
-    player_ta: Optional[dict] = None,       # enrichment only — not blended
+    player_ta: Optional[dict] = None,       # enrichment only — not blended (default)
     sackmann_stats: Optional[dict] = None,
     sackmann_all_stats: Optional[dict] = None,
+    recency_focused: bool = False,          # Prop Projection tab mode
+    ta_recent_stats: Optional[dict] = None, # 52w or 2yr TA stats for the surface
 ) -> dict:
     """
     Build a unified blended stats dict from Sofascore data tiers.
@@ -248,11 +290,27 @@ def get_blended_stats(
     use_last5 = ss_matches_with_stats >= 3
     tier4 = _ss_log5_to_blended(sofascore_surface_log) if use_last5 else None
 
-    # Weights: renormalise automatically in _weighted_avg if any tier is None
-    w1, w2, w3, w4 = 0.25, 0.35, 0.25, (0.15 if use_last5 else 0.0)
-
-    tiers   = [tier1, tier2, tier3, tier4]
-    weights = [w1, w2, w3, w4]
+    # ── Prop Projection mode: prefer last-52-weeks TA over all-time SS ────────
+    # When recency_focused is set, drop SS all-time (career) entirely and add
+    # a 5th tier sourced from TA last-52-weeks (or 2-yr fallback). Weights:
+    #     TA recent : 40%   |   SS 3yr : 30%
+    #     SS last-20: 20%   |   SS last-5: 10%
+    if recency_focused:
+        tier0 = _ta_recent_to_blended_tier(ta_recent_stats, tour=tour)
+        tier1 = None                              # SS all-time dropped
+        w0, w1, w2, w3, w4 = 0.40, 0.0, 0.30, 0.20, (0.10 if use_last5 else 0.0)
+        tiers   = [tier0, tier1, tier2, tier3, tier4]
+        weights = [w0, w1, w2, w3, w4]
+        logger.info(
+            "[BLEND_RECENCY] surface=%s | TA_recent_matches=%s | weights=40/30/20/10",
+            surface,
+            (ta_recent_stats or {}).get("matches", 0),
+        )
+    else:
+        # Weights: renormalise automatically in _weighted_avg if any tier is None
+        w1, w2, w3, w4 = 0.25, 0.35, 0.25, (0.15 if use_last5 else 0.0)
+        tiers   = [tier1, tier2, tier3, tier4]
+        weights = [w1, w2, w3, w4]
 
     # Career match counts for metadata / confidence scoring
     ss_career_matches  = (tier1["matches"] if tier1 else 0)

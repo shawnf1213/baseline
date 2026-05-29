@@ -1801,6 +1801,8 @@ def generate_scouting_report(
     opponent_recent_results: list = None,
     ta_career_matches: int = 0,
     data_quality: str = "moderate",
+    player_recent_meta: dict = None,
+    opponent_recent_meta: dict = None,
 ) -> str:
     """
     Sharp bettor-voice scouting report. 4 sentences max.
@@ -1880,15 +1882,40 @@ def generate_scouting_report(
 
     sentences: list = []
 
-    # ── Low-data uncertainty lead ─────────────────────────────────────────────
-    # Use TA career matches as primary indicator; fall back to Sofascore count
+    # ── Recent-form framing ───────────────────────────────────────────────────
+    # Prop projections are driven by the last 52 weeks of TA data (not career
+    # averages) — make that explicit in the report so the reader understands
+    # the projection reflects *current* form, not historical peak.
+    p_recent_n   = (player_recent_meta or {}).get("surface_n", 0) or 0
+    p_recent_tier = (player_recent_meta or {}).get("tier", "none")
+    o_recent_n   = (opponent_recent_meta or {}).get("surface_n", 0) or 0
+    p_recent_warn = (player_recent_meta or {}).get("warning")
+
+    if p_recent_tier == "52w" and p_recent_n >= 5:
+        sentences.append(
+            f"Over the last 52 weeks on {surface}, {player_name} has played "
+            f"{p_recent_n} matches — that's the window driving this projection."
+        )
+    elif p_recent_tier == "2yr" and p_recent_n > 0:
+        sentences.append(
+            f"{player_name} has only logged a handful on {surface} in the last "
+            f"year, so this leans on {p_recent_n} matches across the last two "
+            f"years instead."
+        )
+    elif p_recent_warn == "insufficient":
+        sentences.append(
+            f"{player_name} hasn't been active enough recently — fewer than 10 "
+            f"matches in the last 52 weeks across all surfaces, so confidence is low."
+        )
+
+    # ── Low-data uncertainty lead (legacy thin-data note) ─────────────────────
     effective_matches = ta_career_matches if ta_career_matches > 0 else p_matches
     thin_data = (data_quality == "thin") or effective_matches < 5
-    if thin_data:
+    if thin_data and not sentences:
         match_note = (
-            f"{effective_matches} career surface matches in our data"
+            f"{effective_matches} recent surface matches in our data"
             if effective_matches > 0 else
-            "very limited surface data"
+            "very limited recent surface data"
         )
         sentences.append(
             f"{player_name} has {match_note} on {surface}"

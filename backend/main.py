@@ -54,7 +54,7 @@ from src.api.sofascore_client import (
     get_h2h_summary,
     get_h2h_stat_avg,
 )
-from src.api.tennis_abstract import get_player_ta_stats
+from src.api.tennis_abstract import get_player_ta_stats, build_props_ta_view
 from src.api.sackmann import (
     load_player_sackmann_data,
     aggregate_sackmann_stats,
@@ -439,6 +439,22 @@ async def prop_calculate(req: PropRequest):
             _ta_safe(req.opponent_name),
         )
 
+        # ── Build Prop-Projection-only TA views ─────────────────────────────
+        # The Prop Projection tab must NOT use TA career data — players' levels
+        # shift over years. Build views whose surface_stats are the last 52
+        # weeks (with 2-yr fallback when sample is thin). All other tabs read
+        # the full `player_ta` directly and are unaffected.
+        player_ta_props,   p1_recent_meta = build_props_ta_view(player_ta,   req.surface)
+        opponent_ta_props, p2_recent_meta = build_props_ta_view(opponent_ta, req.surface)
+        logger.info(
+            "TA_RECENT | p1=%s tier=%s n=%d (all_52w=%d) warn=%s | "
+            "p2=%s tier=%s n=%d (all_52w=%d) warn=%s",
+            req.player_name, p1_recent_meta["tier"], p1_recent_meta["surface_n"],
+            p1_recent_meta["all_surfaces_n"], p1_recent_meta["warning"],
+            req.opponent_name, p2_recent_meta["tier"], p2_recent_meta["surface_n"],
+            p2_recent_meta["all_surfaces_n"], p2_recent_meta["warning"],
+        )
+
         # Collect Sackmann results — give them up to 18s total from task creation.
         # If still running, shield cancels the wait but leaves the task alive for cache.
         try:
@@ -482,18 +498,24 @@ async def prop_calculate(req: PropRequest):
         p1_unified_surf = aggregate_unified_stats(p1_unified, surface_filter=req.surface)
         p2_unified_surf = aggregate_unified_stats(p2_unified, surface_filter=req.surface)
 
-        # Build blended stats: SS all-time (25%) + SS 3yr (35%) + SS last-20 (25%)
-        # + SS last-5 (15%).  TA is enrichment only — not blended into stats.
-        # Sackmann used as low-priority supplement when SS career data is thin.
+        # Build blended stats — RECENCY-FOCUSED for the Prop Projection tab.
+        # TA last-52-weeks 40% + SS 3yr 30% + SS last-20 20% + SS last-5 10%.
+        # SS all-time (career) is dropped: career averages can mislead because
+        # players' levels shift over years.  Sackmann supplements only when SS
+        # data is thin.
         p1_blended = get_blended_stats(
             p1_data, p1_ss_log, req.surface, req.tour,
             player_ta=player_ta,
             sackmann_stats=p1_sack_surf, sackmann_all_stats=p1_sack_all,
+            recency_focused=True,
+            ta_recent_stats=p1_recent_meta["stats"],
         )
         p2_blended = get_blended_stats(
             p2_data, p2_ss_log, req.surface, req.tour,
             player_ta=opponent_ta,
             sackmann_stats=p2_sack_surf, sackmann_all_stats=p2_sack_all,
+            recency_focused=True,
+            ta_recent_stats=p2_recent_meta["stats"],
         )
 
         # Inject SS ace-against-per-match into blended dicts so project_aces
@@ -552,14 +574,14 @@ async def prop_calculate(req: PropRequest):
         if req.prop_type == "Aces":
             result = project_aces(
                 p1_s, p2_s, court_for_calc, h2h_ace_avg, cpr_override=cpr,
-                player_ta=player_ta, opponent_ta=opponent_ta,
+                player_ta=player_ta_props, opponent_ta=opponent_ta_props,
                 tour=req.tour, surface=req.surface,
                 match_format=match_fmt,
             )
         elif req.prop_type == "Double Faults":
             result = project_double_faults(
                 p1_s, p2_s, h2h_df_avg,
-                player_ta=player_ta, opponent_ta=opponent_ta,
+                player_ta=player_ta_props, opponent_ta=opponent_ta_props,
                 tour=req.tour, surface=req.surface,
                 match_format=match_fmt,
                 court=court_for_calc,
@@ -568,7 +590,7 @@ async def prop_calculate(req: PropRequest):
             result = project_total_games(
                 p1_s, p2_s, req.surface, h2h_games_avg,
                 tour=req.tour, court=court_for_calc,
-                player_ta=player_ta, opponent_ta=opponent_ta,
+                player_ta=player_ta_props, opponent_ta=opponent_ta_props,
             )
         else:  # Break Points Won
             # All-surface player stats for Step 9 sanity check
@@ -603,8 +625,8 @@ async def prop_calculate(req: PropRequest):
                 h2h_bp_avg=h2h_bp_avg,
                 cpr_override=cpr,
                 h2h_match_count=h2h_surf_matches,
-                player_ta=player_ta,
-                opponent_ta=opponent_ta,
+                player_ta=player_ta_props,
+                opponent_ta=opponent_ta_props,
                 surface=req.surface,
                 tour=req.tour,
                 opp_ss_matches=p2_blended.get("_ss_recent_matches", 0),
@@ -646,6 +668,15 @@ async def prop_calculate(req: PropRequest):
         sack_penalty = p1_blended.get("_confidence_penalty", 0)
         if sack_penalty:
             confidence = max(15, confidence + sack_penalty)  # penalty is negative
+
+        # Insufficient-recent-data penalty: -20 when either player has fewer
+        # than 10 matches across all surfaces in the last 52 weeks
+        if p1_recent_meta["warning"] == "insufficient" or p2_recent_meta["warning"] == "insufficient":
+            confidence = max(15, confidence - 20)
+            logger.warning(
+                "RECENT_DATA_PENALTY | p1_warn=%s p2_warn=%s | confidence -> %d",
+                p1_recent_meta["warning"], p2_recent_meta["warning"], confidence,
+            )
 
         # Sanity failure: projection fell outside realistic bounds → reduce confidence
         if result.get("sanity_failed"):
@@ -728,6 +759,8 @@ async def prop_calculate(req: PropRequest):
             opponent_recent_results=p2_recent or None,
             ta_career_matches=p1_ta_career,
             data_quality=data_quality,
+            player_recent_meta=p1_recent_meta,
+            opponent_recent_meta=p2_recent_meta,
         )
 
         env_key   = result.get("environment") or detect_environment(p1_s, p2_s, surface=req.surface)
@@ -798,6 +831,17 @@ async def prop_calculate(req: PropRequest):
             "aces_per_set":          result.get("aces_per_set"),
             "df_per_set":            result.get("df_per_set"),
             "bp_won_per_set":        result.get("bp_won_per_set"),
+            # ── TA recent-window metadata (Prop Projection tab) ───────────────
+            "player_ta_recent_tier":      p1_recent_meta["tier"],
+            "player_ta_recent_matches":   p1_recent_meta["surface_n"],
+            "player_ta_recent_all_n":     p1_recent_meta["all_surfaces_n"],
+            "player_ta_recent_warning":   p1_recent_meta["warning"],
+            "player_ta_recent_note":      p1_recent_meta["note"],
+            "opponent_ta_recent_tier":    p2_recent_meta["tier"],
+            "opponent_ta_recent_matches": p2_recent_meta["surface_n"],
+            "opponent_ta_recent_all_n":   p2_recent_meta["all_surfaces_n"],
+            "opponent_ta_recent_warning": p2_recent_meta["warning"],
+            "opponent_ta_recent_note":    p2_recent_meta["note"],
             # Sofascore surface log (for bar chart; may fall back to Sackmann)
             "sofascore_surface_log": p1_chart_log,
             "chart_source":          chart_source,

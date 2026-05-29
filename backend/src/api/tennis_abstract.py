@@ -42,7 +42,7 @@ import re
 import time
 import unicodedata
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -646,6 +646,41 @@ def _parse_match_year(date_str: str) -> Optional[int]:
     return None
 
 
+def _parse_match_date(date_str: str):
+    """
+    Parse a Tennis Abstract date string into a `datetime.date`.
+
+    TA dates are typically `YYYY-MM-DD` but some sources omit the day. Returns
+    None when the date can't be parsed — callers then skip the match.
+    """
+    if not date_str:
+        return None
+    s = str(date_str).strip()
+    # Try YYYY-MM-DD, YYYY/MM/DD, YYYYMMDD, then YYYY-MM (assume day=15)
+    for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%Y%m%d", "%Y-%m"):
+        try:
+            return datetime.strptime(s[:len(fmt) + 2], fmt).date()
+        except (ValueError, TypeError):
+            pass
+    return None
+
+
+def _filter_matches_within(matches: list, days: int) -> list:
+    """
+    Return the subset of `matches` whose Date is within `days` days of today.
+    Matches with unparseable dates are dropped.
+    """
+    if not matches:
+        return []
+    cutoff = (datetime.utcnow() - timedelta(days=days)).date()
+    out = []
+    for m in matches:
+        d = _parse_match_date(m.get("Date"))
+        if d and d >= cutoff:
+            out.append(m)
+    return out
+
+
 def _agg_ta_matches(match_list: list) -> dict:
     """
     Aggregate a list of Tennis Abstract match dicts into a surface stats block.
@@ -731,6 +766,25 @@ def _build_rich_stats(matches: list) -> dict:
     for srf in ("Hard", "Clay", "Grass"):
         surf_log[srf] = by_surface[srf][:10]
 
+    # ── Recent-form windows (for Prop Projection tab) ─────────────────────────
+    # last_52_weeks: matches in the last 364 days — primary source for props
+    # last_2yr:      matches in the last 730 days — fallback when 52w is thin
+    last_52w_all   = _filter_matches_within(matches, 364)
+    last_2yr_all   = _filter_matches_within(matches, 730)
+
+    last_52w_by_surf: dict = defaultdict(list)
+    last_2yr_by_surf: dict = defaultdict(list)
+    for m in last_52w_all:
+        srf = m.get("Surface")
+        if srf:
+            last_52w_by_surf[srf].append(m)
+            last_52w_by_surf["All"].append(m)
+    for m in last_2yr_all:
+        srf = m.get("Surface")
+        if srf:
+            last_2yr_by_surf[srf].append(m)
+            last_2yr_by_surf["All"].append(m)
+
     return {
         "all_surfaces":       _agg_ta_matches(by_surface.get("All", [])),
         "by_surface":         _per_surf(by_surface),
@@ -739,6 +793,11 @@ def _build_rich_stats(matches: list) -> dict:
         "last_20_on_surface": last20,
         "surface_match_log":  surf_log,
         "last_10_matches":    matches[:10],
+        # Recent-form windows for Prop Projection tab — career data is NOT used
+        # for prop projections because it includes seasons where the player
+        # may have been at a very different level.
+        "last_52_weeks":      _per_surf(last_52w_by_surf),
+        "last_2yr_fallback":  _per_surf(last_2yr_by_surf),
     }
 
 
@@ -973,3 +1032,106 @@ def _is_useful(data: Optional[dict]) -> bool:
     if not data:
         return False
     return bool(data.get("handedness") or data.get("surface_stats"))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Recent-window picker — used ONLY by the Prop Projection tab.
+#
+# Players' levels shift over years (rising stars, declining vets); prop
+# projections must reflect *current* form, not career averages. This helper
+# returns the most recent TA surface stats with a controlled fallback:
+#
+#   1. last_52_weeks on the surface, if ≥ 5 matches
+#   2. last_2yr on the surface (amber warning) if 52w sample is too thin
+#   3. None — caller must skip TA enrichment and rely on Sofascore tiers
+#
+# Career stats are never returned by this function on purpose.
+# ─────────────────────────────────────────────────────────────────────────────
+def pick_ta_recent_stats(player_ta: Optional[dict], surface: str) -> dict:
+    """
+    Returns a dict with:
+      stats          — aggregated TA stats for the chosen window (or None)
+      tier           — '52w' | '2yr' | 'none'
+      surface_n      — matches in the chosen window on the selected surface
+      all_surfaces_n — matches in the last 52 weeks across all surfaces
+                       (used by the insufficient-data warning)
+      warning        — None | 'limited' | 'insufficient'
+                       'limited'      → <5 surface matches in 52w (fallback fired)
+                       'insufficient' → <10 total matches in 52w  (red warning)
+      note           — human-readable description for the UI
+    """
+    if not player_ta:
+        return {"stats": None, "tier": "none", "surface_n": 0,
+                "all_surfaces_n": 0, "warning": None, "note": ""}
+
+    rich = player_ta.get("rich_stats") or {}
+    last_52   = rich.get("last_52_weeks") or {}
+    last_2yr  = rich.get("last_2yr_fallback") or {}
+
+    surf_52   = last_52.get(surface) or {}
+    n_52_surf = (surf_52.get("matches") or 0)
+    n_52_all  = ((last_52.get("All") or {}).get("matches") or 0)
+
+    # Insufficient-data condition is independent of the tier choice
+    insufficient = n_52_all < 10
+    warning = "insufficient" if insufficient else None
+
+    if n_52_surf >= 5:
+        return {
+            "stats":          surf_52,
+            "tier":           "52w",
+            "surface_n":      n_52_surf,
+            "all_surfaces_n": n_52_all,
+            "warning":        warning,
+            "note":           f"Last 52 weeks: {n_52_surf} matches on {surface}",
+        }
+
+    # Fall back to 2-year window
+    surf_2yr   = last_2yr.get(surface) or {}
+    n_2yr_surf = (surf_2yr.get("matches") or 0)
+    limited_warning = warning or "limited"
+
+    if n_2yr_surf > 0:
+        return {
+            "stats":          surf_2yr,
+            "tier":           "2yr",
+            "surface_n":      n_2yr_surf,
+            "all_surfaces_n": n_52_all,
+            "warning":        limited_warning,
+            "note":           f"Last 2 years: {n_2yr_surf} matches on {surface} "
+                              f"(only {n_52_surf} in last 52 weeks)",
+        }
+
+    return {
+        "stats":          None,
+        "tier":           "none",
+        "surface_n":      n_52_surf,
+        "all_surfaces_n": n_52_all,
+        "warning":        limited_warning,
+        "note":           "No recent TA matches on this surface within the last 2 years",
+    }
+
+
+def build_props_ta_view(player_ta: Optional[dict], surface: str) -> tuple:
+    """
+    Build a TA dict whose `surface_stats[surface]` is replaced with the recent
+    window (52w or 2yr). All other fields (handedness, rank_splits, etc.) are
+    preserved untouched. The full `surface_stats` for *other* surfaces is
+    cleared so projection code can't accidentally use career data.
+
+    Returns (props_ta_view, picker_result_dict).
+    """
+    picked = pick_ta_recent_stats(player_ta, surface)
+    if not player_ta:
+        return None, picked
+
+    # Shallow copy + override surface_stats. The other keys (handedness etc.)
+    # are not surface-specific so they are fine to keep.
+    view = dict(player_ta)
+    surface_stats = {}
+    if picked["stats"]:
+        surface_stats[surface] = picked["stats"]
+    view["surface_stats"] = surface_stats
+    view["_recent_tier"]  = picked["tier"]
+    view["_recent_n"]     = picked["surface_n"]
+    return view, picked
