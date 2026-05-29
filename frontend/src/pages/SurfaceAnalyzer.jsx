@@ -6,7 +6,6 @@ import {
   LineChart, Line, CartesianGrid,
 } from 'recharts'
 import PlayerSearch from '../components/PlayerSearch'
-import StatCard from '../components/StatCard'
 import LoadingSpinner from '../components/LoadingSpinner'
 import SurfaceBadge from '../components/SurfaceBadge'
 import ResultPill from '../components/ResultPill'
@@ -21,7 +20,6 @@ const STAT_KEYS = [
   'return_second_serve_pts_won','bp_converted','bp_saved',
 ]
 
-// ── Change 12: Surface-specific column header colors ────────────────────────
 const SURFACE_HEADER_COLORS = {
   All:   '#aaa',
   Hard:  '#6b9fff',
@@ -29,16 +27,59 @@ const SURFACE_HEADER_COLORS = {
   Grass: '#00e676',
 }
 
-// ── Change 4: Surface-specific tab styles ───────────────────────────────────
+function SectionDivider({ label }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 16, margin: '24px 0 14px' }}>
+      <div style={{ flex: 1, height: 1, background: 'linear-gradient(90deg, transparent, rgba(0, 230, 118, 0.2), transparent)' }} />
+      <span style={{
+        fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 800,
+        fontSize: 10, letterSpacing: '0.3em', textTransform: 'uppercase',
+        color: 'var(--green-mid)', whiteSpace: 'nowrap',
+      }}>{label}</span>
+      <div style={{ flex: 1, height: 1, background: 'linear-gradient(90deg, transparent, rgba(0, 230, 118, 0.2), transparent)' }} />
+    </div>
+  )
+}
+
 function surfaceTabStyle(surface, isActive) {
-  if (!isActive) return { background: 'transparent', color: '#2a3a30', border: '1px solid #1a2520' }
+  if (!isActive) return { background: 'rgba(255, 255, 255, 0.025)', color: 'var(--muted)', border: '1px solid var(--card-border)' }
   const styles = {
-    Hard:  { background: '#001a40', color: '#6b9fff', border: '1px solid #2a3d5a' },
-    Clay:  { background: '#2a0800', color: '#ff6b35', border: '1px solid #5a2010' },
-    Grass: { background: '#001a0b', color: '#00e676', border: '1px solid #1a4020' },
-    All:   { background: '#0a0f0c', color: '#00e676', border: '1px solid #00e676' },
+    Hard:  { background: 'linear-gradient(135deg, #001a40, #003070)', color: '#6b9fff', border: '1px solid #2a3d5a', glow: '0 0 14px rgba(107, 159, 255, 0.3)' },
+    Clay:  { background: 'linear-gradient(135deg, #2a0800, #5a1c00)', color: '#ff6b35', border: '1px solid #5a2010', glow: '0 0 14px rgba(255, 107, 53, 0.3)' },
+    Grass: { background: 'linear-gradient(135deg, #001a0b, #003a20)', color: '#00e676', border: '1px solid #1a4020', glow: '0 0 14px rgba(0, 230, 118, 0.3)' },
+    All:   { background: 'rgba(0, 230, 118, 0.1)', color: 'var(--green-bright)', border: '1px solid var(--green-bright)', glow: '0 0 14px rgba(0, 230, 118, 0.3)' },
   }
-  return styles[surface] || styles.All
+  const s = styles[surface] || styles.All
+  return { background: s.background, color: s.color, border: s.border, boxShadow: s.glow }
+}
+
+// Archetype style and icon
+const ARCHETYPE_STYLES = {
+  'Big Server':            { bg: 'linear-gradient(135deg, #5a0a14, #ff3b5c)', glow: 'rgba(255, 59, 92, 0.4)', icon: '⚡' },
+  'Precision Baseliner':   { bg: 'linear-gradient(135deg, #0a1a4a, #6b9fff)', glow: 'rgba(107, 159, 255, 0.4)', icon: '◎' },
+  'Counterpuncher':        { bg: 'linear-gradient(135deg, #5a3800, #FFB300)', glow: 'rgba(255, 179, 0, 0.4)', icon: '🛡' },
+  'All-Court Player':      { bg: 'linear-gradient(135deg, #00FF87, #6b9fff, #FFB300)', glow: 'rgba(0, 230, 118, 0.4)', icon: '✦' },
+}
+
+function ArchetypeBadge({ archetype }) {
+  if (!archetype) return null
+  const s = ARCHETYPE_STYLES[archetype] || { bg: 'rgba(255,255,255,0.05)', glow: 'rgba(255,255,255,0.15)', icon: '◉' }
+  return (
+    <span style={{
+      display: 'inline-flex', alignItems: 'center', gap: 8,
+      padding: '8px 16px', borderRadius: 999,
+      background: s.bg,
+      color: '#fff',
+      fontFamily: '"Barlow Condensed", sans-serif',
+      fontWeight: 900, fontSize: 13,
+      letterSpacing: 1.8, textTransform: 'uppercase',
+      boxShadow: `0 6px 18px ${s.glow}`,
+      textShadow: '0 1px 2px rgba(0,0,0,0.3)',
+    }}>
+      <span style={{ fontSize: 16 }}>{s.icon}</span>
+      {archetype}
+    </span>
+  )
 }
 
 function StatTable({ stats, tour }) {
@@ -46,12 +87,11 @@ function StatTable({ stats, tour }) {
   const isHigherBetter = (k) => !['double_faults'].includes(k)
 
   return (
-    <div style={{ overflowX: 'auto' }}>
+    <div className="glass-card" style={{ overflowX: 'auto', padding: '6px 12px' }}>
       <table className="baseline-table">
         <thead>
           <tr>
             <th>Stat</th>
-            {/* ── Change 12: Colored surface column headers ── */}
             {SURFACES.map(s => (
               <th key={s} style={{ color: SURFACE_HEADER_COLORS[s] }}>{s}</th>
             ))}
@@ -62,17 +102,27 @@ function StatTable({ stats, tour }) {
             const avg = avgs[key]
             return (
               <tr key={key}>
-                <td style={{ color: 'var(--muted)', whiteSpace: 'nowrap' }}>{STAT_LABELS[key]}</td>
+                <td style={{ color: 'var(--muted)', whiteSpace: 'nowrap', fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 700 }}>{STAT_LABELS[key]}</td>
                 {SURFACES.map(s => {
                   const v = stats[s]?.[key]
                   const isPct = key.includes('pct') || key.includes('won') || key.includes('converted') || key.includes('saved')
                   const display = v == null ? '—' : isPct ? fmtPct(v) : fmt(v)
-                  let color = 'var(--white)'
+                  let color = '#fff'
+                  let arrow = null
                   if (v != null && avg != null) {
                     const better = v > avg
-                    color = (isHigherBetter(key) ? better : !better) ? 'var(--green)' : 'var(--red)'
+                    const above = isHigherBetter(key) ? better : !better
+                    color = above ? 'var(--green-bright)' : 'var(--red-bright)'
+                    arrow = above ? '▲' : '▼'
                   }
-                  return <td key={s} style={{ color, fontWeight: 600 }}>{display}</td>
+                  return (
+                    <td key={s} style={{ color, fontWeight: 800, fontFamily: '"Barlow Condensed", sans-serif' }}>
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                        {arrow && <span style={{ fontSize: 9, opacity: 0.85 }}>{arrow}</span>}
+                        {display}
+                      </span>
+                    </td>
+                  )
                 })}
               </tr>
             )
@@ -83,21 +133,26 @@ function StatTable({ stats, tour }) {
   )
 }
 
-// ── Change 9: Form dots with glow on win dots (Phase 10: staggered reveal) ──
+// Last 10 form dots — larger with glow + tooltip
 function FormDots({ form }) {
   return (
-    <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
       {form.slice(0, 10).map((m, i) => (
         <motion.div
           key={i}
           initial={{ scale: 0, opacity: 0 }}
           animate={{ scale: 1, opacity: 1 }}
-          transition={{ delay: i * 0.05, type: 'spring', stiffness: 400 }}
-          title={`${m.won ? 'W' : 'L'} vs ${m.opponent} (${m.surface})`}
+          transition={{ delay: i * 0.05, type: 'spring', stiffness: 380 }}
+          title={`${m.won ? 'W' : 'L'} vs ${m.opponent} (${m.surface})${m.score ? ' — ' + m.score : ''}`}
           style={{
-            width: 12, height: 12, borderRadius: '50%',
-            background: m.won ? 'var(--green)' : 'var(--red)',
-            boxShadow: m.won ? '0 0 6px rgba(0, 230, 118, 0.5)' : undefined,
+            width: 18, height: 18, borderRadius: '50%',
+            background: m.won
+              ? 'radial-gradient(circle at 35% 35%, #00FF87, #00A854)'
+              : 'radial-gradient(circle at 35% 35%, #FF6B7A, #B0223A)',
+            boxShadow: m.won
+              ? '0 0 12px rgba(0, 230, 118, 0.55), 0 0 0 1px rgba(0, 230, 118, 0.3) inset'
+              : '0 0 12px rgba(255, 68, 68, 0.5), 0 0 0 1px rgba(255, 68, 68, 0.3) inset',
+            cursor: 'pointer',
           }}
         />
       ))}
@@ -115,45 +170,116 @@ function WinRateSparkline({ matches }) {
   }).slice(-20)
 
   return (
-    <div style={{ height: 120 }}>
+    <div style={{ height: 140 }}>
       <ResponsiveContainer width="100%" height="100%">
         <LineChart data={data}>
-          <CartesianGrid strokeDasharray="3 3" stroke="#1e1e1e" />
+          <defs>
+            <linearGradient id="sa-line" x1="0" x2="0" y1="0" y2="1">
+              <stop offset="0%" stopColor="#00FF87" />
+              <stop offset="100%" stopColor="#00A854" />
+            </linearGradient>
+          </defs>
+          <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
           <XAxis dataKey="i" hide />
           <YAxis domain={[0, 100]} tick={{ fill: 'var(--muted)', fontSize: 11 }} />
-          <Tooltip formatter={v => [`${v}%`, 'Win Rate']} contentStyle={{ background: '#1a1a1a', border: '1px solid var(--border)', borderRadius: 6 }} />
-          <Line type="monotone" dataKey="wr" stroke="var(--green)" strokeWidth={2} dot={false} isAnimationActive />
+          <Tooltip
+            formatter={v => [`${v}%`, 'Win Rate']}
+            contentStyle={{ background: 'rgba(8, 13, 9, 0.95)', border: '1px solid var(--card-border)', borderRadius: 8, backdropFilter: 'blur(10px)' }}
+          />
+          <Line type="monotone" dataKey="wr"
+            stroke="url(#sa-line)" strokeWidth={3}
+            dot={false}
+            isAnimationActive
+            filter="drop-shadow(0 0 6px rgba(0, 230, 118, 0.4))"
+          />
         </LineChart>
       </ResponsiveContainer>
     </div>
   )
 }
 
-function SurfaceBarChart({ stats, tour }) {
+/**
+ * Horizontal bar chart with animated fill from left to right.
+ * Each row is one stat × one surface, color-coded vs the tour average.
+ */
+function HorizontalSurfaceBars({ stats, tour }) {
   const avgs = tour === 'WTA' ? WTA_AVERAGES : ATP_AVERAGES
   const keys = ['aces', 'double_faults', 'bp_converted']
-  const labels = { aces: 'Aces', double_faults: 'DFs', bp_converted: 'BP Conv %' }
+  const labels = { aces: 'Aces/Match', double_faults: 'DFs/Match', bp_converted: 'BP Conversion %' }
   const surfaces = ['Hard', 'Clay', 'Grass']
-
-  const data = keys.map(k => {
-    const row = { stat: labels[k], avg: avgs[k] }
-    surfaces.forEach(s => { row[s] = stats[s]?.[k] ?? null })
-    return row
-  })
-
-  const colors = { Hard: '#42A5F5', Clay: '#EF6C00', Grass: '#388E3C' }
+  const isHigherBetter = (k) => !['double_faults'].includes(k)
 
   return (
-    <div style={{ height: 200 }}>
-      <ResponsiveContainer width="100%" height="100%">
-        <BarChart data={data} barGap={4}>
-          <CartesianGrid strokeDasharray="3 3" stroke="#1e1e1e" />
-          <XAxis dataKey="stat" tick={{ fill: 'var(--muted)', fontSize: 12 }} />
-          <YAxis tick={{ fill: 'var(--muted)', fontSize: 11 }} />
-          <Tooltip contentStyle={{ background: '#1a1a1a', border: '1px solid var(--border)', borderRadius: 6 }} />
-          {surfaces.map(s => <Bar key={s} dataKey={s} fill={colors[s]} radius={[3,3,0,0]} isAnimationActive />)}
-        </BarChart>
-      </ResponsiveContainer>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+      {keys.map(k => {
+        // Find max for scaling
+        const vals = surfaces.map(s => stats[s]?.[k]).filter(v => v != null)
+        const maxV = Math.max(...vals, avgs[k] || 0) * 1.15
+
+        return (
+          <div key={k}>
+            <div style={{
+              fontFamily: '"Barlow Condensed", sans-serif',
+              fontWeight: 800, fontSize: 11, letterSpacing: 1.5,
+              color: 'var(--green-mid)', textTransform: 'uppercase',
+              marginBottom: 10,
+            }}>{labels[k]}</div>
+
+            {surfaces.map(s => {
+              const v = stats[s]?.[k]
+              if (v == null) return null
+              const pct = (v / maxV) * 100
+              const better = isHigherBetter(k) ? v > avgs[k] : v < avgs[k]
+              const color = better ? 'var(--green-bright)' : 'var(--red-bright)'
+              const gradient = better
+                ? 'linear-gradient(90deg, #00A854, #00FF87)'
+                : 'linear-gradient(90deg, #B0223A, #FF3B5C)'
+              const glow = better ? 'rgba(0, 230, 118, 0.35)' : 'rgba(255, 68, 68, 0.35)'
+
+              return (
+                <div key={s} style={{
+                  display: 'grid',
+                  gridTemplateColumns: '70px 1fr 60px',
+                  alignItems: 'center', gap: 12,
+                  marginBottom: 8,
+                }}>
+                  <div style={{
+                    fontFamily: '"Barlow Condensed", sans-serif',
+                    fontWeight: 700, fontSize: 11,
+                    color: SURFACE_HEADER_COLORS[s] || '#888',
+                    letterSpacing: 1.5, textTransform: 'uppercase',
+                  }}>{s}</div>
+                  <div style={{
+                    position: 'relative', height: 12,
+                    background: 'rgba(255, 255, 255, 0.04)',
+                    borderRadius: 6, overflow: 'hidden',
+                  }}>
+                    <motion.div
+                      initial={{ width: 0 }}
+                      animate={{ width: `${pct}%` }}
+                      transition={{ duration: 0.7, ease: 'easeOut' }}
+                      style={{
+                        height: '100%',
+                        background: gradient,
+                        boxShadow: `0 0 10px ${glow}`,
+                        borderRadius: 6,
+                      }}
+                    />
+                  </div>
+                  <div style={{
+                    textAlign: 'right',
+                    fontFamily: '"Barlow Condensed", sans-serif',
+                    fontWeight: 900, fontSize: 14,
+                    color,
+                  }}>
+                    {k.includes('converted') ? fmtPct(v) : fmt(v)}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        )
+      })}
     </div>
   )
 }
@@ -169,18 +295,22 @@ function MatchHistory({ allMatches }) {
 
   return (
     <div>
-      {/* ── Change 4: surface-colored tabs ── */}
-      <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', gap: 10, marginBottom: 14, flexWrap: 'wrap' }}>
         {['All','Hard','Clay','Grass'].map(s => (
-          <button key={s} onClick={() => { setSurface(s); setPage(0) }} style={{
-            padding: '6px 16px', borderRadius: 8, fontSize: 11, cursor: 'pointer',
-            fontWeight: 700, fontFamily: '"Barlow Condensed", sans-serif', letterSpacing: 1.5,
-            textTransform: 'uppercase',
-            ...surfaceTabStyle(s, surface === s),
-          }}>{s}</button>
+          <motion.button
+            key={s}
+            whileTap={{ scale: 0.95 }}
+            onClick={() => { setSurface(s); setPage(0) }}
+            style={{
+              padding: '8px 18px', borderRadius: 999, fontSize: 11, cursor: 'pointer',
+              fontWeight: 800, fontFamily: '"Barlow Condensed", sans-serif', letterSpacing: 1.8,
+              textTransform: 'uppercase',
+              ...surfaceTabStyle(s, surface === s),
+            }}
+          >{s}</motion.button>
         ))}
       </div>
-      <div style={{ overflowX: 'auto' }}>
+      <div className="glass-card" style={{ overflowX: 'auto', padding: '4px 10px' }}>
         <table className="baseline-table">
           <thead><tr>
             <th>Date</th><th>Tournament</th><th>Surface</th><th>Result</th><th>Opponent</th><th>Score</th>
@@ -188,12 +318,12 @@ function MatchHistory({ allMatches }) {
           <tbody>
             {rows.map((m, i) => (
               <tr key={i}>
-                <td style={{ color: '#2a3a30', whiteSpace: 'nowrap', fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 700, fontSize: 11, letterSpacing: 1 }}>{m.date || '—'}</td>
-                <td style={{ color: '#4a6a50', fontSize: 13 }}>{m.tournament}</td>
+                <td style={{ color: 'var(--muted)', whiteSpace: 'nowrap', fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 700, fontSize: 11, letterSpacing: 1 }}>{m.date || '—'}</td>
+                <td style={{ color: 'rgba(255,255,255,0.75)', fontSize: 13 }}>{m.tournament}</td>
                 <td><SurfaceBadge surface={m.surface} /></td>
                 <td><ResultPill result={m.won ? 'W' : 'L'} /></td>
-                <td>{m.opponent_name}</td>
-                <td style={{ fontVariantNumeric: 'tabular-nums', color: '#3a5040', fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 600 }}>{m.score || '—'}</td>
+                <td style={{ color: '#fff', fontWeight: 600 }}>{m.opponent_name}</td>
+                <td style={{ fontVariantNumeric: 'tabular-nums', color: 'rgba(255,255,255,0.7)', fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 700 }}>{m.score || '—'}</td>
               </tr>
             ))}
             {rows.length === 0 && <tr><td colSpan={6} style={{ color: 'var(--muted)', textAlign: 'center', padding: 24 }}>No matches</td></tr>}
@@ -201,14 +331,16 @@ function MatchHistory({ allMatches }) {
         </table>
       </div>
       {pages > 1 && (
-        <div style={{ display: 'flex', gap: 8, marginTop: 12, justifyContent: 'center' }}>
+        <div style={{ display: 'flex', gap: 8, marginTop: 14, justifyContent: 'center' }}>
           {Array.from({ length: pages }, (_, i) => (
             <button key={i} onClick={() => setPage(i)} style={{
-              width: 32, height: 32, borderRadius: 6, cursor: 'pointer',
-              background: page === i ? 'var(--green)' : 'var(--card)',
+              width: 36, height: 36, borderRadius: 8, cursor: 'pointer',
+              background: page === i ? 'var(--green-bright)' : 'rgba(255, 255, 255, 0.025)',
               color: page === i ? '#000' : 'var(--muted)',
-              border: `1px solid ${page === i ? 'var(--green)' : 'var(--border)'}`,
-              fontSize: 12, fontWeight: 700,
+              border: `1px solid ${page === i ? 'var(--green-bright)' : 'var(--card-border)'}`,
+              fontSize: 12, fontWeight: 800, fontFamily: '"Barlow Condensed", sans-serif',
+              boxShadow: page === i ? '0 0 10px rgba(0, 230, 118, 0.3)' : 'none',
+              transition: 'all .2s',
             }}>{i + 1}</button>
           ))}
         </div>
@@ -217,22 +349,21 @@ function MatchHistory({ allMatches }) {
   )
 }
 
-// Handedness badge — R=gray, L=green
 function HandBadge({ hand }) {
   if (!hand) return null
   return (
     <span style={{
-      display: 'inline-block', fontSize: 9, fontWeight: 800,
-      padding: '1px 6px', borderRadius: 4, marginLeft: 8,
-      verticalAlign: 'middle', letterSpacing: '.05em',
-      background: hand === 'L' ? 'var(--green)' : '#3a3a3a',
-      color:      hand === 'L' ? '#000' : '#888',
-      border: `1px solid ${hand === 'L' ? 'var(--green)' : '#555'}`,
-    }}>{hand === 'L' ? 'Left-handed' : 'Right-handed'}</span>
+      display: 'inline-block', fontSize: 10, fontWeight: 800,
+      padding: '3px 10px', borderRadius: 999, marginLeft: 8,
+      verticalAlign: 'middle', letterSpacing: 1,
+      background: hand === 'L' ? 'var(--green-bright)' : 'rgba(255,255,255,0.05)',
+      color:      hand === 'L' ? '#000' : 'var(--muted)',
+      border: `1px solid ${hand === 'L' ? 'var(--green-bright)' : 'rgba(255,255,255,0.12)'}`,
+      textTransform: 'uppercase',
+    }}>{hand === 'L' ? 'Left' : 'Right'}</span>
   )
 }
 
-// TA surface stats panel shown below the Sofascore stat table
 function TaSurfacePanel({ taStats, surface }) {
   if (!taStats?.surface_stats) return null
   const surf = taStats.surface_stats[surface] || taStats.surface_stats['All']
@@ -246,40 +377,43 @@ function TaSurfacePanel({ taStats, surface }) {
     ['2nd Serve Won',  surf.second_won_pct != null? surf.second_won_pct.toFixed(1)+ '%' : '—'],
     ['BP Saved %',     surf.bp_saved_pct != null  ? surf.bp_saved_pct.toFixed(1)  + '%' : '—'],
     ['BP Conv vs opp', surf.bp_conv_pct != null   ? surf.bp_conv_pct.toFixed(1)   + '%' : '—'],
-    ['Matches (TA)',    surf.matches],
+    ['Matches (TA)',   surf.matches],
   ]
 
   return (
-    <div style={{ background: '#080d09', border: '1px solid #1a2520', borderRadius: 10, padding: '16px 18px', marginBottom: 16 }}>
-      <div style={{ fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 700, fontSize: 9, letterSpacing: '0.3em', color: '#00e676', textTransform: 'uppercase', marginBottom: 12 }}>
+    <div className="glass-card" style={{ padding: '18px 22px', marginBottom: 18 }}>
+      <div style={{
+        fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 800,
+        fontSize: 10, letterSpacing: '0.3em',
+        color: 'var(--green-bright)', textTransform: 'uppercase', marginBottom: 14,
+      }}>
         Tennis Abstract — {surface} Data ({surf.matches} matches)
       </div>
-      {rows.map(([lbl, val]) => (
-        <div key={lbl} style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', borderBottom: '1px solid #0d1510', fontSize: 12 }}>
-          <span style={{ color: '#2a3a30', fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 600 }}>{lbl}</span>
-          <span style={{ fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 700, fontSize: 13 }}>{val}</span>
+      {rows.map(([lbl, val], i) => (
+        <div key={lbl} style={{
+          display: 'flex', justifyContent: 'space-between',
+          padding: '7px 8px',
+          borderBottom: '1px solid rgba(13, 21, 16, 0.6)',
+          fontSize: 13,
+          background: i % 2 === 1 ? 'rgba(0, 230, 118, 0.015)' : 'transparent',
+          marginLeft: -8, marginRight: -8,
+        }}>
+          <span style={{ color: 'var(--muted)', fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 700 }}>{lbl}</span>
+          <span style={{ fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 800, fontSize: 14, color: '#fff' }}>{val}</span>
         </div>
       ))}
     </div>
   )
 }
 
-// ── Change 5: Win rate card with best-surface highlight ──────────────────────
 const SURFACE_COLORS = {
   Hard:  '#6b9fff',
   Clay:  '#ff6b35',
   Grass: '#00e676',
   All:   '#00e676',
 }
-const SURFACE_BG_TINTS = {
-  Hard:  'rgba(107,159,255,0.06)',
-  Clay:  'rgba(255,107,53,0.06)',
-  Grass: 'rgba(0,230,118,0.06)',
-  All:   'rgba(0,230,118,0.06)',
-}
 
 function WinRateCards({ stats, taStats }) {
-  // Find best surface by win_rate (exclude 'All', compare only Hard/Clay/Grass)
   let bestSurface = null
   let bestWr = -1
   for (const s of ['Hard', 'Clay', 'Grass']) {
@@ -288,58 +422,70 @@ function WinRateCards({ stats, taStats }) {
   }
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12 }}>
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 14 }}>
       {SURFACES.map(s => {
         const d = stats[s] || {}
         const wr = d.win_rate
         const mp = d.matches_played || 0
         const isBest = s === bestSurface
         const surfColor = SURFACE_COLORS[s] || '#00e676'
-        const bgTint = SURFACE_BG_TINTS[s] || 'transparent'
 
-        // TA career match count for this surface
         const taSurf = taStats?.surface_stats?.[s === 'All' ? 'All' : s]
         const taM = taSurf?.matches || 0
         const taThin = s !== 'All' && taM < 5 && taM > 0
 
         return (
-          <div key={s} style={{
-            background: isBest ? bgTint : '#0a0f0c',
-            border: isBest ? `2px solid ${surfColor}` : '1px solid #1a2520',
-            borderRadius: 10,
-            padding: '14px 16px',
-            transition: 'border .2s',
-          }}>
-            <div style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 4 }}>
+          <div
+            key={s}
+            className="glass-card"
+            style={{
+              padding: '18px 20px',
+              borderColor: isBest ? surfColor : undefined,
+              boxShadow: isBest
+                ? `0 6px 24px ${surfColor}33, 0 0 0 1px ${surfColor}66 inset`
+                : undefined,
+            }}
+          >
+            <div style={{
+              fontFamily: '"Barlow Condensed", sans-serif',
+              fontSize: 10, fontWeight: 800, letterSpacing: 2,
+              color: isBest ? surfColor : 'var(--green-mid)',
+              textTransform: 'uppercase', marginBottom: 6,
+            }}>
               {s === 'All' ? 'All Surfaces' : s}
             </div>
             <div style={{
-              fontSize: isBest ? '3.5rem' : '2.2rem',
+              fontSize: isBest ? 52 : 38,
               fontWeight: 900,
               fontFamily: '"Barlow Condensed", sans-serif',
-              color: wr > 55 ? 'var(--green)' : wr < 45 ? 'var(--red)' : 'var(--white)',
-              lineHeight: 1.1,
+              color: wr > 55 ? 'var(--green-bright)' : wr < 45 ? 'var(--red-bright)' : '#fff',
+              lineHeight: 1.05,
+              textShadow: isBest ? `0 0 18px ${surfColor}55` : 'none',
             }}>
               {wr != null ? (
                 <><NumberFlow value={Math.round(wr)} />%</>
               ) : '—'}
             </div>
-            {/* Match count row: SS recent + TA career */}
-            <div style={{ display: 'flex', gap: 6, marginTop: 5, flexWrap: 'wrap' }}>
-              <span style={{ fontSize: 10, color: 'var(--muted)' }}>SS {mp}</span>
+            <div style={{ display: 'flex', gap: 8, marginTop: 6, flexWrap: 'wrap' }}>
+              <span style={{ fontSize: 10, color: 'var(--muted)', fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 700, letterSpacing: 0.5 }}>SS {mp}</span>
               {taM > 0 && (
-                <span style={{ fontSize: 10, color: '#3a6a40' }}>· TA {taM}</span>
+                <span style={{ fontSize: 10, color: 'var(--muted)', fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 700, letterSpacing: 0.5 }}>· TA {taM}</span>
               )}
             </div>
-            {/* Amber warning if thin TA data on this surface */}
             {taThin && (
-              <div style={{ fontSize: 9, color: '#FFB300', fontWeight: 700, marginTop: 4, fontFamily: '"Barlow Condensed", sans-serif', letterSpacing: 0.5 }}>
+              <div style={{ fontSize: 9, color: 'var(--amber)', fontWeight: 700, marginTop: 4, fontFamily: '"Barlow Condensed", sans-serif', letterSpacing: 0.5 }}>
                 ⚠ Limited surface data
               </div>
             )}
             {isBest && (
-              <div style={{ fontSize: 9, color: surfColor, fontWeight: 700, marginTop: 4, textTransform: 'uppercase', letterSpacing: '.08em', borderRadius: 4, padding: '2px 8px', background: surfColor + '22', border: '1px solid ' + surfColor + '44', display: 'inline-block' }}>
-                Best Surface
+              <div style={{
+                fontSize: 9, color: surfColor, fontWeight: 800, marginTop: 8,
+                textTransform: 'uppercase', letterSpacing: 1.5,
+                borderRadius: 999, padding: '3px 10px',
+                background: surfColor + '22', border: `1px solid ${surfColor}66`,
+                display: 'inline-block', fontFamily: '"Barlow Condensed", sans-serif',
+              }}>
+                ★ Best Surface
               </div>
             )}
           </div>
@@ -354,7 +500,6 @@ export default function SurfaceAnalyzer({ tour }) {
   const [activeSurface, setActiveSurface] = useState('Hard')
   const { stats, loading, error } = usePlayerStats(player?.id, tour, player?.name || '')
 
-  // Inactivity / freshness — computed at component level (not in IIFE)
   const lastMatchTs    = stats?.all_matches?.[0]?.timestamp || 0
   const lastMatchDate  = lastMatchTs > 0 ? new Date(lastMatchTs * 1000) : null
   const daysSinceLast  = lastMatchDate
@@ -366,112 +511,110 @@ export default function SurfaceAnalyzer({ tour }) {
   const isStale    = daysSinceLast != null && daysSinceLast > 7
   const isInactive = daysSinceLast != null && daysSinceLast > 21
 
-  const section = (title) => (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 16, margin: '20px 0 12px' }}>
-      <div style={{ flex: 1, height: 1, background: '#0d1510' }} />
-      <span style={{ fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 700, fontSize: 9, letterSpacing: '0.3em', textTransform: 'uppercase', color: '#1a2a1e', whiteSpace: 'nowrap' }}>{title}</span>
-      <div style={{ flex: 1, height: 1, background: '#0d1510' }} />
-    </div>
-  )
-
   return (
     <div>
-      <div style={{ marginBottom: 20 }}>
+      <div style={{ marginBottom: 22 }}>
         <PlayerSearch tour={tour} label="Search player…" selected={player} onSelect={setPlayer} />
       </div>
 
       {!player && (
-        <div style={{ textAlign: 'center', padding: '60px 20px', color: 'var(--muted)' }}>
+        <div className="glass-card" style={{ textAlign: 'center', padding: '60px 20px', color: 'var(--muted)' }}>
           Search for a player to view surface analytics
         </div>
       )}
 
-      {loading && <LoadingSpinner message="Fetching player data…" />}
-
-      {error && <div style={{ color: 'var(--red)', padding: 20 }}>Error: {error}</div>}
+      {loading && <LoadingSpinner message="Fetching player data" />}
+      {error && <div className="glass-card" style={{ color: 'var(--red-bright)', padding: 20, borderColor: 'rgba(255, 68, 68, 0.3)' }}>Error: {error}</div>}
 
       {stats && !loading && (
         <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4 }}>
-          {/* Header */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8, flexWrap: 'wrap' }}>
-            <h2 style={{ margin: 0, fontSize: 28, fontWeight: 900, fontFamily: '"Barlow Condensed", sans-serif', letterSpacing: 1 }}>{player.name}</h2>
-            {stats.archetype && (
-              <span style={{ padding: '3px 12px', borderRadius: 6, fontSize: 10, fontWeight: 700, fontFamily: '"Barlow Condensed", sans-serif', letterSpacing: 1, textTransform: 'uppercase', background: '#001a0b', color: '#00e676', border: '1px solid #1a4020' }}>
-                {stats.archetype}
-              </span>
-            )}
-            <HandBadge hand={stats.ta_stats?.handedness} />
-            {lastMatchLabel && (
-              <span style={{
-                fontSize: 10, fontWeight: 700, fontFamily: '"Barlow Condensed", sans-serif',
-                letterSpacing: 1, padding: '3px 10px', borderRadius: 6,
-                background: isStale ? '#1a1000' : '#0a0f0c',
-                color: isStale ? '#f5a623' : '#888',
-                border: `1px solid ${isStale ? '#5a3800' : '#1a2520'}`,
+          {/* Player header */}
+          <div className="glass-card" style={{ padding: '22px 24px', marginBottom: 18 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 12, flexWrap: 'wrap' }}>
+              <h2 style={{
+                margin: 0, fontSize: 32, fontWeight: 900,
+                fontFamily: '"Barlow Condensed", sans-serif', letterSpacing: 1,
+                color: '#fff',
+              }}>{player.name}</h2>
+              <ArchetypeBadge archetype={stats.archetype} />
+              <HandBadge hand={stats.ta_stats?.handedness} />
+              {lastMatchLabel && (
+                <span style={{
+                  fontSize: 10, fontWeight: 700, fontFamily: '"Barlow Condensed", sans-serif',
+                  letterSpacing: 1, padding: '4px 11px', borderRadius: 999,
+                  background: isStale ? 'rgba(255, 179, 0, 0.08)' : 'rgba(255, 255, 255, 0.03)',
+                  color: isStale ? 'var(--amber)' : 'var(--muted)',
+                  border: `1px solid ${isStale ? 'rgba(255, 179, 0, 0.3)' : 'var(--card-border)'}`,
+                  textTransform: 'uppercase',
+                }}>
+                  Last match: {lastMatchLabel}
+                </span>
+              )}
+            </div>
+
+            {isInactive && (
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: 10,
+                background: 'rgba(255, 179, 0, 0.06)', border: '1px solid rgba(255, 179, 0, 0.3)',
+                borderRadius: 10, padding: '10px 16px', marginBottom: 8,
               }}>
-                Last match: {lastMatchLabel}
-              </span>
+                <span style={{ fontSize: 16, color: 'var(--amber)' }}>⚠</span>
+                <span style={{
+                  fontSize: 12, fontWeight: 700, color: 'var(--amber)',
+                  fontFamily: '"Barlow Condensed", sans-serif', letterSpacing: 0.5,
+                }}>
+                  Player may be inactive or injured — last match was {daysSinceLast} days ago
+                </span>
+              </div>
             )}
+
+            <div style={{
+              fontFamily: '"Barlow Condensed", sans-serif',
+              fontSize: 11, fontWeight: 800, letterSpacing: 2,
+              color: 'var(--green-mid)', textTransform: 'uppercase',
+              marginBottom: 8, marginTop: 6,
+            }}>Form — Last 10</div>
+            <FormDots form={stats.form || []} />
           </div>
 
-          {/* Inactivity warning — shown when last match was > 21 days ago */}
-          {isInactive && (
-            <div style={{
-              display: 'flex', alignItems: 'center', gap: 8,
-              background: '#1a1000', border: '1px solid #5a3800',
-              borderRadius: 8, padding: '8px 14px', marginBottom: 12,
-            }}>
-              <span style={{ fontSize: 14 }}>⚠</span>
-              <span style={{
-                fontSize: 11, fontWeight: 700, color: '#f5a623',
-                fontFamily: '"Barlow Condensed", sans-serif', letterSpacing: 0.5,
-              }}>
-                Player may be inactive or injured — last match was {daysSinceLast} days ago
-              </span>
-            </div>
-          )}
-
-          {section('Form (last 10)')}
-          {/* ── Change 9: FormDots with glow ── */}
-          <FormDots form={stats.form || []} />
-
-          {section('Win Rate by Surface')}
-          {/* ── Change 5: Win rate cards with best-surface highlight + TA match counts ── */}
+          <SectionDivider label="Win Rate by Surface" />
           <WinRateCards stats={stats} taStats={stats.ta_stats} />
 
-          {section('Surface Stats')}
-          {/* ── Changes 3 & 12 applied inside StatTable ── */}
+          <SectionDivider label="Surface Stats" />
           <StatTable stats={stats} tour={tour} />
 
-          {/* Tennis Abstract supplemental panel — surface selector */}
           {stats.ta_stats && (
             <>
-              {/* ── Change 4: Surface-colored tab buttons ── */}
-              <div style={{ display: 'flex', gap: 8, margin: '16px 0 10px', flexWrap: 'wrap' }}>
+              <div style={{ display: 'flex', gap: 10, margin: '18px 0 14px', flexWrap: 'wrap' }}>
                 {['Hard', 'Clay', 'Grass', 'All'].map(s => (
-                  <button key={s} onClick={() => setActiveSurface(s)} style={{
-                    padding: '6px 16px', borderRadius: 8, fontSize: 11, cursor: 'pointer',
-                    fontWeight: 700, fontFamily: '"Barlow Condensed", sans-serif', letterSpacing: 1.5,
-                    textTransform: 'uppercase',
-                    ...surfaceTabStyle(s, activeSurface === s),
-                  }}>{s}</button>
+                  <motion.button
+                    key={s}
+                    whileTap={{ scale: 0.95 }}
+                    onClick={() => setActiveSurface(s)}
+                    style={{
+                      padding: '8px 18px', borderRadius: 999, fontSize: 11, cursor: 'pointer',
+                      fontWeight: 800, fontFamily: '"Barlow Condensed", sans-serif', letterSpacing: 1.8,
+                      textTransform: 'uppercase',
+                      ...surfaceTabStyle(s, activeSurface === s),
+                    }}
+                  >{s}</motion.button>
                 ))}
               </div>
               <TaSurfacePanel taStats={stats.ta_stats} surface={activeSurface} />
             </>
           )}
 
-          {section('Rolling Win Rate (last 20 matches)')}
-          <div style={{ background: '#0a0f0c', border: '1px solid #1a2520', borderRadius: 12, padding: '18px 16px' }}>
+          <SectionDivider label="Rolling Win Rate (last 20 matches)" />
+          <div className="glass-card" style={{ padding: '20px 18px' }}>
             <WinRateSparkline matches={stats.all_matches || []} />
           </div>
 
-          {section('Surface Comparison — Aces · DFs · BP Conversion')}
-          <div style={{ background: '#0a0f0c', border: '1px solid #1a2520', borderRadius: 12, padding: '18px 16px' }}>
-            <SurfaceBarChart stats={stats} tour={tour} />
+          <SectionDivider label="Surface Comparison — Aces · DFs · BP Conversion" />
+          <div className="glass-card" style={{ padding: '22px 24px', marginBottom: 18 }}>
+            <HorizontalSurfaceBars stats={stats} tour={tour} />
           </div>
 
-          {section('Match History')}
+          <SectionDivider label="Match History" />
           <MatchHistory allMatches={stats.all_matches || []} />
         </motion.div>
       )}

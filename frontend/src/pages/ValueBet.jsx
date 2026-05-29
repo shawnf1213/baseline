@@ -1,12 +1,26 @@
 import { useState, useEffect } from 'react'
 import { motion } from 'motion/react'
+import NumberFlow from '@number-flow/react'
 import PlayerSearch from '../components/PlayerSearch'
 import LoadingSpinner from '../components/LoadingSpinner'
-import StatCard from '../components/StatCard'
 import { fetchStats } from '../utils/api'
 import { fmt, fmtPct } from '../utils/constants'
 
 const SURFACES = ['Hard', 'Clay', 'Grass']
+
+function SectionDivider({ label }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 16, margin: '24px 0 14px' }}>
+      <div style={{ flex: 1, height: 1, background: 'linear-gradient(90deg, transparent, rgba(0, 230, 118, 0.2), transparent)' }} />
+      <span style={{
+        fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 800,
+        fontSize: 10, letterSpacing: '0.3em', textTransform: 'uppercase',
+        color: 'var(--green-mid)', whiteSpace: 'nowrap',
+      }}>{label}</span>
+      <div style={{ flex: 1, height: 1, background: 'linear-gradient(90deg, transparent, rgba(0, 230, 118, 0.2), transparent)' }} />
+    </div>
+  )
+}
 
 function impliedProb(odds) {
   if (!odds || isNaN(odds)) return null
@@ -17,7 +31,6 @@ function impliedProb(odds) {
 }
 
 function modelWinProb(p1Stats, p2Stats, p1Rank, p2Rank) {
-  // If TA rank-splits are available for p1, use the split that matches p2's rank
   const rankSplits = p1Stats?.ta_stats?.rank_splits
   let wr1 = p1Stats?.win_rate ?? 50
   if (rankSplits && p2Rank) {
@@ -31,6 +44,70 @@ function modelWinProb(p1Stats, p2Stats, p1Rank, p2Rank) {
   const wr2 = p2Stats?.win_rate ?? 50
   const total = wr1 + wr2
   return total > 0 ? (wr1 / total) * 100 : 50
+}
+
+/**
+ * Semicircular win-probability gauge. Color depends on which player is favored
+ * (passed in via `colorMode`: "favored" → green, "underdog" → red).
+ */
+function SemiGauge({ value, label, colorMode = 'favored' }) {
+  const isFav = colorMode === 'favored'
+  const color = isFav ? 'var(--green-bright)' : 'var(--red-bright)'
+  const trackColor = 'rgba(255, 255, 255, 0.06)'
+  const cx = 90, cy = 90, r = 70
+  const startAngle = 180
+  const endAngle = startAngle + (180 * value) / 100
+
+  const polar = (angle) => {
+    const rad = (angle * Math.PI) / 180
+    return { x: cx + r * Math.cos(rad), y: cy + r * Math.sin(rad) }
+  }
+
+  const arc = (a1, a2) => {
+    const p1 = polar(a1)
+    const p2 = polar(a2)
+    const largeArc = a2 - a1 > 180 ? 1 : 0
+    return `M ${p1.x} ${p1.y} A ${r} ${r} 0 ${largeArc} 1 ${p2.x} ${p2.y}`
+  }
+
+  return (
+    <div style={{ position: 'relative', width: 180, height: 110 }}>
+      <svg width={180} height={110} style={{ filter: `drop-shadow(0 0 12px ${isFav ? 'rgba(0, 230, 118, 0.4)' : 'rgba(255, 68, 68, 0.4)'})` }}>
+        <path d={arc(180, 360)} stroke={trackColor} strokeWidth={14} fill="none" strokeLinecap="round" />
+        <motion.path
+          d={arc(startAngle, endAngle)}
+          stroke={color}
+          strokeWidth={14}
+          fill="none"
+          strokeLinecap="round"
+          initial={{ pathLength: 0 }}
+          animate={{ pathLength: 1 }}
+          transition={{ duration: 1.1, ease: 'easeOut' }}
+        />
+      </svg>
+      <div style={{
+        position: 'absolute', inset: 0,
+        display: 'flex', flexDirection: 'column',
+        alignItems: 'center', justifyContent: 'flex-end',
+        paddingBottom: 8,
+      }}>
+        <div style={{
+          fontSize: 36, fontWeight: 900, color,
+          fontFamily: '"Barlow Condensed", sans-serif',
+          lineHeight: 1,
+          textShadow: `0 0 14px ${color}66`,
+        }}>
+          <NumberFlow value={Math.round(value)} /><span style={{ fontSize: 18 }}>%</span>
+        </div>
+      </div>
+      <div style={{
+        marginTop: 6, textAlign: 'center',
+        fontSize: 11, color: 'var(--muted)',
+        fontFamily: '"Barlow Condensed", sans-serif',
+        fontWeight: 700, letterSpacing: 1.5, textTransform: 'uppercase',
+      }}>{label}</div>
+    </div>
+  )
 }
 
 export default function ValueBet({ tour }) {
@@ -66,57 +143,138 @@ export default function ValueBet({ tour }) {
   const edge1 = modelP1 != null && book1 != null ? modelP1 - book1 : null
   const edge2 = modelP2 != null && book2 != null ? modelP2 - book2 : null
 
-  const section = (t) => (
-    <div style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.08em', marginBottom: 12, marginTop: 24, paddingBottom: 6, borderBottom: '1px solid var(--border)' }}>{t}</div>
-  )
+  // Determine favored side for color
+  const p1IsFavored = modelP1 != null && modelP1 >= 50
 
   return (
     <div>
-      {section('Players')}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 16 }}>
+      <SectionDivider label="Players" />
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 14, marginBottom: 18 }}>
         <PlayerSearch tour={tour} label="Player 1" selected={p1} onSelect={p => { setP1(p); setP1Stats(null) }} />
         <PlayerSearch tour={tour} label="Player 2" selected={p2} onSelect={p => { setP2(p); setP2Stats(null) }} />
       </div>
 
-      {section('Surface')}
-      <div style={{ display: 'flex', gap: 8, marginBottom: 20 }}>
-        {SURFACES.map(s => (
-          <button key={s} onClick={() => setSurface(s)} style={{
-            padding: '6px 16px', borderRadius: 20, fontSize: 12, cursor: 'pointer',
-            background: surface === s ? 'var(--green)' : 'var(--card)',
-            color: surface === s ? '#000' : 'var(--muted)',
-            border: `1px solid ${surface === s ? 'var(--green)' : 'var(--border)'}`,
-            fontWeight: surface === s ? 700 : 400,
-          }}>{s}</button>
-        ))}
+      <SectionDivider label="Surface" />
+      <div style={{ display: 'flex', gap: 10, marginBottom: 22 }}>
+        {SURFACES.map(s => {
+          const active = surface === s
+          return (
+            <motion.button
+              key={s}
+              whileTap={{ scale: 0.94 }}
+              onClick={() => setSurface(s)}
+              style={{
+                padding: '8px 18px', borderRadius: 999, fontSize: 12, cursor: 'pointer',
+                background: active ? 'var(--green-bright)' : 'rgba(255, 255, 255, 0.025)',
+                color: active ? '#000' : 'var(--muted)',
+                border: `1px solid ${active ? 'var(--green-bright)' : 'var(--card-border)'}`,
+                fontWeight: 800,
+                fontFamily: '"Barlow Condensed", sans-serif',
+                letterSpacing: 2,
+                textTransform: 'uppercase',
+                boxShadow: active ? '0 0 14px rgba(0, 230, 118, 0.3)' : 'none',
+                transition: 'all .2s',
+              }}
+            >{s}</motion.button>
+          )
+        })}
       </div>
 
-      {!p1 && !p2 && <div style={{ textAlign: 'center', padding: '60px 20px', color: 'var(--muted)' }}>Select two players to analyze value</div>}
-      {loading && <LoadingSpinner message="Fetching player data…" />}
+      {!p1 && !p2 && (
+        <div className="glass-card" style={{ textAlign: 'center', padding: '60px 20px', color: 'var(--muted)' }}>
+          Select two players to analyze value
+        </div>
+      )}
+      {loading && <LoadingSpinner message="Fetching player data" />}
 
       {p1Stats && p2Stats && !loading && (
-        <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.35 }}>
-          {/* Archetypes */}
-          {section('Player Archetypes')}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 16 }}>
+        <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4 }}>
+          {/* Model win probability — large semicircular gauges */}
+          <SectionDivider label="Model Win Probability" />
+          <div className="glass-card" style={{ padding: '28px 24px', marginBottom: 18 }}>
+            <div style={{
+              display: 'grid', gridTemplateColumns: '1fr auto 1fr',
+              alignItems: 'center', gap: 24,
+            }}>
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}>
+                <div style={{
+                  fontSize: 12, color: 'var(--muted)',
+                  fontFamily: '"Barlow Condensed", sans-serif',
+                  fontWeight: 700, letterSpacing: 1.5, textTransform: 'uppercase',
+                }}>{p1?.name}</div>
+                <SemiGauge value={modelP1 || 0} label="Model" colorMode={p1IsFavored ? 'favored' : 'underdog'} />
+              </div>
+
+              <div style={{
+                fontSize: 24, color: 'var(--muted)',
+                fontFamily: '"Barlow Condensed", sans-serif',
+                fontWeight: 800, letterSpacing: 3,
+              }}>VS</div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}>
+                <div style={{
+                  fontSize: 12, color: 'var(--muted)',
+                  fontFamily: '"Barlow Condensed", sans-serif',
+                  fontWeight: 700, letterSpacing: 1.5, textTransform: 'uppercase',
+                }}>{p2?.name}</div>
+                <SemiGauge value={modelP2 || 0} label="Model" colorMode={!p1IsFavored ? 'favored' : 'underdog'} />
+              </div>
+            </div>
+          </div>
+
+          {/* Archetype cards */}
+          <SectionDivider label="Player Archetypes" />
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 14, marginBottom: 18 }}>
             {[[p1, arch1, s1, p1Stats], [p2, arch2, s2, p2Stats]].map(([pl, arch, s, full], idx) => {
               const hand = full?.ta_stats?.handedness
               const rSplits = full?.ta_stats?.rank_splits || {}
+
+              // Archetype style by name
+              const archStyle = {
+                'Big Server': { bg: 'linear-gradient(135deg, #5a0a14, #ff3b5c)', glow: 'rgba(255, 59, 92, 0.4)', icon: '⚡' },
+                'Precision Baseliner': { bg: 'linear-gradient(135deg, #0a1a4a, #6b9fff)', glow: 'rgba(107, 159, 255, 0.4)', icon: '◎' },
+                'Counterpuncher': { bg: 'linear-gradient(135deg, #5a3800, #FFB300)', glow: 'rgba(255, 179, 0, 0.4)', icon: '🛡' },
+                'All-Court Player': { bg: 'linear-gradient(135deg, #00FF87, #6b9fff, #FFB300)', glow: 'rgba(0, 230, 118, 0.4)', icon: '✦' },
+              }[arch] || { bg: 'rgba(255, 255, 255, 0.05)', glow: 'rgba(255, 255, 255, 0.15)', icon: '◉' }
+
               return (
-                <div key={idx} style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, padding: 16 }}>
-                  <div style={{ fontWeight: 700, marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
+                <div key={idx} className="glass-card" style={{ padding: '20px 22px' }}>
+                  <div style={{
+                    fontFamily: '"Barlow Condensed", sans-serif',
+                    fontWeight: 900, fontSize: 18,
+                    color: '#fff', marginBottom: 10,
+                    display: 'flex', alignItems: 'center', gap: 8,
+                  }}>
                     {pl?.name}
                     {hand && (
                       <span style={{
-                        fontSize: 9, fontWeight: 800, padding: '1px 5px', borderRadius: 4,
-                        background: hand === 'L' ? 'var(--green)' : '#3a3a3a',
-                        color: hand === 'L' ? '#000' : '#888',
-                        border: `1px solid ${hand === 'L' ? 'var(--green)' : '#555'}`,
+                        fontSize: 9, fontWeight: 800, padding: '2px 7px', borderRadius: 999,
+                        background: hand === 'L' ? 'var(--green-bright)' : 'rgba(255,255,255,0.05)',
+                        color: hand === 'L' ? '#000' : 'var(--muted)',
+                        border: `1px solid ${hand === 'L' ? 'var(--green-bright)' : 'rgba(255,255,255,0.12)'}`,
                       }}>{hand}</span>
                     )}
                   </div>
-                  {arch && <span style={{ padding: '3px 10px', borderRadius: 12, fontSize: 11, fontWeight: 700, background: '#00E67622', color: 'var(--green)', border: '1px solid #00E67644' }}>{arch}</span>}
-                  <div style={{ marginTop: 12, fontSize: 12 }}>
+
+                  {arch && (
+                    <div style={{
+                      display: 'inline-flex', alignItems: 'center', gap: 8,
+                      padding: '7px 14px', borderRadius: 999,
+                      background: archStyle.bg,
+                      color: '#fff',
+                      fontFamily: '"Barlow Condensed", sans-serif',
+                      fontWeight: 900, fontSize: 12,
+                      letterSpacing: 1.5, textTransform: 'uppercase',
+                      boxShadow: `0 4px 14px ${archStyle.glow}`,
+                      marginBottom: 14,
+                      textShadow: '0 1px 2px rgba(0,0,0,0.3)',
+                    }}>
+                      <span style={{ fontSize: 14 }}>{archStyle.icon}</span>
+                      {arch}
+                    </div>
+                  )}
+
+                  <div style={{ fontSize: 12 }}>
                     {[
                       ['Win Rate', fmtPct(s.win_rate)],
                       ['Aces/M', fmt(s.aces)],
@@ -124,10 +282,15 @@ export default function ValueBet({ tour }) {
                       ['BP Conv', fmtPct(s.bp_converted)],
                       ...(rSplits.top10 != null ? [['TA: vs Top 10', rSplits.top10.toFixed(1) + '%']] : []),
                       ...(rSplits['11to50'] != null ? [['TA: vs 11-50', rSplits['11to50'].toFixed(1) + '%']] : []),
-                    ].map(([lbl, val]) => (
-                      <div key={lbl} style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', borderBottom: '1px solid #151515' }}>
-                        <span style={{ color: 'var(--muted)' }}>{lbl}</span>
-                        <span style={{ fontWeight: 600 }}>{val}</span>
+                    ].map(([lbl, val], rowIdx) => (
+                      <div key={lbl} style={{
+                        display: 'flex', justifyContent: 'space-between', padding: '7px 8px',
+                        borderBottom: '1px solid rgba(13, 21, 16, 0.6)',
+                        background: rowIdx % 2 === 1 ? 'rgba(0, 230, 118, 0.015)' : 'transparent',
+                        marginLeft: -8, marginRight: -8,
+                      }}>
+                        <span style={{ color: 'var(--muted)', fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 700 }}>{lbl}</span>
+                        <span style={{ fontWeight: 800, color: '#fff', fontFamily: '"Barlow Condensed", sans-serif' }}>{val}</span>
                       </div>
                     ))}
                   </div>
@@ -136,47 +299,71 @@ export default function ValueBet({ tour }) {
             })}
           </div>
 
-          {/* Model win probability */}
-          {section('Model Win Probability')}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 16 }}>
-            <StatCard label={`${p1?.name} — Model`} value={`${modelP1?.toFixed(1)}%`} color={modelP1 > 55 ? 'green' : modelP1 < 45 ? 'red' : undefined} />
-            <StatCard label={`${p2?.name} — Model`} value={`${modelP2?.toFixed(1)}%`} color={modelP2 > 55 ? 'green' : modelP2 < 45 ? 'red' : undefined} />
-          </div>
-
           {/* Odds input */}
-          {section('Sportsbook Implied Odds (American)')}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 16 }}>
-            {[[p1, odds1, setOdds1, book1, edge1], [p2, odds2, setOdds2, book2, edge2]].map(([pl, odds, setOdds, book, edge], idx) => (
-              <div key={idx} style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, padding: 16 }}>
-                <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 8 }}>{pl?.name}</div>
-                <input
-                  type="number" value={odds} placeholder="+150 or -180"
-                  onChange={e => setOdds(e.target.value)}
-                  style={{ width: '100%', padding: '8px 12px', background: '#0a0a0a', border: '1px solid var(--border)', borderRadius: 8, color: 'var(--white)', fontSize: 14, marginBottom: 10 }}
-                />
-                {book != null && (
-                  <div style={{ fontSize: 12 }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-                      <span style={{ color: 'var(--muted)' }}>Book implied</span>
-                      <span style={{ fontWeight: 600 }}>{book.toFixed(1)}%</span>
-                    </div>
-                    {edge != null && (
-                      <div style={{ marginTop: 8, padding: '10px 12px', borderRadius: 8,
-                        background: edge > 5 ? '#00E67615' : '#1a1a1a',
-                        border: `1px solid ${edge > 5 ? 'var(--green)' : 'var(--border)'}`,
-                      }}>
-                        <div style={{ fontSize: 11, fontWeight: 700, color: edge > 5 ? 'var(--green)' : 'var(--muted)', marginBottom: 2 }}>
-                          {edge > 5 ? '✓ VALUE' : 'NO VALUE'}
-                        </div>
-                        <div style={{ fontSize: 13, fontWeight: 800, color: edge > 5 ? 'var(--green)' : 'var(--muted)' }}>
-                          Edge: {edge >= 0 ? '+' : ''}{edge.toFixed(1)}%
-                        </div>
+          <SectionDivider label="Sportsbook Implied Odds (American)" />
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 14, marginBottom: 18 }}>
+            {[[p1, odds1, setOdds1, book1, edge1], [p2, odds2, setOdds2, book2, edge2]].map(([pl, odds, setOdds, book, edge], idx) => {
+              const hasValue = edge != null && edge > 5
+              return (
+                <div key={idx} className="glass-card" style={{ padding: '20px 22px' }}>
+                  <div style={{
+                    fontSize: 12, color: 'var(--muted)',
+                    fontFamily: '"Barlow Condensed", sans-serif',
+                    fontWeight: 700, letterSpacing: 1.5, textTransform: 'uppercase',
+                    marginBottom: 10,
+                  }}>{pl?.name}</div>
+                  <input
+                    type="number" value={odds} placeholder="+150 or -180"
+                    onChange={e => setOdds(e.target.value)}
+                    style={{
+                      width: '100%', padding: '11px 14px',
+                      background: 'rgba(255, 255, 255, 0.025)',
+                      border: '1px solid var(--card-border)', borderRadius: 12,
+                      color: 'var(--white)', fontSize: 15, marginBottom: 14,
+                      fontFamily: '"Barlow Condensed", sans-serif',
+                      fontWeight: 700, letterSpacing: 0.5,
+                      outline: 'none',
+                    }}
+                  />
+                  {book != null && (
+                    <div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 10 }}>
+                        <span style={{ color: 'var(--muted)', fontSize: 12, fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase' }}>Book Implied</span>
+                        <span style={{ fontWeight: 800, color: '#fff', fontFamily: '"Barlow Condensed", sans-serif' }}>{book.toFixed(1)}%</span>
                       </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            ))}
+                      {edge != null && (
+                        <div style={{
+                          padding: '14px 16px', borderRadius: 12,
+                          background: hasValue ? 'rgba(0, 230, 118, 0.08)' : 'rgba(255, 255, 255, 0.02)',
+                          border: `1px solid ${hasValue ? 'rgba(0, 230, 118, 0.4)' : 'rgba(255, 255, 255, 0.06)'}`,
+                          boxShadow: hasValue ? '0 0 16px rgba(0, 230, 118, 0.15)' : 'none',
+                        }}>
+                          <div style={{
+                            fontSize: 11, fontWeight: 800,
+                            color: hasValue ? 'var(--green-bright)' : 'var(--muted)',
+                            fontFamily: '"Barlow Condensed", sans-serif',
+                            letterSpacing: 2, textTransform: 'uppercase',
+                            marginBottom: 4,
+                          }}>
+                            {hasValue ? '✓ VALUE' : 'NO VALUE'}
+                          </div>
+                          <div style={{
+                            fontSize: 22, fontWeight: 900,
+                            color: hasValue ? 'var(--green-bright)' : 'var(--muted)',
+                            fontFamily: '"Barlow Condensed", sans-serif',
+                            display: 'inline-flex', alignItems: 'center', gap: 8,
+                            textShadow: hasValue ? '0 0 10px rgba(0, 230, 118, 0.4)' : 'none',
+                          }}>
+                            <span style={{ fontSize: 18 }}>{edge >= 0 ? '▲' : '▼'}</span>
+                            Edge {edge >= 0 ? '+' : ''}{edge.toFixed(1)}%
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )
+            })}
           </div>
         </motion.div>
       )}
