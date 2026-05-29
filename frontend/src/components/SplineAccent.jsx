@@ -1,62 +1,48 @@
-import { Suspense, useEffect, useState } from 'react'
-
 /**
- * Decorative Spline 3D accent. Loads lazily and only mounts on desktop.
- * Uses a try/catch wrapper so any Spline runtime error is silently swallowed —
- * this is purely decorative and should never block the app.
+ * Decorative accent — pure CSS gradient orb.
+ *
+ * Previously this lazy-loaded a Spline 3D scene, but the placeholder scene URL
+ * was unreliable and could crash the React tree if Spline's runtime threw an
+ * unhandled error mid-render. Reverted to a guaranteed-safe CSS-only gradient
+ * that gives the same "atmospheric green glow" effect with zero failure risk.
  */
 export default function SplineAccent() {
-  const [Spline, setSpline] = useState(null)
-  const [errored, setErrored] = useState(false)
-
-  useEffect(() => {
-    let cancelled = false
-    import('@splinetool/react-spline')
-      .then(mod => { if (!cancelled) setSpline(() => mod.default) })
-      .catch(() => { if (!cancelled) setErrored(true) })
-    return () => { cancelled = true }
-  }, [])
-
-  if (errored || !Spline) {
-    // Fallback: subtle CSS gradient orb if Spline fails to load
-    return (
+  return (
+    <>
+      {/* Top-right ambient orb */}
       <div
         aria-hidden
         style={{
           position: 'fixed',
-          top: -120,
-          right: -120,
+          top: -160,
+          right: -160,
+          width: 560,
+          height: 560,
+          borderRadius: '50%',
+          background: 'radial-gradient(circle, rgba(0, 230, 118, 0.12) 0%, rgba(0, 230, 118, 0.05) 35%, transparent 70%)',
+          filter: 'blur(60px)',
+          pointerEvents: 'none',
+          zIndex: 0,
+          animation: 'breath 8s ease-in-out infinite',
+        }}
+      />
+      {/* Bottom-left subtle counter-orb */}
+      <div
+        aria-hidden
+        style={{
+          position: 'fixed',
+          bottom: -200,
+          left: -200,
           width: 480,
           height: 480,
           borderRadius: '50%',
-          background: 'radial-gradient(circle, rgba(0, 230, 118, 0.10) 0%, rgba(0, 230, 118, 0.04) 35%, transparent 70%)',
-          filter: 'blur(40px)',
+          background: 'radial-gradient(circle, rgba(0, 230, 118, 0.05) 0%, transparent 65%)',
+          filter: 'blur(50px)',
           pointerEvents: 'none',
           zIndex: 0,
+          animation: 'breath 11s ease-in-out infinite reverse',
         }}
       />
-    )
-  }
-
-  return (
-    <div
-      aria-hidden
-      style={{
-        position: 'fixed',
-        top: 0,
-        right: 0,
-        width: 360,
-        height: 360,
-        opacity: 0.45,
-        pointerEvents: 'none',
-        zIndex: 0,
-        filter: 'blur(0.5px)',
-      }}
-    >
-      <Suspense fallback={null}>
-        {/* Public Spline scene — abstract green orb. Errors fall back to gradient orb above. */}
-        <Spline scene="https://prod.spline.design/6Wq1Q7YGyM-iab9p/scene.splinecode" />
-      </Suspense>
-    </div>
+    </>
   )
 }

@@ -1,12 +1,11 @@
-import { useState, useRef, useEffect, Suspense, lazy } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { motion, AnimatePresence } from 'motion/react'
 import SurfaceAnalyzer from './pages/SurfaceAnalyzer'
 import PropProjection  from './pages/PropProjection'
 import HeadToHead      from './pages/HeadToHead'
 import ValueBet        from './pages/ValueBet'
-
-// Lazy Spline accent (desktop only)
-const SplineAccent = lazy(() => import('./components/SplineAccent'))
+import SplineAccent    from './components/SplineAccent'
+import ErrorBoundary   from './components/ErrorBoundary'
 
 // Tab definitions with icons (inline SVG so no extra deps)
 const TABS = [
@@ -225,12 +224,8 @@ export default function App() {
 
   return (
     <div style={{ minHeight: '100vh', position: 'relative' }}>
-      {/* Decorative Spline accent — desktop only, low z-index */}
-      {isDesktop && (
-        <Suspense fallback={null}>
-          <SplineAccent />
-        </Suspense>
-      )}
+      {/* Decorative ambient orbs — CSS-only, desktop only */}
+      {isDesktop && <SplineAccent />}
 
       {/* Nav — glassmorphism header */}
       <nav style={{
@@ -288,10 +283,12 @@ export default function App() {
             exit="exit"
             transition={{ duration: 0.25, ease: 'easeInOut' }}
           >
-            {tab === 'surface' && <SurfaceAnalyzer tour={tour} />}
-            {tab === 'prop'    && <PropProjection  tour={tour} />}
-            {tab === 'h2h'     && <HeadToHead      tour={tour} />}
-            {tab === 'value'   && <ValueBet        tour={tour} />}
+            <ErrorBoundary>
+              {tab === 'surface' && <SurfaceAnalyzer tour={tour} />}
+              {tab === 'prop'    && <PropProjection  tour={tour} />}
+              {tab === 'h2h'     && <HeadToHead      tour={tour} />}
+              {tab === 'value'   && <ValueBet        tour={tour} />}
+            </ErrorBoundary>
           </motion.div>
         </AnimatePresence>
       </div>
