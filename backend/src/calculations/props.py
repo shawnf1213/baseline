@@ -202,30 +202,54 @@ def project_aces(
     match_format: str = "best_of_3",
 ) -> dict:
     """
-    5-layer ace projection model:
-      L1 — base ace rate: TA surface stats (primary) or Sofascore (fallback)
+    5-layer ace projection model with expected-sets scaling:
+      L1 — base ace rate per set: TA surface stats (primary) or Sofascore (fallback)
+            scaled by expected_sets (driven by matchup competitiveness)
       L2 — opponent suppression: TA first_won_pct (primary) blended with Sofascore
       L3 — handedness matchup adjustment (Tennis Abstract)
       L4 — opponent ace-against (TA ace_pct blended with Sofascore ace-against)
       L5 — surface/court CPR (court pace rating)
     """
-    # BO5 Grand Slams have ~115 service points vs ~80 for BO3 tours.
-    # Use the correct denominator when converting ace% → aces/match.
+    # ── Expected sets — driven by matchup competitiveness, not flat BO5 ──
+    is_bo5 = _is_bo5_match(tour, court)
+    _p_form = player_stats.get("form") or player_stats.get("recent_form")
+    _o_form = opponent_stats.get("form") or opponent_stats.get("recent_form")
+    p_prob, o_prob, win_prob_gap = _estimate_win_prob(
+        player_stats, opponent_stats,
+        p_rank=player_stats.get("rank") or player_stats.get("currentRank"),
+        o_rank=opponent_stats.get("rank") or opponent_stats.get("currentRank"),
+        p_form=_p_form, o_form=_o_form,
+    )
+    expected_sets, comp_label = _expected_sets_from_gap(win_prob_gap, is_bo5)
+    per_set_scale = _per_set_scale(tour, expected_sets)
+    avg_hist_sets = _AVG_HISTORICAL_SETS.get(tour, 2.45)
+
+    # Per-set service points (~ same across BO3/BO5 because match-format
+    # averages are roughly proportional to sets played). Used by TA branch.
     _sp_map = _AVG_SERVICE_PTS.get(tour, {"best_of_3": 80, "best_of_5": 80})
-    avg_service_pts = _sp_map.get(match_format, _sp_map["best_of_3"])
+    sp_per_set = _sp_map.get("best_of_3", 80) / 2.3
+    avg_service_pts = sp_per_set * expected_sets
+
     ta_used = False
     ta_surface_matches = 0
 
+    logger.info(
+        "ACE_EXPSETS | player=%s | tour=%s | bo5=%s | "
+        "p_wr=%.1f o_wr=%.1f | win_prob_gap=%.1fpp | exp_sets=%.2f (%s) | "
+        "avg_hist_sets=%.2f | per_set_scale=%.3f | sp_per_set=%.1f | "
+        "avg_service_pts=%.1f",
+        player_stats.get("player_name", "?"), tour, is_bo5,
+        _safe(player_stats.get("win_rate"), 50.0),
+        _safe(opponent_stats.get("win_rate"), 50.0),
+        win_prob_gap, expected_sets, comp_label,
+        avg_hist_sets, per_set_scale, sp_per_set, avg_service_pts,
+    )
+
     # ── L1: Base ace rate — TA surface stats preferred ────────────────────────
     sofascore_base_raw = _safe(player_stats.get("aces"))
-    # Sofascore blended data is a per-match average over mixed BO3 + BO5 matches.
-    # Scale up modestly for Grand Slam BO5 projection (partial correction).
-    _bo5_ace_ss_scale = BO5_SS_SCALE.get(surface, 1.30)
-    sofascore_base = (
-        sofascore_base_raw * _bo5_ace_ss_scale
-        if match_format == "best_of_5" and tour == "ATP"
-        else sofascore_base_raw
-    )
+    # Per-set scaling: divide per-match by historical avg sets, then multiply
+    # by THIS match's expected sets. Replaces the flat BO5_SS_SCALE multiplier.
+    sofascore_base = sofascore_base_raw * per_set_scale
 
     ta_base = None
     ta_surf = None
@@ -233,7 +257,7 @@ def project_aces(
         ta_surf = player_ta.get("surface_stats", {}).get(surface)
     if ta_surf and ta_surf.get("ace_pct") is not None:
         ace_pct = ta_surf["ace_pct"]
-        # avg_service_pts is already set to 115 for BO5 — this is the primary fix
+        # avg_service_pts now reflects expected sets for THIS match
         ta_base = (ace_pct / 100) * avg_service_pts
         ta_used = True
         ta_surface_matches = ta_surf.get("matches", 0) or 0
@@ -384,6 +408,17 @@ def project_aces(
         "opp_ace_against":     round(opp_ace_against, 1) if opp_ace_against else None,
         "ta_used":             ta_used,
         "ta_surface_matches":  ta_surface_matches,
+        # Expected-sets exposure
+        "expected_sets":       round(expected_sets, 2),
+        "competitiveness":     comp_label,
+        "win_prob_gap":        round(win_prob_gap, 1),
+        "p1_win_prob":         round(p_prob, 1),
+        "p2_win_prob":         round(o_prob, 1),
+        "avg_historical_sets": round(avg_hist_sets, 2),
+        "per_set_scale":       round(per_set_scale, 3),
+        "is_bo5":              is_bo5,
+        "aces_per_set":        round(sofascore_base_raw / max(avg_hist_sets, 0.01), 2)
+                                if sofascore_base_raw else None,
     }
 
 
@@ -396,23 +431,46 @@ def project_double_faults(
     tour: str = "ATP",
     surface: str = "Hard",
     match_format: str = "best_of_3",
+    court: str = "",
 ) -> dict:
-    # BO5 Grand Slams have ~115 service points vs ~80 for BO3 tours.
+    """
+    Double-fault projection with per-set scaling driven by expected sets.
+    A 5-set match has more service games and therefore more DF opportunities
+    than a 3-set match — but a 3-set blowout has fewer than a 3-set thriller.
+    Scale by (expected_sets / avg_historical_sets).
+    """
+    # ── Expected sets — driven by matchup competitiveness ──
+    is_bo5 = _is_bo5_match(tour, court) or match_format == "best_of_5"
+    p_prob, o_prob, win_prob_gap = _estimate_win_prob(
+        player_stats, opponent_stats,
+        p_rank=player_stats.get("rank") or player_stats.get("currentRank"),
+        o_rank=opponent_stats.get("rank") or opponent_stats.get("currentRank"),
+        p_form=player_stats.get("form") or player_stats.get("recent_form"),
+        o_form=opponent_stats.get("form") or opponent_stats.get("recent_form"),
+    )
+    expected_sets, comp_label = _expected_sets_from_gap(win_prob_gap, is_bo5)
+    per_set_scale = _per_set_scale(tour, expected_sets)
+    avg_hist_sets = _AVG_HISTORICAL_SETS.get(tour, 2.45)
+
+    # Per-set service pts → total service pts for this expected match length
     _sp_map = _AVG_SERVICE_PTS.get(tour, {"best_of_3": 80, "best_of_5": 80})
-    avg_service_pts = _sp_map.get(match_format, _sp_map["best_of_3"])
+    sp_per_set = _sp_map.get("best_of_3", 80) / 2.3
+    avg_service_pts = sp_per_set * expected_sets
 
     ta_used = False
     ta_surface_matches = 0
 
+    logger.info(
+        "DF_EXPSETS | player=%s | tour=%s | bo5=%s | "
+        "win_prob_gap=%.1fpp | exp_sets=%.2f (%s) | per_set_scale=%.3f",
+        player_stats.get("player_name", "?"), tour, is_bo5,
+        win_prob_gap, expected_sets, comp_label, per_set_scale,
+    )
+
     # ── Base DF rate: TA surface stats preferred ──────────────────────────────
     sofascore_base_raw = _safe(player_stats.get("double_faults"))
-    # Scale Sofascore blended average for BO5 (partial correction for mixed data)
-    _bo5_df_ss_scale = BO5_SS_SCALE.get(surface, 1.30)
-    sofascore_base = (
-        sofascore_base_raw * _bo5_df_ss_scale
-        if match_format == "best_of_5" and tour == "ATP"
-        else sofascore_base_raw
-    )
+    # Per-set scaling: per_match / avg_hist_sets * expected_sets
+    sofascore_base = sofascore_base_raw * per_set_scale
 
     ta_base = None
     ta_surf = None
@@ -420,7 +478,6 @@ def project_double_faults(
         ta_surf = player_ta.get("surface_stats", {}).get(surface)
     if ta_surf and ta_surf.get("df_pct") is not None:
         df_pct = ta_surf["df_pct"]
-        # avg_service_pts is already 115 for BO5 — the primary scaling mechanism
         ta_base = (df_pct / 100) * avg_service_pts
         ta_used = True
         ta_surface_matches = ta_surf.get("matches", 0) or 0
@@ -477,6 +534,17 @@ def project_double_faults(
         "pressure_factor": round(pressure, 3),
         "ta_used": ta_used,
         "ta_surface_matches": ta_surface_matches,
+        # Expected-sets exposure
+        "expected_sets":       round(expected_sets, 2),
+        "competitiveness":     comp_label,
+        "win_prob_gap":        round(win_prob_gap, 1),
+        "p1_win_prob":         round(p_prob, 1),
+        "p2_win_prob":         round(o_prob, 1),
+        "avg_historical_sets": round(avg_hist_sets, 2),
+        "per_set_scale":       round(per_set_scale, 3),
+        "is_bo5":              is_bo5,
+        "df_per_set":          round(sofascore_base_raw / max(avg_hist_sets, 0.01), 2)
+                                if sofascore_base_raw else None,
     }
 
 
@@ -706,19 +774,168 @@ def _returner_dominance_factor(
 # ---------------------------------------------------------------------------
 # Total Games
 # ---------------------------------------------------------------------------
-def _expected_sets(tour: str, court: str, p1_wr: float = 50.0, p2_wr: float = 50.0) -> float:
-    if tour == "WTA":
-        base = 2.1
-    elif court in GRAND_SLAMS:
-        return 3.6
+# ─────────────────────────────────────────────────────────────────────────────
+# Expected-sets model
+#
+# Replaces the previous flat BO5 multipliers (1.6, 1.1, etc.) and the
+# simplistic _expected_sets helper. The match length is now driven by
+# competitiveness: the bigger the win-probability gap, the shorter the match.
+#
+# BO5 tiers (ATP Grand Slams):
+#   gap > 40%   →  3.3 sets  (heavy favorite, most matches 3-0 / 3-1)
+#   25% – 40%   →  3.7 sets  (clear favorite)
+#   10% – 25%   →  4.1 sets  (slight favorite)
+#   gap < 10%   →  4.4 sets  (even matchup, many 4- and 5-setters)
+#
+# BO3 tiers (everything else):
+#   gap > 40%   →  2.1 sets
+#   25% – 40%   →  2.3 sets
+#   10% – 25%   →  2.5 sets
+#   gap < 10%   →  2.6 sets
+#
+# Average sets in the historical Sofascore data — used to convert per-match
+# averages into per-set rates so we can re-scale by expected_sets:
+#   WTA  always BO3      →  ~2.30 sets/match
+#   ATP  mix of BO3+BO5  →  ~2.45 sets/match  (mostly BO3 with some GS)
+# ─────────────────────────────────────────────────────────────────────────────
+_AVG_HISTORICAL_SETS = {"WTA": 2.30, "ATP": 2.45}
+
+
+def _is_bo5_match(tour: str, court: str) -> bool:
+    """ATP Grand Slams are best-of-5. Everything else is best-of-3."""
+    return tour == "ATP" and court in GRAND_SLAMS
+
+
+def _estimate_win_prob(p_stats: dict, o_stats: dict,
+                       p_rank: int = None, o_rank: int = None,
+                       p_form: list = None, o_form: list = None) -> tuple:
+    """
+    Estimate (p_win_prob_pct, o_win_prob_pct, gap_pct) using surface win rate,
+    ranking (if available), and recent form (last-10 W/L).
+
+    Key design choice: comparing win rates against *all* opponents understates
+    the head-to-head gap (a top-10 player who only plays top-20 opponents has
+    a similar overall win rate to a #50 player who plays #100s). To compensate
+    we use steep difference-based shares rather than pure ratio shares:
+        share = 50 + (p_metric - o_metric) × k  (clamped)
+
+    Component weights when both rankings present:
+        surface win rate  : 35%   (k = 1.5)
+        ranking advantage : 55%   (k = 18 on log10 scale)
+        recent form       : 10%   (k = 0.6)
+    Falls back to higher win-rate weight when rank is missing.
+    """
+    import math
+    p_wr = _safe(p_stats.get("win_rate"), 50.0)
+    o_wr = _safe(o_stats.get("win_rate"), 50.0)
+
+    # ── Component 1: surface win-rate difference ──
+    # k=1.5 means a 20pp gap (e.g. 75% vs 55%) → 30pp share lead.
+    wr_share = 50.0 + (p_wr - o_wr) * 1.5
+    wr_share = max(5.0, min(95.0, wr_share))
+
+    have_rank = p_rank and o_rank and p_rank > 0 and o_rank > 0
+    components = []
+
+    if have_rank:
+        # Ranking is the strongest signal — weight it more than win rate.
+        components.append((wr_share, 0.35))
+
+        # log10 rank diff: #1 vs #20 → log10(20) - log10(1) = 1.30
+        # k=18 means that diff is worth a 23pp share lead.
+        rank_diff = math.log10(o_rank) - math.log10(p_rank)
+        rank_share = 50.0 + rank_diff * 18.0
+        rank_share = max(5.0, min(95.0, rank_share))
+        components.append((rank_share, 0.55))
     else:
-        base = 2.3
-    balance = abs(p1_wr - p2_wr)
-    if balance > 20:
-        return max(2.0, base - 0.2)
-    if balance < 10:
-        return min(2.6, base + 0.15)
-    return base
+        # No ranking — lean heavily on win rate
+        components.append((wr_share, 0.90))
+
+    # ── Component 3: recent form (last-10 W/L list) ──
+    def _form_pct(form):
+        if not form:
+            return None
+        wins = sum(1 for m in form if (m.get("won") if isinstance(m, dict) else m))
+        n = len(form)
+        return (wins / n) * 100.0 if n > 0 else None
+
+    p_form_pct = _form_pct(p_form)
+    o_form_pct = _form_pct(o_form)
+    if p_form_pct is not None and o_form_pct is not None:
+        form_share = 50.0 + (p_form_pct - o_form_pct) * 0.6
+        form_share = max(20.0, min(80.0, form_share))
+        components.append((form_share, 0.10))
+
+    total_w = sum(w for _, w in components)
+    p_prob = sum(share * w for share, w in components) / total_w if total_w > 0 else 50.0
+    p_prob = max(5.0, min(95.0, p_prob))
+    o_prob = 100.0 - p_prob
+    gap = abs(p_prob - o_prob)
+    return p_prob, o_prob, gap
+
+
+def _expected_sets_from_gap(win_prob_gap: float, is_bo5: bool) -> tuple:
+    """
+    Map a win-probability gap to (expected_sets, competitiveness_label).
+    """
+    if is_bo5:
+        if win_prob_gap > 40:
+            return 3.3, "Heavy favorite"
+        if win_prob_gap > 25:
+            return 3.7, "Clear favorite"
+        if win_prob_gap > 10:
+            return 4.1, "Slight favorite"
+        return 4.4, "Even matchup"
+    else:
+        if win_prob_gap > 40:
+            return 2.1, "Heavy favorite"
+        if win_prob_gap > 25:
+            return 2.3, "Clear favorite"
+        if win_prob_gap > 10:
+            return 2.5, "Slight favorite"
+        return 2.6, "Even matchup"
+
+
+def _per_set_scale(tour: str, expected_sets: float) -> float:
+    """
+    Conversion factor that turns a per-match stat (from historical Sofascore
+    data, which mixes BO3 and BO5 matches) into the projected per-match stat
+    for *this* match given its expected length.
+
+        per_set      = per_match_stat / avg_historical_sets[tour]
+        projected    = per_set * expected_sets
+                     = per_match_stat * (expected_sets / avg_historical_sets[tour])
+    """
+    avg = _AVG_HISTORICAL_SETS.get(tour, 2.45)
+    if avg <= 0:
+        return 1.0
+    return expected_sets / avg
+
+
+def _expected_sets(tour: str, court: str, p1_wr: float = 50.0, p2_wr: float = 50.0,
+                   p1_stats: dict = None, p2_stats: dict = None,
+                   p1_rank: int = None, p2_rank: int = None,
+                   p1_form: list = None, p2_form: list = None) -> float:
+    """
+    Backwards-compatible wrapper. Returns just the expected sets value so
+    existing callers (notably project_total_games) keep working. When stats
+    dicts are provided the win-prob estimator is used; otherwise we fall back
+    to comparing raw win rates directly.
+    """
+    is_bo5 = _is_bo5_match(tour, court)
+
+    if p1_stats is not None and p2_stats is not None:
+        _, _, gap = _estimate_win_prob(
+            p1_stats, p2_stats, p1_rank, p2_rank, p1_form, p2_form,
+        )
+    else:
+        # Fallback: treat win-rate share as a proxy for win prob
+        total = p1_wr + p2_wr
+        share = (p1_wr / total * 100.0) if total > 0 else 50.0
+        gap = abs(share - (100.0 - share))
+
+    exp_sets, _ = _expected_sets_from_gap(gap, is_bo5)
+    return exp_sets
 
 
 def project_total_games(
@@ -781,10 +998,26 @@ def project_total_games(
     else:
         games_per_set = max(7.5, 7.5 + (combined_hold - 50) / 15)
 
-    # ── Expected sets adjusted for match balance ──────────────────────────────
+    # ── Expected sets — driven by win-probability gap, not flat tour avg ──
     p1_wr = _safe(player_stats.get("win_rate"), 50.0)
     p2_wr = _safe(opponent_stats.get("win_rate"), 50.0)
-    exp_sets = _expected_sets(tour, court, p1_wr, p2_wr)
+    is_bo5 = _is_bo5_match(tour, court)
+    p_prob, o_prob, win_prob_gap = _estimate_win_prob(
+        player_stats, opponent_stats,
+        p_rank=player_stats.get("rank") or player_stats.get("currentRank"),
+        o_rank=opponent_stats.get("rank") or opponent_stats.get("currentRank"),
+        p_form=player_stats.get("form") or player_stats.get("recent_form"),
+        o_form=opponent_stats.get("form") or opponent_stats.get("recent_form"),
+    )
+    exp_sets, comp_label = _expected_sets_from_gap(win_prob_gap, is_bo5)
+    avg_hist_sets = _AVG_HISTORICAL_SETS.get(tour, 2.45)
+
+    logger.info(
+        "GAMES_EXPSETS | p1=%s p2=%s | bo5=%s | p_wr=%.1f o_wr=%.1f | "
+        "win_prob_gap=%.1fpp | exp_sets=%.2f (%s) | gps=%.2f",
+        player_stats.get("player_name", "?"), opponent_stats.get("player_name", "?"),
+        is_bo5, p1_wr, p2_wr, win_prob_gap, exp_sets, comp_label, games_per_set,
+    )
 
     # ── Raw total games ───────────────────────────────────────────────────────
     proj = games_per_set * exp_sets
@@ -824,15 +1057,22 @@ def project_total_games(
         "lean":                lean,
         "confidence":          conf,
         "games_per_set":       round(games_per_set, 1),
-        "expected_sets":       exp_sets,
+        "expected_sets":       round(exp_sets, 2),
         "combined_hold":       round(combined_hold, 1),
         "p1_srv":              round(p1_srv, 1),
         "p2_srv":              round(p2_srv, 1),
-        "format":              f"Best of {'5' if court in GRAND_SLAMS and tour == 'ATP' else '3'}",
+        "format":              f"Best of {'5' if is_bo5 else '3'}",
         "environment":         env,
         "cpr":                 cpr,
         "ta_used":             ta_used,
         "ta_surface_matches":  ta_surface_matches,
+        # Expected-sets exposure
+        "competitiveness":     comp_label,
+        "win_prob_gap":        round(win_prob_gap, 1),
+        "p1_win_prob":         round(p_prob, 1),
+        "p2_win_prob":         round(o_prob, 1),
+        "avg_historical_sets": round(avg_hist_sets, 2),
+        "is_bo5":              is_bo5,
     }
 
 
@@ -1300,29 +1540,53 @@ def project_break_points(
     )
 
     # ═════════════════════════════════════════════════════════════════════════
-    # COMPONENT 8 — Match format multiplier
+    # COMPONENT 8 — Expected-sets scaling
     #
-    # ATP Grand Slams (AO, RG, Wimbledon, US Open) when tour==ATP: × 1.1
-    # ALL WTA events including all 4 Grand Slams:                   × 1.0
-    # ALL ATP non-Grand Slam events:                                 × 1.0
-    # Applied AFTER adding momentum (proj = (base + momentum) × C8).
+    # Replaces every previous flat multiplier (1.6 → 1.1 → 1.0). The match
+    # length is now derived from the win-probability gap:
     #
-    # NOTE: Reduced from 1.6 → 1.1 → 1.0.
-    # Sofascore bp_faced_count is a per-MATCH average; for ATP GS players whose
-    # career data includes both BO3 and BO5 matches, the BO5 effect is already
-    # embedded in C1. Applying any multiplier > 1.0 double-counts the format
-    # and consistently over-predicts vs market lines.
+    #   BO5 gap > 40%  → 3.3 sets   (heavy fav, blowout)
+    #       25–40%    → 3.7 sets   (clear fav)
+    #       10–25%    → 4.1 sets   (slight fav)
+    #       < 10%     → 4.4 sets   (even — many 4- and 5-setters)
+    #
+    #   BO3 gap > 40%  → 2.1 sets
+    #       25–40%    → 2.3 sets
+    #       10–25%    → 2.5 sets
+    #       < 10%     → 2.6 sets
+    #
+    # The C8 multiplier becomes  expected_sets / avg_historical_sets, which
+    # converts the per-match base (built from Sofascore data averaging ~2.45
+    # sets for ATP, 2.30 for WTA) into the projected per-match value for
+    # THIS match's actual expected length. The momentum bonus is similarly
+    # rescaled per-set, so longer matches produce proportionally more
+    # break-back windows.
     # ═════════════════════════════════════════════════════════════════════════
-    c8_format_mult = 1.0  # same for all formats — BO5 effect embedded in C1
-    bo_scale       = c8_format_mult   # alias for return-dict compat
+    _p_form_bp = player_stats.get("form") or player_stats.get("recent_form")
+    _o_form_bp = opponent_stats.get("form") or opponent_stats.get("recent_form")
+    p_prob, o_prob, win_prob_gap = _estimate_win_prob(
+        player_stats, opponent_stats,
+        p_rank=player_stats.get("rank") or player_stats.get("currentRank"),
+        o_rank=opponent_stats.get("rank") or opponent_stats.get("currentRank"),
+        p_form=_p_form_bp, o_form=_o_form_bp,
+    )
+    expected_sets, comp_label = _expected_sets_from_gap(win_prob_gap, is_bo5)
+    avg_hist_sets             = _AVG_HISTORICAL_SETS.get(tour, 2.45)
+    c8_format_mult            = expected_sets / max(avg_hist_sets, 0.01)
+    bo_scale                  = c8_format_mult   # alias for return-dict compat
 
     logger.info(
-        "BP_C8 | tour=%s | is_bo5=%s | court=%s | c8=%.1f",
-        tour, is_bo5, court or "generic", c8_format_mult,
+        "BP_C8_EXPSETS | tour=%s | bo5=%s | court=%s | "
+        "win_prob_gap=%.1fpp | exp_sets=%.2f (%s) | avg_hist=%.2f | c8=%.3f",
+        tour, is_bo5, court or "generic",
+        win_prob_gap, expected_sets, comp_label, avg_hist_sets, c8_format_mult,
     )
 
     # ─────────────────────────────────────────────────────────────────────────
-    # COMBINED PROJECTION:  proj = (base + momentum) × format_mult
+    # COMBINED PROJECTION:  proj = (base_per_set + momentum_per_set) × exp_sets
+    #                            = (base + momentum) × C8
+    # The momentum bonus is recomputed in per-set terms first so that a
+    # longer match accumulates proportionally more break-back windows.
     # ─────────────────────────────────────────────────────────────────────────
     proj_before_format = base_proj + momentum_bonus
     proj               = proj_before_format * c8_format_mult
@@ -1505,6 +1769,15 @@ def project_break_points(
         "ta_surface_matches":    ta_surface_matches,
         "p1_ret":                round(p1_ret, 1),
         "p2_srv":                round(p2_srv, 1),
+        # ── Expected-sets exposure ────────────────────────────────────────────
+        "expected_sets":         round(expected_sets, 2),
+        "competitiveness":       comp_label,
+        "win_prob_gap":          round(win_prob_gap, 1),
+        "p1_win_prob":           round(p_prob, 1),
+        "p2_win_prob":           round(o_prob, 1),
+        "avg_historical_sets":   round(avg_hist_sets, 2),
+        "is_bo5":                is_bo5,
+        "bp_won_per_set":        round(base_proj / max(avg_hist_sets, 0.01), 3),
     }
 
 

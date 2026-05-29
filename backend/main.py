@@ -164,6 +164,9 @@ class PropRequest(BaseModel):
     court: str = ""
     prop_type: str = "Aces"
     prop_line: float = 0.0
+    # Optional: client may send rankings to improve win-prob estimation
+    player_rank: Optional[int] = None
+    opponent_rank: Optional[int] = None
 
 
 class H2HRequest(BaseModel):
@@ -521,6 +524,20 @@ async def prop_calculate(req: PropRequest):
         if p2_unified_surf and p2_unified_surf["matches"] > p2_s.get("matches_played", 0):
             p2_s["matches_played"] = p2_unified_surf["matches"]
 
+        # Inject identity, rank, and recent form into stats dicts so the
+        # expected-sets win-prob estimator has everything it needs.
+        p1_s["player_name"] = req.player_name or req.player_id
+        p2_s["player_name"] = req.opponent_name or req.opponent_id
+        if req.player_rank:
+            p1_s["rank"] = int(req.player_rank)
+        if req.opponent_rank:
+            p2_s["rank"] = int(req.opponent_rank)
+        # Recent form: derived from the unified surface match list (newest first)
+        _p1_recent_matches = p1_data.get(f"{req.surface}_matches", []) or []
+        _p2_recent_matches = p2_data.get(f"{req.surface}_matches", []) or []
+        p1_s["form"] = [{"won": bool(m.get("won"))} for m in _p1_recent_matches[:10]]
+        p2_s["form"] = [{"won": bool(m.get("won"))} for m in _p2_recent_matches[:10]]
+
         # ── Match format: strict rules, logged for every request ────────────────
         # ATP Grand Slams only → best_of_5. ALL WTA events → best_of_3 (no
         # exceptions; WTA Grand Slams are NEVER BO5).  All ATP non-GS → best_of_3.
@@ -545,6 +562,7 @@ async def prop_calculate(req: PropRequest):
                 player_ta=player_ta, opponent_ta=opponent_ta,
                 tour=req.tour, surface=req.surface,
                 match_format=match_fmt,
+                court=court_for_calc,
             )
         elif req.prop_type == "Total Games":
             result = project_total_games(
@@ -768,6 +786,18 @@ async def prop_calculate(req: PropRequest):
             "bp_bo5_momentum_mult":  result.get("bo5_momentum_mult"),
             "bp_base_proj":          result.get("base_proj"),
             "match_format":          result.get("match_format", match_fmt),
+            # ── Expected-sets engine (all prop types expose these) ────────────
+            "expected_sets":         result.get("expected_sets"),
+            "competitiveness":       result.get("competitiveness"),
+            "win_prob_gap":          result.get("win_prob_gap"),
+            "p1_win_prob":           result.get("p1_win_prob"),
+            "p2_win_prob":           result.get("p2_win_prob"),
+            "avg_historical_sets":   result.get("avg_historical_sets"),
+            "per_set_scale":         result.get("per_set_scale"),
+            "is_bo5":                result.get("is_bo5", _is_atp_gs),
+            "aces_per_set":          result.get("aces_per_set"),
+            "df_per_set":            result.get("df_per_set"),
+            "bp_won_per_set":        result.get("bp_won_per_set"),
             # Sofascore surface log (for bar chart; may fall back to Sackmann)
             "sofascore_surface_log": p1_chart_log,
             "chart_source":          chart_source,

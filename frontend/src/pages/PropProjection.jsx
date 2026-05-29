@@ -10,6 +10,7 @@ import LoadingSpinner from '../components/LoadingSpinner'
 import LeanBadge from '../components/LeanBadge'
 import ConfidenceGauge from '../components/ConfidenceGauge'
 import EnvironmentBanner from '../components/EnvironmentBanner'
+import ExpectedSetsBanner from '../components/ExpectedSetsBanner'
 import Last5Bars from '../components/Last5Bars'
 import { calcProp, fetchStats } from '../utils/api'
 import { TOURNAMENT_CONFIG, fmt, fmtPct } from '../utils/constants'
@@ -264,6 +265,9 @@ export default function PropProjection({ tour }) {
       opponent_name: p2.name || '',
       tour, surface, court: court === 'None' ? '' : court,
       prop_type: propType, prop_line: propLine,
+      // Rankings feed the expected-sets win-prob estimator
+      player_rank:   p1.currentRank || null,
+      opponent_rank: p2.currentRank || null,
     }
     try {
       const data = await calcProp(payload)
@@ -640,6 +644,22 @@ export default function PropProjection({ tour }) {
                 </motion.div>
               )}
             </motion.div>
+
+            {/* ── Expected sets banner — match length drives volume ── */}
+            {result.expected_sets != null && (
+              <motion.div variants={REVEAL_ITEM}>
+                <ExpectedSetsBanner
+                  expectedSets={result.expected_sets}
+                  competitiveness={result.competitiveness}
+                  winProbGap={result.win_prob_gap}
+                  p1Prob={result.p1_win_prob}
+                  p2Prob={result.p2_win_prob}
+                  p1Name={p1?.name}
+                  p2Name={p2?.name}
+                  isBo5={result.is_bo5}
+                />
+              </motion.div>
+            )}
 
             {/* ── Environment banner (full-width) ── */}
             {result.environment && (
