@@ -1819,10 +1819,30 @@ def _under_over_count(values: list, line: float) -> tuple:
     return over, under
 
 
+def _window_phrase(meta: dict) -> str:
+    """
+    Phrase describing the time window the headline figure was drawn from.
+      52w available, healthy           → "in the last 52 weeks"
+      2yr fallback                     → "in the last two years"
+      TA log unavailable (Sofascore-only) → "in recent form"
+      otherwise                        → "in recent form"
+    """
+    if not meta:
+        return "in recent form"
+    tier = meta.get("tier", "none")
+    if tier == "52w":
+        return "in the last 52 weeks"
+    if tier == "2yr":
+        return "in the last two years"
+    return "in recent form"
+
+
 def _recent_form_phrase(meta: dict, surface: str, player_name: str) -> str:
     """
     Natural-language sample-size acknowledgment when data is thin. Returns
-    empty string for healthy samples (≥5 surface matches in 52 weeks).
+    empty string for healthy samples (≥5 surface matches in 52 weeks) or when
+    TA is genuinely unavailable (because the Sofascore tiers still carry the
+    projection — there's no point telling the bettor we couldn't reach TA).
     """
     if not meta:
         return ""
@@ -1832,6 +1852,9 @@ def _recent_form_phrase(meta: dict, surface: str, player_name: str) -> str:
     warning   = meta.get("warning")
     last      = _last_name(player_name)
 
+    # TA log missing — quietly skip. Don't claim the player has been "quiet".
+    if warning == "ta_unavailable" or tier == "ta_unavailable":
+        return ""
     if warning == "insufficient":
         return (f" {last} has been quiet recently — only {total_n} matches across all "
                 f"surfaces in the last 52 weeks, so the read here is loose.")
@@ -1870,27 +1893,30 @@ def _report_aces(player_name, opponent_name, surface, court, projection,
 
     sentences = []
 
-    # 1. Player ace rate + sample
+    # 1. Player ace rate + sample. When TA is unavailable the figure is
+    # driven by Sofascore tiers rather than a 52-week window — phrase it
+    # honestly instead of claiming a window we don't have.
     sample_note = ""
     if p_surf_n and p_surf_n >= 5:
         sample_note = f" across {p_surf_n} matches"
+    window_phrase = _window_phrase(player_recent_meta)
     sentences.append(
         f"{player_name} averages {p_aces} aces per match on {surface.lower()} "
-        f"in the last 52 weeks{sample_note}."
+        f"{window_phrase}{sample_note}."
     )
 
     # 2. Opponent return quality / aces conceded
     if opp_against is not None:
-        suppress_dir = (
-            "above tour average" if suppress < 0.98 else
-            "below tour average" if suppress > 1.02 else
-            "roughly tour average"
-        )
         suppress_pct = abs(1.0 - suppress) * 100
+        if suppress < 0.98:
+            tail = f"above tour average, applying a {suppress_pct:.0f}% suppression factor"
+        elif suppress > 1.02:
+            tail = f"below tour average, applying a {suppress_pct:.0f}% boost factor"
+        else:
+            tail = "roughly tour average — no adjustment to the base rate"
         sentences.append(
             f"{o_last} concedes {opp_against:.1f} aces per match on {surface.lower()} "
-            f"as a returner — {suppress_dir}, applying a {suppress_pct:.0f}% "
-            f"{'suppression' if suppress < 1.0 else 'boost'} factor."
+            f"as a returner — {tail}."
         )
     else:
         ret_pts = opponent_surface_stats.get("return_first_serve_pts_won")
@@ -1904,11 +1930,15 @@ def _report_aces(player_name, opponent_name, surface, court, projection,
     # 3. Handedness + CPR effect (combined to save sentences)
     hand_note = ""
     if player_hand and opponent_hand and player_hand != opponent_hand:
-        direction = "opens up ace angles" if hand_factor > 1.0 else "cuts into ace angles"
-        hand_note = (
-            f" The {player_hand}H vs {opponent_hand}H matchup {direction} for "
-            f"{p_last} ({(hand_factor - 1) * 100:+.0f}%)."
-        )
+        if hand_factor > 1.01:
+            hand_note = (f" The {player_hand}H vs {opponent_hand}H matchup opens up "
+                         f"ace angles for {p_last} (+{(hand_factor - 1) * 100:.0f}%).")
+        elif hand_factor < 0.99:
+            hand_note = (f" The {player_hand}H vs {opponent_hand}H matchup cuts into "
+                         f"{p_last}'s ace angles ({(hand_factor - 1) * 100:.0f}%).")
+        else:
+            hand_note = (f" {player_hand}H vs {opponent_hand}H matchup is neutral on "
+                         f"ace production.")
     elif player_hand and opponent_hand:
         hand_note = f" Both players are {player_hand}-handed, no handedness adjustment."
 
@@ -1978,9 +2008,10 @@ def _report_bp(player_name, opponent_name, surface, court, projection,
     # 1. Player conversion rate on surface
     if conv is not None:
         sample_note = f" across {surf_conv_n} matches" if surf_conv_n and surf_conv_n >= 5 else ""
+        window_phrase = _window_phrase(player_recent_meta)
         sentences.append(
             f"{player_name} has converted {conv:.0f}% of break points on "
-            f"{surface.lower()} in the last 52 weeks{sample_note}."
+            f"{surface.lower()} {window_phrase}{sample_note}."
         )
 
     # 2. Opponent BP opportunities conceded
@@ -2059,9 +2090,10 @@ def _report_df(player_name, opponent_name, surface, court, projection,
 
     # 1. Player DF rate on surface
     sample_note = f" across {p_surf_n} matches" if p_surf_n and p_surf_n >= 5 else ""
+    window_phrase = _window_phrase(player_recent_meta)
     sentences.append(
         f"{player_name} averages {p_dfs} double faults per match on "
-        f"{surface.lower()} in the last 52 weeks{sample_note}."
+        f"{surface.lower()} {window_phrase}{sample_note}."
     )
 
     # 2. Opponent return pressure on 2nd serve

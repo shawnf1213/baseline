@@ -646,20 +646,45 @@ def _parse_match_year(date_str: str) -> Optional[int]:
     return None
 
 
+_DATE_PATTERN = re.compile(r'(20\d{2})[-/](\d{1,2})[-/](\d{1,2})')
+_YEAR_ONLY    = re.compile(r'\b(20\d{2})\b')
+
+
 def _parse_match_date(date_str: str):
     """
     Parse a Tennis Abstract date string into a `datetime.date`.
 
-    TA dates are typically `YYYY-MM-DD` but some sources omit the day. Returns
-    None when the date can't be parsed — callers then skip the match.
+    Handles:
+      - "2025-04-13" / "2025/04/13"        (primary TA format)
+      - "20250413"                          (compact)
+      - Year-only fallback: returns Jul 1 of the matched year so the date
+        still falls inside a 52-week window for matches from the current year
+    Returns None only when nothing parseable is found.
     """
     if not date_str:
         return None
     s = str(date_str).strip()
-    # Try YYYY-MM-DD, YYYY/MM/DD, YYYYMMDD, then YYYY-MM (assume day=15)
-    for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%Y%m%d", "%Y-%m"):
+
+    m = _DATE_PATTERN.search(s)
+    if m:
         try:
-            return datetime.strptime(s[:len(fmt) + 2], fmt).date()
+            return datetime(int(m.group(1)), int(m.group(2)), int(m.group(3))).date()
+        except (ValueError, TypeError):
+            pass
+
+    # Compact YYYYMMDD
+    if len(s) >= 8 and s[:8].isdigit():
+        try:
+            return datetime.strptime(s[:8], "%Y%m%d").date()
+        except ValueError:
+            pass
+
+    # Last resort: year-only → assume mid-year so it still lands inside a
+    # 52-week window for the current year's matches.
+    m = _YEAR_ONLY.search(s)
+    if m:
+        try:
+            return datetime(int(m.group(1)), 7, 1).date()
         except (ValueError, TypeError):
             pass
     return None
@@ -1051,22 +1076,42 @@ def pick_ta_recent_stats(player_ta: Optional[dict], surface: str) -> dict:
     """
     Returns a dict with:
       stats          — aggregated TA stats for the chosen window (or None)
-      tier           — '52w' | '2yr' | 'none'
+      tier           — '52w' | '2yr' | 'none' | 'ta_unavailable'
       surface_n      — matches in the chosen window on the selected surface
       all_surfaces_n — matches in the last 52 weeks across all surfaces
-                       (used by the insufficient-data warning)
-      warning        — None | 'limited' | 'insufficient'
-                       'limited'      → <5 surface matches in 52w (fallback fired)
-                       'insufficient' → <10 total matches in 52w  (red warning)
+      warning        — None | 'limited' | 'insufficient' | 'ta_unavailable'
+                       'limited'         → <5 surface matches in 52w (fallback fired)
+                       'insufficient'    → <10 total matches in 52w  (red warning)
+                       'ta_unavailable'  → TA match log missing — can't compute
+                                           recency at all. No confidence penalty;
+                                           Sofascore tiers carry the projection.
       note           — human-readable description for the UI
     """
     if not player_ta:
-        return {"stats": None, "tier": "none", "surface_n": 0,
-                "all_surfaces_n": 0, "warning": None, "note": ""}
+        return {"stats": None, "tier": "ta_unavailable", "surface_n": 0,
+                "all_surfaces_n": 0, "warning": "ta_unavailable",
+                "note": "Tennis Abstract data unavailable for this player"}
 
-    rich = player_ta.get("rich_stats") or {}
+    rich      = player_ta.get("rich_stats") or {}
     last_52   = rich.get("last_52_weeks") or {}
     last_2yr  = rich.get("last_2yr_fallback") or {}
+
+    # Detect "match log unavailable" up front. TA sometimes returns career
+    # surface_stats from the jsfrags table but no raw match array (so the
+    # 52w window can't be built at all). That's *not* the same as a player
+    # being inactive — we mustn't treat 0/0 the same as 0/30. The marker is
+    # whether the player_ta carries any matches at all.
+    n_raw_matches = len(player_ta.get("matches") or [])
+    if n_raw_matches == 0 and not last_52 and not last_2yr:
+        return {
+            "stats":          None,
+            "tier":           "ta_unavailable",
+            "surface_n":      0,
+            "all_surfaces_n": 0,
+            "warning":        "ta_unavailable",
+            "note":           "Tennis Abstract match log not available — "
+                              "projection driven by Sofascore tiers only",
+        }
 
     surf_52   = last_52.get(surface) or {}
     n_52_surf = (surf_52.get("matches") or 0)

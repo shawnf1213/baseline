@@ -678,6 +678,10 @@ async def prop_calculate(req: PropRequest):
         def _recent_penalty(meta):
             if not meta:
                 return 0, None
+            # TA match log not available — no penalty. The projection still
+            # has Sofascore tiers behind it; we just can't compute recency.
+            if meta.get("warning") == "ta_unavailable":
+                return 0, None
             total_n   = meta.get("all_surfaces_n", 0) or 0
             surface_n = meta.get("surface_n", 0) or 0
             if meta.get("warning") == "insufficient" or total_n < 10:
