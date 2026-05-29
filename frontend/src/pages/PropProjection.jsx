@@ -743,15 +743,17 @@ export default function PropProjection({ tour }) {
                       fallback: result?.player_surface_fallback, aceAgainst: null,
                       recentTier:    result?.player_ta_recent_tier,
                       recentMatches: result?.player_ta_recent_matches,
-                      recentWarn:    result?.player_ta_recent_warning },
+                      recentAllN:    result?.player_ta_recent_all_n,
+                      penaltyKind:   result?.player_ta_penalty_kind },
                     { s: p2SurfaceStats, name: p2?.name, hand: result?.opponent_handedness,
                       taM: result?.opponent_ta_matches, ssM: result?.opponent_ss_matches,
                       fallback: result?.opponent_surface_fallback, aceAgainst: result?.opponent_ace_against,
                       recentTier:    result?.opponent_ta_recent_tier,
                       recentMatches: result?.opponent_ta_recent_matches,
-                      recentWarn:    result?.opponent_ta_recent_warning },
+                      recentAllN:    result?.opponent_ta_recent_all_n,
+                      penaltyKind:   result?.opponent_ta_penalty_kind },
                   ].map(({ s, name, hand, taM, ssM, fallback, aceAgainst,
-                          recentTier, recentMatches, recentWarn }, idx) => {
+                          recentTier, recentMatches, recentAllN, penaltyKind }, idx) => {
                     const d = s || {}
                     const isBPProp = propType === 'Break Points Won'
                     const surfLabel = surface || 'Surf'
@@ -855,8 +857,22 @@ export default function PropProjection({ tour }) {
                           )}
                         </div>
 
-                        {/* Recent-data warnings */}
-                        {recentWarn === 'limited' && (
+                        {/* Recent-data warnings — three tiers based on penalty_kind */}
+                        {penaltyKind === 'specialist' && (
+                          <div style={{
+                            fontSize: 11, color: 'var(--hard-blue)',
+                            fontFamily: '"Barlow Condensed", sans-serif',
+                            fontWeight: 700, letterSpacing: 0.5,
+                            padding: '6px 10px', borderRadius: 8,
+                            background: 'rgba(107, 159, 255, 0.06)',
+                            border: '1px solid rgba(107, 159, 255, 0.3)',
+                            marginBottom: 10,
+                          }}>
+                            ◐ Surface specialist — limited data on this surface
+                            {recentAllN != null && ` (${recentAllN} matches across all surfaces in last 52w)`}, but overall form is strong
+                          </div>
+                        )}
+                        {penaltyKind === 'limited' && (
                           <div style={{
                             fontSize: 11, color: 'var(--amber)',
                             fontFamily: '"Barlow Condensed", sans-serif',
@@ -866,10 +882,10 @@ export default function PropProjection({ tour }) {
                             border: '1px solid rgba(255, 179, 0, 0.3)',
                             marginBottom: 10,
                           }}>
-                            ⚠ Limited recent surface data — fewer than 5 matches in last 52 weeks
+                            ⚠ Limited recent activity — fewer than 5 matches on surface and under 20 total in last 52 weeks
                           </div>
                         )}
-                        {recentWarn === 'insufficient' && (
+                        {penaltyKind === 'insufficient' && (
                           <div style={{
                             fontSize: 11, color: 'var(--red-bright)',
                             fontFamily: '"Barlow Condensed", sans-serif',
@@ -879,7 +895,7 @@ export default function PropProjection({ tour }) {
                             border: '1px solid rgba(255, 68, 68, 0.3)',
                             marginBottom: 10,
                           }}>
-                            ⚠ Insufficient recent data — projection confidence is low
+                            ⚠ Insufficient recent data — fewer than 10 total matches in last 52 weeks
                           </div>
                         )}
                         {rows.map(([lbl, val], rowIdx) => {

@@ -1781,6 +1781,431 @@ def project_break_points(
     }
 
 
+def _last_name(name: str) -> str:
+    parts = (name or "").strip().split()
+    return parts[-1] if parts else name
+
+
+def _fmt_num(val, fmt: str = ".1f", default: str = "—") -> str:
+    if val is None:
+        return default
+    try:
+        return format(float(val), fmt)
+    except Exception:
+        return default
+
+
+def _last_n_values(matches: list, key: str, n: int = 5) -> list:
+    """Pull the last `n` non-None values of `key` from the surface match log."""
+    if not matches:
+        return []
+    out = []
+    for m in matches[:n]:
+        v = m.get(key)
+        if v is not None:
+            try:
+                out.append(round(float(v), 1))
+            except Exception:
+                pass
+    return out
+
+
+def _under_over_count(values: list, line: float) -> tuple:
+    """Returns (over_count, under_count) for a list of values vs the line."""
+    if not values or line <= 0:
+        return 0, 0
+    over  = sum(1 for v in values if v > line)
+    under = sum(1 for v in values if v < line)
+    return over, under
+
+
+def _recent_form_phrase(meta: dict, surface: str, player_name: str) -> str:
+    """
+    Natural-language sample-size acknowledgment when data is thin. Returns
+    empty string for healthy samples (≥5 surface matches in 52 weeks).
+    """
+    if not meta:
+        return ""
+    tier      = meta.get("tier", "none")
+    surf_n    = meta.get("surface_n", 0) or 0
+    total_n   = meta.get("all_surfaces_n", 0) or 0
+    warning   = meta.get("warning")
+    last      = _last_name(player_name)
+
+    if warning == "insufficient":
+        return (f" {last} has been quiet recently — only {total_n} matches across all "
+                f"surfaces in the last 52 weeks, so the read here is loose.")
+    if tier == "52w" and surf_n >= 5:
+        return ""  # healthy — don't mention sample size
+    if surf_n < 5 and total_n >= 20:
+        # Surface specialist case — busy player, just not on this surface
+        return (f" {last} has limited {surface.lower()} appearances in the last 52 "
+                f"weeks with only {surf_n} matches tracked on the surface, so the "
+                f"{surface.lower()} tendencies are based on a small recent sample.")
+    if tier == "2yr" and surf_n > 0:
+        return (f" {last}'s {surface.lower()} sample is thin in the last year — "
+                f"this leans on {surf_n} matches across the last two years.")
+    return ""
+
+
+# ── Prop-specific report builders ────────────────────────────────────────────
+def _report_aces(player_name, opponent_name, surface, court, projection,
+                 player_surface_stats, opponent_surface_stats,
+                 player_hand, opponent_hand,
+                 player_recent_meta, prop_line,
+                 last5_matches) -> str:
+    """4-6 sentence aces-only scouting report."""
+    from src.constants import COURT_CPR, CPR_NEUTRAL
+    p_last, o_last = _last_name(player_name), _last_name(opponent_name)
+
+    p_aces      = _fmt_num(player_surface_stats.get("aces"), ".1f")
+    p_surf_n    = (player_recent_meta or {}).get("surface_n", 0)
+    opp_against = projection.get("opp_ace_against")
+    suppress    = projection.get("suppression_factor", 1.0) or 1.0
+    cpr         = projection.get("cpr", COURT_CPR.get(court, CPR_NEUTRAL))
+    cpr_factor  = projection.get("cpr_factor", 1.0) or 1.0
+    hand_factor = projection.get("hand_factor", 1.0) or 1.0
+    lean        = projection.get("lean", "NEUTRAL")
+    exp_sets    = projection.get("expected_sets")
+
+    sentences = []
+
+    # 1. Player ace rate + sample
+    sample_note = ""
+    if p_surf_n and p_surf_n >= 5:
+        sample_note = f" across {p_surf_n} matches"
+    sentences.append(
+        f"{player_name} averages {p_aces} aces per match on {surface.lower()} "
+        f"in the last 52 weeks{sample_note}."
+    )
+
+    # 2. Opponent return quality / aces conceded
+    if opp_against is not None:
+        suppress_dir = (
+            "above tour average" if suppress < 0.98 else
+            "below tour average" if suppress > 1.02 else
+            "roughly tour average"
+        )
+        suppress_pct = abs(1.0 - suppress) * 100
+        sentences.append(
+            f"{o_last} concedes {opp_against:.1f} aces per match on {surface.lower()} "
+            f"as a returner — {suppress_dir}, applying a {suppress_pct:.0f}% "
+            f"{'suppression' if suppress < 1.0 else 'boost'} factor."
+        )
+    else:
+        ret_pts = opponent_surface_stats.get("return_first_serve_pts_won")
+        if ret_pts is not None:
+            sentences.append(
+                f"{o_last}'s first-serve return points won sits at {ret_pts:.0f}% "
+                f"on {surface.lower()} — "
+                f"{'a tough returner' if ret_pts > 36 else 'a beatable returner'}."
+            )
+
+    # 3. Handedness + CPR effect (combined to save sentences)
+    hand_note = ""
+    if player_hand and opponent_hand and player_hand != opponent_hand:
+        direction = "opens up ace angles" if hand_factor > 1.0 else "cuts into ace angles"
+        hand_note = (
+            f" The {player_hand}H vs {opponent_hand}H matchup {direction} for "
+            f"{p_last} ({(hand_factor - 1) * 100:+.0f}%)."
+        )
+    elif player_hand and opponent_hand:
+        hand_note = f" Both players are {player_hand}-handed, no handedness adjustment."
+
+    cpr_pct = abs(1.0 - cpr_factor) * 100
+    cpr_dir = "boosts" if cpr_factor > 1.0 else "reduces"
+    court_label = court if court and court not in ("", "None") else f"{surface.lower()} courts"
+    if cpr_pct >= 3:
+        sentences.append(
+            f"{surface} CPR {cpr} at {court_label} {cpr_dir} ace output by "
+            f"{cpr_pct:.0f}% from baseline.{hand_note}"
+        )
+    elif hand_note:
+        sentences.append(hand_note.strip())
+
+    # 4. Last 5 trend
+    last5 = _last_n_values(last5_matches, "aces", 5)
+    if last5 and prop_line > 0:
+        over, under = _under_over_count(last5, prop_line)
+        ace_str = " ".join(str(int(v)) if v == int(v) else f"{v}" for v in last5)
+        direction = "went over" if over >= under else "went under"
+        sentences.append(
+            f"Last 5 {surface.lower()} matches {p_last} hit {ace_str} aces — "
+            f"{max(over, under)} of 5 {direction} the {prop_line:.1f} line."
+        )
+
+    # Data-limit acknowledgement (only if warranted)
+    limit_phrase = _recent_form_phrase(player_recent_meta, surface, player_name)
+    if limit_phrase:
+        sentences.append(limit_phrase.strip())
+
+    # 5. Closing directional lean
+    if prop_line > 0:
+        sentences.append(
+            f"Conditions lean {lean.title()} {prop_line:.1f} aces."
+            if lean in ("OVER", "UNDER") else
+            f"No clear edge on the {prop_line:.1f} aces line — stay off."
+        )
+    else:
+        sentences.append(
+            f"Lean is {lean.title()} on aces."
+            if lean in ("OVER", "UNDER") else
+            "No directional edge on aces."
+        )
+
+    return " ".join(sentences[:6])
+
+
+def _report_bp(player_name, opponent_name, surface, court, projection,
+               player_surface_stats, opponent_surface_stats,
+               player_recent_meta, prop_line, h2h_summary) -> str:
+    """4-6 sentence break-points-only scouting report."""
+    p_last, o_last = _last_name(player_name), _last_name(opponent_name)
+
+    conv        = projection.get("conv_rate_pct")
+    surf_conv_n = projection.get("surf_conv_sample") or (player_recent_meta or {}).get("surface_n", 0)
+    opp_faced   = projection.get("opp_bp_faced")
+    serve_tier  = projection.get("opp_serve_tier")
+    env         = projection.get("environment", "STANDARD")
+    match_fmt   = projection.get("match_format", "best_of_3")
+    fmt_label   = "best-of-5" if match_fmt == "best_of_5" else "best-of-3"
+    exp_sets    = projection.get("expected_sets")
+    comp        = projection.get("competitiveness")
+    lean        = projection.get("lean", "NEUTRAL")
+
+    sentences = []
+
+    # 1. Player conversion rate on surface
+    if conv is not None:
+        sample_note = f" across {surf_conv_n} matches" if surf_conv_n and surf_conv_n >= 5 else ""
+        sentences.append(
+            f"{player_name} has converted {conv:.0f}% of break points on "
+            f"{surface.lower()} in the last 52 weeks{sample_note}."
+        )
+
+    # 2. Opponent BP opportunities conceded
+    if opp_faced is not None:
+        serve_qual = {
+            "Elite": "elite hold — opportunities will be limited",
+            "Good":  "solid hold — each opportunity counts",
+            "Weak":  "leaky hold — opportunity pool is inflated",
+        }.get(serve_tier, "average hold")
+        sentences.append(
+            f"{o_last} faces {opp_faced:.1f} BPs per match on {surface.lower()} "
+            f"({serve_qual})."
+        )
+
+    # 3. Match environment
+    env_label = {
+        "HIGH_BREAK": "high-break environment — both servers leaky",
+        "SERVE_DOM":  "serve-dominant environment — breaks are at a premium",
+        "RET_EDGE":   "returner-edge environment — return quality outpaces serve",
+        "WEAK_SERVE": "weak-serve environment — breaks come freely",
+        "STANDARD":   "standard environment — no extreme tilt",
+    }.get(env, "standard environment")
+    sentences.append(f"Match profile is a {env_label}.")
+
+    # 4. Match format + expected sets
+    if exp_sets is not None and comp:
+        sentences.append(
+            f"Format is {fmt_label} with {exp_sets:.1f} expected sets ({comp.lower()}) "
+            f"— the longer the match, the more BP windows accumulate."
+        )
+
+    # H2H reference (optional)
+    if h2h_summary and h2h_summary.get("bp_avg") is not None:
+        bp_avg = h2h_summary["bp_avg"]
+        sentences.append(
+            f"In the H2H {p_last} has averaged {bp_avg:.1f} BPs won across "
+            f"{h2h_summary.get('total', 0)} prior meetings."
+        )
+
+    # Data-limit acknowledgement
+    limit_phrase = _recent_form_phrase(player_recent_meta, surface, player_name)
+    if limit_phrase:
+        sentences.append(limit_phrase.strip())
+
+    # 5. Closing directional lean
+    if prop_line > 0:
+        if lean == "OVER":
+            sentences.append(f"Line looks beatable Over {prop_line:.1f} BPs won.")
+        elif lean == "UNDER":
+            sentences.append(f"Line looks rich — lean Under {prop_line:.1f} BPs won.")
+        else:
+            sentences.append(f"No clean edge on the {prop_line:.1f} line — pass.")
+    else:
+        sentences.append(
+            f"Lean is {lean.title()} on break points won." if lean in ("OVER", "UNDER")
+            else "No directional edge on break points."
+        )
+
+    return " ".join(sentences[:6])
+
+
+def _report_df(player_name, opponent_name, surface, court, projection,
+               player_surface_stats, opponent_surface_stats,
+               player_recent_meta, prop_line, last5_matches) -> str:
+    """4-6 sentence double-faults-only scouting report."""
+    p_last, o_last = _last_name(player_name), _last_name(opponent_name)
+
+    p_dfs       = _fmt_num(player_surface_stats.get("double_faults"), ".1f")
+    p_surf_n    = (player_recent_meta or {}).get("surface_n", 0)
+    pressure    = projection.get("pressure_factor", 1.0) or 1.0
+    o_ret2      = opponent_surface_stats.get("return_second_serve_pts_won")
+    o_ret1      = opponent_surface_stats.get("return_first_serve_pts_won")
+    lean        = projection.get("lean", "NEUTRAL")
+
+    sentences = []
+
+    # 1. Player DF rate on surface
+    sample_note = f" across {p_surf_n} matches" if p_surf_n and p_surf_n >= 5 else ""
+    sentences.append(
+        f"{player_name} averages {p_dfs} double faults per match on "
+        f"{surface.lower()} in the last 52 weeks{sample_note}."
+    )
+
+    # 2. Opponent return pressure on 2nd serve
+    if o_ret2 is not None:
+        pressure_dir = (
+            "applies real pressure on second serves"
+            if o_ret2 > 53 else
+            "doesn't apply much pressure on second serves"
+            if o_ret2 < 48 else
+            "applies average second-serve pressure"
+        )
+        sentences.append(
+            f"{o_last} wins {o_ret2:.0f}% of return points on second serve — "
+            f"{pressure_dir} ({(pressure - 1) * 100:+.0f}% pressure factor)."
+        )
+    elif o_ret1 is not None:
+        sentences.append(
+            f"{o_last}'s return game runs at {o_ret1:.0f}% on first serve — "
+            f"applying a {(pressure - 1) * 100:+.0f}% pressure factor on second balls."
+        )
+
+    # 3. Surface-specific DF tendency
+    surface_note = {
+        "Clay":  "Clay gives servers more time to recover on the second ball — DFs slightly suppressed.",
+        "Hard":  "Hard courts are neutral on second-serve risk.",
+        "Grass": "Grass shortens points so servers push the second ball harder — DFs creep up.",
+    }.get(surface, "")
+    if surface_note:
+        sentences.append(surface_note)
+
+    # 4. Last 5 trend
+    last5 = _last_n_values(last5_matches, "double_faults", 5)
+    if last5 and prop_line > 0:
+        over, under = _under_over_count(last5, prop_line)
+        df_str = " ".join(str(int(v)) if v == int(v) else f"{v}" for v in last5)
+        direction = "went over" if over >= under else "went under"
+        sentences.append(
+            f"Last 5 {surface.lower()} matches {p_last} threw {df_str} double faults — "
+            f"{max(over, under)} of 5 {direction} the {prop_line:.1f} line."
+        )
+
+    # Data-limit acknowledgement
+    limit_phrase = _recent_form_phrase(player_recent_meta, surface, player_name)
+    if limit_phrase:
+        sentences.append(limit_phrase.strip())
+
+    # 5. Closing directional lean
+    if prop_line > 0:
+        sentences.append(
+            f"Lean is {lean.title()} {prop_line:.1f} double faults."
+            if lean in ("OVER", "UNDER") else
+            f"No directional edge on the {prop_line:.1f} double-fault line."
+        )
+    else:
+        sentences.append(
+            f"Lean is {lean.title()} on double faults."
+            if lean in ("OVER", "UNDER") else
+            "No directional edge on double faults."
+        )
+
+    return " ".join(sentences[:6])
+
+
+def _report_total_games(player_name, opponent_name, surface, court, projection,
+                        player_surface_stats, opponent_surface_stats,
+                        player_recent_meta, prop_line, h2h_summary) -> str:
+    """4-6 sentence total-games-only scouting report."""
+    from src.constants import COURT_CPR, CPR_NEUTRAL
+    p_last, o_last = _last_name(player_name), _last_name(opponent_name)
+
+    p_1sw       = _fmt_num(projection.get("p1_srv") or player_surface_stats.get("first_serve_pts_won"), ".0f")
+    o_1sw       = _fmt_num(projection.get("p2_srv") or opponent_surface_stats.get("first_serve_pts_won"), ".0f")
+    ch          = projection.get("combined_hold")
+    gps         = projection.get("games_per_set")
+    exp_sets    = projection.get("expected_sets")
+    comp        = projection.get("competitiveness")
+    env         = projection.get("environment", "STANDARD")
+    cpr         = projection.get("cpr", COURT_CPR.get(court, CPR_NEUTRAL))
+    lean        = projection.get("lean", "NEUTRAL")
+
+    sentences = []
+
+    # 1. Hold rates for both
+    sentences.append(
+        f"On {surface.lower()}, {p_last} holds at {p_1sw}% on first serve and "
+        f"{o_last} at {o_1sw}% — combined hold of {ch:.0f}%."
+        if ch is not None else
+        f"On {surface.lower()}, {p_last} holds at {p_1sw}% on first serve and "
+        f"{o_last} at {o_1sw}%."
+    )
+
+    # 2. Match environment
+    env_label = {
+        "HIGH_BREAK": "high-break environment — sets run long with multiple breaks",
+        "SERVE_DOM":  "serve-dominant environment — sets tend to go to tiebreaks",
+        "RET_EDGE":   "returner-edge environment — return quality keeps sets tight",
+        "WEAK_SERVE": "weak-serve environment — frequent breaks shorten sets",
+        "STANDARD":   "standard environment — no extreme tilt on game volume",
+    }.get(env, "standard environment")
+    sentences.append(f"Match profile is a {env_label}.")
+
+    # 3. Expected sets + projected games
+    if exp_sets is not None and gps is not None and comp:
+        sentences.append(
+            f"Expected sets sits at {exp_sets:.1f} ({comp.lower()}) at "
+            f"{gps:.1f} games per set."
+        )
+
+    # 4. H2H games avg + CPR effect
+    extras = []
+    if h2h_summary and h2h_summary.get("games_avg") is not None:
+        ga = h2h_summary["games_avg"]
+        extras.append(
+            f"H2H on {surface.lower()} averages {ga:.1f} total games across "
+            f"{h2h_summary.get('total', 0)} prior meetings"
+        )
+    if cpr <= 28:
+        extras.append(f"slow {surface.lower()} (CPR {cpr}) adds to game volume")
+    elif cpr >= 43:
+        extras.append(f"fast court (CPR {cpr}) trims a fraction of a game per set")
+    if extras:
+        sentences.append(("; ".join(extras)).capitalize() + ".")
+
+    # Data-limit acknowledgement
+    limit_phrase = _recent_form_phrase(player_recent_meta, surface, player_name)
+    if limit_phrase:
+        sentences.append(limit_phrase.strip())
+
+    # 5. Closing directional lean
+    if prop_line > 0:
+        sentences.append(
+            f"Total games projects {lean.title()} {prop_line:.1f}."
+            if lean in ("OVER", "UNDER") else
+            f"No directional edge on {prop_line:.1f} total games."
+        )
+    else:
+        sentences.append(
+            f"Lean is {lean.title()} on total games." if lean in ("OVER", "UNDER")
+            else "No directional edge on total games."
+        )
+
+    return " ".join(sentences[:6])
+
+
 def generate_scouting_report(
     player_name: str,
     opponent_name: str,
@@ -1803,284 +2228,56 @@ def generate_scouting_report(
     data_quality: str = "moderate",
     player_recent_meta: dict = None,
     opponent_recent_meta: dict = None,
+    prop_line: float = 0.0,
+    player_surface_matches: list = None,
 ) -> str:
     """
-    Sharp bettor-voice scouting report. 4 sentences max.
+    Prop-specific scouting report — 4 to 6 sentences max, every sentence
+    carries a specific number or context point relevant to the selected prop.
+    The closing sentence always states a directional lean.
 
-    Voice: write like a sharp tennis bettor posting their take in a Discord or
-    on Twitter — direct, opinionated, backed by stats but not showing the math.
+    Reports are routed by prop_type so the bettor never sees stats irrelevant
+    to what they're trying to decide. Aces reports do not discuss break
+    points; total-games reports do not discuss ace rates; etc.
 
-    Never output:
-    - "profiling" in any form
-    - "conditions favor X"
-    - "trending toward X" when discussing game totals
-    - "that's a standard setup" or "that's a <env> setup"
-    - "synthesis of" or "matchup dynamics"
-    - Archetype labels as nouns (counterpuncher, all-court player) — use
-      tendencies instead ("he lives on his return game")
-    - Any sentence ending with a confidence percentage
-    - Any inline calculation showing X × Y = Z
+    Data-limitation acknowledgements are woven into the report naturally
+    rather than appearing as a separate header — see _recent_form_phrase.
     """
-    from src.constants import COURT_CPR, CPR_NEUTRAL
-
-    # Archetype → plain-English tendency descriptions
-    _ARCH_TENDENCY = {
-        "Big Server":          "leans hard on his serve to win points",
-        "Serve and Volleyer":  "likes to serve big and close points at the net",
-        "Precision Baseliner": "keeps a clean serve and competes well on return",
-        "Attacking Baseliner": "looks to take over points from the baseline on both wings",
-        "Solid Baseliner":     "is comfortable at the back of the court, leans on his return",
-        "Counterpuncher":      "lives on his return game and turns defence into break chances",
-        "All-Court Player":    "has no obvious weakness in his game",
-    }
-
-    def _s(val, fmt=".0f", default="—"):
-        if val is None:
-            return default
-        try:
-            return format(float(val), fmt)
-        except Exception:
-            return default
-
-    def _last(name: str) -> str:
-        parts = name.strip().split()
-        return parts[-1] if parts else name
-
-    cpr = COURT_CPR.get(court, CPR_NEUTRAL)
-
-    p_aces    = _s(player_surface_stats.get("aces"), ".1f")
-    p_dfs     = _s(player_surface_stats.get("double_faults"), ".1f")
-    p_1sw     = _s(player_surface_stats.get("first_serve_pts_won"), ".0f")
-    p_ret1    = _s(player_surface_stats.get("return_first_serve_pts_won"), ".0f")
-    p_bpc     = _s(player_surface_stats.get("bp_converted"), ".0f")
-    p_wr      = _s(player_surface_stats.get("win_rate"))
-    p_matches = player_surface_stats.get("matches_played", 0) or 0
-
-    o_ret1    = _s(opponent_surface_stats.get("return_first_serve_pts_won"), ".0f")
-    o_1sw     = _s(opponent_surface_stats.get("first_serve_pts_won"), ".0f")
-    o_aces    = _s(opponent_surface_stats.get("aces"), ".1f")
-    o_wr      = _s(opponent_surface_stats.get("win_rate"))
-    o_matches = opponent_surface_stats.get("matches_played", 0) or 0
-
-    lean = projection.get("lean", "NEUTRAL")
-
-    p_last = _last(player_name)
-    o_last = _last(opponent_name)
-
-    p_tendency = _ARCH_TENDENCY.get(player_arch, "has a balanced game")
-    o_tendency = _ARCH_TENDENCY.get(opponent_arch, "has a balanced game")
-
-    # Court description
-    court_desc = court if court and court not in ("", "None") else f"{surface} courts"
-    court_is_fast = cpr >= 40
-    court_is_slow = cpr <= 28
-
-    # Recent results string (first result only for inline reference)
-    p_recent_ref = ""
-    if player_recent_results:
-        p_recent_ref = player_recent_results[0]  # e.g. "W 6-3 6-4 vs Napolitano (Clay, Apr 13)"
-
-    sentences: list = []
-
-    # ── Recent-form framing ───────────────────────────────────────────────────
-    # Prop projections are driven by the last 52 weeks of TA data (not career
-    # averages) — make that explicit in the report so the reader understands
-    # the projection reflects *current* form, not historical peak.
-    p_recent_n   = (player_recent_meta or {}).get("surface_n", 0) or 0
-    p_recent_tier = (player_recent_meta or {}).get("tier", "none")
-    o_recent_n   = (opponent_recent_meta or {}).get("surface_n", 0) or 0
-    p_recent_warn = (player_recent_meta or {}).get("warning")
-
-    if p_recent_tier == "52w" and p_recent_n >= 5:
-        sentences.append(
-            f"Over the last 52 weeks on {surface}, {player_name} has played "
-            f"{p_recent_n} matches — that's the window driving this projection."
-        )
-    elif p_recent_tier == "2yr" and p_recent_n > 0:
-        sentences.append(
-            f"{player_name} has only logged a handful on {surface} in the last "
-            f"year, so this leans on {p_recent_n} matches across the last two "
-            f"years instead."
-        )
-    elif p_recent_warn == "insufficient":
-        sentences.append(
-            f"{player_name} hasn't been active enough recently — fewer than 10 "
-            f"matches in the last 52 weeks across all surfaces, so confidence is low."
-        )
-
-    # ── Low-data uncertainty lead (legacy thin-data note) ─────────────────────
-    effective_matches = ta_career_matches if ta_career_matches > 0 else p_matches
-    thin_data = (data_quality == "thin") or effective_matches < 5
-    if thin_data and not sentences:
-        match_note = (
-            f"{effective_matches} recent surface matches in our data"
-            if effective_matches > 0 else
-            "very limited recent surface data"
-        )
-        sentences.append(
-            f"{player_name} has {match_note} on {surface}"
-            f" — I don't have a great read here, so take this with a grain of salt."
-        )
-
-    # ── Prop-specific opening ─────────────────────────────────────────────────
-    if prop_type == "Aces":
-        _o_ret1_raw = opponent_surface_stats.get("return_first_serve_pts_won") or 0
-        suppress_note = (
-            "a strong returner who keeps ace totals honest"
-            if _o_ret1_raw > 36 else
-            "not someone who really suppresses aces"
-        )
-        hand_note = ""
-        if player_hand and opponent_hand and player_hand != opponent_hand:
-            hf = projection.get("hand_factor", 1.0) or 1.0
-            hand_note = (
-                f" {player_hand}H vs {opponent_hand}H angle works in {p_last}'s favour here."
-                if hf >= 1.0 else
-                f" The {player_hand}H vs {opponent_hand}H matchup cuts into {p_last}'s ace angles."
-            )
-            hand_note = f"{hand_note}"
-        recent_note = f" Most recently: {p_recent_ref}." if p_recent_ref and not thin_data else ""
-        sentences.append(
-            f"{player_name} is averaging {p_aces} aces on {surface} and {o_last} is {suppress_note}"
-            f" — {o_ret1}% on first-serve return points.{hand_note}{recent_note}"
-        )
-        speed_note = (
-            "Fast conditions here mean free points are easier to come by on serve."
-            if court_is_fast else
-            "Slower conditions mean he'll have to earn those aces — returns come back more often."
-            if court_is_slow else
-            f"{court_desc} is a medium-pace surface, nothing extreme either way."
-        )
-        if not thin_data:
-            sentences.append(speed_note)
-
-    elif prop_type == "Double Faults":
-        pf = projection.get("pressure_factor", 1.0) or 1.0
-        pressure_note = (
-            "pushes servers to take more risks on second balls"
-            if pf > 1.02 else
-            "doesn't put huge pressure on second serves"
-            if pf < 0.98 else
-            "is roughly neutral on second-serve pressure"
-        )
-        recent_note = f" Recent form: {p_recent_ref}." if p_recent_ref and not thin_data else ""
-        sentences.append(
-            f"{player_name} is averaging {p_dfs} double faults per match on {surface}"
-            f" and {o_last}'s return game {pressure_note}.{recent_note}"
-        )
-        speed_note = (
-            "Fast courts put extra pressure on the second serve — servers push for more."
-            if court_is_fast else
-            "Slow clay gives servers slightly more margin on the second ball."
-            if court_is_slow and surface == "Clay" else
-            f"{court_desc} is a medium-pace surface, nothing extreme."
-        )
-        if not thin_data:
-            sentences.append(speed_note)
-
-    elif prop_type == "Total Games":
-        ch    = projection.get("combined_hold", 72) or 72
-        gps   = projection.get("games_per_set", 0) or 0
-        _p1sw_raw = player_surface_stats.get("first_serve_pts_won") or 0
-        _o1sw_raw = opponent_surface_stats.get("first_serve_pts_won") or 0
-        _p_ret_raw = player_surface_stats.get("return_first_serve_pts_won") or 0
-        _o_ret_raw = opponent_surface_stats.get("return_first_serve_pts_won") or 0
-
-        serve_note = (
-            "both players hold at a high clip"
-            if ch >= 74 else
-            "neither player holds at a rate that makes breaks rare"
-            if ch <= 68 else
-            "hold rates are average for this surface"
-        )
-        return_note = (
-            "The return games on both sides are competitive, which keeps sets tight."
-            if (_p_ret_raw > 36 or _o_ret_raw > 36) else
-            "Neither player puts massive return pressure on the other's serve."
-        )
-        recent_note = f" {player_name} recently: {p_recent_ref}." if p_recent_ref and not thin_data else ""
-        sentences.append(
-            f"On {surface}, {serve_note} — {p_last} holds at {p_1sw}% on first serve"
-            f" and {o_last} at {o_1sw}%.{recent_note}"
-        )
-        if not thin_data:
-            sentences.append(return_note)
-
-    elif prop_type == "Break Points Won":
-        conv       = projection.get("conv_rate_pct", 0) or 0
-        faced      = projection.get("opp_bp_faced", 0) or 0
-        serve_tier = projection.get("opp_serve_tier", "")
-        bo_scale   = projection.get("bo_scale", 1.0) or 1.0
-        momentum   = projection.get("momentum_factor", 1.0) or 1.0
-        fmt_label  = "best-of-5" if bo_scale >= 1.5 else "best-of-3"
-
-        serve_tier_note = {
-            "Elite": f"{o_last} is an elite server — opportunities will be limited even for good returners.",
-            "Good":  f"{o_last} holds at a solid rate, so each opportunity will count.",
-            "Weak":  f"{o_last} struggles to hold serve, which inflates the opportunity pool significantly.",
-        }.get(serve_tier, "")
-
-        momentum_note = (
-            f" Momentum models add {(momentum - 1) * 100:.0f}% for the break-back effect across {fmt_label}."
-            if momentum > 1.02 else ""
-        )
-
-        recent_note = f" {player_name} recently: {p_recent_ref}." if p_recent_ref and not thin_data else ""
-        sentences.append(
-            f"{player_name} converts around {conv:.0f}% of break point chances on {surface}"
-            f" and {o_last} gives up roughly {faced:.1f} BP opportunities per {fmt_label} match on serve."
-            f"{recent_note}"
-        )
-        if serve_tier_note and not thin_data:
-            sentences.append(serve_tier_note + momentum_note)
-        elif momentum_note and not thin_data:
-            sentences.append(momentum_note.strip())
-
-        speed_note = (
-            "Fast courts shrink break-point volume — serves are harder to get back."
-            if court_is_fast else
-            "Slow clay gives servers more recovery time per point, which suppresses conversion rates even when opportunities exist."
-            if court_is_slow and surface == "Clay" else
-            f"{court_desc} is a medium-pace court — nothing extreme either way."
-        )
-        if not thin_data:
-            sentences.append(speed_note)
-
-    # ── Player tendency + H2H (one combined sentence to stay within 4-sentence limit) ─
-    h2h_str = ""
-    if h2h_summary and h2h_summary.get("total", 0) > 0:
-        total = h2h_summary["total"]
-        p1w   = h2h_summary.get("p1_wins", 0)
-        p2w   = total - p1w
-        surf_total = h2h_summary.get("surface_matches", 0)
-        meeting_word = "meeting" if total == 1 else "meetings"
-        if total <= 2:
-            h2h_str = f"H2H is basically noise at {total} {meeting_word}."
-        else:
-            if p1w > p2w:
-                h2h_str = f"{p_last} leads the H2H {p1w}–{p2w}"
-            elif p2w > p1w:
-                h2h_str = f"{o_last} leads the H2H {p2w}–{p1w}"
-            else:
-                h2h_str = f"They're even in the H2H at {p1w}–{p2w}"
-            if surf_total > 0:
-                sp1w = h2h_summary.get("surface_p1_wins", 0)
-                h2h_str += f", {sp1w}–{surf_total - sp1w} on {surface}"
-            h2h_str += "."
-    else:
-        h2h_str = "No meaningful H2H to factor in."
-
-    tendency_sentence = (
-        f"{p_last} {p_tendency} on this surface — {o_last} {o_tendency}. {h2h_str}"
+    common_kwargs = dict(
+        player_name=player_name,
+        opponent_name=opponent_name,
+        surface=surface,
+        court=court,
+        projection=projection,
+        player_surface_stats=player_surface_stats or {},
+        opponent_surface_stats=opponent_surface_stats or {},
+        player_recent_meta=player_recent_meta,
+        prop_line=prop_line or 0.0,
     )
-    sentences.append(tendency_sentence)
 
-    # ── Lean (always last, no confidence percentage) ──────────────────────────
-    lean_phrases = {
-        "OVER":    f"I'm leaning OVER on the {prop_type.lower()} — the setup points that way.",
-        "UNDER":   f"I'm leaning UNDER on the {prop_type.lower()} — the numbers don't support the high side.",
-        "NEUTRAL": f"Tough to take a strong side on the {prop_type.lower()} — I'm staying off this one.",
-    }
-    sentences.append(lean_phrases.get(lean, lean_phrases["NEUTRAL"]))
+    if prop_type == "Aces":
+        return _report_aces(
+            **common_kwargs,
+            player_hand=player_hand,
+            opponent_hand=opponent_hand,
+            last5_matches=player_surface_matches or [],
+        )
+    if prop_type == "Double Faults":
+        return _report_df(
+            **common_kwargs,
+            last5_matches=player_surface_matches or [],
+        )
+    if prop_type == "Total Games":
+        return _report_total_games(
+            **common_kwargs,
+            h2h_summary=h2h_summary,
+        )
+    if prop_type == "Break Points Won":
+        return _report_bp(
+            **common_kwargs,
+            h2h_summary=h2h_summary,
+        )
 
-    return " ".join(sentences[:4])
+    # Fallback for unknown prop types
+    lean = projection.get("lean", "NEUTRAL")
+    return f"{player_name} vs {opponent_name} on {surface}. Lean is {lean.title()}."

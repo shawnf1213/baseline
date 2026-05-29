@@ -669,13 +669,41 @@ async def prop_calculate(req: PropRequest):
         if sack_penalty:
             confidence = max(15, confidence + sack_penalty)  # penalty is negative
 
-        # Insufficient-recent-data penalty: -20 when either player has fewer
-        # than 10 matches across all surfaces in the last 52 weeks
-        if p1_recent_meta["warning"] == "insufficient" or p2_recent_meta["warning"] == "insufficient":
-            confidence = max(15, confidence - 20)
+        # ── Recent-data confidence penalty ───────────────────────────────────
+        # Distinguish surface specialists from genuinely inactive players:
+        #   Truly inactive  (<10 total in 52w)               → -20
+        #   Middle ground   (10-19 total, <5 surface)        → -10
+        #   Specialist      (≥20 total, <5 surface)          →  -5
+        #   Healthy         (≥5 surface)                     →   0
+        def _recent_penalty(meta):
+            if not meta:
+                return 0, None
+            total_n   = meta.get("all_surfaces_n", 0) or 0
+            surface_n = meta.get("surface_n", 0) or 0
+            if meta.get("warning") == "insufficient" or total_n < 10:
+                return -20, "insufficient"
+            if surface_n >= 5:
+                return 0, None
+            if total_n >= 20:
+                return -5, "specialist"
+            return -10, "limited"
+
+        p1_pen, p1_pen_kind = _recent_penalty(p1_recent_meta)
+        p2_pen, p2_pen_kind = _recent_penalty(p2_recent_meta)
+        total_recent_pen = p1_pen + p2_pen
+        # Annotate the meta dicts so the frontend knows whether to draw amber
+        # (limited / specialist) vs red (insufficient) warnings.
+        if p1_recent_meta:
+            p1_recent_meta["penalty"]      = p1_pen
+            p1_recent_meta["penalty_kind"] = p1_pen_kind
+        if p2_recent_meta:
+            p2_recent_meta["penalty"]      = p2_pen
+            p2_recent_meta["penalty_kind"] = p2_pen_kind
+        if total_recent_pen:
+            confidence = max(15, confidence + total_recent_pen)
             logger.warning(
-                "RECENT_DATA_PENALTY | p1_warn=%s p2_warn=%s | confidence -> %d",
-                p1_recent_meta["warning"], p2_recent_meta["warning"], confidence,
+                "RECENT_DATA_PENALTY | p1=%s(%+d) p2=%s(%+d) | total=%+d -> conf=%d",
+                p1_pen_kind, p1_pen, p2_pen_kind, p2_pen, total_recent_pen, confidence,
             )
 
         # Sanity failure: projection fell outside realistic bounds → reduce confidence
@@ -761,6 +789,8 @@ async def prop_calculate(req: PropRequest):
             data_quality=data_quality,
             player_recent_meta=p1_recent_meta,
             opponent_recent_meta=p2_recent_meta,
+            prop_line=req.prop_line,
+            player_surface_matches=p1_chart_log,
         )
 
         env_key   = result.get("environment") or detect_environment(p1_s, p2_s, surface=req.surface)
@@ -837,11 +867,15 @@ async def prop_calculate(req: PropRequest):
             "player_ta_recent_all_n":     p1_recent_meta["all_surfaces_n"],
             "player_ta_recent_warning":   p1_recent_meta["warning"],
             "player_ta_recent_note":      p1_recent_meta["note"],
+            "player_ta_penalty_kind":     p1_recent_meta.get("penalty_kind"),
+            "player_ta_penalty":          p1_recent_meta.get("penalty", 0),
             "opponent_ta_recent_tier":    p2_recent_meta["tier"],
             "opponent_ta_recent_matches": p2_recent_meta["surface_n"],
             "opponent_ta_recent_all_n":   p2_recent_meta["all_surfaces_n"],
             "opponent_ta_recent_warning": p2_recent_meta["warning"],
             "opponent_ta_recent_note":    p2_recent_meta["note"],
+            "opponent_ta_penalty_kind":   p2_recent_meta.get("penalty_kind"),
+            "opponent_ta_penalty":        p2_recent_meta.get("penalty", 0),
             # Sofascore surface log (for bar chart; may fall back to Sackmann)
             "sofascore_surface_log": p1_chart_log,
             "chart_source":          chart_source,
