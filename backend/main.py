@@ -968,6 +968,190 @@ async def h2h_endpoint(req: H2HRequest):
 
 
 # ---------------------------------------------------------------------------
+# POST /api/board/scrape and /analyze — PrizePicks Board Optimizer
+# ---------------------------------------------------------------------------
+from src.api.prizepicks_scraper import scrape_board, clear_cache as _pp_clear_cache
+from src.api.player_matcher import match_player
+from src.constants import COURT_CPR, COURTS_BY_SURFACE
+
+
+# Reverse index: lowercase tournament name → (surface, court_key)
+_TOURNAMENT_INDEX: dict = {}
+for _surf, _courts in COURTS_BY_SURFACE.items():
+    for _c in _courts:
+        _TOURNAMENT_INDEX[_c.lower()] = (_surf, _c)
+# Add common short forms / aliases users may see on PrizePicks
+_TOURNAMENT_ALIASES = {
+    "french open":          ("Clay",  "Roland Garros"),
+    "roland-garros":        ("Clay",  "Roland Garros"),
+    "rome masters":         ("Clay",  "Italian Open Rome"),
+    "madrid masters":       ("Clay",  "Madrid Open"),
+    "monte-carlo":          ("Clay",  "Monte Carlo Masters"),
+    "ao":                   ("Hard",  "Australian Open"),
+    "us open":              ("Hard",  "US Open"),
+    "wimbledon":            ("Grass", "Wimbledon"),
+}
+_TOURNAMENT_INDEX.update({k: v for k, v in _TOURNAMENT_ALIASES.items()})
+
+
+def _resolve_surface_and_court(tournament: Optional[str],
+                               description: Optional[str] = "") -> tuple:
+    """
+    Pick (surface, court) from a tournament-ish string. Falls back to ('Hard', '')
+    when nothing matches — Hard is the most common surface on tour year-round.
+    """
+    haystack = " ".join(filter(None, [tournament or "", description or ""])).lower()
+    if not haystack.strip():
+        return "Hard", ""
+    # First try exact match on the index keys (longest first to avoid partial wins)
+    for key in sorted(_TOURNAMENT_INDEX.keys(), key=len, reverse=True):
+        if key in haystack:
+            return _TOURNAMENT_INDEX[key]
+    return "Hard", ""
+
+
+class BoardScrapeRequest(BaseModel):
+    force_refresh: bool = False
+
+
+class BoardAnalyzeRequest(BaseModel):
+    """Caller passes the already-scraped board to keep the two steps separate."""
+    props: list = []
+    tour_filter: Optional[str] = None   # 'ATP' | 'WTA' | None (both)
+
+
+@app.post("/api/board/scrape")
+async def board_scrape(req: BoardScrapeRequest = None):
+    """
+    Scrape PrizePicks tennis board. Returns the eligible-prop list along with
+    scrape metadata. Heavy work runs in a thread so we don't block the loop.
+    """
+    force = bool(req and req.force_refresh)
+    if force:
+        _pp_clear_cache()
+    loop = asyncio.get_event_loop()
+    try:
+        result = await loop.run_in_executor(None, scrape_board, force)
+        return result
+    except Exception as exc:
+        logger.exception("board/scrape failed: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+async def _analyze_one_prop(pp_prop: dict, tour: str) -> dict:
+    """
+    Match a single PrizePicks prop to Sofascore players and run the full
+    Baseline projection. Returns a normalised analyzed-prop dict that the
+    frontend renders directly.
+    """
+    out = {
+        "pp_prop":           pp_prop,
+        "tour":              tour,
+        "matched":           False,
+        "match_note":        None,
+        "model_projection":  None,
+        "lean":              None,
+        "confidence":        0,
+        "edge":              None,
+        "surface":           None,
+        "court":             None,
+        "player":            None,
+        "opponent":          None,
+        "result":            None,   # full /api/prop/calculate payload when matched
+        "error":             None,
+    }
+
+    try:
+        # Resolve surface + court from tournament
+        surface, court = _resolve_surface_and_court(
+            pp_prop.get("tournament"), pp_prop.get("description"),
+        )
+        out["surface"], out["court"] = surface, court
+
+        # Match the selected player
+        player = match_player(pp_prop.get("player_name") or "", tour=tour)
+        if not player:
+            out["match_note"] = "Player data unavailable"
+            return out
+        out["player"] = player
+
+        # Match the opponent if PrizePicks supplied one. If not, we can't run
+        # the model — but we still return the matched player + a clear note.
+        opp_name = pp_prop.get("opponent_name")
+        opponent = match_player(opp_name, tour=tour) if opp_name else None
+        if not opponent:
+            out["match_note"] = "Opponent not listed by PrizePicks"
+            return out
+        out["opponent"] = opponent
+        out["matched"]  = True
+
+        # Run the existing prop projection endpoint inline. Builds the same
+        # PropRequest the user would have sent from the Prop Projection tab.
+        req = PropRequest(
+            player_id=str(player["id"]),
+            opponent_id=str(opponent["id"]),
+            player_name=player.get("name") or pp_prop.get("player_name") or "",
+            opponent_name=opponent.get("name") or opp_name or "",
+            tour=tour,
+            surface=surface,
+            court=court or "",
+            prop_type=pp_prop["prop_type"],
+            prop_line=float(pp_prop["prop_line"]),
+            player_rank=player.get("currentRank"),
+            opponent_rank=opponent.get("currentRank"),
+        )
+        result = await prop_calculate(req)
+        out["result"]           = result
+        out["model_projection"] = result.get("model_projection")
+        out["lean"]             = result.get("lean")
+        out["confidence"]       = result.get("confidence") or 0
+        if out["model_projection"] is not None:
+            out["edge"] = round(float(out["model_projection"]) - float(pp_prop["prop_line"]), 2)
+    except HTTPException as exc:
+        out["error"] = f"projection failed: {exc.detail}"
+    except Exception as exc:
+        logger.exception("[Board] analyze one prop failed: %s", exc)
+        out["error"] = str(exc)
+    return out
+
+
+@app.post("/api/board/analyze")
+async def board_analyze(req: BoardAnalyzeRequest):
+    """
+    Run the full Baseline projection for each prop in `req.props`. Players
+    and opponents are matched by fuzzy name match. Heavy parallelism is
+    capped via a semaphore so we don't hammer Sofascore.
+    """
+    if not req.props:
+        return {"analyzed": [], "n_total": 0, "n_matched": 0}
+
+    # Heuristic tour selection: WTA leagues from PP carry the literal string
+    # 'WTA' in the league name. Everything else maps to ATP.
+    def _tour_for_league(name: str) -> str:
+        return "WTA" if name and "wta" in str(name).lower() else "ATP"
+
+    sem = asyncio.Semaphore(5)
+
+    async def _run(pp_prop):
+        tour = _tour_for_league(pp_prop.get("league"))
+        if req.tour_filter and tour != req.tour_filter.upper():
+            return None
+        async with sem:
+            return await _analyze_one_prop(pp_prop, tour)
+
+    raw_results = await asyncio.gather(*(_run(p) for p in req.props))
+    analyzed = [r for r in raw_results if r is not None]
+
+    return {
+        "analyzed":   analyzed,
+        "n_total":    len(req.props),
+        "n_matched":  sum(1 for r in analyzed if r.get("matched")),
+        "n_projected": sum(1 for r in analyzed
+                            if r.get("model_projection") is not None),
+    }
+
+
+# ---------------------------------------------------------------------------
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
