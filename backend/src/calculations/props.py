@@ -611,9 +611,13 @@ SURFACE_FORMAT_BP_SCALE = {
 # _BO5_MOMENTUM_MULT amplifies the bonus in 5-set matches because momentum
 # swings compound across more sets.
 # ---------------------------------------------------------------------------
-_SURFACE_MOMENTUM_MULT = {"Clay": 0.15, "Hard": 0.25, "Grass": 0.20}
-# Clay reduced from 0.28: when both players lose serve often (WTA clay), opp_proj_bp
-# is itself large, making the 0.28 bonus additive ~1.2–1.5 breaks — far too much.
+_SURFACE_MOMENTUM_MULT = {"Clay": 0.10, "Hard": 0.20, "Grass": 0.16}
+# Clay reduced 0.28 → 0.15 → 0.12 → 0.10. Diagnosis (Cerundolo vs Landaluce RG):
+# the base projection (C1×C2×C3×C8) already lands at ~5.5 — exactly the book
+# line. The momentum bonus was adding the entire ~0.7 overage. opp_proj_bp is
+# large when the opponent is a weak/young server, so even a small multiplier
+# compounds with C8. 0.10 keeps a modest break-back signal without it adding
+# a near-full phantom break for high-break matchups.
 _BO5_MOMENTUM_MULT     = 1.15
 
 # ---------------------------------------------------------------------------
@@ -796,9 +800,14 @@ def _returner_dominance_factor(
 # Average sets in the historical Sofascore data — used to convert per-match
 # averages into per-set rates so we can re-scale by expected_sets:
 #   WTA  always BO3      →  ~2.30 sets/match
-#   ATP  mix of BO3+BO5  →  ~2.45 sets/match  (mostly BO3 with some GS)
+#   ATP  mix of BO3+BO5  →  ~2.60 sets/match
+#        Top-20 ATP players average ~15-20 GS matches per season (3.7 sets each)
+#        on top of ~25-30 BO3 events (2.2 sets). Weighted avg ≈ 2.60.
+#        Using 2.45 underestimated C8 baseline, making the BO5 scaler too
+#        aggressive for players whose per-match Sofascore data already embeds
+#        significant BO5 volume.
 # ─────────────────────────────────────────────────────────────────────────────
-_AVG_HISTORICAL_SETS = {"WTA": 2.30, "ATP": 2.45}
+_AVG_HISTORICAL_SETS = {"WTA": 2.30, "ATP": 2.60}
 
 
 def _is_bo5_match(tour: str, court: str) -> bool:
@@ -1162,11 +1171,11 @@ def project_break_points(
         if surf_n >= 10:
             raw_weight = 1.00
         elif surf_n >= 5:
-            raw_weight = 0.75
+            raw_weight = 0.60   # was 0.75 — more shrinkage for thin samples
         elif surf_n >= 3:
-            raw_weight = 0.55
+            raw_weight = 0.40   # was 0.55
         else:
-            raw_weight = 0.35   # heavy shrinkage for ≤ 2 matches
+            raw_weight = 0.20   # was 0.35 — maximum shrinkage for ≤ 2 matches
         c1_opp_bp_faced = raw_weight * raw_opp_bp_faced + (1.0 - raw_weight) * tour_avg_bp
         c1_source       = f"surface_blended(n={surf_n},w={raw_weight:.0%})"
     elif overall_opp_bp_faced is not None and overall_opp_bp_faced >= min_credible_bp:
@@ -1217,11 +1226,11 @@ def project_break_points(
         if career_ret_avg > 0:
             c2_delta_pct = (surf_ret_avg - career_ret_avg) / career_ret_avg
             if c2_delta_pct > 0.05:
-                # Upper bound trimmed 1.15 → 1.10. A 10% returner boost on a
-                # specialist's best surface is realistic; 15% compounds too
-                # aggressively against C6/C8 in the same projection.
+                # Upper bound trimmed 1.15 → 1.10 → 1.05. A 5% returner boost
+                # on a specialist's best surface is realistic; larger values
+                # compound too aggressively with C8 for heavy-favorite BO5 matches.
                 excess           = c2_delta_pct - 0.05
-                c2_returner_mult = min(1.10, 1.05 + excess * 1.0)
+                c2_returner_mult = min(1.05, 1.02 + excess * 0.6)
                 c2_source        = f"above_career({c2_delta_pct:+.1%})"
             elif c2_delta_pct < -0.05:
                 deficit          = abs(c2_delta_pct) - 0.05
@@ -1298,7 +1307,12 @@ def project_break_points(
     # Prevent TA enrichment from inflating conv_rate_pct beyond what any player
     # sustains in practice.  Elite WTA clay returner (Swiatek): ~55%.
     # Elite ATP clay returner (Alcaraz, Sinner): ~50%.
-    _CONV_RATE_CAP = {"WTA": 52.0, "ATP": 45.0}
+    _CONV_RATE_CAP = {"WTA": 52.0, "ATP": 40.0}
+    # ATP cap reduced 50→45→40. Working backwards from known market prices:
+    # the book's implied effective conversion rate for top ATP clay returners
+    # vs weak servers is ~38-42%, not 45-50%. The TA enrichment pipeline can
+    # push computed C3 above these realistic ceilings, which compounds with
+    # C2 and C8 to inflate projections.
     if conv_rate_pct is not None:
         _cap = _CONV_RATE_CAP.get(tour, 52.0)
         if conv_rate_pct > _cap:
@@ -1496,8 +1510,8 @@ def project_break_points(
         if opp_career_ret > 0:
             opp_c2_delta = (opp_surf_ret - opp_career_ret) / opp_career_ret
             if opp_c2_delta > 0.05:
-                # Upper bound trimmed 1.15 → 1.10 (matches the player-side C2).
-                c2_opp = min(1.10, 1.05 + (opp_c2_delta - 0.05) * 1.0)
+                # Upper bound trimmed 1.15 → 1.10 → 1.05 (matches the player-side C2).
+                c2_opp = min(1.05, 1.02 + (opp_c2_delta - 0.05) * 0.6)
             elif opp_c2_delta < -0.05:
                 c2_opp = max(0.88, 0.95 - (abs(opp_c2_delta) - 0.05) * 1.4)
 
