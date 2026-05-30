@@ -232,6 +232,7 @@ export default function App() {
   const direction = curIdx >= prevTabIdx.current ? 1 : -1
 
   return (
+    <ErrorBoundary label="App">
     <div style={{ minHeight: '100vh', position: 'relative' }}>
       {/* Decorative ambient orbs — CSS-only, desktop only */}
       {isDesktop && <SplineAccent />}
@@ -290,16 +291,18 @@ export default function App() {
             exit="exit"
             transition={{ duration: 0.25, ease: 'easeInOut' }}
           >
-            <ErrorBoundary>
-              {tab === 'surface' && <SurfaceAnalyzer tour={tour} />}
-              {tab === 'prop'    && <PropProjection  tour={tour} />}
-              {tab === 'board'   && <BoardOptimizer  tour={tour} />}
-              {tab === 'h2h'     && <HeadToHead      tour={tour} />}
-              {tab === 'value'   && <ValueBet        tour={tour} />}
-            </ErrorBoundary>
+            {/* Each tab has its own error boundary — one tab crashing won't
+                affect the others. Board Optimizer is the most likely to
+                fail (network-heavy) so its boundary is especially important. */}
+            {tab === 'surface' && <ErrorBoundary label="Surface Analyzer"><SurfaceAnalyzer tour={tour} /></ErrorBoundary>}
+            {tab === 'prop'    && <ErrorBoundary label="Prop Projection"><PropProjection   tour={tour} /></ErrorBoundary>}
+            {tab === 'board'   && <ErrorBoundary label="Board Optimizer"><BoardOptimizer   tour={tour} /></ErrorBoundary>}
+            {tab === 'h2h'     && <ErrorBoundary label="Head to Head"><HeadToHead         tour={tour} /></ErrorBoundary>}
+            {tab === 'value'   && <ErrorBoundary label="Value Bet"><ValueBet               tour={tour} /></ErrorBoundary>}
           </motion.div>
         </AnimatePresence>
       </div>
     </div>
+    </ErrorBoundary>
   )
 }

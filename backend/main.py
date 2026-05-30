@@ -13,6 +13,7 @@ Endpoints:
 
 import asyncio
 import sys
+import time
 import types
 import logging
 
@@ -304,23 +305,49 @@ def _build_explanation(req: PropRequest, result: dict, lean: str,
 # ---------------------------------------------------------------------------
 @app.get("/api/search")
 async def search_get(query: str = "", tour: str = "ATP"):
-    if len(query.strip()) < 3:
+    q = query.strip()
+    if len(q) < 3:
         return []
+    t0 = time.time()
+    loop = asyncio.get_event_loop()
     try:
-        return search_players(query.strip(), tour)
+        # search_players calls blocking requests.get() — must run in executor
+        # so it never blocks the event loop and starves other endpoints.
+        result = await asyncio.wait_for(
+            loop.run_in_executor(None, search_players, q, tour),
+            timeout=8.0,
+        )
+        elapsed = time.time() - t0
+        logger.info("SEARCH | q=%r tour=%s t=%.2fs results=%d", q, tour, elapsed, len(result or []))
+        return result or []
+    except asyncio.TimeoutError:
+        logger.warning("SEARCH TIMEOUT | q=%r tour=%s after 8s", q, tour)
+        return []
     except Exception as e:
-        logger.error("search error: %s", e)
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error("SEARCH ERROR | q=%r tour=%s err=%s", q, tour, e)
+        return []
 
 @app.post("/api/search")
 async def search_post(req: SearchRequest):
-    if len(req.query.strip()) < 3:
+    q = req.query.strip()
+    if len(q) < 3:
         return []
+    t0 = time.time()
+    loop = asyncio.get_event_loop()
     try:
-        return search_players(req.query.strip(), req.tour)
+        result = await asyncio.wait_for(
+            loop.run_in_executor(None, search_players, q, req.tour),
+            timeout=8.0,
+        )
+        elapsed = time.time() - t0
+        logger.info("SEARCH | q=%r tour=%s t=%.2fs results=%d", q, req.tour, elapsed, len(result or []))
+        return result or []
+    except asyncio.TimeoutError:
+        logger.warning("SEARCH TIMEOUT | q=%r tour=%s after 8s", q, req.tour)
+        return []
     except Exception as e:
-        logger.error("search error: %s", e)
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error("SEARCH ERROR | q=%r tour=%s err=%s", q, req.tour, e)
+        return []
 
 
 # ---------------------------------------------------------------------------
@@ -329,7 +356,10 @@ async def search_post(req: SearchRequest):
 @app.post("/api/player/stats")
 async def player_stats(req: PlayerStatsRequest):
     try:
-        data      = get_player_stats_by_surface(req.player_id, req.tour)
+        _loop2 = asyncio.get_event_loop()
+        data      = await _loop2.run_in_executor(
+            None, get_player_stats_by_surface, req.player_id, req.tour
+        )
         all_stats = data.get("All", {}) or {}
         archetype = classify_archetype(all_stats, req.tour)
 
@@ -368,14 +398,14 @@ async def player_stats(req: PlayerStatsRequest):
 @app.post("/api/prop/calculate")
 async def prop_calculate(req: PropRequest):
     try:
-        # Fetch Sofascore data
-        p1_data = get_player_stats_by_surface(req.player_id, req.tour)
-        p2_data = get_player_stats_by_surface(req.opponent_id, req.tour)
-        h2h_summary = get_h2h_summary(
-            req.tour, req.player_id, req.opponent_id, surface=req.surface
-        )
-        h2h_stats = get_h2h_stat_avg(
-            req.tour, req.player_id, req.opponent_id, surface=req.surface
+        # All Sofascore calls are blocking sync — run in executor so they
+        # never freeze the event loop and block search / other endpoints.
+        _loop = asyncio.get_event_loop()
+        p1_data, p2_data, h2h_summary, h2h_stats = await asyncio.gather(
+            _loop.run_in_executor(None, get_player_stats_by_surface, req.player_id, req.tour),
+            _loop.run_in_executor(None, get_player_stats_by_surface, req.opponent_id, req.tour),
+            _loop.run_in_executor(None, get_h2h_summary, req.tour, req.player_id, req.opponent_id, req.surface),
+            _loop.run_in_executor(None, get_h2h_stat_avg, req.tour, req.player_id, req.opponent_id, req.surface),
         )
 
         # Raw Sofascore surface stats (for fallback / return stats)
@@ -938,11 +968,14 @@ async def prop_calculate(req: PropRequest):
 @app.post("/api/h2h")
 async def h2h_endpoint(req: H2HRequest):
     try:
-        summary = get_h2h_summary(
-            req.tour, req.player1_id, req.player2_id, surface=req.surface
-        )
-        stats = get_h2h_stat_avg(
-            req.tour, req.player1_id, req.player2_id, surface=req.surface
+        _h2h_loop = asyncio.get_event_loop()
+        summary, stats = await asyncio.gather(
+            _h2h_loop.run_in_executor(
+                None, get_h2h_summary, req.tour, req.player1_id, req.player2_id, req.surface
+            ),
+            _h2h_loop.run_in_executor(
+                None, get_h2h_stat_avg, req.tour, req.player1_id, req.player2_id, req.surface
+            ),
         )
 
         def _df(key):

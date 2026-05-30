@@ -25,6 +25,8 @@ Returns a normalised list of props:
 from __future__ import annotations
 
 import logging
+import os
+import random
 import time
 from typing import Optional
 
@@ -37,12 +39,32 @@ logger = logging.getLogger(__name__)
 _PP_API_URL = "https://partner-api.prizepicks.com/projections"
 _HEADERS = {
     "User-Agent": (
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
     ),
     "Accept":          "application/json",
     "Accept-Language": "en-US,en;q=0.9",
+    "Origin":          "https://app.prizepicks.com",
+    "Referer":         "https://app.prizepicks.com/",
+    "Cache-Control":   "no-cache",
 }
+
+# ── Decodo proxy (same config as sofascore_client / tennis_abstract) ─────────
+_PROXY_HOST  = os.getenv("PROXY_HOST", "gate.decodo.com")
+_PROXY_USER  = os.getenv("PROXY_USERNAME")
+_PROXY_PASS  = os.getenv("PROXY_PASSWORD")
+_PROXY_PORTS = [
+    int(p.strip())
+    for p in os.getenv("PROXY_PORT_LIST", "").split(",")
+    if p.strip().isdigit()
+]
+
+
+def _proxy_url() -> Optional[str]:
+    if not (_PROXY_PORTS and _PROXY_USER and _PROXY_HOST):
+        return None
+    port = random.choice(_PROXY_PORTS)
+    return f"http://{_PROXY_USER}:{_PROXY_PASS}@{_PROXY_HOST}:{port}"
 
 
 # ── Eligible prop types ─────────────────────────────────────────────────────
@@ -97,21 +119,45 @@ def clear_cache() -> None:
 
 # ── Low-level fetch ─────────────────────────────────────────────────────────
 def _fetch_raw(per_page: int = 1000) -> dict:
-    """GET the partner-api endpoint and return parsed JSON. No proxy needed."""
-    r = requests.get(
-        _PP_API_URL,
-        params={"per_page": per_page, "single_stat": "true"},
-        headers=_HEADERS,
-        timeout=20,
-    )
-    if r.status_code != 200:
-        raise RuntimeError(
-            f"PrizePicks partner-api returned HTTP {r.status_code}: {r.text[:200]}"
+    """
+    GET the partner-api endpoint.
+    Tries direct first; if that returns a non-200 or connection error,
+    falls back to the Decodo proxy (same infra used by Sofascore / TA).
+    """
+    params = {"per_page": per_page, "single_stat": "true"}
+
+    def _attempt(proxies=None, label="direct"):
+        r = requests.get(
+            _PP_API_URL,
+            params=params,
+            headers=_HEADERS,
+            proxies=proxies,
+            timeout=15,
         )
+        logger.info("[PP] %s HTTP %d, content-type=%s, len=%d",
+                    label, r.status_code,
+                    r.headers.get("content-type", "?"), len(r.content))
+        if r.status_code != 200:
+            raise RuntimeError(
+                f"PrizePicks partner-api returned HTTP {r.status_code} ({label}): {r.text[:200]}"
+            )
+        try:
+            return r.json()
+        except Exception as exc:
+            raise RuntimeError(f"PrizePicks partner-api returned non-JSON ({label}): {exc}")
+
+    # Try direct first
     try:
-        return r.json()
+        return _attempt(proxies=None, label="direct")
     except Exception as exc:
-        raise RuntimeError(f"PrizePicks partner-api returned non-JSON: {exc}")
+        logger.warning("[PP] direct fetch failed (%s), retrying via proxy", exc)
+
+    # Fall back to proxy
+    proxy = _proxy_url()
+    if not proxy:
+        raise RuntimeError("PrizePicks direct fetch failed and no proxy configured")
+    proxies = {"http": proxy, "https": proxy}
+    return _attempt(proxies=proxies, label="proxy")
 
 
 # ── Index helpers ───────────────────────────────────────────────────────────

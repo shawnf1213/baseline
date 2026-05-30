@@ -7,6 +7,7 @@ import ConfidenceGauge from '../components/ConfidenceGauge'
 import EnvironmentBanner from '../components/EnvironmentBanner'
 import Last5Bars from '../components/Last5Bars'
 import { scrapeBoard, analyzeBoard } from '../utils/api'
+import { api } from '../utils/api'
 
 // Prop type → badge color
 const PROP_BADGE = {
@@ -436,14 +437,14 @@ export default function BoardOptimizer({ tour }) {
   const [loading, setLoading]   = useState(false)
   const [stage, setStage]       = useState('idle')   // idle | scraping | analyzing | done | error
   const [error, setError]       = useState(null)
-  const [board, setBoard]       = useState(null)     // raw scrape response (both tours)
+  // Never auto-load on mount — the board analyze can block the backend for
+  // minutes. The user must click "Load Board" explicitly.
+  const [hasLoadedOnce, setHasLoadedOnce] = useState(false)
+  const [board, setBoard]       = useState(null)
   const [scrapedAt, setScrapedAt] = useState(null)
-  // Per-tour analyzed cache so flipping the ATP/WTA toggle is instant when
-  // we've already analyzed that tour's board. Shape: {ATP: [...], WTA: [...]}
   const [analyzedByTour, setAnalyzedByTour] = useState({})
   const [metaByTour,     setMetaByTour]     = useState({})
 
-  // Derived view for the currently-selected tour
   const analyzed    = analyzedByTour[tour] || []
   const analyzeMeta = metaByTour[tour]     || null
 
@@ -465,19 +466,34 @@ export default function BoardOptimizer({ tour }) {
   // visible "top of the board" and finishes in ~60-90 seconds.
   const ANALYZE_LIMIT = 20
 
+  const BOARD_TIMEOUT_MS = 20_000   // 20s wall-clock guard
+
   const refresh = useCallback(async (force = false) => {
     setLoading(true); setError(null); setStage('scraping')
     if (force) {
-      // Hard refresh wipes the per-tour cache so both tours re-analyze on
-      // demand (current tour now, other tour next time it's selected).
       setAnalyzedByTour({})
       setMetaByTour({})
     }
+
+    // 20-second wall-clock guard — never leave the user with an infinite spinner
+    const timeoutId = setTimeout(() => {
+      setLoading(false)
+      setStage('error')
+      setError('Board data unavailable — PrizePicks may be blocking server requests. Try the refresh button.')
+    }, BOARD_TIMEOUT_MS)
+
     try {
+      // Quick connectivity test: log raw board endpoint to console so
+      // the user can paste it into a report if things still don't work.
+      api.get('/api/board/test')
+        .then(r => console.log('[BoardOptimizer] /api/board/test response:', r.data))
+        .catch(e => console.error('[BoardOptimizer] /api/board/test failed:', e?.response?.status, e?.message))
+
       const b = await scrapeBoard(force)
+      clearTimeout(timeoutId)
       setBoard(b); setScrapedAt(b.scraped_at)
       if (!b.ok && (!b.props || b.props.length === 0)) {
-        setError(b.error || 'Unable to reach PrizePicks board')
+        setError(b.error || 'PrizePicks board unavailable — try refreshing.')
         setStage('error'); setLoading(false); return
       }
       if (!b.props || b.props.length === 0) {
@@ -489,24 +505,25 @@ export default function BoardOptimizer({ tour }) {
       const a = await analyzeBoard(b.props || [], tour, ANALYZE_LIMIT)
       setAnalyzedByTour(prev => ({ ...prev, [tour]: a.analyzed || [] }))
       setMetaByTour(prev => ({ ...prev, [tour]: a }))
+      setHasLoadedOnce(true)
       setStage('done')
     } catch (e) {
+      clearTimeout(timeoutId)
       setError(e.response?.data?.detail || e.message || 'Board fetch failed')
       setStage('error')
     } finally {
+      clearTimeout(timeoutId)
       setLoading(false)
     }
   }, [tour])
 
-  // Auto-load: scrape on mount, then analyze the *current* tour. When the
-  // user flips ATP↔WTA, only re-analyze if we don't have that tour cached
-  // yet — switching back to a tour we've already analyzed is instant.
-  useEffect(() => {
-    if (analyzedByTour[tour]) return       // already have this tour cached
-    refresh(false)
-    // intentionally only re-runs when tour or refresh changes
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tour, refresh])
+  // No auto-load on mount. When the user switches tours after the initial load
+  // and we already have that tour's data cached, it shows instantly.
+  // No useEffect that auto-triggers refresh on mount.
+  const handleTourChange = useCallback(() => {
+    // Already have this tour cached — nothing to do.
+    // If not cached and user wants to see it they can hit Refresh.
+  }, [])
 
   // ── Filter + sort the analyzed list ──────────────────────────────────────
   const filtered = useMemo(() => {
@@ -611,6 +628,36 @@ export default function BoardOptimizer({ tour }) {
           >{loading ? 'Refreshing…' : '↻ Refresh'}</motion.button>
         </div>
       </div>
+
+      {/* Idle — not yet loaded */}
+      {!loading && !error && stage === 'idle' && !hasLoadedOnce && (
+        <div className="glass-card" style={{
+          padding: '48px 24px', textAlign: 'center',
+          display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 18,
+        }}>
+          <div style={{ fontSize: 36 }}>📋</div>
+          <div style={{
+            fontFamily: '"Barlow Condensed", sans-serif',
+            fontWeight: 900, fontSize: 20, color: '#fff', letterSpacing: 1,
+          }}>Load {tour} Props</div>
+          <div style={{ fontSize: 13, color: 'var(--muted)', maxWidth: 380, lineHeight: 1.5 }}>
+            Scrapes the live PrizePicks board and runs the Baseline model on the top 20 {tour} tennis props.
+            Takes about 60-90 seconds on first load.
+          </div>
+          <motion.button
+            whileTap={{ scale: 0.95 }}
+            onClick={() => refresh(false)}
+            style={{
+              padding: '14px 36px', borderRadius: 999, cursor: 'pointer',
+              background: 'var(--green-bright)', color: '#000',
+              fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 900,
+              fontSize: 15, letterSpacing: 2.5, textTransform: 'uppercase',
+              border: 'none',
+              boxShadow: '0 0 20px rgba(0, 230, 118, 0.4)',
+            }}
+          >Load Board</motion.button>
+        </div>
+      )}
 
       {/* Loading state */}
       {loading && (
