@@ -263,10 +263,14 @@ def project_aces(
         ta_surface_matches = ta_surf.get("matches", 0) or 0
 
     base = ta_base if ta_used else sofascore_base
+    # Fallback cascade — never fail outright. A player with no surface ace
+    # data falls back to the tour-average ace rate for this surface so a
+    # projection is still produced (flagged via aces_fallback).
+    aces_fallback = False
     if base == 0 or base is None:
-        return {"projection": None, "lean": None, "confidence": 0,
-                "note": "No ace data available for this surface.",
-                "ta_used": ta_used, "ta_surface_matches": ta_surface_matches}
+        base = _tour_avg(tour, surface).get("aces_per_match", 3.0)
+        aces_fallback = True
+        logger.info("ACE_FALLBACK | tour-avg ace rate %.2f used (no surface data)", base)
 
     cpr = cpr_override if cpr_override is not None else COURT_CPR.get(court, CPR_NEUTRAL)
 
@@ -483,10 +487,13 @@ def project_double_faults(
         ta_surface_matches = ta_surf.get("matches", 0) or 0
 
     base = ta_base if ta_used else sofascore_base
+    # Fallback cascade — never fail outright. No surface DF data falls back
+    # to the tour-average DF rate for this surface (flagged via df_fallback).
+    df_fallback = False
     if base == 0 or base is None:
-        return {"projection": None, "lean": None, "confidence": 0,
-                "note": "No double fault data available for this surface.",
-                "ta_used": ta_used, "ta_surface_matches": ta_surface_matches}
+        base = _tour_avg(tour, surface).get("df_per_match", 2.5)
+        df_fallback = True
+        logger.info("DF_FALLBACK | tour-avg DF rate %.2f used (no surface data)", base)
 
     # ── Opponent pressure factor (Sofascore) ──────────────────────────────────
     opp_ret1 = _safe(opponent_stats.get("return_first_serve_pts_won"))
@@ -1341,14 +1348,26 @@ def project_break_points(
     p_matches = player_stats.get("matches_played", 0) or 0
     o_matches = opponent_stats.get("matches_played", 0) or 0
 
+    # ── Conversion-rate fallback — never fail outright on missing data ────────
+    # A player with few recent matches on the selected surface (e.g. a
+    # hard-court specialist on clay) can have no surface conversion rate in
+    # the recency-focused window. Instead of returning "Insufficient Data",
+    # fall back to all-surface career conversion, then the tour average, and
+    # flag it so the UI can disclose the limitation.
+    conv_rate_fallback = False
     if not conv_rate_pct:
-        return {
-            "projection": None, "lean": None, "confidence": 0,
-            "note": "No break point conversion data available for this surface.",
-            "ta_used": ta_used, "ta_surface_matches": ta_surface_matches,
-            "sanity_failed": False, "used_opp_tour_avg": used_opp_tour_avg,
-            "match_format": match_format,
-        }
+        _all_conv = _p_all.get("bp_converted") if isinstance(_p_all, dict) else None
+        if _all_conv and _all_conv > 0:
+            conv_rate_pct    = _all_conv
+            conv_rate_source = "fallback_all_surface"
+        else:
+            conv_rate_pct    = 45.0 if tour == "ATP" else 42.0
+            conv_rate_source = "fallback_tour_avg"
+        conv_rate_fallback = True
+        logger.info(
+            "BP_CONV_FALLBACK | player=%s | source=%s | conv=%.1f",
+            player_name, conv_rate_source, conv_rate_pct,
+        )
 
     # ═════════════════════════════════════════════════════════════════════════
     # COMPONENT 4 — Serve quality adjustment (opponent hold rate)

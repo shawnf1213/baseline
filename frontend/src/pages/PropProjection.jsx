@@ -612,7 +612,7 @@ export default function PropProjection({ tour }) {
                 </div>
               )}
 
-              {hasProjection && (result.sanity_failed || result.used_opp_tour_avg) && (
+              {hasProjection && (result.sanity_failed || result.used_opp_tour_avg || result.conv_rate_fallback) && (
                 <div className="glass-card" style={{
                   padding: '12px 16px', background: 'rgba(255, 179, 0, 0.06)', borderColor: 'rgba(255, 179, 0, 0.3)',
                   marginBottom: 14, fontSize: 12, display: 'flex', alignItems: 'center', gap: 10,
@@ -621,6 +621,7 @@ export default function PropProjection({ tour }) {
                   <span style={{ color: 'rgba(255, 179, 0, 0.7)' }}>
                     {result.sanity_failed ? 'Projection outside normal bounds — confidence reduced. ' : ''}
                     {result.used_opp_tour_avg ? 'Opponent has limited surface data — tour average used.' : ''}
+                    {result.conv_rate_fallback ? 'Player has limited recent conversion data on this surface — career/tour-average fallback used.' : ''}
                   </span>
                 </div>
               )}

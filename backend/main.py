@@ -896,6 +896,7 @@ async def prop_calculate(req: PropRequest):
             # Projection quality flags
             "sanity_failed":        result.get("sanity_failed", False),
             "used_opp_tour_avg":    result.get("used_opp_tour_avg", False),
+            "conv_rate_fallback":   result.get("conv_rate_fallback", False),
             "data_warning":         data_warning,
             # Break Points — surface vs overall breakdown + momentum (BP prop only)
             "bp_surf_conv_pct":      result.get("surf_conv_pct"),
