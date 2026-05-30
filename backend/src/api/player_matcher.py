@@ -13,13 +13,51 @@ from src.api.matchstat_client import search_players
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_THRESHOLD = 0.85
+_DEFAULT_THRESHOLD = 0.80
+
+
+def _to_first_last(name: str) -> str:
+    """
+    Normalize a PrizePicks-format name to 'First Last' as best we can.
+
+    Handles all four formats the user listed:
+      "Carlos Alcaraz"    →  "Carlos Alcaraz"
+      "C. Alcaraz"        →  "C. Alcaraz"
+      "ALCARAZ C."        →  "C. Alcaraz"        (lastname uppercase first)
+      "Alcaraz, C."       →  "C. Alcaraz"        (comma swap)
+      "Alcaraz, Carlos"   →  "Carlos Alcaraz"
+    Anything we can't classify is returned unchanged.
+    """
+    if not name:
+        return ""
+    s = str(name).strip()
+
+    # "Lastname, Firstname" / "Lastname, F."
+    if "," in s:
+        lhs, _, rhs = s.partition(",")
+        lhs, rhs = lhs.strip(), rhs.strip()
+        if lhs and rhs:
+            s = f"{rhs} {lhs}"
+
+    tokens = s.split()
+
+    # "LASTNAME F." or "DE MINAUR A." — one or more uppercase surname tokens
+    # followed by a 1-2 char initial. Swap to "F. Lastname Lastname".
+    if (len(tokens) >= 2
+            and all(t.isupper() and len(t) >= 2 for t in tokens[:-1])
+            and len(tokens[-1].rstrip(".")) <= 2):
+        initial = tokens[-1] if tokens[-1].endswith(".") else f"{tokens[-1]}."
+        lastname = " ".join(t.title() for t in tokens[:-1])
+        s = f"{initial} {lastname}"
+
+    return s.strip()
 
 
 def _normalize_name(s: str) -> str:
-    """Lowercase, strip diacritics-friendly chars, collapse whitespace."""
+    """Lowercase, strip punctuation, collapse whitespace. Used for similarity."""
     if not s:
         return ""
+    s = _to_first_last(s)
     s = str(s).strip().lower()
     s = re.sub(r"[.,'`]", " ", s)
     s = re.sub(r"\s+", " ", s).strip()
@@ -50,22 +88,23 @@ def _name_similarity(query: str, candidate: str) -> float:
 
 def _query_variants(name: str) -> list:
     """
-    Generate search query variants. PrizePicks names like 'C. Alcaraz' need
-    to be reduced to just the last name to surface Sofascore matches.
+    Generate search query variants. PrizePicks names come in several formats
+    ("C. Alcaraz", "Carlos Alcaraz", "ALCARAZ C.", "Alcaraz, C.") — we
+    normalize first then try multiple substrings so the Sofascore search
+    surfaces the right player.
     """
-    norm = _normalize_name(name)
+    norm = _normalize_name(name)     # e.g. "c alcaraz" or "carlos alcaraz"
     parts = norm.split()
     variants: list = []
     if parts:
-        # Last name alone (most reliable for surname-prefixed formats)
+        # Last name alone — most reliable for any abbreviated-first-name format
         variants.append(parts[-1])
         # Full normalized form
         if len(parts) > 1:
             variants.append(norm)
-        # 'Lastname, F.' format → swap
-        if "," in name:
-            swapped = " ".join(reversed(name.split(",")))
-            variants.append(_normalize_name(swapped))
+        # Last two words (handles long names like "del potro" or "de minaur")
+        if len(parts) >= 3:
+            variants.append(" ".join(parts[-2:]))
     # Dedupe preserving order
     seen, out = set(), []
     for v in variants:

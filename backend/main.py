@@ -970,7 +970,7 @@ async def h2h_endpoint(req: H2HRequest):
 # ---------------------------------------------------------------------------
 # POST /api/board/scrape and /analyze — PrizePicks Board Optimizer
 # ---------------------------------------------------------------------------
-from src.api.prizepicks_scraper import scrape_board, clear_cache as _pp_clear_cache
+from src.api.prizepicks_scraper import scrape_board, fetch_raw_sample, clear_cache as _pp_clear_cache
 from src.api.player_matcher import match_player
 from src.constants import COURT_CPR, COURTS_BY_SURFACE
 
@@ -1035,6 +1035,29 @@ async def board_scrape(req: BoardScrapeRequest = None):
         return result
     except Exception as exc:
         logger.exception("board/scrape failed: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/api/board/test")
+async def board_test():
+    """
+    Debug endpoint — fetches the raw partner-api response and returns the
+    first 5 tennis projections completely unprocessed so you can verify
+    field names directly. Logs the full sample to the Railway terminal.
+    """
+    loop = asyncio.get_event_loop()
+    try:
+        sample = await loop.run_in_executor(None, fetch_raw_sample)
+        logger.info(
+            "[PP-TEST] endpoint=%s n_data=%d n_included=%d n_tennis=%d",
+            sample.get("endpoint"), sample.get("n_data"),
+            sample.get("n_included"), sample.get("n_tennis_found"),
+        )
+        for i, s in enumerate(sample.get("samples", []), 1):
+            logger.info("[PP-TEST] sample %d: %s", i, s)
+        return sample
+    except Exception as exc:
+        logger.exception("board/test failed: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc))
 
 

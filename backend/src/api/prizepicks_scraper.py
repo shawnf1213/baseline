@@ -1,12 +1,11 @@
 """
 PrizePicks tennis board scraper.
 
-Hits PrizePicks' public-facing projections API directly through the Decodo
-proxy. This is much lighter than driving Playwright and works reliably from
-Railway containers (no browser binaries needed).
+Hits the public partner-api endpoint:
+    https://partner-api.prizepicks.com/projections?per_page=1000
 
-Caches scraped boards for 30 minutes. Callers must use scrape_board() —
-which handles caching transparently — rather than the lower-level helpers.
+No authentication, no league discovery, no pagination — one call returns
+every active projection across every sport, and we filter tennis in-memory.
 
 Returns a normalised list of props:
     [
@@ -17,7 +16,7 @@ Returns a normalised list of props:
         "prop_line":       6.5,
         "match_time":      "2026-05-30T13:00:00Z",
         "tournament":      "Roland Garros",
-        "league":          "TENNIS",            # "TENNIS" (ATP) or "WTA"
+        "league":          "TENNIS",            # raw league name from PP
         "pp_projection_id": "1234567",
       },
       ...
@@ -26,47 +25,44 @@ Returns a normalised list of props:
 from __future__ import annotations
 
 import logging
-import os
-import random
 import time
 from typing import Optional
 
-from curl_cffi import requests as cc_requests
+import requests
 
 logger = logging.getLogger(__name__)
 
-# ── Decodo proxy config (shared pattern with sofascore/tennis_abstract) ──
-_PROXY_HOST  = os.getenv("PROXY_HOST", "gate.decodo.com")
-_PROXY_USER  = os.getenv("PROXY_USERNAME")
-_PROXY_PASS  = os.getenv("PROXY_PASSWORD")
-_PROXY_PORTS = [
-    int(p.strip())
-    for p in os.getenv("PROXY_PORT_LIST", "").split(",")
-    if p.strip().isdigit()
-]
 
-
-def _proxy_url() -> Optional[str]:
-    if not (_PROXY_PORTS and _PROXY_USER and _PROXY_HOST):
-        return None
-    port = random.choice(_PROXY_PORTS)
-    return f"http://{_PROXY_USER}:{_PROXY_PASS}@{_PROXY_HOST}:{port}"
+# ── Endpoint ────────────────────────────────────────────────────────────────
+_PP_API_URL = "https://partner-api.prizepicks.com/projections"
+_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+    ),
+    "Accept":          "application/json",
+    "Accept-Language": "en-US,en;q=0.9",
+}
 
 
 # ── Eligible prop types ─────────────────────────────────────────────────────
-# Map PrizePicks stat_type strings → our internal prop type vocabulary.
-# PrizePicks uses inconsistent naming so we match permissively.
-_ELIGIBLE_PROP_MAP = {
-    "fantasy score":        None,    # skipped
-    "total games":          "Total Games",
-    "total games won":      None,    # skipped — different prop
+# Map raw PrizePicks stat_type (case-insensitive) → our internal vocabulary.
+# Anything not in this map is silently dropped.
+_PROP_MAP = {
+    # Aces variants
     "aces":                 "Aces",
+    # Double faults variants
     "double faults":        "Double Faults",
+    "double fault":         "Double Faults",
+    "df":                   "Double Faults",
+    # Break points variants
     "break points won":     "Break Points Won",
-    "break points":         "Break Points Won",   # PP variants
+    "break points":         "Break Points Won",
+    "breaks":               "Break Points Won",
     "break points scored":  "Break Points Won",
-    "games won":            None,    # skipped — single-player count, different
-    "sets won":             None,    # skipped
+    # Total games variants
+    "total games":          "Total Games",
+    "games played":         "Total Games",
     "match games":          "Total Games",
 }
 
@@ -74,8 +70,19 @@ _ELIGIBLE_PROP_MAP = {
 def _normalize_prop_type(raw: str) -> Optional[str]:
     if not raw:
         return None
-    key = str(raw).strip().lower()
-    return _ELIGIBLE_PROP_MAP.get(key)
+    return _PROP_MAP.get(str(raw).strip().lower())
+
+
+# ── Tennis detection ────────────────────────────────────────────────────────
+def _is_tennis_league(name: Optional[str]) -> bool:
+    if not name:
+        return False
+    n = str(name).lower()
+    # PrizePicks tennis leagues observed: "TENNIS" (ATP), "WTA",
+    # "TENNIS DOUBLES" (excluded — we only do singles)
+    if "doubles" in n:
+        return False
+    return ("tennis" in n) or ("wta" in n) or ("atp" in n)
 
 
 # ── In-memory cache ─────────────────────────────────────────────────────────
@@ -89,145 +96,98 @@ def clear_cache() -> None:
 
 
 # ── Low-level fetch ─────────────────────────────────────────────────────────
-_PP_LEAGUES_URL     = "https://api.prizepicks.com/leagues?per_page=200"
-_PP_PROJECTIONS_URL = "https://api.prizepicks.com/projections"
-_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
-    ),
-    "Accept":          "application/json, text/plain, */*",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Origin":          "https://app.prizepicks.com",
-    "Referer":         "https://app.prizepicks.com/",
-}
-
-
-def _fetch_json(url: str, params: Optional[dict] = None, retries: int = 3):
-    """GET `url` through Decodo proxy. Retries on proxy/timeout errors."""
-    last_err = None
-    for attempt in range(retries):
-        proxy = _proxy_url()
-        proxies = {"http": proxy, "https": proxy} if proxy else None
-        try:
-            r = cc_requests.get(
-                url,
-                params=params,
-                headers=_HEADERS,
-                proxies=proxies,
-                impersonate="chrome120",
-                timeout=20,
-            )
-            if r.status_code == 200:
-                return r.json()
-            logger.warning("[PP] %s %s -> HTTP %d (attempt %d)",
-                           url, params or {}, r.status_code, attempt + 1)
-            last_err = f"HTTP {r.status_code}"
-        except Exception as exc:
-            logger.warning("[PP] fetch error attempt %d: %s", attempt + 1, exc)
-            last_err = str(exc)
-        time.sleep(0.6 + attempt * 0.4)
-    raise RuntimeError(f"PrizePicks fetch failed for {url}: {last_err}")
-
-
-# ── League discovery ────────────────────────────────────────────────────────
-# Tennis leagues on PrizePicks are labelled in the `attributes.name` field —
-# typical values include "TENNIS" (ATP men's), "WTA" (women's), and sometimes
-# "TENNIS DOUBLES". We discover them dynamically so league-id changes don't
-# break the scraper.
-def _discover_tennis_leagues() -> list:
+def _fetch_raw(per_page: int = 1000) -> dict:
+    """GET the partner-api endpoint and return parsed JSON. No proxy needed."""
+    r = requests.get(
+        _PP_API_URL,
+        params={"per_page": per_page, "single_stat": "true"},
+        headers=_HEADERS,
+        timeout=20,
+    )
+    if r.status_code != 200:
+        raise RuntimeError(
+            f"PrizePicks partner-api returned HTTP {r.status_code}: {r.text[:200]}"
+        )
     try:
-        data = _fetch_json(_PP_LEAGUES_URL)
+        return r.json()
     except Exception as exc:
-        logger.error("[PP] league discovery failed: %s", exc)
-        return []
-    leagues = []
-    for item in data.get("data", []):
-        attrs = item.get("attributes") or {}
-        name  = (attrs.get("name") or "").strip()
-        if not name:
-            continue
-        name_lc = name.lower()
-        if "tennis" in name_lc or "wta" in name_lc or "atp" in name_lc:
-            leagues.append({"id": str(item.get("id")), "name": name})
-    logger.info("[PP] discovered tennis leagues: %s", leagues)
-    return leagues
+        raise RuntimeError(f"PrizePicks partner-api returned non-JSON: {exc}")
 
 
-# ── Projection parsing ──────────────────────────────────────────────────────
-def _parse_projections(payload: dict, league_name: str) -> list:
-    """
-    PrizePicks responses are JSON:API formatted:
-      data:     list of projection objects (with relationships)
-      included: list of related objects (players, stat_types, leagues, ...)
-    We need to join projection → player → stat_type to build a flat record.
-    """
-    if not isinstance(payload, dict):
-        return []
-
-    included = payload.get("included") or []
-    # Index included objects by (type, id) for quick lookup
+# ── Index helpers ───────────────────────────────────────────────────────────
+def _build_included_index(included: list) -> dict:
+    """Index a JSON:API `included` list by (type, id)."""
     idx: dict = {}
-    for obj in included:
+    for obj in included or []:
         t = obj.get("type")
         i = obj.get("id")
         if t and i:
             idx[(t, str(i))] = obj
+    return idx
 
-    props = []
-    for proj in payload.get("data", []):
-        attrs = proj.get("attributes") or {}
-        rels  = proj.get("relationships") or {}
 
-        prop_type = _normalize_prop_type(attrs.get("stat_type"))
-        if not prop_type:
+def _player_from_rel(rels: dict, idx: dict) -> tuple:
+    """
+    Returns (player_name, player_league) from the new_player/player relationship.
+    Tries new_player first then falls back to player.
+    """
+    for rel_key in ("new_player", "player"):
+        rel = (rels.get(rel_key) or {}).get("data") or {}
+        ptype, pid = rel.get("type"), str(rel.get("id") or "")
+        if not (ptype and pid):
             continue
-
-        line_val = attrs.get("line_score")
-        if line_val is None:
+        obj = idx.get((ptype, pid))
+        if not obj:
             continue
-        try:
-            line_val = float(line_val)
-        except (TypeError, ValueError):
-            continue
+        attrs = obj.get("attributes") or {}
+        name = (attrs.get("display_name")
+                or attrs.get("name")
+                or attrs.get("short_name"))
+        league = attrs.get("league")
+        if name:
+            return name, league
+    return None, None
 
-        # Resolve player name
-        player_name = None
-        player_rel  = (rels.get("new_player") or {}).get("data") or {}
-        ptype, pid  = player_rel.get("type"), str(player_rel.get("id") or "")
-        if ptype and pid:
-            p_obj = idx.get((ptype, pid))
-            if p_obj:
-                p_attrs = p_obj.get("attributes") or {}
-                player_name = p_attrs.get("display_name") or p_attrs.get("name")
 
-        if not player_name:
-            continue
+def _league_name_from_rel(rels: dict, idx: dict) -> Optional[str]:
+    """Pull the league name from the league relationship if present."""
+    rel = (rels.get("league") or {}).get("data") or {}
+    ltype, lid = rel.get("type"), str(rel.get("id") or "")
+    if ltype and lid:
+        obj = idx.get((ltype, lid))
+        if obj:
+            return (obj.get("attributes") or {}).get("name")
+    return None
 
-        # Opponent / tournament — PrizePicks often embeds these in
-        # description fields. We don't always have them.
-        description = attrs.get("description") or ""
-        opponent_name = None
-        if " vs " in description.lower():
-            try:
-                rhs = description.lower().split(" vs ")[1]
-                opponent_name = rhs.split(",")[0].split("(")[0].strip().title()
-            except Exception:
-                pass
 
-        props.append({
-            "player_name":      player_name,
-            "opponent_name":    opponent_name,
-            "prop_type":        prop_type,
-            "prop_line":        line_val,
-            "match_time":       attrs.get("start_time") or attrs.get("starts_at"),
-            "tournament":       attrs.get("game") or attrs.get("tournament"),
-            "description":      description,
-            "league":           league_name,
-            "pp_projection_id": str(proj.get("id") or ""),
-        })
+def _opponent_from_description(desc: str) -> Optional[str]:
+    """
+    PrizePicks partner-api puts the opponent name directly in the
+    `description` field (verified live: e.g. "Zachary Svajda"). Older API
+    variants used "X vs Y" — we support both.
+    """
+    if not desc:
+        return None
+    s = str(desc).strip()
+    if not s:
+        return None
 
-    return props
+    # Older "X vs Y" / "X v. Y" / "X v Y" variants
+    for sep in (" vs ", " VS ", " v. ", " v "):
+        if sep in s:
+            rhs = s.split(sep, 1)[1]
+            opp = rhs.split(",")[0].split("(")[0].strip()
+            return opp.title() if opp.islower() else opp
+
+    # partner-api: description IS the opponent name (already a clean string).
+    # Skip if it's obviously something else (numeric, very long, contains @, etc).
+    if any(ch in s for ch in ("@", "{", "}", ";")):
+        return None
+    if s.replace(" ", "").isdigit():
+        return None
+    if len(s) > 60:
+        return None
+    return s
 
 
 # ── Public entry point ─────────────────────────────────────────────────────
@@ -237,10 +197,14 @@ def scrape_board(force_refresh: bool = False) -> dict:
       {
         "props":         [ ...normalised prop dicts... ],
         "scraped_at":    epoch seconds,
-        "leagues_found": [ {id, name} ... ],
         "ok":            bool,
         "error":         None or str,
-        "cached":        bool — True if served from cache,
+        "cached":        bool,
+        "n_total":       total projections in API response (all sports),
+        "n_tennis":      tennis projections (any stat type),
+        "n_eligible":    tennis projections matching our 4 prop types,
+        "stat_types_seen": dict { raw_stat_type: count } for tennis only,
+        "unmapped_stat_types": list of tennis stat_types we don't yet map,
       }
     """
     now = time.time()
@@ -250,51 +214,173 @@ def scrape_board(force_refresh: bool = False) -> dict:
         return cached
 
     try:
-        leagues = _discover_tennis_leagues()
-        if not leagues:
-            raise RuntimeError("No tennis leagues found on PrizePicks board")
-
-        all_props: list = []
-        for lg in leagues:
-            try:
-                payload = _fetch_json(
-                    _PP_PROJECTIONS_URL,
-                    params={"league_id": lg["id"], "per_page": 250, "single_stat": "true"},
-                )
-                parsed = _parse_projections(payload, lg["name"])
-                logger.info("[PP] league=%s id=%s -> %d eligible props",
-                            lg["name"], lg["id"], len(parsed))
-                all_props.extend(parsed)
-            except Exception as exc:
-                logger.warning("[PP] league %s fetch failed: %s", lg["name"], exc)
-
-        result = {
-            "props":         all_props,
-            "scraped_at":    now,
-            "leagues_found": leagues,
-            "ok":            True,
-            "error":         None,
-            "cached":        False,
-        }
-        _CACHE["ts"]   = now
-        _CACHE["data"] = result
-        return result
-
+        payload = _fetch_raw(per_page=1000)
     except Exception as exc:
-        logger.exception("[PP] scrape_board failed: %s", exc)
-        # On total failure, return any cached data if we have it; otherwise
-        # report the error so the UI can show a clear message.
+        logger.exception("[PP] partner-api fetch failed: %s", exc)
         if _CACHE["data"]:
             stale = dict(_CACHE["data"])
             stale["cached"] = True
             stale["ok"]     = False
-            stale["error"]  = f"Live scrape failed — showing cached data: {exc}"
+            stale["error"]  = f"Live fetch failed — showing cached data: {exc}"
             return stale
         return {
-            "props":         [],
-            "scraped_at":    now,
-            "leagues_found": [],
-            "ok":            False,
-            "error":         f"Unable to reach PrizePicks board: {exc}",
-            "cached":        False,
+            "props":              [],
+            "scraped_at":         now,
+            "ok":                 False,
+            "error":              f"PrizePicks board unavailable — try refreshing. ({exc})",
+            "cached":             False,
+            "n_total":            0,
+            "n_tennis":           0,
+            "n_eligible":         0,
+            "stat_types_seen":    {},
+            "unmapped_stat_types": [],
         }
+
+    data     = payload.get("data") or []
+    included = payload.get("included") or []
+    idx      = _build_included_index(included)
+
+    logger.info(
+        "[PP] partner-api returned %d projections (%d included objects)",
+        len(data), len(included),
+    )
+
+    tennis_props: list = []
+    stat_type_counts: dict = {}
+
+    # For debug: capture the first 3 tennis projections' full field set
+    debug_samples: list = []
+
+    for proj in data:
+        attrs = proj.get("attributes") or {}
+        rels  = proj.get("relationships") or {}
+
+        # Tennis detection — check both the projection's league relationship
+        # AND the player's league attribute. Either is sufficient.
+        league_from_proj   = _league_name_from_rel(rels, idx)
+        player_name, player_league = _player_from_rel(rels, idx)
+        league = league_from_proj or player_league
+
+        if not _is_tennis_league(league):
+            continue
+        if not player_name:
+            continue
+        # Filter out doubles teams — names like "Kempen M / Klepac A" carry
+        # a "/" which our singles-only model can't handle.
+        if "/" in player_name:
+            continue
+
+        raw_stat = attrs.get("stat_type") or ""
+        stat_type_counts[raw_stat] = stat_type_counts.get(raw_stat, 0) + 1
+
+        # Capture sample data for the first 3 tennis projections (any stat type)
+        if len(debug_samples) < 3:
+            debug_samples.append({
+                "projection_id":      proj.get("id"),
+                "raw_attributes":     attrs,
+                "raw_relationships":  list(rels.keys()),
+                "resolved_player":    player_name,
+                "resolved_league":    league,
+            })
+
+        prop_type = _normalize_prop_type(raw_stat)
+        if not prop_type:
+            continue   # eligible-tennis-but-not-our-stat-type
+
+        line_val = attrs.get("line_score")
+        if line_val is None:
+            continue
+        try:
+            line_val = float(line_val)
+        except (TypeError, ValueError):
+            continue
+
+        description = attrs.get("description") or ""
+        opponent = _opponent_from_description(description)
+
+        tennis_props.append({
+            "player_name":      player_name,
+            "opponent_name":    opponent,
+            "prop_type":        prop_type,
+            "prop_line":        line_val,
+            "match_time":       attrs.get("start_time") or attrs.get("starts_at"),
+            "tournament":       attrs.get("game") or attrs.get("tournament"),
+            "description":      description,
+            "league":           league,
+            "pp_projection_id": str(proj.get("id") or ""),
+        })
+
+    # Surface unmapped stat types so we can extend the map later
+    unmapped = sorted({
+        st for st in stat_type_counts
+        if st and _normalize_prop_type(st) is None
+    })
+
+    # Log debug samples so the exact API shape is visible in Railway logs
+    if debug_samples:
+        logger.info("[PP] DEBUG — first 3 tennis projections:")
+        for i, sample in enumerate(debug_samples, 1):
+            logger.info("[PP]   sample %d: %s", i, sample)
+
+    logger.info(
+        "[PP] %d tennis projections; %d eligible after stat-type filter. "
+        "stat_types_seen=%s. unmapped=%s",
+        sum(stat_type_counts.values()), len(tennis_props),
+        stat_type_counts, unmapped,
+    )
+
+    result = {
+        "props":              tennis_props,
+        "scraped_at":         now,
+        "ok":                 True,
+        "error":              None,
+        "cached":             False,
+        "n_total":            len(data),
+        "n_tennis":           sum(stat_type_counts.values()),
+        "n_eligible":         len(tennis_props),
+        "stat_types_seen":    stat_type_counts,
+        "unmapped_stat_types": unmapped,
+    }
+    _CACHE["ts"]   = now
+    _CACHE["data"] = result
+    return result
+
+
+# ── Debug helper used by /api/board/test ───────────────────────────────────
+def fetch_raw_sample() -> dict:
+    """
+    For the GET /api/board/test endpoint. Returns the raw partner-api payload
+    plus the first 5 tennis-eligible projections with every field surfaced
+    so we can verify the API shape without any processing layer in between.
+    """
+    payload = _fetch_raw(per_page=1000)
+    data     = payload.get("data") or []
+    included = payload.get("included") or []
+    idx      = _build_included_index(included)
+
+    samples: list = []
+    for proj in data:
+        attrs = proj.get("attributes") or {}
+        rels  = proj.get("relationships") or {}
+        league_from_proj = _league_name_from_rel(rels, idx)
+        player_name, player_league = _player_from_rel(rels, idx)
+        league = league_from_proj or player_league
+        if not _is_tennis_league(league):
+            continue
+        samples.append({
+            "projection_id":      proj.get("id"),
+            "league":             league,
+            "resolved_player":    player_name,
+            "raw_attributes":     attrs,
+            "relationship_keys":  list(rels.keys()),
+        })
+        if len(samples) >= 5:
+            break
+
+    return {
+        "endpoint":        _PP_API_URL,
+        "n_data":          len(data),
+        "n_included":      len(included),
+        "n_tennis_found":  len(samples),
+        "samples":         samples,
+    }
