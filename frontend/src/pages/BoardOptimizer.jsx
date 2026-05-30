@@ -413,6 +413,7 @@ export default function BoardOptimizer({ tour }) {
   const [board, setBoard]       = useState(null)     // raw scrape response
   const [analyzed, setAnalyzed] = useState([])       // analyzed items list
   const [scrapedAt, setScrapedAt] = useState(null)
+  const [analyzeMeta, setAnalyzeMeta] = useState(null)  // {n_analyzed, n_truncated, ...}
 
   // Filters
   const [filterPropTypes, setFilterPropTypes] = useState(new Set(
@@ -423,8 +424,18 @@ export default function BoardOptimizer({ tour }) {
   const [sortBy,     setSortBy]     = useState('confidence')  // confidence | edge | time
   const [showFilters, setShowFilters] = useState(false)
 
+  // ── Why we cap to 20 ─────────────────────────────────────────────────────
+  // The PrizePicks board has 500+ eligible tennis props. Each projection
+  // does a full Sofascore + Tennis Abstract + scouting-report pass — ~10-30
+  // seconds wall time per prop with cold Sofascore caches. Analysing the
+  // whole board at once would tie up the backend for the better part of an
+  // hour and break every other tab while it runs. 20 props matches the user-
+  // visible "top of the board" and finishes in ~60-90 seconds.
+  const ANALYZE_LIMIT = 20
+
   const refresh = useCallback(async (force = false) => {
     setLoading(true); setError(null); setStage('scraping')
+    setAnalyzeMeta(null)
     try {
       const b = await scrapeBoard(force)
       setBoard(b); setScrapedAt(b.scraped_at)
@@ -432,9 +443,13 @@ export default function BoardOptimizer({ tour }) {
         setError(b.error || 'Unable to reach PrizePicks board')
         setStage('error'); setLoading(false); return
       }
+      if (!b.props || b.props.length === 0) {
+        setAnalyzed([]); setStage('done'); setLoading(false); return
+      }
       setStage('analyzing')
-      const a = await analyzeBoard(b.props || [], tour)
+      const a = await analyzeBoard(b.props || [], tour, ANALYZE_LIMIT)
       setAnalyzed(a.analyzed || [])
+      setAnalyzeMeta(a)
       setStage('done')
     } catch (e) {
       setError(e.response?.data?.detail || e.message || 'Board fetch failed')
@@ -444,7 +459,9 @@ export default function BoardOptimizer({ tour }) {
     }
   }, [tour])
 
-  // Auto-load on mount and when tour changes
+  // Auto-load on mount + when tour changes. Strict-mode double-invoke is
+  // OK because the backend caches the scrape for 30 minutes and the analyze
+  // request is now capped at 20 props.
   useEffect(() => { refresh(false) }, [refresh])
 
   // ── Filter + sort the analyzed list ──────────────────────────────────────
@@ -580,24 +597,42 @@ export default function BoardOptimizer({ tour }) {
 
       {/* Summary bar */}
       {!loading && !error && analyzed.length > 0 && (
-        <div style={{
-          display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))',
-          gap: 10, marginBottom: 18,
-        }}>
-          {[
-            ['Total Props', summary.tot, '#fff'],
-            ['OVER leans', summary.over, 'var(--green-bright)'],
-            ['UNDER leans', summary.under, 'var(--red-bright)'],
-            ['High Conf', summary.high, 'var(--green-mid)'],
-          ].map(([lbl, val, col]) => (
-            <div key={lbl} className="glass-card" style={{ padding: '14px 16px', textAlign: 'center' }}>
-              <div style={{ fontSize: 10, color: 'var(--muted)', fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 700, letterSpacing: 2, textTransform: 'uppercase' }}>{lbl}</div>
-              <div style={{ fontSize: 28, fontWeight: 900, color: col, fontFamily: '"Barlow Condensed", sans-serif', lineHeight: 1.1 }}>
-                <NumberFlow value={val} />
+        <>
+          <div style={{
+            display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))',
+            gap: 10, marginBottom: 12,
+          }}>
+            {[
+              ['Analyzed',   summary.tot, '#fff'],
+              ['OVER leans', summary.over, 'var(--green-bright)'],
+              ['UNDER leans', summary.under, 'var(--red-bright)'],
+              ['High Conf',  summary.high, 'var(--green-mid)'],
+            ].map(([lbl, val, col]) => (
+              <div key={lbl} className="glass-card" style={{ padding: '14px 16px', textAlign: 'center' }}>
+                <div style={{ fontSize: 10, color: 'var(--muted)', fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 700, letterSpacing: 2, textTransform: 'uppercase' }}>{lbl}</div>
+                <div style={{ fontSize: 28, fontWeight: 900, color: col, fontFamily: '"Barlow Condensed", sans-serif', lineHeight: 1.1 }}>
+                  <NumberFlow value={val} />
+                </div>
               </div>
+            ))}
+          </div>
+
+          {/* Truncation note — analyse cap is intentional */}
+          {analyzeMeta && analyzeMeta.n_truncated > 0 && (
+            <div style={{
+              fontSize: 11, color: 'var(--amber)',
+              fontFamily: '"Barlow Condensed", sans-serif',
+              fontWeight: 700, letterSpacing: 0.5,
+              padding: '8px 12px', borderRadius: 8,
+              background: 'rgba(255, 179, 0, 0.06)',
+              border: '1px solid rgba(255, 179, 0, 0.3)',
+              marginBottom: 18,
+            }}>
+              Showing top {analyzeMeta.n_analyzed} of {analyzeMeta.n_candidates ?? analyzeMeta.n_total} eligible {tour} props
+              ({analyzeMeta.n_truncated} more on board) — refresh after match start for updated lines.
             </div>
-          ))}
-        </div>
+          )}
+        </>
       )}
 
       {/* Best Bets section */}

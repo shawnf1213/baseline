@@ -15,5 +15,5 @@ export const fetchH2H       = (body) => api.post('/api/h2h', body).then(r => r.d
 // (player matching + N projections in parallel) so give it a generous timeout.
 export const scrapeBoard    = (force_refresh = false) =>
   api.post('/api/board/scrape', { force_refresh }, { timeout: 60000 }).then(r => r.data)
-export const analyzeBoard   = (props, tour_filter = null) =>
-  api.post('/api/board/analyze', { props, tour_filter }, { timeout: 300000 }).then(r => r.data)
+export const analyzeBoard   = (props, tour_filter = null, limit = 20) =>
+  api.post('/api/board/analyze', { props, tour_filter, limit }, { timeout: 300000 }).then(r => r.data)

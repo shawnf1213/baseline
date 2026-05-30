@@ -1018,6 +1018,16 @@ class BoardAnalyzeRequest(BaseModel):
     """Caller passes the already-scraped board to keep the two steps separate."""
     props: list = []
     tour_filter: Optional[str] = None   # 'ATP' | 'WTA' | None (both)
+    # Hard server-side cap to prevent a 500-prop board from blocking the
+    # backend for an hour. The frontend defaults to 20; allow up to 40.
+    limit: int = 20
+
+
+# Absolute server-side ceiling — refuses to analyze more than this in a
+# single request regardless of what the client asks for. Sized so a worst-
+# case batch (8 concurrent × ~30s each ≈ 4 min) stays inside the 300s
+# client timeout AND keeps Railway memory under control.
+_BOARD_ANALYZE_MAX = 40
 
 
 @app.post("/api/board/scrape")
@@ -1144,33 +1154,57 @@ async def board_analyze(req: BoardAnalyzeRequest):
     Run the full Baseline projection for each prop in `req.props`. Players
     and opponents are matched by fuzzy name match. Heavy parallelism is
     capped via a semaphore so we don't hammer Sofascore.
+
+    SAFETY CAP: at most `_BOARD_ANALYZE_MAX` props are analyzed per request.
+    A 500-prop board × full Sofascore + TA + scouting per prop would tie up
+    the backend for the better part of an hour, blocking every other tab.
+    The frontend asks for 20 by default; we hard-cap at 40.
     """
     if not req.props:
-        return {"analyzed": [], "n_total": 0, "n_matched": 0}
+        return {"analyzed": [], "n_total": 0, "n_matched": 0, "n_truncated": 0}
 
     # Heuristic tour selection: WTA leagues from PP carry the literal string
     # 'WTA' in the league name. Everything else maps to ATP.
     def _tour_for_league(name: str) -> str:
         return "WTA" if name and "wta" in str(name).lower() else "ATP"
 
+    # Apply tour filter first so the cap acts on the right pool
+    if req.tour_filter:
+        wanted = req.tour_filter.upper()
+        candidates = [p for p in req.props if _tour_for_league(p.get("league")) == wanted]
+    else:
+        candidates = list(req.props)
+
+    requested = min(max(1, req.limit), _BOARD_ANALYZE_MAX)
+    truncated = max(0, len(candidates) - requested)
+    work_queue = candidates[:requested]
+
+    logger.info(
+        "[Board] analyze: scraped=%d candidates=%d (tour=%s) cap=%d truncated=%d",
+        len(req.props), len(candidates), req.tour_filter or "any",
+        requested, truncated,
+    )
+
     sem = asyncio.Semaphore(5)
 
     async def _run(pp_prop):
         tour = _tour_for_league(pp_prop.get("league"))
-        if req.tour_filter and tour != req.tour_filter.upper():
-            return None
         async with sem:
             return await _analyze_one_prop(pp_prop, tour)
 
-    raw_results = await asyncio.gather(*(_run(p) for p in req.props))
+    raw_results = await asyncio.gather(*(_run(p) for p in work_queue))
     analyzed = [r for r in raw_results if r is not None]
 
     return {
-        "analyzed":   analyzed,
-        "n_total":    len(req.props),
-        "n_matched":  sum(1 for r in analyzed if r.get("matched")),
+        "analyzed":    analyzed,
+        "n_total":     len(req.props),
+        "n_candidates": len(candidates),
+        "n_analyzed":  len(analyzed),
+        "n_truncated": truncated,
+        "n_matched":   sum(1 for r in analyzed if r.get("matched")),
         "n_projected": sum(1 for r in analyzed
                             if r.get("model_projection") is not None),
+        "limit_applied": requested,
     }
 
 
