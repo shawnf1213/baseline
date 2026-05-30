@@ -1399,8 +1399,8 @@ def project_break_points(
         opp_serve_tier = f"Neutral(player_C1,proxy={opp_hold_proxy:.2f})"
 
     logger.info(
-        "BP_C4 | opp=%s | hold_proxy=%.3f | tier=%s | c4=%.2f",
-        opp_name, opp_hold_proxy, opp_serve_tier, c4_serve_qual,
+        "BP_C4 | hold_proxy=%.3f | tier=%s | c4=%.2f",
+        opp_hold_proxy, opp_serve_tier, c4_serve_qual,
     )
 
     # ═════════════════════════════════════════════════════════════════════════
