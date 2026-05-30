@@ -1212,8 +1212,11 @@ def project_break_points(
         if career_ret_avg > 0:
             c2_delta_pct = (surf_ret_avg - career_ret_avg) / career_ret_avg
             if c2_delta_pct > 0.05:
+                # Upper bound trimmed 1.15 → 1.10. A 10% returner boost on a
+                # specialist's best surface is realistic; 15% compounds too
+                # aggressively against C6/C8 in the same projection.
                 excess           = c2_delta_pct - 0.05
-                c2_returner_mult = min(1.15, 1.08 + excess * 1.4)
+                c2_returner_mult = min(1.10, 1.05 + excess * 1.0)
                 c2_source        = f"above_career({c2_delta_pct:+.1%})"
             elif c2_delta_pct < -0.05:
                 deficit          = abs(c2_delta_pct) - 0.05
@@ -1482,7 +1485,8 @@ def project_break_points(
         if opp_career_ret > 0:
             opp_c2_delta = (opp_surf_ret - opp_career_ret) / opp_career_ret
             if opp_c2_delta > 0.05:
-                c2_opp = min(1.15, 1.08 + (opp_c2_delta - 0.05) * 1.4)
+                # Upper bound trimmed 1.15 → 1.10 (matches the player-side C2).
+                c2_opp = min(1.10, 1.05 + (opp_c2_delta - 0.05) * 1.0)
             elif opp_c2_delta < -0.05:
                 c2_opp = max(0.88, 0.95 - (abs(opp_c2_delta) - 0.05) * 1.4)
 
@@ -1529,14 +1533,26 @@ def project_break_points(
     )
 
     surface_momentum_mult = _SURFACE_MOMENTUM_MULT.get(surface, 0.25)
-    momentum_bonus        = opp_proj_bp * surface_momentum_mult
+    momentum_bonus_raw    = opp_proj_bp * surface_momentum_mult
+
+    # ── Hard cap on momentum bonus ───────────────────────────────────────────
+    # The break-back-urgency effect is real but has a natural ceiling — a
+    # player doesn't get unlimited momentum from being broken repeatedly. Cap
+    # at 0.6 in BO3 / 1.0 in BO5 so extreme opp_proj_bp values (Paul-style
+    # weak servers) can't add 1.5+ phantom breaks to the projection.
+    _is_bo5_for_cap = (match_format == "best_of_5" and tour == "ATP")
+    momentum_cap    = 1.0 if _is_bo5_for_cap else 0.6
+    momentum_bonus  = min(momentum_bonus_raw, momentum_cap)
+    momentum_capped = momentum_bonus_raw > momentum_cap
 
     logger.info(
         "BP_C7_MOMENTUM | opp_persp: C1_player_bp_faced=%.2f | C2_opp=%.3f | "
         "C3_opp=%.1f%% | C4_opp=%.2f | C5_opp=%.3f | C6_opp=%.3f | "
-        "opp_proj_bp=%.3f | surf_factor=%.2f | momentum_bonus=%.3f",
+        "opp_proj_bp=%.3f | surf_factor=%.2f | momentum_raw=%.3f | "
+        "momentum_capped_at=%.2f | momentum_used=%.3f | hit_cap=%s",
         c1_opp_persp, c2_opp, c3_opp, c4_opp, c5_opp, c6_opp,
-        opp_proj_bp, surface_momentum_mult, momentum_bonus,
+        opp_proj_bp, surface_momentum_mult, momentum_bonus_raw,
+        momentum_cap, momentum_bonus, momentum_capped,
     )
 
     # ═════════════════════════════════════════════════════════════════════════
@@ -1596,6 +1612,67 @@ def project_break_points(
         "c8=%.1f | proj=%.3f",
         base_proj, momentum_bonus, proj_before_format, c8_format_mult, proj,
     )
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # BP_DIAG — every component in human-readable form, one log line per
+    # projection. Use this when a number looks wrong (e.g. Ruud vs Paul RG
+    # projecting 8 against a book-implied 5-6) to identify which factor or
+    # which compounding combination is doing the inflating.
+    # ─────────────────────────────────────────────────────────────────────────
+    _running_base    = c1_opp_bp_faced
+    _after_c2        = _running_base * c2_returner_mult
+    _after_c3        = _after_c2 * (conv_rate_pct / 100.0)
+    _after_c4        = _after_c3 * c4_serve_qual
+    _after_c5        = _after_c4 * c5_surf_adj
+    _after_c6        = _after_c5 * c6_cpr_mod
+    _final_momentum  = momentum_bonus * c8_format_mult
+    logger.info(
+        "BP_DIAG | %s vs %s (%s, %s, BO%s) |\n"
+        "  C1 opp_bp_faced/match  = %6.2f  (%s, raw_surf=%s, overall=%s)\n"
+        "  × C2 returner_mult     = %6.3f  (%s)                  → %6.3f\n"
+        "  × C3 conv_rate_blended = %5.1f%%  (surf %.1f%%×0.60 + overall %.1f%%×0.40) → %6.3f\n"
+        "  × C4 serve_quality_adj = %6.2f  (%s, hold_proxy=%.2f) → %6.3f\n"
+        "  × C5 player_surf_adj   = %6.3f  (delta=%.1fpp, disabled→1.0) → %6.3f\n"
+        "  × C6 cpr_modifier      = %6.3f  (%s) → BASE = %6.3f\n"
+        "  + C7 momentum_raw      = %6.3f  (opp_proj_bp %.2f × surf_mult %.2f)\n"
+        "    momentum_capped@%.1f = %6.3f  (capped=%s)\n"
+        "  pre-C8 (base+mom)      = %6.3f\n"
+        "  × C8 exp_sets_scale    = %6.3f  (exp_sets %.2f / avg_hist %.2f, %s, gap=%.1fpp)\n"
+        "  × hand_bp_factor       = %6.3f  (opp_hand=%s)\n"
+        "  FINAL                  = %6.2f  [base_after_c8=%.2f + mom_after_c8=%.2f]",
+        player_name, opp_name, surface, court or "generic",
+        "5" if is_bo5 else "3",
+        c1_opp_bp_faced, c1_source,
+        f"{raw_opp_bp_faced:.2f}" if raw_opp_bp_faced else "None",
+        f"{overall_opp_bp_faced:.2f}" if overall_opp_bp_faced else "None",
+        c2_returner_mult, c2_source, _after_c2,
+        conv_rate_pct, ss_surf_conv or 0.0, ss_overall_conv or 0.0, _after_c3,
+        c4_serve_qual, opp_serve_tier, opp_hold_proxy, _after_c4,
+        c5_surf_adj, player_surf_delta, _after_c5,
+        c6_cpr_mod, c6_note, _after_c6,
+        momentum_bonus_raw, opp_proj_bp, surface_momentum_mult,
+        momentum_cap, momentum_bonus, momentum_capped,
+        proj_before_format,
+        c8_format_mult, expected_sets, avg_hist_sets, comp_label, win_prob_gap,
+        # hand_bp_factor is applied below — log with placeholder for now (real
+        # value appended via BP_HAND).
+        1.0, "see BP_HAND below",
+        proj, base_proj * c8_format_mult, _final_momentum,
+    )
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Reality check — high-projection flag (warning only, not a cap).
+    # If the projection blows past realistic ranges flag it so the UI can
+    # surface "verify data quality" without suppressing the value. The user
+    # decides whether to trust it.
+    # ─────────────────────────────────────────────────────────────────────────
+    _high_threshold = 9.0 if is_bo5 else 7.0
+    bp_high_projection = proj > _high_threshold
+    if bp_high_projection:
+        logger.warning(
+            "BP_HIGH | %s | proj=%.2f exceeds %.1f (BO%s) — review components",
+            player_name, proj, _high_threshold, "5" if is_bo5 else "3",
+        )
 
     # ─────────────────────────────────────────────────────────────────────────
     # GS DIAGNOSTIC — individual component log for Sinner-style matchups
@@ -1778,6 +1855,12 @@ def project_break_points(
         "avg_historical_sets":   round(avg_hist_sets, 2),
         "is_bo5":                is_bo5,
         "bp_won_per_set":        round(base_proj / max(avg_hist_sets, 0.01), 3),
+        # ── Reality-check flag (warning only, not a cap) ─────────────────────
+        "bp_high_projection":    bp_high_projection,
+        "bp_high_threshold":     _high_threshold,
+        "bp_momentum_capped":    momentum_capped,
+        "bp_momentum_cap":       momentum_cap,
+        "bp_momentum_raw":       round(momentum_bonus_raw, 3),
     }
 
 

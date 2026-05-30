@@ -547,6 +547,24 @@ export default function PropProjection({ tour }) {
                 </div>
               )}
 
+              {/* Reality-check banner for unusually-high BP projections.
+                  This is a warning only — the projection is not capped, the
+                  bettor decides whether to trust it. */}
+              {hasProjection && propType === 'Break Points Won' && result.bp_high_projection && (
+                <div className="glass-card" style={{
+                  padding: '12px 16px', background: 'rgba(255, 179, 0, 0.06)', borderColor: 'rgba(255, 179, 0, 0.3)',
+                  marginBottom: 14, fontSize: 12, display: 'flex', alignItems: 'center', gap: 10,
+                }}>
+                  <span style={{ color: 'var(--amber)', fontWeight: 800, fontFamily: '"Barlow Condensed", sans-serif', letterSpacing: 1 }}>⚠ HIGH PROJECTION</span>
+                  <span style={{ color: 'rgba(255, 179, 0, 0.75)' }}>
+                    Model output {result.model_projection?.toFixed(1)} exceeds the
+                    {result.bp_high_threshold === 9.0 ? ' BO5' : ' BO3'} reality threshold of
+                    {' '}{result.bp_high_threshold?.toFixed(1)} — verify data quality before betting.
+                    {result.bp_momentum_capped && ' (Momentum bonus hit its hard cap.)'}
+                  </span>
+                </div>
+              )}
+
               {/* Three projection cards */}
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 14, marginBottom: 22 }}>
 

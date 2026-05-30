@@ -865,6 +865,12 @@ async def prop_calculate(req: PropRequest):
             "aces_per_set":          result.get("aces_per_set"),
             "df_per_set":            result.get("df_per_set"),
             "bp_won_per_set":        result.get("bp_won_per_set"),
+            # Reality-check flags (BP prop only)
+            "bp_high_projection":    result.get("bp_high_projection", False),
+            "bp_high_threshold":     result.get("bp_high_threshold"),
+            "bp_momentum_capped":    result.get("bp_momentum_capped", False),
+            "bp_momentum_cap":       result.get("bp_momentum_cap"),
+            "bp_momentum_raw":       result.get("bp_momentum_raw"),
             # ── TA recent-window metadata (Prop Projection tab) ───────────────
             "player_ta_recent_tier":      p1_recent_meta["tier"],
             "player_ta_recent_matches":   p1_recent_meta["surface_n"],
