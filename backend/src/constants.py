@@ -1,97 +1,154 @@
+"""
+Court speed data — String Tension ST Pace Index values.
+
+ST Pace Index is computed from real match data (ace rates + break-point
+defence vs career baselines), calibrated against the ATP published CPI.
+Source: stringtension.com
+
+Speed-tier thresholds (ST / ATP scale):
+  < 25         Very Slow
+  25 – 32      Slow
+  33 – 38      Average
+  39 – 44      Fast
+  > 44         Very Fast
+
+CPR_NEUTRAL = 35 (mid-Average range). All prop formula adjustments are
+relative to this neutral point, so the sign/direction of each factor
+remains correct — only the magnitude changes with new court values.
+"""
+
+# ---------------------------------------------------------------------------
+# Speed tier helper (used by props.py, main.py, and the test endpoint)
+# ---------------------------------------------------------------------------
+def get_speed_tier(cpr: float) -> str:
+    if cpr < 25:  return "Very Slow"
+    if cpr <= 32: return "Slow"
+    if cpr <= 38: return "Average"
+    if cpr <= 44: return "Fast"
+    return "Very Fast"
+
+
+# ---------------------------------------------------------------------------
+# Year-over-year reference — courts with confirmed multi-year ST data.
+# Used to show bettors when this year's surface plays significantly
+# differently from what they may expect from historical mental models.
+# Any gap >= 5 points triggers a YoY indicator in the UI.
+# ---------------------------------------------------------------------------
+ST_PACE_PREVIOUS_YEAR = {
+    # Roland Garros dramatically faster in 2026 (new Dunlop ball)
+    "Roland Garros":     {"prev": 24.2, "prev_year": 2025},
+    "Roland Garros WTA": {"prev": 24.2, "prev_year": 2025},
+}
+ST_YOY_THRESHOLD = 5.0   # minimum change to show the indicator
+
+
+# ---------------------------------------------------------------------------
+# Court pace index — String Tension ST Pace Index values (confirmed)
+# or best estimates where ST data is not yet published.
+#
+# Confirmed ST values are labelled [ST confirmed].
+# Estimate values are labelled [ST estimate].
+# ---------------------------------------------------------------------------
 COURT_CPR = {
     # ── ATP Hard ──────────────────────────────────────────────────────────────
-    "Australian Open":                   40,
-    "US Open":                           37,
-    "Indian Wells":                      36,   # legacy name
-    "Indian Wells Masters":              36,
-    "Miami":                             35,
-    "Miami Open":                        35,
-    "Cincinnati":                        36,
-    "Cincinnati Masters":                36,
-    "Canada Montreal":                   35,   # legacy name
-    "Canadian Open (Montreal/Toronto)":  35,
-    "Vienna":                            38,
-    "Vienna Open":                       38,
-    "Basel":                             39,   # legacy name
-    "Swiss Indoors Basel":               39,
-    "Rotterdam":                         38,
-    "Rotterdam Open":                    38,
-    "Doha":                              36,   # legacy name
-    "Qatar Open Doha":                   36,
-    "Dubai":                             37,   # legacy name
-    "Dubai Duty Free Championships":     37,
-    "ATP Finals":                        38,   # legacy name
-    "ATP Finals Turin":                  38,
-    "Dallas Open":                       37,
-    "Delray Beach Open":                 37,
-    "Adelaide International":            38,
-    "Auckland Open":                     37,
-    "Acapulco Open":                     38,
-    "Washington Citi Open":              37,
-    "Winston-Salem Open":                36,
-    "Tokyo Japan Open":                  38,
-    "Shanghai Masters":                  36,
-    "Paris Masters":                     39,
-    "Stockholm Open":                    39,
-    "Antwerp European Open":             39,
-    "Challenger Hard (Generic)":         33,
+    "Australian Open":                   40,    # [ST estimate — no confirmed ST yet; keep prior value]
+    "US Open":                           42.8,  # [ST confirmed, 2025]
+    "Indian Wells":                      35.4,  # [ST confirmed, 2023] legacy name
+    "Indian Wells Masters":              35.4,  # [ST confirmed, 2023]
+    "Miami":                             40.6,  # [ST confirmed, 2023] legacy name
+    "Miami Open":                        40.6,  # [ST confirmed, 2023]
+    "Cincinnati":                        38,    # [ST estimate]
+    "Cincinnati Masters":                38,    # [ST estimate]
+    "Canada Montreal":                   38,    # [ST estimate] legacy name
+    "Canadian Open (Montreal/Toronto)":  38,    # [ST estimate]
+    "Vienna":                            37,    # [ST estimate]
+    "Vienna Open":                       37,    # [ST estimate]
+    "Basel":                             38,    # [ST estimate] legacy name
+    "Swiss Indoors Basel":               38,    # [ST estimate]
+    "Rotterdam":                         37,    # [ST estimate]
+    "Rotterdam Open":                    37,    # [ST estimate]
+    "Doha":                              35,    # [ST estimate] legacy name
+    "Qatar Open Doha":                   35,    # [ST estimate]
+    "Dubai":                             36,    # [ST estimate] legacy name
+    "Dubai Duty Free Championships":     36,    # [ST estimate]
+    "ATP Finals":                        39,    # [ST estimate] legacy name
+    "ATP Finals Turin":                  39,    # [ST estimate]
+    "Paris Masters":                     39,    # [ST estimate]
+    "Paris Bercy":                       39,    # [ST estimate] legacy alias
+    "Dallas Open":                       37,    # [ST estimate]
+    "Delray Beach Open":                 37,    # [ST estimate]
+    "Adelaide International":            38,    # [ST estimate]
+    "Auckland Open":                     37,    # [ST estimate]
+    "Acapulco Open":                     38,    # [ST estimate]
+    "Washington Citi Open":              37,    # [ST estimate]
+    "Winston-Salem Open":                36,    # [ST estimate]
+    "Tokyo Japan Open":                  38,    # [ST estimate]
+    "Shanghai Masters":                  36,    # [ST estimate]
+    "Stockholm Open":                    39,    # [ST estimate]
+    "Antwerp European Open":             39,    # [ST estimate]
+    "Challenger Hard (Generic)":         36,    # [ST estimate — user specified]
 
     # ── ATP Clay ─────────────────────────────────────────────────────────────
-    "Roland Garros":                     24,
-    "Monte Carlo":                       25,   # legacy name
-    "Monte Carlo Masters":               25,
-    "Madrid":                            29,   # legacy name
-    "Madrid Open":                       29,
-    "Barcelona":                         24,   # legacy name
-    "Barcelona Open":                    24,
-    "Rome":                              24,   # legacy name
-    "Italian Open Rome":                 24,
-    "Hamburg":                           25,   # legacy name
-    "Hamburg Open":                      25,
-    "Geneva":                            24,   # legacy name (hard & clay share name — CPR differs by context)
-    "Lyon":                              25,   # legacy name
-    "Lyon Open":                         25,
-    "Buenos Aires Open":                 25,
-    "Rio Open":                          26,
-    "Santiago Open":                     24,
-    "Houston Clay":                      27,
-    "Munich Open":                       28,
-    "Estoril Open":                      27,
-    "Marrakech Open":                    24,
-    "Bastad Open":                       24,
-    "Umag Open":                         23,
-    "Gstaad Open":                       24,
-    "Kitzbuhel Open":                    24,
-    "Challenger Clay Europe (Generic)":  23,
-    "Challenger Clay South America (Generic)": 24,
-    "Bordeaux Challenger":               23,
-    "Braunschweig Challenger":           23,
-    "Valencia Challenger":               24,
-    "Monza Challenger":                  23,
-    "Aix-en-Provence Challenger":        24,
-    "Sanremo Challenger":                23,
-    "Geneva Challenger":                 24,
+    "Roland Garros":                     37.7,  # [ST confirmed, 2026 — significantly faster than 2025 (24.2)]
+    "Monte Carlo":                       30.4,  # [ST confirmed, 2026] legacy name
+    "Monte Carlo Masters":               30.4,  # [ST confirmed, 2026]
+    "Madrid":                            31.9,  # [ST confirmed, 2026] legacy name
+    "Madrid Open":                       31.9,  # [ST confirmed, 2026]
+    "Barcelona":                         27.2,  # [ST confirmed, 2026] legacy name
+    "Barcelona Open":                    27.2,  # [ST confirmed, 2026]
+    "Rome":                              29.6,  # [ST confirmed, 2026] legacy name
+    "Italian Open Rome":                 29.6,  # [ST confirmed, 2026]
+    "Hamburg":                           28.4,  # [ST confirmed, 2026] legacy name
+    "Hamburg Open":                      28.4,  # [ST confirmed, 2026]
+    "Munich":                            29.1,  # [ST confirmed, 2026] legacy name
+    "Munich Open":                       29.1,  # [ST confirmed, 2026]
+    "Geneva":                            31.2,  # [ST confirmed, 2026] ATP clay legacy name
+    "Geneva Open":                       31.2,  # [ST confirmed, 2026]
+    "Lyon":                              26,    # [ST estimate — no confirmed value]
+    "Lyon Open":                         26,    # [ST estimate]
+    "Buenos Aires Open":                 25,    # [ST estimate]
+    "Rio Open":                          26,    # [ST estimate]
+    "Santiago Open":                     24,    # [ST estimate]
+    "Houston Clay":                      27,    # [ST estimate]
+    "Estoril Open":                      27,    # [ST estimate]
+    "Marrakech Open":                    24,    # [ST estimate]
+    "Bastad Open":                       24,    # [ST estimate]
+    "Umag Open":                         23,    # [ST estimate]
+    "Gstaad Open":                       24,    # [ST estimate]
+    "Kitzbuhel Open":                    24,    # [ST estimate]
+    "Challenger Clay Europe (Generic)":  26,    # [ST estimate — user specified 26]
+    "Challenger Clay South America (Generic)": 26,
+    "Bordeaux Challenger":               24,    # [ST estimate]
+    "Braunschweig Challenger":           24,    # [ST estimate]
+    "Valencia Challenger":               24,    # [ST estimate]
+    "Monza Challenger":                  24,    # [ST estimate]
+    "Aix-en-Provence Challenger":        24,    # [ST estimate]
+    "Sanremo Challenger":                24,    # [ST estimate]
+    "Geneva Challenger":                 26,    # [ST estimate]
 
     # ── ATP Grass ────────────────────────────────────────────────────────────
-    "Wimbledon":                         43,
-    "Queens Club":                       44,   # legacy name
-    "Queens Club Championships":         44,
-    "Halle":                             44,
-    "Stuttgart Grass":                   42,
-    "Eastbourne":                        41,   # legacy name
-    "Eastbourne International":          41,
-    "Mallorca Championships":            42,
-    "Hertogenbosch Open":                43,
-    "Ilkley Challenger":                 40,
-    "Nottingham Challenger":             41,
+    "Wimbledon":                         36.1,  # [ST confirmed, 2025 — significantly slower than prior est. 43]
+    "Queens Club":                       38,    # [ST estimate] legacy name
+    "Queens Club Championships":         38,    # [ST estimate]
+    "Halle":                             38,    # [ST estimate]
+    "Stuttgart Grass":                   37,    # [ST estimate]
+    "Eastbourne":                        36,    # [ST estimate] legacy name
+    "Eastbourne International":          36,    # [ST estimate]
+    "Mallorca Championships":            37,    # [ST estimate]
+    "Hertogenbosch Open":                38,    # [ST estimate]
+    "Ilkley Challenger":                 36,    # [ST estimate]
+    "Nottingham Challenger":             36,    # [ST estimate]
 
     # ── WTA Hard ─────────────────────────────────────────────────────────────
+    # Roland Garros and Wimbledon WTA share the same court as ATP — same ST values.
+    # Other WTA hardcourt values are adjusted ~1-2 slower than ATP equivalents
+    # (women's game generates fewer aces, calibration is slightly different).
     "Australian Open WTA":               38,
-    "US Open WTA":                       36,
-    "Indian Wells WTA":                  35,
-    "Miami Open WTA":                    34,
-    "Cincinnati WTA":                    35,
-    "Canadian Open WTA":                 34,
+    "US Open WTA":                       41.5,  # same venue, slightly adjusted for WTA
+    "Indian Wells WTA":                  34.5,
+    "Miami Open WTA":                    39.5,
+    "Cincinnati WTA":                    37,
+    "Canadian Open WTA":                 37,
     "Wuhan Open":                        36,
     "China Open Beijing":                36,
     "WTA Finals":                        37,
@@ -106,16 +163,16 @@ COURT_CPR = {
     "Osaka WTA":                         36,
     "Linz WTA":                          38,
     "Guadalajara WTA":                   36,
-    "WTA 125 Hard (Generic)":            32,
-    "Austin WTA 125":                    32,
-    "Jiangxi Open WTA 125":              32,
+    "WTA 125 Hard (Generic)":            36,    # [ST estimate — user specified 36]
+    "Austin WTA 125":                    36,
+    "Jiangxi Open WTA 125":              36,
 
     # ── WTA Clay ─────────────────────────────────────────────────────────────
-    "Roland Garros WTA":                 23,
-    "Madrid Open WTA":                   28,
-    "Italian Open WTA Rome":             23,
+    "Roland Garros WTA":                 37.7,  # [ST confirmed, 2026 — same court as ATP]
+    "Madrid Open WTA":                   31.0,
+    "Italian Open WTA Rome":             28.5,
     "Stuttgart WTA":                     27,
-    "Hamburg WTA":                       24,
+    "Hamburg WTA":                       27.5,
     "Prague Open WTA":                   24,
     "Rabat WTA":                         23,
     "Strasbourg WTA":                    24,
@@ -129,15 +186,15 @@ COURT_CPR = {
     "Catalonia Open WTA 125":            23,
     "Huzhou Open WTA 125 Clay":          23,
     "Emilia-Romagna WTA 125 Clay":       23,
-    "WTA 125 Clay (Generic)":            23,
+    "WTA 125 Clay (Generic)":            26,    # [ST estimate — user specified 26]
 
     # ── WTA Grass ────────────────────────────────────────────────────────────
-    "Wimbledon WTA":                     42,
-    "Eastbourne WTA":                    40,
-    "Birmingham WTA":                    41,
-    "Hertogenbosch WTA":                 42,
-    "Mallorca WTA":                      41,
-    "Ilkley WTA 125 Grass":              39,
+    "Wimbledon WTA":                     36.1,  # [ST confirmed, 2025 — same court as ATP]
+    "Eastbourne WTA":                    36,
+    "Birmingham WTA":                    37,
+    "Hertogenbosch WTA":                 38,
+    "Mallorca WTA":                      37,
+    "Ilkley WTA 125 Grass":              36,
 }
 
 COURTS_BY_SURFACE = {
@@ -153,8 +210,9 @@ COURTS_BY_SURFACE = {
 
 CPR_NEUTRAL = 35
 
-GENERIC_SURFACE_CPR = {"Hard": 36, "Clay": 24, "Grass": 43}
-GENERIC_TIER_LABEL  = {"Hard": "Medium-Fast", "Clay": "Slow", "Grass": "Fast"}
+# Generic surface defaults for when no specific court is selected
+GENERIC_SURFACE_CPR   = {"Hard": 36, "Clay": 26, "Grass": 36}
+GENERIC_TIER_LABEL    = {"Hard": "Average", "Clay": "Slow", "Grass": "Average"}
 
 ATP_TOUR_AVERAGES = {
     "ace_rate":                     10.0,

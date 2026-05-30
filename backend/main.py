@@ -82,7 +82,11 @@ from src.calculations.props import (
     ENVIRONMENT_LABELS,
     GRAND_SLAMS,
 )
-from src.constants import COURT_CPR, CPR_NEUTRAL, GENERIC_SURFACE_CPR
+from src.constants import (
+    COURT_CPR, CPR_NEUTRAL, GENERIC_SURFACE_CPR,
+    get_speed_tier, ST_PACE_PREVIOUS_YEAR, ST_YOY_THRESHOLD,
+)
+from src.api.string_tension import lookup_pace_index
 
 # ---------------------------------------------------------------------------
 # App
@@ -427,8 +431,35 @@ async def prop_calculate(req: PropRequest):
         h2h_surf_matches = h2h_summary.get("surface_matches", 0)
 
         court_for_calc = "" if req.court in ("", "None") else req.court
-        cpr = COURT_CPR.get(court_for_calc,
-              GENERIC_SURFACE_CPR.get(req.surface, CPR_NEUTRAL))
+
+        # ── ST Pace Index lookup — dynamic first, hardcoded fallback ─────────
+        _fallback_cpr = COURT_CPR.get(court_for_calc,
+                         GENERIC_SURFACE_CPR.get(req.surface, CPR_NEUTRAL))
+        # lookup_pace_index is blocking; run in executor so it doesn't stall the loop
+        _loop_cpr = asyncio.get_event_loop()
+        _st_live_val, _st_source = await _loop_cpr.run_in_executor(
+            None, lookup_pace_index, court_for_calc, _fallback_cpr
+        )
+        cpr = _st_live_val if _st_live_val is not None else _fallback_cpr
+        _st_source_label = "st_live" if _st_source == "st_live" else "hardcoded"
+
+        # Speed tier + year-over-year context
+        _speed_tier = get_speed_tier(cpr)
+        _yoy = ST_PACE_PREVIOUS_YEAR.get(court_for_calc)
+        _yoy_note: Optional[str] = None
+        if _yoy and abs(cpr - _yoy["prev"]) >= ST_YOY_THRESHOLD:
+            direction = "faster" if cpr > _yoy["prev"] else "slower"
+            _yoy_note = (
+                f"{_yoy['prev_year'] + 1}: {cpr:.1f} vs {_yoy['prev_year']}: {_yoy['prev']:.1f} "
+                f"— significantly {direction} this year"
+            )
+
+        logger.info(
+            "CPR | court=%r surface=%s | fallback=%.1f | st_val=%.1f | "
+            "source=%s | tier=%s | yoy=%s",
+            court_for_calc, req.surface, _fallback_cpr, cpr,
+            _st_source_label, _speed_tier, _yoy_note or "none",
+        )
 
         # Fetch Tennis Abstract data for both players concurrently (30s timeout each)
         async def _ta_safe(name):
@@ -895,6 +926,11 @@ async def prop_calculate(req: PropRequest):
             "aces_per_set":          result.get("aces_per_set"),
             "df_per_set":            result.get("df_per_set"),
             "bp_won_per_set":        result.get("bp_won_per_set"),
+            # ── ST Pace Index / Surface Speed Tier ────────────────────────────
+            "court_pace_index":      round(cpr, 1),
+            "court_speed_tier":      _speed_tier,
+            "court_st_source":       _st_source_label,   # 'st_live' | 'hardcoded'
+            "court_yoy_note":        _yoy_note,
             # Reality-check flags (BP prop only)
             "bp_high_projection":    result.get("bp_high_projection", False),
             "bp_high_threshold":     result.get("bp_high_threshold"),

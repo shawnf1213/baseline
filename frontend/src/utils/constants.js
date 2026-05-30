@@ -1,84 +1,112 @@
 // ── Tournament configuration by tour and surface ──────────────────────────────
-// Each entry: { name, cpr } — name must match exactly what backend COURT_CPR expects.
+// Each entry: { name, cpr, prev_cpr? }
+//   name     — must match exactly what backend COURT_CPR expects
+//   cpr      — ST Pace Index (String Tension confirmed or estimated value)
+//   prev_cpr — previous year ST Pace Index (for year-over-year indicator when
+//              change ≥ 5 pts). Field only present where we have prior-year data.
+//
+// Speed tiers (ST / ATP scale):
+//   < 25     Very Slow
+//   25–32    Slow
+//   33–38    Average
+//   39–44    Fast
+//   > 44     Very Fast
+
+export const ST_YOY_THRESHOLD = 5.0   // minimum change to show the YoY indicator
+
+export function getSpeedTier(cpr) {
+  if (cpr == null) return null
+  if (cpr < 25)  return 'Very Slow'
+  if (cpr <= 32) return 'Slow'
+  if (cpr <= 38) return 'Average'
+  if (cpr <= 44) return 'Fast'
+  return 'Very Fast'
+}
+
 export const TOURNAMENT_CONFIG = {
   ATP: {
     Hard: [
-      { name: "Australian Open",                  cpr: 40 },
-      { name: "US Open",                           cpr: 37 },
-      { name: "Indian Wells Masters",              cpr: 36 },
-      { name: "Miami Open",                        cpr: 35 },
-      { name: "Cincinnati Masters",                cpr: 36 },
-      { name: "Canadian Open (Montreal/Toronto)",  cpr: 35 },
-      { name: "Vienna Open",                       cpr: 38 },
-      { name: "Swiss Indoors Basel",               cpr: 39 },
-      { name: "Rotterdam Open",                    cpr: 38 },
-      { name: "Qatar Open Doha",                   cpr: 36 },
-      { name: "Dubai Duty Free Championships",     cpr: 37 },
-      { name: "ATP Finals Turin",                  cpr: 38 },
-      { name: "Dallas Open",                       cpr: 37 },
-      { name: "Delray Beach Open",                 cpr: 37 },
-      { name: "Adelaide International",            cpr: 38 },
-      { name: "Auckland Open",                     cpr: 37 },
-      { name: "Acapulco Open",                     cpr: 38 },
-      { name: "Washington Citi Open",              cpr: 37 },
-      { name: "Winston-Salem Open",                cpr: 36 },
-      { name: "Tokyo Japan Open",                  cpr: 38 },
-      { name: "Shanghai Masters",                  cpr: 36 },
-      { name: "Paris Masters",                     cpr: 39 },
-      { name: "Stockholm Open",                    cpr: 39 },
-      { name: "Antwerp European Open",             cpr: 39 },
-      { name: "Challenger Hard (Generic)",         cpr: 33 },
+      { name: "Australian Open",                  cpr: 40 },    // ST estimate (no confirmed value yet)
+      { name: "US Open",                           cpr: 42.8 },  // ST confirmed 2025
+      { name: "Indian Wells Masters",              cpr: 35.4 },  // ST confirmed 2023
+      { name: "Miami Open",                        cpr: 40.6 },  // ST confirmed 2023
+      { name: "Cincinnati Masters",                cpr: 38 },    // ST estimate
+      { name: "Canadian Open (Montreal/Toronto)",  cpr: 38 },    // ST estimate
+      { name: "Vienna Open",                       cpr: 37 },    // ST estimate
+      { name: "Swiss Indoors Basel",               cpr: 38 },    // ST estimate
+      { name: "Rotterdam Open",                    cpr: 37 },    // ST estimate
+      { name: "Qatar Open Doha",                   cpr: 35 },    // ST estimate
+      { name: "Dubai Duty Free Championships",     cpr: 36 },    // ST estimate
+      { name: "ATP Finals Turin",                  cpr: 39 },    // ST estimate
+      { name: "Paris Masters",                     cpr: 39 },    // ST estimate
+      { name: "Dallas Open",                       cpr: 37 },    // ST estimate
+      { name: "Delray Beach Open",                 cpr: 37 },    // ST estimate
+      { name: "Adelaide International",            cpr: 38 },    // ST estimate
+      { name: "Auckland Open",                     cpr: 37 },    // ST estimate
+      { name: "Acapulco Open",                     cpr: 38 },    // ST estimate
+      { name: "Washington Citi Open",              cpr: 37 },    // ST estimate
+      { name: "Winston-Salem Open",                cpr: 36 },    // ST estimate
+      { name: "Tokyo Japan Open",                  cpr: 38 },    // ST estimate
+      { name: "Shanghai Masters",                  cpr: 36 },    // ST estimate
+      { name: "Stockholm Open",                    cpr: 39 },    // ST estimate
+      { name: "Antwerp European Open",             cpr: 39 },    // ST estimate
+      { name: "Challenger Hard (Generic)",         cpr: 36 },    // ST estimate
     ],
     Clay: [
-      { name: "Roland Garros",                           cpr: 24 },
-      { name: "Monte Carlo Masters",                     cpr: 25 },
-      { name: "Madrid Open",                             cpr: 29 },
-      { name: "Barcelona Open",                          cpr: 24 },
-      { name: "Italian Open Rome",                       cpr: 24 },
-      { name: "Hamburg Open",                            cpr: 25 },
-      { name: "Lyon Open",                               cpr: 25 },
-      { name: "Buenos Aires Open",                       cpr: 25 },
-      { name: "Rio Open",                                cpr: 26 },
-      { name: "Santiago Open",                           cpr: 24 },
-      { name: "Houston Clay",                            cpr: 27 },
-      { name: "Munich Open",                             cpr: 28 },
-      { name: "Estoril Open",                            cpr: 27 },
-      { name: "Marrakech Open",                          cpr: 24 },
-      { name: "Bastad Open",                             cpr: 24 },
-      { name: "Umag Open",                               cpr: 23 },
-      { name: "Gstaad Open",                             cpr: 24 },
-      { name: "Kitzbuhel Open",                          cpr: 24 },
-      { name: "Challenger Clay Europe (Generic)",        cpr: 23 },
-      { name: "Challenger Clay South America (Generic)", cpr: 24 },
-      { name: "Bordeaux Challenger",                     cpr: 23 },
-      { name: "Braunschweig Challenger",                 cpr: 23 },
+      // Roland Garros 2026 is dramatically faster than 2025 (new Dunlop ball).
+      // Bettors using historical mental models of RG as "Very Slow" need this context.
+      { name: "Roland Garros",                           cpr: 37.7, prev_cpr: 24.2, prev_year: 2025 }, // ST confirmed 2026
+      { name: "Monte Carlo Masters",                     cpr: 30.4 },  // ST confirmed 2026
+      { name: "Madrid Open",                             cpr: 31.9 },  // ST confirmed 2026
+      { name: "Barcelona Open",                          cpr: 27.2 },  // ST confirmed 2026
+      { name: "Italian Open Rome",                       cpr: 29.6 },  // ST confirmed 2026
+      { name: "Hamburg Open",                            cpr: 28.4 },  // ST confirmed 2026
+      { name: "Munich Open",                             cpr: 29.1 },  // ST confirmed 2026
+      { name: "Geneva Open",                             cpr: 31.2 },  // ST confirmed 2026
+      { name: "Lyon Open",                               cpr: 26 },    // ST estimate
+      { name: "Buenos Aires Open",                       cpr: 25 },    // ST estimate
+      { name: "Rio Open",                                cpr: 26 },    // ST estimate
+      { name: "Santiago Open",                           cpr: 24 },    // ST estimate
+      { name: "Houston Clay",                            cpr: 27 },    // ST estimate
+      { name: "Estoril Open",                            cpr: 27 },    // ST estimate
+      { name: "Marrakech Open",                          cpr: 24 },    // ST estimate
+      { name: "Bastad Open",                             cpr: 24 },    // ST estimate
+      { name: "Umag Open",                               cpr: 23 },    // ST estimate
+      { name: "Gstaad Open",                             cpr: 24 },    // ST estimate
+      { name: "Kitzbuhel Open",                          cpr: 24 },    // ST estimate
+      { name: "Challenger Clay Europe (Generic)",        cpr: 26 },    // ST estimate
+      { name: "Challenger Clay South America (Generic)", cpr: 26 },
+      { name: "Bordeaux Challenger",                     cpr: 24 },
+      { name: "Braunschweig Challenger",                 cpr: 24 },
       { name: "Valencia Challenger",                     cpr: 24 },
-      { name: "Monza Challenger",                        cpr: 23 },
+      { name: "Monza Challenger",                        cpr: 24 },
       { name: "Aix-en-Provence Challenger",              cpr: 24 },
-      { name: "Sanremo Challenger",                      cpr: 23 },
-      { name: "Geneva Challenger",                       cpr: 24 },
+      { name: "Sanremo Challenger",                      cpr: 24 },
+      { name: "Geneva Challenger",                       cpr: 26 },
     ],
     Grass: [
-      { name: "Wimbledon",               cpr: 43 },
-      { name: "Queens Club Championships", cpr: 44 },
-      { name: "Halle",                   cpr: 44 },
-      { name: "Stuttgart Grass",         cpr: 42 },
-      { name: "Eastbourne International", cpr: 41 },
-      { name: "Mallorca Championships",  cpr: 42 },
-      { name: "Hertogenbosch Open",      cpr: 43 },
-      { name: "Ilkley Challenger",       cpr: 40 },
-      { name: "Nottingham Challenger",   cpr: 41 },
+      // Wimbledon 2025 ST = 36.1 — significantly slower than prior estimate of 43.
+      // No longer a "Very Fast" court on the ST scale — Average.
+      { name: "Wimbledon",               cpr: 36.1 },  // ST confirmed 2025
+      { name: "Queens Club Championships", cpr: 38 },  // ST estimate
+      { name: "Halle",                   cpr: 38 },    // ST estimate
+      { name: "Stuttgart Grass",         cpr: 37 },    // ST estimate
+      { name: "Eastbourne International", cpr: 36 },   // ST estimate
+      { name: "Mallorca Championships",  cpr: 37 },    // ST estimate
+      { name: "Hertogenbosch Open",      cpr: 38 },    // ST estimate
+      { name: "Ilkley Challenger",       cpr: 36 },    // ST estimate
+      { name: "Nottingham Challenger",   cpr: 36 },    // ST estimate
     ],
   },
 
   WTA: {
     Hard: [
       { name: "Australian Open WTA",      cpr: 38 },
-      { name: "US Open WTA",              cpr: 36 },
-      { name: "Indian Wells WTA",         cpr: 35 },
-      { name: "Miami Open WTA",           cpr: 34 },
-      { name: "Cincinnati WTA",           cpr: 35 },
-      { name: "Canadian Open WTA",        cpr: 34 },
+      { name: "US Open WTA",              cpr: 41.5 },  // same venue as ATP, WTA-adjusted
+      { name: "Indian Wells WTA",         cpr: 34.5 },
+      { name: "Miami Open WTA",           cpr: 39.5 },
+      { name: "Cincinnati WTA",           cpr: 37 },
+      { name: "Canadian Open WTA",        cpr: 37 },
       { name: "Wuhan Open",               cpr: 36 },
       { name: "China Open Beijing",       cpr: 36 },
       { name: "WTA Finals",               cpr: 37 },
@@ -93,16 +121,17 @@ export const TOURNAMENT_CONFIG = {
       { name: "Osaka WTA",                cpr: 36 },
       { name: "Linz WTA",                 cpr: 38 },
       { name: "Guadalajara WTA",          cpr: 36 },
-      { name: "WTA 125 Hard (Generic)",   cpr: 32 },
-      { name: "Austin WTA 125",           cpr: 32 },
-      { name: "Jiangxi Open WTA 125",     cpr: 32 },
+      { name: "WTA 125 Hard (Generic)",   cpr: 36 },
+      { name: "Austin WTA 125",           cpr: 36 },
+      { name: "Jiangxi Open WTA 125",     cpr: 36 },
     ],
     Clay: [
-      { name: "Roland Garros WTA",              cpr: 23 },
-      { name: "Madrid Open WTA",                cpr: 28 },
-      { name: "Italian Open WTA Rome",          cpr: 23 },
+      // Roland Garros WTA uses the same court as ATP — same ST value.
+      { name: "Roland Garros WTA",              cpr: 37.7, prev_cpr: 24.2, prev_year: 2025 }, // ST confirmed 2026
+      { name: "Madrid Open WTA",                cpr: 31.0 },
+      { name: "Italian Open WTA Rome",          cpr: 28.5 },
       { name: "Stuttgart WTA",                  cpr: 27 },
-      { name: "Hamburg WTA",                    cpr: 24 },
+      { name: "Hamburg WTA",                    cpr: 27.5 },
       { name: "Prague Open WTA",                cpr: 24 },
       { name: "Rabat WTA",                      cpr: 23 },
       { name: "Strasbourg WTA",                 cpr: 24 },
@@ -116,20 +145,20 @@ export const TOURNAMENT_CONFIG = {
       { name: "Catalonia Open WTA 125",         cpr: 23 },
       { name: "Huzhou Open WTA 125 Clay",       cpr: 23 },
       { name: "Emilia-Romagna WTA 125 Clay",    cpr: 23 },
-      { name: "WTA 125 Clay (Generic)",         cpr: 23 },
+      { name: "WTA 125 Clay (Generic)",         cpr: 26 },
     ],
     Grass: [
-      { name: "Wimbledon WTA",           cpr: 42 },
-      { name: "Eastbourne WTA",          cpr: 40 },
-      { name: "Birmingham WTA",          cpr: 41 },
-      { name: "Hertogenbosch WTA",       cpr: 42 },
-      { name: "Mallorca WTA",            cpr: 41 },
-      { name: "Ilkley WTA 125 Grass",    cpr: 39 },
+      { name: "Wimbledon WTA",           cpr: 36.1 },  // ST confirmed 2025 — same court as ATP
+      { name: "Eastbourne WTA",          cpr: 36 },
+      { name: "Birmingham WTA",          cpr: 37 },
+      { name: "Hertogenbosch WTA",       cpr: 38 },
+      { name: "Mallorca WTA",            cpr: 37 },
+      { name: "Ilkley WTA 125 Grass",    cpr: 36 },
     ],
   },
 }
 
-// Legacy flat list (kept for backward compat with any other component using it)
+// Legacy flat list (backward compat)
 export const COURTS_BY_SURFACE = {
   Hard:  ['Australian Open','US Open','Indian Wells Masters','Miami Open','Cincinnati Masters',
           'Canadian Open (Montreal/Toronto)','Vienna Open','Swiss Indoors Basel','Rotterdam Open',

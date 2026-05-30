@@ -13,7 +13,7 @@ import EnvironmentBanner from '../components/EnvironmentBanner'
 import ExpectedSetsBanner from '../components/ExpectedSetsBanner'
 import Last5Bars from '../components/Last5Bars'
 import { calcProp, fetchStats } from '../utils/api'
-import { TOURNAMENT_CONFIG, fmt, fmtPct } from '../utils/constants'
+import { TOURNAMENT_CONFIG, fmt, fmtPct, getSpeedTier, ST_YOY_THRESHOLD } from '../utils/constants'
 
 const PROP_TYPES = ['Aces', 'Double Faults', 'Total Games', 'Break Points Won']
 const SURFACES   = ['Hard', 'Clay', 'Grass']
@@ -366,8 +366,77 @@ export default function PropProjection({ tour }) {
             fontFamily: '"Barlow Condensed", sans-serif', fontSize: 14, fontWeight: 600,
             letterSpacing: 0.5, outline: 'none',
           }}>
-            {courts.map(c => <option key={c} value={c} style={{ background: '#0a0f0c' }}>{c}</option>)}
+            {courts.map(c => {
+              // Find ST Pace Index for the option label
+              const tourKey = tour === 'WTA' ? 'WTA' : 'ATP'
+              const allTourneys = Object.values(TOURNAMENT_CONFIG[tourKey] || {}).flat()
+              const entry = allTourneys.find(t => t.name === c)
+              const cpr = entry?.cpr
+              const tier = cpr != null ? getSpeedTier(cpr) : null
+              const label = c === 'None'
+                ? 'None'
+                : cpr != null
+                  ? `${c}  ·  ST ${cpr.toFixed(1)}  ·  ${tier}`
+                  : c
+              return (
+                <option key={c} value={c} style={{ background: '#0a0f0c' }}>{label}</option>
+              )
+            })}
           </select>
+
+          {/* Surface Speed Tier chip — shows when a specific court is selected */}
+          {court && court !== 'None' && (() => {
+            const tourKey = tour === 'WTA' ? 'WTA' : 'ATP'
+            const allT = Object.values(TOURNAMENT_CONFIG[tourKey] || {}).flat()
+            const entry = allT.find(t => t.name === court)
+            if (!entry?.cpr) return null
+            const tier = getSpeedTier(entry.cpr)
+            const tierColor = {
+              'Very Slow': '#ff6b35',
+              'Slow':      '#ffb347',
+              'Average':   'var(--green-mid)',
+              'Fast':      'var(--hard-blue)',
+              'Very Fast': '#aa66ff',
+            }[tier] || 'var(--muted)'
+            const hasYoY = entry.prev_cpr != null &&
+              Math.abs(entry.cpr - entry.prev_cpr) >= ST_YOY_THRESHOLD
+            const yoyDir = hasYoY && entry.cpr > entry.prev_cpr ? 'faster' : 'slower'
+            return (
+              <div style={{ marginTop: 8 }}>
+                <div style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 10,
+                  padding: '7px 14px', borderRadius: 10,
+                  background: `${tierColor}14`,
+                  border: `1px solid ${tierColor}44`,
+                  flexWrap: 'wrap',
+                }}>
+                  <span style={{
+                    fontFamily: '"Barlow Condensed", sans-serif',
+                    fontWeight: 900, fontSize: 14, color: tierColor, letterSpacing: 1,
+                  }}>{tier}</span>
+                  <span style={{
+                    fontFamily: '"Barlow Condensed", sans-serif',
+                    fontWeight: 700, fontSize: 12, color: 'var(--muted)',
+                  }}>ST Pace Index {entry.cpr.toFixed(1)}</span>
+                  {hasYoY && (
+                    <span style={{
+                      fontFamily: '"Barlow Condensed", sans-serif',
+                      fontWeight: 700, fontSize: 11,
+                      color: yoyDir === 'faster' ? '#ff9f43' : 'var(--hard-blue)',
+                    }}>
+                      {entry.prev_year + 1}: {entry.cpr.toFixed(1)} vs {entry.prev_year}: {entry.prev_cpr.toFixed(1)} — significantly {yoyDir} this year
+                    </span>
+                  )}
+                </div>
+                <div style={{
+                  marginTop: 4, fontSize: 10,
+                  color: 'rgba(255,255,255,0.25)',
+                  fontFamily: '"Barlow Condensed", sans-serif',
+                  letterSpacing: 1,
+                }}>Powered by String Tension · stringtension.com</div>
+              </div>
+            )
+          })()}
         </div>
       </div>
 
@@ -678,6 +747,54 @@ export default function PropProjection({ tour }) {
                 />
               </motion.div>
             )}
+
+            {/* ── ST Pace Index result banner — shows dynamic value from backend ── */}
+            {result.court_pace_index != null && result.court_speed_tier && (() => {
+              const tierColor = {
+                'Very Slow': '#ff6b35',
+                'Slow':      '#ffb347',
+                'Average':   'var(--green-mid)',
+                'Fast':      'var(--hard-blue)',
+                'Very Fast': '#aa66ff',
+              }[result.court_speed_tier] || 'var(--muted)'
+              return (
+                <motion.div variants={REVEAL_ITEM} style={{
+                  display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap',
+                  padding: '10px 16px',
+                  background: `${tierColor}10`,
+                  border: `1px solid ${tierColor}33`,
+                  borderRadius: 10,
+                  marginBottom: 14,
+                }}>
+                  <span style={{
+                    fontFamily: '"Barlow Condensed", sans-serif',
+                    fontWeight: 900, fontSize: 14, color: tierColor, letterSpacing: 1,
+                  }}>{result.court_speed_tier}</span>
+                  <span style={{
+                    fontFamily: '"Barlow Condensed", sans-serif',
+                    fontWeight: 700, fontSize: 12, color: 'var(--muted)',
+                  }}>
+                    {court && court !== 'None' ? court : surface} — ST Pace Index {result.court_pace_index.toFixed(1)}
+                    {result.court_st_source === 'st_live' && (
+                      <span style={{ marginLeft: 8, color: 'var(--green-mid)', fontSize: 10 }}>● 2026 Live</span>
+                    )}
+                    {result.court_st_source !== 'st_live' && (
+                      <span style={{ marginLeft: 8, color: 'rgba(255,255,255,0.3)', fontSize: 10 }}>Historical</span>
+                    )}
+                  </span>
+                  {result.court_yoy_note && (
+                    <span style={{
+                      fontFamily: '"Barlow Condensed", sans-serif',
+                      fontWeight: 700, fontSize: 11, color: '#ff9f43',
+                    }}>{result.court_yoy_note}</span>
+                  )}
+                  <span style={{
+                    marginLeft: 'auto', fontSize: 9, color: 'rgba(255,255,255,0.2)',
+                    fontFamily: '"Barlow Condensed", sans-serif', letterSpacing: 1,
+                  }}>Powered by String Tension</span>
+                </motion.div>
+              )
+            })()}
 
             {/* ── Environment banner (full-width) ── */}
             {result.environment && (

@@ -1026,12 +1026,17 @@ def project_total_games(
     if h2h_games_avg is not None and h2h_games_avg > 0:
         proj = proj * 0.65 + h2h_games_avg * 0.35
 
-    # ── CPR surface adjustment ────────────────────────────────────────────────
+    # ── ST Pace Index surface adjustment for total games per set ─────────────
+    # Thresholds updated for the ST Pace Index scale (not the old CPR scale):
+    #   ST ≤ 28  (Very Slow / low-Slow clay)  → +0.4 gps (longer rallies, more deuce)
+    #            Examples: Barcelona 27.2, Hamburg 28.4, generic clay 26
+    #   ST ≥ 42  (Fast — US Open 42.8, top hard courts) → −0.3 gps
+    #   All others (Average incl. Roland Garros 37.7, Wimbledon 36.1) → neutral
     from src.constants import COURT_CPR
     cpr = COURT_CPR.get(court, CPR_NEUTRAL)
     if cpr <= 28:
         gps_adj = 0.4
-    elif cpr >= 43:
+    elif cpr >= 42:
         gps_adj = -0.3
     else:
         gps_adj = 0.0
@@ -1400,29 +1405,35 @@ def project_break_points(
     )
 
     # ═════════════════════════════════════════════════════════════════════════
-    # COMPONENT 6 — CPR modifier (within-surface court speed variation)
+    # COMPONENT 6 — ST Pace Index modifier (within-surface speed variation)
     #
-    # Clay:  CPR ≤ 24 → +2.5%  |  CPR 25–27 → +1%  |  CPR ≥ 28 → 0%
-    #        Slower clay (Roland Garros CPR 24) benefits returners more.
+    # Thresholds updated for the String Tension ST Pace Index scale:
     #
-    # Grass: Driven by opponent's first-serve pts won on grass — NOT CPR value.
-    #        opp 1st-won > 75% → −10%  |  65–75% → −5%  |  < 65% → 0%
+    # Clay (ST Pace Index scale, Very Slow / Slow / Average tiers):
+    #   ST ≤ 28  (Very Slow / low-Slow)  → +2.5%  returner advantage
+    #            Examples: Barcelona 27.2, Hamburg 28.4, generic clay 26
+    #   ST ≤ 33  (Slow)                  → +1.0%
+    #            Examples: Munich 29.1, Rome 29.6, Monte Carlo 30.4, Madrid 31.9
+    #   ST > 33  (Average or faster)     →  0%  neutral
+    #            Example: Roland Garros 2026 at 37.7 → neutral, NOT slow-clay bonus
     #
-    # Hard:  0% — C5 player-specific delta handles hard court variation.
+    # Grass: driven by opponent's 1st-serve pts won, NOT CPR value.
+    # Hard:  0% — the aces/DFs formula already handles hard-court speed via
+    #         cpr_factor = 1 + (cpr - CPR_NEUTRAL) / 100.
     # ═════════════════════════════════════════════════════════════════════════
     c6_cpr_mod  = 1.0
     c6_note     = "hard_zero"
 
     if surface == "Clay":
-        if cpr <= 24:
+        if cpr <= 28:
             c6_cpr_mod = 1.025
-            c6_note    = f"clay_slow(CPR={cpr})+2.5%"
-        elif cpr <= 27:
+            c6_note    = f"clay_slow(ST={cpr:.1f})+2.5%"
+        elif cpr <= 33:
             c6_cpr_mod = 1.010
-            c6_note    = f"clay_medium(CPR={cpr})+1%"
+            c6_note    = f"clay_medium(ST={cpr:.1f})+1%"
         else:
             c6_cpr_mod = 1.000
-            c6_note    = f"clay_faster(CPR={cpr})0%"
+            c6_note    = f"clay_avg(ST={cpr:.1f})0%"
     elif surface == "Grass":
         opp_1st_won = _safe(opponent_stats.get("first_serve_pts_won"), 72.0)
         if opp_1st_won > 75:
