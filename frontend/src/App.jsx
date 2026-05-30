@@ -2,7 +2,6 @@ import { useState, useRef, useEffect } from 'react'
 import { motion, AnimatePresence } from 'motion/react'
 import SurfaceAnalyzer from './pages/SurfaceAnalyzer'
 import PropProjection  from './pages/PropProjection'
-import BoardOptimizer  from './pages/BoardOptimizer'
 import HeadToHead      from './pages/HeadToHead'
 import ValueBet        from './pages/ValueBet'
 import SplineAccent    from './components/SplineAccent'
@@ -12,7 +11,6 @@ import ErrorBoundary   from './components/ErrorBoundary'
 const TABS = [
   { key: 'surface', label: 'Surface Analyzer', icon: 'bar' },
   { key: 'prop',    label: 'Prop Projection',  icon: 'bolt' },
-  { key: 'board',   label: 'Board Optimizer',  icon: 'grid' },
   { key: 'h2h',     label: 'Head to Head',     icon: 'rackets' },
   { key: 'value',   label: 'Value Bet',        icon: 'target' },
 ]
@@ -39,14 +37,6 @@ const TabIcon = ({ icon, color }) => {
     case 'bolt': return (
       <svg viewBox="0 0 24 24" {...s}>
         <path d="M13 2L3 14h7l-1 8 10-12h-7l1-8z" fill={color} fillOpacity="0.25" />
-      </svg>
-    )
-    case 'grid': return (
-      <svg viewBox="0 0 24 24" {...s}>
-        <rect x="3" y="3" width="7" height="7" rx="1" />
-        <rect x="14" y="3" width="7" height="7" rx="1" />
-        <rect x="3" y="14" width="7" height="7" rx="1" />
-        <rect x="14" y="14" width="7" height="7" rx="1" />
       </svg>
     )
     default: return null
@@ -296,7 +286,6 @@ export default function App() {
                 fail (network-heavy) so its boundary is especially important. */}
             {tab === 'surface' && <ErrorBoundary label="Surface Analyzer"><SurfaceAnalyzer tour={tour} /></ErrorBoundary>}
             {tab === 'prop'    && <ErrorBoundary label="Prop Projection"><PropProjection   tour={tour} /></ErrorBoundary>}
-            {tab === 'board'   && <ErrorBoundary label="Board Optimizer"><BoardOptimizer   tour={tour} /></ErrorBoundary>}
             {tab === 'h2h'     && <ErrorBoundary label="Head to Head"><HeadToHead         tour={tour} /></ErrorBoundary>}
             {tab === 'value'   && <ErrorBoundary label="Value Bet"><ValueBet               tour={tour} /></ErrorBoundary>}
           </motion.div>
