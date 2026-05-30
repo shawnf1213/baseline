@@ -1018,12 +1018,20 @@ def _resolve_surface_and_court(tournament: Optional[str],
 
 class BoardScrapeRequest(BaseModel):
     force_refresh: bool = False
+    # Optional tour filter — the backend always caches the *full* board so
+    # both tours remain available without a re-scrape. When `tour` is set
+    # the response is filtered before returning so the client can render
+    # only the relevant pool.
+    tour: Optional[str] = None
 
 
 class BoardAnalyzeRequest(BaseModel):
     """Caller passes the already-scraped board to keep the two steps separate."""
     props: list = []
-    tour_filter: Optional[str] = None   # 'ATP' | 'WTA' | None (both)
+    # 'ATP' or 'WTA'. PrizePicks doesn't include a gender field so a tour
+    # context is REQUIRED — we use it for Sofascore tour-restricted matching.
+    # Defaults to ATP for backwards compat with old clients.
+    tour_filter: Optional[str] = "ATP"
     # Hard server-side cap to prevent a 500-prop board from blocking the
     # backend for an hour. The frontend defaults to 20; allow up to 40.
     limit: int = 20
@@ -1036,11 +1044,20 @@ class BoardAnalyzeRequest(BaseModel):
 _BOARD_ANALYZE_MAX = 40
 
 
+def _tour_for_league(name: str) -> str:
+    """WTA leagues from PP carry the literal string 'WTA'. Everything else → ATP."""
+    return "WTA" if name and "wta" in str(name).lower() else "ATP"
+
+
 @app.post("/api/board/scrape")
 async def board_scrape(req: BoardScrapeRequest = None):
     """
     Scrape PrizePicks tennis board. Returns the eligible-prop list along with
     scrape metadata. Heavy work runs in a thread so we don't block the loop.
+
+    When req.tour is set the response is filtered server-side; the underlying
+    30-min cache still holds the full board so the other tour is one filter
+    away (no extra fetch).
     """
     force = bool(req and req.force_refresh)
     if force:
@@ -1048,10 +1065,26 @@ async def board_scrape(req: BoardScrapeRequest = None):
     loop = asyncio.get_event_loop()
     try:
         result = await loop.run_in_executor(None, scrape_board, force)
-        return result
     except Exception as exc:
         logger.exception("board/scrape failed: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc))
+
+    # Per-tour counts are always returned so the UI can show "N ATP / M WTA"
+    all_props = result.get("props") or []
+    n_atp = sum(1 for p in all_props if _tour_for_league(p.get("league")) == "ATP")
+    n_wta = sum(1 for p in all_props if _tour_for_league(p.get("league")) == "WTA")
+    result["n_atp"] = n_atp
+    result["n_wta"] = n_wta
+
+    # Optional tour-side filter on the returned props list (cache untouched)
+    if req and req.tour:
+        wanted = req.tour.upper()
+        result = dict(result)   # shallow copy so we don't mutate the cache
+        result["props"]      = [p for p in all_props
+                                if _tour_for_league(p.get("league")) == wanted]
+        result["tour_filter"] = wanted
+        result["n_filtered"]  = len(result["props"])
+    return result
 
 
 @app.get("/api/board/test")
@@ -1082,6 +1115,14 @@ async def _analyze_one_prop(pp_prop: dict, tour: str) -> dict:
     Match a single PrizePicks prop to Sofascore players and run the full
     Baseline projection. Returns a normalised analyzed-prop dict that the
     frontend renders directly.
+
+    PrizePicks doesn't include a gender field in its API response (verified
+    live: both Sabalenka and Alcaraz come back as league='TENNIS'). We use
+    Sofascore as the source of truth: a prop belongs to `tour` only if the
+    selected player exists in that tour's Sofascore database. Props whose
+    player lives in the OTHER tour are returned as None (excluded entirely),
+    so the board never shows wrong-tour props. Genuinely unknown players
+    keep the card with a "Player data unavailable" note.
     """
     out = {
         "pp_prop":           pp_prop,
@@ -1107,9 +1148,22 @@ async def _analyze_one_prop(pp_prop: dict, tour: str) -> dict:
         )
         out["surface"], out["court"] = surface, court
 
-        # Match the selected player
-        player = match_player(pp_prop.get("player_name") or "", tour=tour)
+        # ── Tour resolution via Sofascore search ────────────────────────────
+        # Step 1: search in the requested tour
+        pp_player_name = pp_prop.get("player_name") or ""
+        player = match_player(pp_player_name, tour=tour)
         if not player:
+            # Step 2: maybe this prop belongs to the OTHER tour. If so, drop
+            # it entirely so the UI never shows wrong-tour props.
+            other_tour   = "WTA" if tour == "ATP" else "ATP"
+            other_player = match_player(pp_player_name, tour=other_tour)
+            if other_player:
+                logger.info(
+                    "[Board] excluding %r — belongs to %s, not requested tour %s",
+                    pp_player_name, other_tour, tour,
+                )
+                return None
+            # Step 3: not in either tour — keep card with No Data badge
             out["match_note"] = "Player data unavailable"
             return out
         out["player"] = player
@@ -1169,48 +1223,65 @@ async def board_analyze(req: BoardAnalyzeRequest):
     if not req.props:
         return {"analyzed": [], "n_total": 0, "n_matched": 0, "n_truncated": 0}
 
-    # Heuristic tour selection: WTA leagues from PP carry the literal string
-    # 'WTA' in the league name. Everything else maps to ATP.
-    def _tour_for_league(name: str) -> str:
-        return "WTA" if name and "wta" in str(name).lower() else "ATP"
-
-    # Apply tour filter first so the cap acts on the right pool
-    if req.tour_filter:
-        wanted = req.tour_filter.upper()
-        candidates = [p for p in req.props if _tour_for_league(p.get("league")) == wanted]
-    else:
-        candidates = list(req.props)
+    # Tour is required (defaults to ATP). PrizePicks doesn't expose gender,
+    # so the per-prop tour is resolved inside _analyze_one_prop via Sofascore
+    # name matching — wrong-tour props return None and drop out.
+    tour = (req.tour_filter or "ATP").upper()
 
     requested = min(max(1, req.limit), _BOARD_ANALYZE_MAX)
-    truncated = max(0, len(candidates) - requested)
-    work_queue = candidates[:requested]
+    # We can't pre-filter candidates by league anymore (every PP prop comes
+    # back as league=TENNIS today regardless of gender), so we walk the
+    # scraped pool in order and analyze each one. Wrong-tour props are
+    # filtered inside the analyzer. To avoid burning the cap on excluded
+    # props we keep walking until we have `requested` accepted results OR
+    # we exhaust the pool.
+    sem = asyncio.Semaphore(5)
+    analyzed:    list = []
+    n_examined:  int  = 0
+    n_excluded:  int  = 0      # excluded because they belong to the OTHER tour
 
+    # Process in small batches so we can early-exit once we hit the cap
+    BATCH = 5
+    for batch_start in range(0, len(req.props), BATCH):
+        if len(analyzed) >= requested:
+            break
+        batch = req.props[batch_start:batch_start + BATCH]
+        n_examined += len(batch)
+
+        async def _run(pp_prop):
+            async with sem:
+                return await _analyze_one_prop(pp_prop, tour)
+
+        batch_results = await asyncio.gather(*(_run(p) for p in batch))
+        for r in batch_results:
+            if r is None:
+                n_excluded += 1
+            else:
+                analyzed.append(r)
+                if len(analyzed) >= requested:
+                    break
+
+    truncated = max(0, len(req.props) - n_examined)
     logger.info(
-        "[Board] analyze: scraped=%d candidates=%d (tour=%s) cap=%d truncated=%d",
-        len(req.props), len(candidates), req.tour_filter or "any",
-        requested, truncated,
+        "[Board] analyze: scraped=%d examined=%d wrong_tour=%d "
+        "accepted=%d (tour=%s, cap=%d) unexamined=%d",
+        len(req.props), n_examined, n_excluded, len(analyzed),
+        tour, requested, truncated,
     )
 
-    sem = asyncio.Semaphore(5)
-
-    async def _run(pp_prop):
-        tour = _tour_for_league(pp_prop.get("league"))
-        async with sem:
-            return await _analyze_one_prop(pp_prop, tour)
-
-    raw_results = await asyncio.gather(*(_run(p) for p in work_queue))
-    analyzed = [r for r in raw_results if r is not None]
-
     return {
-        "analyzed":    analyzed,
-        "n_total":     len(req.props),
-        "n_candidates": len(candidates),
-        "n_analyzed":  len(analyzed),
-        "n_truncated": truncated,
-        "n_matched":   sum(1 for r in analyzed if r.get("matched")),
-        "n_projected": sum(1 for r in analyzed
-                            if r.get("model_projection") is not None),
+        "analyzed":      analyzed,
+        "n_total":       len(req.props),
+        "n_examined":    n_examined,
+        "n_excluded":    n_excluded,
+        "n_analyzed":    len(analyzed),
+        "n_truncated":   truncated,
+        "n_candidates":  n_examined - n_excluded,
+        "n_matched":     sum(1 for r in analyzed if r.get("matched")),
+        "n_projected":   sum(1 for r in analyzed
+                              if r.get("model_projection") is not None),
         "limit_applied": requested,
+        "tour":          tour,
     }
 
 

@@ -359,6 +359,7 @@ def fetch_raw_sample() -> dict:
     idx      = _build_included_index(included)
 
     samples: list = []
+    league_counts: dict = {}    # tour-name → count, for the entire response
     for proj in data:
         attrs = proj.get("attributes") or {}
         rels  = proj.get("relationships") or {}
@@ -367,20 +368,27 @@ def fetch_raw_sample() -> dict:
         league = league_from_proj or player_league
         if not _is_tennis_league(league):
             continue
-        samples.append({
-            "projection_id":      proj.get("id"),
-            "league":             league,
-            "resolved_player":    player_name,
-            "raw_attributes":     attrs,
-            "relationship_keys":  list(rels.keys()),
-        })
-        if len(samples) >= 5:
-            break
+        league_counts[league] = league_counts.get(league, 0) + 1
+        if len(samples) < 5:
+            # Surface the gender-distinguishing fields prominently so the
+            # right field for ATP/WTA filtering is obvious in the output.
+            samples.append({
+                "projection_id":         proj.get("id"),
+                # Fields used for tour detection
+                "league_from_projection": league_from_proj,
+                "league_from_player":     player_league,
+                "resolved_player":        player_name,
+                "tour_detected":          "WTA" if league and "wta" in league.lower() else "ATP",
+                # Full raw blocks for reference
+                "raw_attributes":         attrs,
+                "relationship_keys":      list(rels.keys()),
+            })
 
     return {
         "endpoint":        _PP_API_URL,
         "n_data":          len(data),
         "n_included":      len(included),
-        "n_tennis_found":  len(samples),
+        "n_tennis_found":  sum(league_counts.values()),
+        "league_counts":   league_counts,   # e.g. {"TENNIS": 600, "WTA": 250}
         "samples":         samples,
     }

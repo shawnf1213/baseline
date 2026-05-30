@@ -87,6 +87,29 @@ function PropBadge({ propType }) {
   )
 }
 
+function TourBadge({ tour }) {
+  if (!tour) return null
+  const isWta = tour === 'WTA'
+  // ATP keeps the existing green-toggle palette; WTA uses pink so the two
+  // tours are instantly distinguishable in a mixed board feed.
+  const style = isWta
+    ? { bg: 'rgba(255, 99, 178, 0.18)', fg: '#ff63b2', border: 'rgba(255, 99, 178, 0.5)' }
+    : { bg: 'rgba(0, 230, 118, 0.18)', fg: 'var(--green-bright)', border: 'rgba(0, 230, 118, 0.5)' }
+  return (
+    <span style={{
+      padding: '3px 10px',
+      borderRadius: 999,
+      background: style.bg,
+      color: style.fg,
+      border: `1px solid ${style.border}`,
+      fontFamily: '"Barlow Condensed", sans-serif',
+      fontWeight: 900, fontSize: 10, letterSpacing: 2,
+      textTransform: 'uppercase',
+      whiteSpace: 'nowrap',
+    }}>{tour}</span>
+  )
+}
+
 function ConfPill({ confidence }) {
   const c = confidence || 0
   const color = c >= 80 ? 'var(--green-bright)'
@@ -183,7 +206,10 @@ function PropCard({ item, isBestBet = false, defaultExpanded = false }) {
             </div>
           )}
         </div>
-        <PropBadge propType={propType} />
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6 }}>
+          <TourBadge tour={item.tour} />
+          <PropBadge propType={propType} />
+        </div>
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr auto 1fr', alignItems: 'center', gap: 14, marginBottom: 12 }}>
@@ -410,10 +436,16 @@ export default function BoardOptimizer({ tour }) {
   const [loading, setLoading]   = useState(false)
   const [stage, setStage]       = useState('idle')   // idle | scraping | analyzing | done | error
   const [error, setError]       = useState(null)
-  const [board, setBoard]       = useState(null)     // raw scrape response
-  const [analyzed, setAnalyzed] = useState([])       // analyzed items list
+  const [board, setBoard]       = useState(null)     // raw scrape response (both tours)
   const [scrapedAt, setScrapedAt] = useState(null)
-  const [analyzeMeta, setAnalyzeMeta] = useState(null)  // {n_analyzed, n_truncated, ...}
+  // Per-tour analyzed cache so flipping the ATP/WTA toggle is instant when
+  // we've already analyzed that tour's board. Shape: {ATP: [...], WTA: [...]}
+  const [analyzedByTour, setAnalyzedByTour] = useState({})
+  const [metaByTour,     setMetaByTour]     = useState({})
+
+  // Derived view for the currently-selected tour
+  const analyzed    = analyzedByTour[tour] || []
+  const analyzeMeta = metaByTour[tour]     || null
 
   // Filters
   const [filterPropTypes, setFilterPropTypes] = useState(new Set(
@@ -435,7 +467,12 @@ export default function BoardOptimizer({ tour }) {
 
   const refresh = useCallback(async (force = false) => {
     setLoading(true); setError(null); setStage('scraping')
-    setAnalyzeMeta(null)
+    if (force) {
+      // Hard refresh wipes the per-tour cache so both tours re-analyze on
+      // demand (current tour now, other tour next time it's selected).
+      setAnalyzedByTour({})
+      setMetaByTour({})
+    }
     try {
       const b = await scrapeBoard(force)
       setBoard(b); setScrapedAt(b.scraped_at)
@@ -444,12 +481,14 @@ export default function BoardOptimizer({ tour }) {
         setStage('error'); setLoading(false); return
       }
       if (!b.props || b.props.length === 0) {
-        setAnalyzed([]); setStage('done'); setLoading(false); return
+        setAnalyzedByTour({ ATP: [], WTA: [] })
+        setMetaByTour({})
+        setStage('done'); setLoading(false); return
       }
       setStage('analyzing')
       const a = await analyzeBoard(b.props || [], tour, ANALYZE_LIMIT)
-      setAnalyzed(a.analyzed || [])
-      setAnalyzeMeta(a)
+      setAnalyzedByTour(prev => ({ ...prev, [tour]: a.analyzed || [] }))
+      setMetaByTour(prev => ({ ...prev, [tour]: a }))
       setStage('done')
     } catch (e) {
       setError(e.response?.data?.detail || e.message || 'Board fetch failed')
@@ -459,10 +498,15 @@ export default function BoardOptimizer({ tour }) {
     }
   }, [tour])
 
-  // Auto-load on mount + when tour changes. Strict-mode double-invoke is
-  // OK because the backend caches the scrape for 30 minutes and the analyze
-  // request is now capped at 20 props.
-  useEffect(() => { refresh(false) }, [refresh])
+  // Auto-load: scrape on mount, then analyze the *current* tour. When the
+  // user flips ATP↔WTA, only re-analyze if we don't have that tour cached
+  // yet — switching back to a tour we've already analyzed is instant.
+  useEffect(() => {
+    if (analyzedByTour[tour]) return       // already have this tour cached
+    refresh(false)
+    // intentionally only re-runs when tour or refresh changes
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tour, refresh])
 
   // ── Filter + sort the analyzed list ──────────────────────────────────────
   const filtered = useMemo(() => {
@@ -532,7 +576,11 @@ export default function BoardOptimizer({ tour }) {
           <div style={{
             fontFamily: '"Barlow Condensed", sans-serif',
             fontWeight: 900, fontSize: 24, color: '#fff', letterSpacing: 1,
-          }}>Board Optimizer</div>
+            display: 'inline-flex', alignItems: 'center', gap: 10,
+          }}>
+            Board Optimizer
+            <TourBadge tour={tour} />
+          </div>
           <div style={{ fontSize: 12, color: 'var(--muted)', fontFamily: '"Barlow Condensed", sans-serif', letterSpacing: 0.5 }}>
             Live PrizePicks props × Baseline projection
           </div>
@@ -759,10 +807,10 @@ export default function BoardOptimizer({ tour }) {
         </>
       )}
 
-      {/* Empty state */}
+      {/* Empty state — tour-aware */}
       {!loading && !error && analyzed.length === 0 && board?.ok && (
         <div className="glass-card" style={{ padding: '40px 20px', textAlign: 'center', color: 'var(--muted)' }}>
-          No eligible tennis props on the PrizePicks board right now.
+          No {tour} tennis props on the board right now. Check back closer to match time.
         </div>
       )}
     </div>
