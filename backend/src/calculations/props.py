@@ -1200,11 +1200,26 @@ def project_break_points(
         df_bonus_added   = 0.4
         c1_opp_bp_faced += df_bonus_added
 
+    # ── Realistic floor on the opportunity pool (C1) ──────────────────────────
+    # C1 is the opponent's BP faced per match — the pool of break chances this
+    # player can convert. No server credibly faces fewer than ~55% of the tour
+    # average per match (e.g. ATP clay floor ≈ 5.4). Values below that are
+    # almost always a data artifact (stat-rich-only subset, per-set vs per-match
+    # mislabel, or tiny sample) rather than a real signal. A 2.9 reading for a
+    # solid server like Nakashima collapses the whole projection. Clamp up to
+    # the floor — this mirrors the _CONV_RATE_CAP ceiling already applied to C3.
+    c1_floor = tour_avg_bp * 0.55
+    c1_floored = False
+    if c1_opp_bp_faced < c1_floor:
+        c1_floored = True
+        c1_opp_bp_faced = c1_floor
+        c1_source = f"{c1_source}+floor({c1_floor:.1f})"
+
     logger.info(
         "BP_C1 | opp=%s | surf_raw=%s | overall=%s | opp_surf_n=%d | "
-        "source=%s | c1=%.2f | opp_df=%.1f | df_bonus=%.1f | tour_avg=%.2f",
+        "source=%s | c1=%.2f | floored=%s | opp_df=%.1f | df_bonus=%.1f | tour_avg=%.2f",
         opp_name, raw_opp_bp_faced, overall_opp_bp_faced, opp_surf_sample,
-        c1_source, c1_opp_bp_faced, opp_df, df_bonus_added, tour_avg_bp,
+        c1_source, c1_opp_bp_faced, c1_floored, opp_df, df_bonus_added, tour_avg_bp,
     )
 
     # ═════════════════════════════════════════════════════════════════════════
