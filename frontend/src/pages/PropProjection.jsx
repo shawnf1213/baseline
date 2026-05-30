@@ -271,6 +271,15 @@ export default function PropProjection({ tour }) {
     }
     try {
       const data = await calcProp(payload)
+      if (propType === 'Break Points Won') {
+        // STEP 5 diagnostic — surface field names so any camelCase vs
+        // snake_case mismatch between backend and frontend is visible.
+        console.log('[BP] player_stats:', data?.player_stats)
+        console.log('[BP] opponent_stats:', data?.opponent_stats)
+        console.log('[BP] bp_* fields:', Object.fromEntries(
+          Object.entries(data || {}).filter(([k]) => k.startsWith('bp_') || k.startsWith('opp_'))
+        ))
+      }
       setResult(data)
       setRanFor(currentPair)
     } catch(e) {
@@ -914,11 +923,17 @@ export default function PropProjection({ tour }) {
                                 {overallN != null && <span style={{ fontSize: 9, color: 'var(--muted)', marginLeft: 4 }}>{overallN}m</span>}
                               </span>
                             : '—'],
-                        ['Conv (Blended)', blendedConv != null ? `${blendedConv.toFixed(0)}%` : '—'],
-                        [`BP Opps (${surfLabel})`, result?.surf_opp_bp_faced != null ? fmt(result.surf_opp_bp_faced) : '—'],
-                        ['BP Opps (Overall)', result?.overall_opp_bp_faced != null ? fmt(result.overall_opp_bp_faced) : '—'],
-                        ['Ret Pts Won (1st)', fmtPct(d.return_first_serve_pts_won)],
-                        ['Matches', d.matches_played || '—'],
+                        ['Conv (Blended)', blendedConv != null ? `${blendedConv.toFixed(0)}%` : 'N/A'],
+                        // FIX: backend exposes these as bp_surf_opp_faced /
+                        // bp_overall_opp_faced (the opponent's BP faced = this
+                        // player's BP opportunities created). Reading the
+                        // non-prefixed keys left these cells blank.
+                        [`BP Opps (${surfLabel})`, result?.bp_surf_opp_faced != null ? fmt(result.bp_surf_opp_faced) : 'N/A'],
+                        ['BP Opps (Overall)', result?.bp_overall_opp_faced != null ? fmt(result.bp_overall_opp_faced) : 'N/A'],
+                        ['Ret Pts Won (1st)', d.return_first_serve_pts_won != null ? fmtPct(d.return_first_serve_pts_won) : 'N/A'],
+                        ['Ret Pts Won (2nd)', d.return_second_serve_pts_won != null ? fmtPct(d.return_second_serve_pts_won) : 'N/A'],
+                        ['Win Rate', d.win_rate != null ? fmtPct(d.win_rate) : 'N/A'],
+                        ['Matches', d.matches_played || 'N/A'],
                       ]
                     } else if (isBPProp && idx === 1) {
                       const serveTier = result?.opp_serve_tier
@@ -930,18 +945,20 @@ export default function PropProjection({ tour }) {
                             ? <span>{fmt(result.bp_surf_opp_faced)}
                                 {oppSurfN != null && <span style={{ fontSize: 9, color: 'var(--muted)', marginLeft: 4 }}>{oppSurfN}m</span>}
                               </span>
-                            : fmt(d.bp_faced_count)],
+                            : (d.bp_faced_count != null ? fmt(d.bp_faced_count) : 'N/A')],
                         ['BP Faced (Overall)',
-                          result?.bp_overall_opp_faced != null ? fmt(result.bp_overall_opp_faced) : '—'],
+                          result?.bp_overall_opp_faced != null ? fmt(result.bp_overall_opp_faced) : 'N/A'],
                         ['Opp BP Won (proj)', result?.bp_opp_projected != null
                           ? <span style={{ color: 'var(--amber)', fontWeight: 800 }}>{fmt(result.bp_opp_projected)}</span>
-                          : '—'],
-                        ['Hold Rate (est)', result?.opp_hold_rate_pct != null ? `${result.opp_hold_rate_pct.toFixed(0)}%` : '—'],
+                          : 'N/A'],
+                        ['Hold Rate (est)', result?.opp_hold_rate_pct != null ? `${result.opp_hold_rate_pct.toFixed(0)}%` : 'N/A'],
                         ['Serve Quality', serveTier
                           ? <span style={{ color: serveTierColor, fontWeight: 800 }}>{serveTier}</span>
-                          : '—'],
-                        ['1st Srv Won', fmtPct(d.first_serve_pts_won)],
-                        ['Matches', d.matches_played || '—'],
+                          : 'N/A'],
+                        ['1st Srv Won', d.first_serve_pts_won != null ? fmtPct(d.first_serve_pts_won) : 'N/A'],
+                        ['2nd Srv Won', d.second_serve_pts_won != null ? fmtPct(d.second_serve_pts_won) : 'N/A'],
+                        ['DFs/Match', d.double_faults != null ? fmt(d.double_faults) : 'N/A'],
+                        ['Matches', d.matches_played || 'N/A'],
                       ]
                     } else {
                       rows = [

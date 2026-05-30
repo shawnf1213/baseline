@@ -913,6 +913,17 @@ async def prop_calculate(req: PropRequest):
             "bp_surf_momentum_mult": result.get("surface_momentum_mult"),
             "bp_bo5_momentum_mult":  result.get("bo5_momentum_mult"),
             "bp_base_proj":          result.get("base_proj"),
+            # Opponent serve-quality fields read directly (non-prefixed) by the
+            # frontend BP stat comparison — these were previously not exposed,
+            # leaving the Hold Rate and Serve Quality cells blank.
+            "opp_hold_rate_pct":     result.get("opp_hold_rate_pct"),
+            "opp_serve_tier":        result.get("opp_serve_tier"),
+            # Player return / blended conversion echoed for completeness
+            "conv_rate_pct":         result.get("conv_rate_pct"),
+            "player_bp_won_per_match":  result.get("player_bp_won_per_match"),
+            "player_bp_opps_per_match": result.get("player_bp_opps_per_match"),
+            "p1_ret":                result.get("p1_ret"),
+            "p2_srv":                result.get("p2_srv"),
             "match_format":          result.get("match_format", match_fmt),
             # ── Expected-sets engine (all prop types expose these) ────────────
             "expected_sets":         result.get("expected_sets"),
