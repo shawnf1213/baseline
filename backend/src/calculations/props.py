@@ -678,8 +678,21 @@ def detect_environment(p1_stats: dict, p2_stats: dict, surface: str = "Hard") ->
     surf_break_adj = {"Clay": 1.12, "Hard": 1.0, "Grass": 0.88}
     adj_breaks = exp_breaks_per_set * surf_break_adj.get(surface, 1.0)
 
-    if combined_hold < 0.62 or adj_breaks > 4.5:
+    # Surface-relative HIGH_BREAK gate. The surf_break_adj multiplier already
+    # scaled break frequency down for grass (0.88) and up for clay (1.12), so
+    # adj_breaks is the right cross-surface comparison — but the secondary
+    # "combined_hold < 0.62" trigger ignored surface entirely. WTA hold rates
+    # run structurally low, so a normal WTA grass match tripped HIGH_BREAK off
+    # the hold floor alone, which is backwards (grass is the most serve-
+    # dominant surface). Disable the low-hold HIGH_BREAK trigger on grass and
+    # raise the adj_breaks bar there.
+    high_break_breaks = 5.2 if surface == "Grass" else 4.5
+    low_hold_trigger  = (combined_hold < 0.62) and surface != "Grass"
+
+    if low_hold_trigger or adj_breaks > high_break_breaks:
         return "HIGH_BREAK"
+    elif combined_hold > 0.74 and surface == "Grass":
+        return "SERVE_DOM"
     elif combined_hold > 0.78 and adj_breaks < 2.5:
         return "SERVE_DOM"
     elif adj_breaks > 3.5:
