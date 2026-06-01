@@ -221,13 +221,17 @@ def project_aces(
         p_form=_p_form, o_form=_o_form,
     )
     expected_sets, comp_label = _expected_sets_from_gap(win_prob_gap, is_bo5)
-    per_set_scale = _per_set_scale(tour, expected_sets)
-    avg_hist_sets = _AVG_HISTORICAL_SETS.get(tour, 2.45)
+    # Aces use the ace-specific historical-sets denominator (~2.35 ATP), NOT
+    # the BP-tuned 2.60 — see _ACE_AVG_HISTORICAL_SETS. Using 2.60 here
+    # suppressed every projection because per-match ace averages are taken
+    # over a mostly-BO3 season.
+    avg_hist_sets = _ACE_AVG_HISTORICAL_SETS.get(tour, 2.35)
+    per_set_scale = expected_sets / max(avg_hist_sets, 0.01)
 
     # Per-set service points (~ same across BO3/BO5 because match-format
     # averages are roughly proportional to sets played). Used by TA branch.
     _sp_map = _AVG_SERVICE_PTS.get(tour, {"best_of_3": 80, "best_of_5": 80})
-    sp_per_set = _sp_map.get("best_of_3", 80) / 2.3
+    sp_per_set = _sp_map.get("best_of_3", 80) / avg_hist_sets
     avg_service_pts = sp_per_set * expected_sets
 
     ta_used = False
@@ -471,12 +475,15 @@ def project_double_faults(
         o_form=opponent_stats.get("form") or opponent_stats.get("recent_form"),
     )
     expected_sets, comp_label = _expected_sets_from_gap(win_prob_gap, is_bo5)
-    per_set_scale = _per_set_scale(tour, expected_sets)
-    avg_hist_sets = _AVG_HISTORICAL_SETS.get(tour, 2.45)
+    # DFs are a per-serve volume stat like aces — use the ace/DF historical-sets
+    # denominator (~2.35 ATP), NOT the BP-tuned 2.60, which suppressed every
+    # per-match DF average over a mostly-BO3 season.
+    avg_hist_sets = _ACE_AVG_HISTORICAL_SETS.get(tour, 2.35)
+    per_set_scale = expected_sets / max(avg_hist_sets, 0.01)
 
     # Per-set service pts → total service pts for this expected match length
     _sp_map = _AVG_SERVICE_PTS.get(tour, {"best_of_3": 80, "best_of_5": 80})
-    sp_per_set = _sp_map.get("best_of_3", 80) / 2.3
+    sp_per_set = _sp_map.get("best_of_3", 80) / avg_hist_sets
     avg_service_pts = sp_per_set * expected_sets
 
     ta_used = False
@@ -859,6 +866,16 @@ def _returner_dominance_factor(
 #        significant BO5 volume.
 # ─────────────────────────────────────────────────────────────────────────────
 _AVG_HISTORICAL_SETS = {"WTA": 2.30, "ATP": 2.60}
+
+# Aces/DFs use their OWN historical-sets denominator. _AVG_HISTORICAL_SETS was
+# raised to 2.60 for ATP specifically to tame Break-Points-Won BO5 overcounting
+# — but the BP per-match data over-weights top players' heavy Grand Slam (BO5)
+# schedules. A volume serve stat like aces is averaged across a player's ENTIRE
+# season, which is dominated by BO3 events; the true mean is ~2.35 sets/match.
+# Borrowing 2.60 here divided every per-match ace average by too large a number,
+# systematically suppressing ace projections (worst for heavy favorites whose
+# expected_sets is low — exactly the big-server over-bet case).
+_ACE_AVG_HISTORICAL_SETS = {"WTA": 2.20, "ATP": 2.35}
 
 
 def _is_bo5_match(tour: str, court: str) -> bool:
