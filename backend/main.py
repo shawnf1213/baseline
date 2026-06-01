@@ -858,7 +858,7 @@ async def prop_calculate(req: PropRequest):
             player_surface_matches=p1_chart_log,
         )
 
-        env_key   = result.get("environment") or detect_environment(p1_s, p2_s, surface=req.surface)
+        env_key   = result.get("environment") or detect_environment(p1_s, p2_s, surface=req.surface, tour=req.tour)
         env_label = ENVIRONMENT_LABELS.get(env_key, "Standard")
 
         # Serialise H2H DataFrames

@@ -660,44 +660,57 @@ def _hold_rate_proxy(stats: dict) -> float:
     return fin * sp1w + (1.0 - fin) * sp2w
 
 
-def detect_environment(p1_stats: dict, p2_stats: dict, surface: str = "Hard") -> str:
+def detect_environment(p1_stats: dict, p2_stats: dict,
+                       surface: str = "Hard", tour: str = "ATP") -> str:
     """
-    Classify match environment using expected breaks per set.
+    Classify match environment from the surface-specific combined hold rate.
 
-    Returns one of: HIGH_BREAK / SERVE_DOM / RET_EDGE / STANDARD
-    Surface is used to adjust break frequency (clay plays longer → more breaks).
+    Combined hold = average of both players' first_serve_pts_won on the
+    selected surface. The blended-stats pipeline upstream already supplies
+    surface-specific stats, so we read first_serve_pts_won directly (no
+    all-surface proxy — that was the bug that mislabeled grass).
+
+    Thresholds per (surface, tour) reflect actual tennis dynamics:
+      Grass is the most serve-dominant surface → HIGH_BREAK requires an
+        extreme breakdown of both servers' hold rates.
+      Clay favors returners → easier to qualify as HIGH_BREAK.
+      WTA serve stats run ~7-8pp lower than ATP across every surface, so
+        WTA thresholds are uniformly lower.
+
+    Returns one of: SERVE_DOM / STANDARD / RET_EDGE / HIGH_BREAK.
     """
-    p1_hold = _hold_rate_proxy(p1_stats)
-    p2_hold = _hold_rate_proxy(p2_stats)
-    combined_hold = (p1_hold + p2_hold) / 2.0
+    p1_h = _safe(p1_stats.get("first_serve_pts_won"), 70.0)
+    p2_h = _safe(p2_stats.get("first_serve_pts_won"), 70.0)
+    combined = (p1_h + p2_h) / 2.0
 
-    # Expected total breaks per set: each player's break chance × 6 service games/set
-    exp_breaks_per_set = (1.0 - p1_hold) * 6.0 + (1.0 - p2_hold) * 6.0
+    s = (surface or "Hard").title()
+    t = (tour or "ATP").upper()
 
-    # Surface adjustment — clay generates ~12% more breaks, grass ~12% fewer
-    surf_break_adj = {"Clay": 1.12, "Hard": 1.0, "Grass": 0.88}
-    adj_breaks = exp_breaks_per_set * surf_break_adj.get(surface, 1.0)
+    # (high_break_below, ret_edge_below, standard_below, serve_dom_at_or_above)
+    THRESHOLDS = {
+        ("Grass", "ATP"): (58.0, 65.0, 72.0, 72.0),
+        ("Grass", "WTA"): (50.0, 58.0, 65.0, 65.0),
+        ("Hard",  "ATP"): (60.0, 68.0, 75.0, 75.0),
+        ("Hard",  "WTA"): (52.0, 60.0, 68.0, 68.0),
+        ("Clay",  "ATP"): (62.0, 70.0, 78.0, 78.0),
+        ("Clay",  "WTA"): (54.0, 62.0, 70.0, 70.0),
+    }
+    high, ret, std, _ = THRESHOLDS.get((s, t), THRESHOLDS[("Hard", "ATP")])
 
-    # Surface-relative HIGH_BREAK gate. The surf_break_adj multiplier already
-    # scaled break frequency down for grass (0.88) and up for clay (1.12), so
-    # adj_breaks is the right cross-surface comparison — but the secondary
-    # "combined_hold < 0.62" trigger ignored surface entirely. WTA hold rates
-    # run structurally low, so a normal WTA grass match tripped HIGH_BREAK off
-    # the hold floor alone, which is backwards (grass is the most serve-
-    # dominant surface). Disable the low-hold HIGH_BREAK trigger on grass and
-    # raise the adj_breaks bar there.
-    high_break_breaks = 5.2 if surface == "Grass" else 4.5
-    low_hold_trigger  = (combined_hold < 0.62) and surface != "Grass"
+    if combined < high:
+        env = "HIGH_BREAK"
+    elif combined < ret:
+        env = "RET_EDGE"
+    elif combined < std:
+        env = "STANDARD"
+    else:
+        env = "SERVE_DOM"
 
-    if low_hold_trigger or adj_breaks > high_break_breaks:
-        return "HIGH_BREAK"
-    elif combined_hold > 0.74 and surface == "Grass":
-        return "SERVE_DOM"
-    elif combined_hold > 0.78 and adj_breaks < 2.5:
-        return "SERVE_DOM"
-    elif adj_breaks > 3.5:
-        return "RET_EDGE"
-    return "STANDARD"
+    logger.info(
+        "ENV | surface=%s tour=%s | p1_1st=%.1f p2_1st=%.1f combined=%.1f -> %s",
+        s, t, p1_h, p2_h, combined, env,
+    )
+    return env
 
 
 # ── Break opportunity scaling ──────────────────────────────────────────────────
@@ -1071,7 +1084,7 @@ def project_total_games(
         gps_adj = 0.0
     proj += gps_adj * exp_sets
 
-    env = detect_environment(player_stats, opponent_stats, surface=surface)
+    env = detect_environment(player_stats, opponent_stats, surface=surface, tour=tour)
 
     p_matches = player_stats.get("matches_played", 0) or 0
     o_matches = opponent_stats.get("matches_played", 0) or 0
@@ -1788,7 +1801,11 @@ def project_break_points(
         )
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Handedness adjustment (carry-over)
+    # Handedness factor — DIAGNOSTIC ONLY (no longer mutates proj).
+    # Per spec: a single calculation produces a single number. The user-
+    # specified BP formula is C1×C2×C3×C4×C5×C6×C8 + momentum_bonus — no
+    # post-formula multipliers. Handedness data is retained in the response
+    # for transparency, but is not applied to the projection.
     # ─────────────────────────────────────────────────────────────────────────
     hand_bp_factor = 1.0
     opp_hand = opponent_ta.get("handedness") if opponent_ta else None
@@ -1800,24 +1817,32 @@ def project_break_points(
         vs_right_bp = player_ta.get("vs_right", {}).get("bp_converted")
         if vs_right_bp and conv_rate_pct > 0:
             hand_bp_factor = max(0.88, min(1.12, vs_right_bp / conv_rate_pct))
-    proj = proj * hand_bp_factor
-    logger.info("BP_HAND | opp_hand=%s | factor=%.3f | after=%.2f",
-                opp_hand, hand_bp_factor, proj)
+    logger.info(
+        "BP_HAND | opp_hand=%s | factor=%.3f | DIAGNOSTIC_ONLY (proj unchanged)",
+        opp_hand, hand_bp_factor,
+    )
 
-    env = detect_environment(player_stats, opponent_stats, surface=surface)
+    env = detect_environment(player_stats, opponent_stats, surface=surface, tour=tour)
 
     # ─────────────────────────────────────────────────────────────────────────
-    # H2H blend — 25% weight if ≥ 3 surface matches
+    # H2H availability — DIAGNOSTIC ONLY (no longer mutates proj).
+    # The h2h_used flag still feeds the confidence calculation below, but the
+    # 75/25 blend that previously inflated/deflated proj after the formula has
+    # been removed per spec: one calculation, one number.
     # ─────────────────────────────────────────────────────────────────────────
     h2h_used = h2h_bp_avg is not None and h2h_bp_avg > 0 and h2h_match_count >= 3
     if h2h_used:
-        proj_pre_h2h = proj
-        proj = proj * 0.75 + h2h_bp_avg * 0.25
-        logger.info("BP_H2H | avg=%.2f | before=%.2f | after=%.2f",
-                    h2h_bp_avg, proj_pre_h2h, proj)
+        logger.info(
+            "BP_H2H | avg=%.2f | available_for_confidence_only (proj unchanged)",
+            h2h_bp_avg,
+        )
 
     # ─────────────────────────────────────────────────────────────────────────
-    # All-surface sanity check — blend toward all-surface estimate if outlier
+    # All-surface reference — DIAGNOSTIC ONLY (no longer mutates proj).
+    # Per spec the formula's output is final; we still compute the reference
+    # so the UI can disclose it and the confidence logic can detect outliers,
+    # but the 70/30 blend that previously deflated proj toward this reference
+    # has been removed.
     # ─────────────────────────────────────────────────────────────────────────
     all_surface_blended = False
     all_surface_ref     = None
@@ -1828,12 +1853,10 @@ def project_break_points(
         if all_conv_pct and all_conv_pct > 0:
             all_surface_ref = (all_conv_pct / 100.0) * all_bp_opps
             if proj < all_surface_ref * 0.60:
-                proj_pre_sanity = proj
-                proj = proj * 0.70 + all_surface_ref * 0.30
-                all_surface_blended = True
                 logger.info(
-                    "BP_ALL_SURF | proj=%.2f < 60%% of ref=%.2f → blend → %.2f",
-                    proj_pre_sanity, all_surface_ref, proj,
+                    "BP_ALL_SURF | proj=%.2f < 60%% of ref=%.2f | "
+                    "diagnostic_only (proj unchanged)",
+                    proj, all_surface_ref,
                 )
 
     # ─────────────────────────────────────────────────────────────────────────
