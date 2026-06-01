@@ -368,10 +368,29 @@ def project_aces(
     elif ta_opp_ace_against is not None:
         opp_ace_against = ta_opp_ace_against
 
+    have_real_ace_against = False
     if opp_ace_against and opp_ace_against > 0:
         tour_avg_ag = _TOUR_AVG_ACE_AGAINST.get(tour, 5.5)
         raw_factor = opp_ace_against / tour_avg_ag
         ace_against_factor = max(0.70, min(1.50, raw_factor))
+        have_real_ace_against = True
+
+    # ── Resolve L2/L4 double-count ────────────────────────────────────────────
+    # L4 (ace-against) is the DIRECT measure of how many aces the opponent
+    # concedes — the authoritative opponent effect for an ACE projection.
+    # L2 (suppression) is derived from the opponent's first_serve_won /
+    # return points and is really a proxy for the same thing, but it points
+    # the WRONG way: an opponent who concedes lots of aces is often also a
+    # strong server, so L2 returns a SUPPRESSION (<1.0) that cancels L4's
+    # boost. That double-count produced the Arnaldi vs Tiafoe bug — Tiafoe
+    # concedes 15 aces/match (L4 = 1.50 boost) yet L2 = 0.65 dragged the
+    # projection down to 6.8. When we have real ace-against data, L4 owns the
+    # opponent adjustment and L2 is neutralized toward 1.0 (kept at a light
+    # 25% weight so it still nudges, not dominates). When L4 has no data, L2
+    # remains the full fallback.
+    if have_real_ace_against:
+        suppression = 1.0 + (suppression - 1.0) * 0.25
+        ss_suppression = 1.0 + (ss_suppression - 1.0) * 0.25
 
     # ── L5: Court speed (ST Pace Index) ───────────────────────────────────────
     # The ace BASE is already surface-specific (a clay player's base reflects
