@@ -369,8 +369,26 @@ def project_aces(
         raw_factor = opp_ace_against / tour_avg_ag
         ace_against_factor = max(0.70, min(1.50, raw_factor))
 
-    # ── L5: Court speed (CPR) ─────────────────────────────────────────────────
-    cpr_factor = 1 + (cpr - CPR_NEUTRAL) / 100
+    # ── L5: Court speed (ST Pace Index) ───────────────────────────────────────
+    # The ace BASE is already surface-specific (a clay player's base reflects
+    # how they serve on clay). So the court-speed adjustment must measure how
+    # fast THIS court plays RELATIVE TO A TYPICAL COURT OF THIS SURFACE — not
+    # relative to the global neutral. Anchoring to the global CPR_NEUTRAL=35
+    # was the bug: Roland Garros 2026 at 37.7 (very fast clay) only earned
+    # +2.7% when it should be ~+20%, because 37.7 is far above clay's typical
+    # ~26. That suppressed big servers on a fast clay court by ~2x vs reality
+    # (Mensik projected 6 when the book had 12.5).
+    from src.constants import GENERIC_SURFACE_CPR as _GEN_SURF_CPR
+    surface_baseline = _GEN_SURF_CPR.get(surface, CPR_NEUTRAL)
+    # Slope 0.018/point: a 10-point speed gap = ±18% aces, matching how
+    # strongly ace volume tracks court pace. Capped to ±35% so an extreme
+    # reading can't run away.
+    cpr_factor = 1.0 + (cpr - surface_baseline) * 0.018
+    cpr_factor = max(0.65, min(1.35, cpr_factor))
+    logger.info(
+        "ACE_L5_CPR | court_cpr=%.1f surface=%s surf_baseline=%.1f -> cpr_factor=%.3f",
+        cpr, surface, surface_baseline, cpr_factor,
+    )
 
     # ── Combine layers (TA projection) ────────────────────────────────────────
     ta_proj = base * ace_against_factor * hand_factor * suppression * cpr_factor
