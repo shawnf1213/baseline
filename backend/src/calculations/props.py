@@ -221,11 +221,17 @@ def project_aces(
         p_form=_p_form, o_form=_o_form,
     )
     expected_sets, comp_label = _expected_sets_from_gap(win_prob_gap, is_bo5)
-    # Aces use the ace-specific historical-sets denominator (~2.35 ATP), NOT
-    # the BP-tuned 2.60 — see _ACE_AVG_HISTORICAL_SETS. Using 2.60 here
-    # suppressed every projection because per-match ace averages are taken
-    # over a mostly-BO3 season.
-    avg_hist_sets = _ACE_AVG_HISTORICAL_SETS.get(tour, 2.35)
+    # Sets-scaling denominator for aces. The per-match ace average is taken
+    # over a player's whole season:
+    #   BO3 matches  → ~2.35 sets/match (mostly best-of-3 events)
+    #   BO5 matches  → the per-match data ALREADY embeds the player's Grand
+    #                  Slam BO5 history, so scaling a 4.1-set match against
+    #                  2.35 double-counts the long-match volume. Use a
+    #                  BO5-appropriate denominator (~3.4) so a Grand Slam
+    #                  projection lands at book-realistic levels (Mensik RG
+    #                  BO5 ~12-13, matching the 12.5 line, not 21).
+    avg_hist_sets = _ACE_BO5_HISTORICAL_SETS.get(tour, 3.4) if is_bo5 \
+        else _ACE_AVG_HISTORICAL_SETS.get(tour, 2.35)
     per_set_scale = expected_sets / max(avg_hist_sets, 0.01)
 
     # Per-set service points (~ same across BO3/BO5 because match-format
@@ -278,35 +284,15 @@ def project_aces(
 
     cpr = cpr_override if cpr_override is not None else COURT_CPR.get(court, CPR_NEUTRAL)
 
-    # ── L2: Opponent suppression — TA first_won_pct blended with Sofascore ───
+    # ── Opponent return context (sets the BLEND WEIGHT, not a multiplier) ────
+    # Return points won is NO LONGER a suppression multiplier. It only shifts
+    # how much weight the blend gives the opponent's ace-against rate vs the
+    # player's own baseline (see the blend below). This removes the old
+    # compounding double-suppression that crushed big-server projections.
     opp_ta_surf = None
     if opponent_ta:
         opp_ta_surf = opponent_ta.get("surface_stats", {}).get(surface)
-
-    # Sofascore suppression (always computed as fallback component)
     opp_ret1 = _safe(opponent_stats.get("return_first_serve_pts_won"))
-    tour_avg_ret1 = ATP_TOUR_AVERAGES["return_first_serve_pts_won"]
-    if opp_ret1 > 0:
-        if opp_ret1 > tour_avg_ret1:
-            ss_suppression = 1 - (opp_ret1 - tour_avg_ret1) / 120
-        else:
-            ss_suppression = 1 + (tour_avg_ret1 - opp_ret1) / 200
-    else:
-        ss_suppression = 1.0
-
-    # TA suppression via opponent first_won_pct
-    if opp_ta_surf and opp_ta_surf.get("first_won_pct") is not None:
-        tour_avg_fw = _TOUR_AVG_FIRST_WON.get(tour, 72.0)
-        opp_fw = opp_ta_surf["first_won_pct"]
-        raw_ta_supp = 1.0 - (opp_fw - tour_avg_fw) / tour_avg_fw
-        raw_ta_supp = max(0.70, min(1.30, raw_ta_supp))
-        # Blend 60% TA + 40% Sofascore if both available
-        if opp_ret1 > 0:
-            suppression = 0.60 * raw_ta_supp + 0.40 * ss_suppression
-        else:
-            suppression = raw_ta_supp
-    else:
-        suppression = ss_suppression
 
     # ── L3: Handedness matchup (Tennis Abstract) ──────────────────────────────
     hand_factor = 1.0
@@ -345,90 +331,87 @@ def project_aces(
             else:
                 hand_factor = factor_table.get((player_hand, opp_hand), 1.0)
 
-    # ── L4: Opponent ace-against (SS primary, TA secondary) ──────────────────
-    ace_against_factor = 1.0
+    # ── Opponent ace-against rate (aces they concede per match on surface) ────
+    # Direct measure: how many aces this opponent gives up as a returner.
     opp_ace_against = None
-    # SS ace-against (from opp_aces field computed in sofascore_client) — injected
-    # into opponent_stats by main.py before reaching here.
     ss_opp_ace_against = opponent_stats.get("ace_against_per_match")
-    # TA ace_against as fallback
     if ss_opp_ace_against is None and opponent_ta:
         ss_opp_ace_against = opponent_ta.get("ace_against_per_match")
-    # TA ace_pct for opponent is their own ace rate (correlated with server quality)
-    # Use it as a proxy for how many aces they face
+    # TA opponent ace_pct is the opponent's OWN serve ace rate, a proxy for how
+    # dominant a server they are — NOT how many aces they face. We only use it
+    # as a last-resort fallback scaled to the tour-average ace-against level.
     ta_opp_ace_against = None
     if opp_ta_surf and opp_ta_surf.get("ace_pct") is not None:
         ta_opp_ace_against = (opp_ta_surf["ace_pct"] / 100) * avg_service_pts
 
-    if ta_opp_ace_against is not None and ss_opp_ace_against is not None and ss_opp_ace_against > 0:
-        blended_against = 0.60 * ta_opp_ace_against + 0.40 * ss_opp_ace_against
-        opp_ace_against = blended_against
-    elif ss_opp_ace_against is not None:
+    if ss_opp_ace_against is not None and ss_opp_ace_against > 0:
         opp_ace_against = ss_opp_ace_against
-    elif ta_opp_ace_against is not None:
+    elif ta_opp_ace_against is not None and ta_opp_ace_against > 0:
         opp_ace_against = ta_opp_ace_against
 
-    have_real_ace_against = False
-    if opp_ace_against and opp_ace_against > 0:
-        tour_avg_ag = _TOUR_AVG_ACE_AGAINST.get(tour, 5.5)
-        raw_factor = opp_ace_against / tour_avg_ag
-        ace_against_factor = max(0.70, min(1.50, raw_factor))
-        have_real_ace_against = True
-
-    # ── Resolve L2/L4 double-count ────────────────────────────────────────────
-    # L4 (ace-against) is the DIRECT measure of how many aces the opponent
-    # concedes — the authoritative opponent effect for an ACE projection.
-    # L2 (suppression) is derived from the opponent's first_serve_won /
-    # return points and is really a proxy for the same thing, but it points
-    # the WRONG way: an opponent who concedes lots of aces is often also a
-    # strong server, so L2 returns a SUPPRESSION (<1.0) that cancels L4's
-    # boost. That double-count produced the Arnaldi vs Tiafoe bug — Tiafoe
-    # concedes 15 aces/match (L4 = 1.50 boost) yet L2 = 0.65 dragged the
-    # projection down to 6.8. When we have real ace-against data, L4 owns the
-    # opponent adjustment and L2 is neutralized toward 1.0 (kept at a light
-    # 25% weight so it still nudges, not dominates). When L4 has no data, L2
-    # remains the full fallback.
+    have_real_ace_against = opp_ace_against is not None and opp_ace_against > 0
+    # opp_ace_against is a per-match figure from history. Scale it to THIS
+    # match's expected length so it's on the same footing as `base`.
     if have_real_ace_against:
-        suppression = 1.0 + (suppression - 1.0) * 0.25
-        ss_suppression = 1.0 + (ss_suppression - 1.0) * 0.25
+        opp_ace_against_scaled = opp_ace_against * (expected_sets / max(avg_hist_sets, 0.01))
+    else:
+        # No data → fall back to the player's own baseline (blend is a no-op)
+        opp_ace_against_scaled = base
 
-    # ── L5: Court speed (ST Pace Index) ───────────────────────────────────────
-    # The ace BASE is already surface-specific (a clay player's base reflects
-    # how they serve on clay). So the court-speed adjustment must measure how
-    # fast THIS court plays RELATIVE TO A TYPICAL COURT OF THIS SURFACE — not
-    # relative to the global neutral. Anchoring to the global CPR_NEUTRAL=35
-    # was the bug: Roland Garros 2026 at 37.7 (very fast clay) only earned
-    # +2.7% when it should be ~+20%, because 37.7 is far above clay's typical
-    # ~26. That suppressed big servers on a fast clay court by ~2x vs reality
-    # (Mensik projected 6 when the book had 12.5).
+    # ── CORE FORMULA — weighted blend of player baseline and opp ace-against ──
+    # The blend captures the entire matchup dynamic. Return quality only sets
+    # the WEIGHT (not a separate multiplier), per spec:
+    #   elite returner (ret1 > 40%)  → 55% player / 45% opp ace-against
+    #   weak returner  (ret1 < 30%)  → 75% player / 25% opp ace-against
+    #   otherwise                    → 65% player / 35% opp ace-against
+    if opp_ret1 > 40.0:
+        w_player = 0.55
+    elif opp_ret1 > 0 and opp_ret1 < 30.0:
+        w_player = 0.75
+    else:
+        w_player = 0.65
+    w_opp = 1.0 - w_player
+
+    if have_real_ace_against:
+        blended = w_player * base + w_opp * opp_ace_against_scaled
+        # Floor: never pull a big server below 60% of their own baseline.
+        blended = max(blended, 0.60 * base)
+    else:
+        blended = base   # no opponent data → use player baseline alone
+
+    # ── L5: Court speed (ST Pace Index) — surface-relative multiplier ─────────
     from src.constants import GENERIC_SURFACE_CPR as _GEN_SURF_CPR
     surface_baseline = _GEN_SURF_CPR.get(surface, CPR_NEUTRAL)
-    # Slope 0.018/point: a 10-point speed gap = ±18% aces, matching how
-    # strongly ace volume tracks court pace. Capped to ±35% so an extreme
-    # reading can't run away.
     cpr_factor = 1.0 + (cpr - surface_baseline) * 0.018
     cpr_factor = max(0.65, min(1.35, cpr_factor))
-    logger.info(
-        "ACE_L5_CPR | court_cpr=%.1f surface=%s surf_baseline=%.1f -> cpr_factor=%.3f",
-        cpr, surface, surface_baseline, cpr_factor,
-    )
 
-    # ── Combine layers (TA projection) ────────────────────────────────────────
-    ta_proj = base * ace_against_factor * hand_factor * suppression * cpr_factor
+    # ── Final projection — blend × CPR × handedness (no other suppressors) ────
+    proj = blended * cpr_factor * hand_factor
 
-    # ── Sofascore recency blend ───────────────────────────────────────────────
+    # ── H2H blend (light, only when real H2H ace data exists) ─────────────────
+    if h2h_ace_avg is not None and h2h_ace_avg > 0:
+        proj = proj * 0.80 + h2h_ace_avg * 0.20
+
     p_matches = player_stats.get("matches_played", 0) or 0
     o_matches = opponent_stats.get("matches_played", 0) or 0
 
-    if ta_used and sofascore_base > 0 and p_matches >= 3:
-        ss_proj = sofascore_base * ace_against_factor * hand_factor * ss_suppression * cpr_factor
-        proj = 0.70 * ta_proj + 0.30 * ss_proj
-    else:
-        proj = ta_proj
+    # ── Single comprehensive diagnostic ───────────────────────────────────────
+    logger.info(
+        "ACE_DIAG | player=%s vs %s | surface=%s court_cpr=%.1f | "
+        "base=%.2f | opp_ace_against(raw=%.2f scaled=%.2f have=%s) | "
+        "opp_ret1=%.1f%% -> w_player=%.2f/w_opp=%.2f | blended=%.2f | "
+        "cpr_factor=%.3f hand_factor=%.3f | exp_sets=%.2f | FINAL=%.2f",
+        player_stats.get("player_name", "?"),
+        opponent_stats.get("player_name", "?"),
+        surface, cpr,
+        base, opp_ace_against or 0.0, opp_ace_against_scaled, have_real_ace_against,
+        opp_ret1, w_player, w_opp, blended,
+        cpr_factor, hand_factor, expected_sets, proj,
+    )
 
-    # ── H2H blend ────────────────────────────────────────────────────────────
-    if h2h_ace_avg is not None and h2h_ace_avg > 0:
-        proj = proj * 0.70 + h2h_ace_avg * 0.30
+    # Kept for return-dict back-compat (no longer multiplied into proj)
+    ace_against_factor = round(opp_ace_against_scaled / max(base, 0.01), 3)
+    suppression = round(w_opp, 3)
 
     conf = _confidence(p_matches, o_matches, h2h_ace_avg is not None)
 
@@ -494,10 +477,11 @@ def project_double_faults(
         o_form=opponent_stats.get("form") or opponent_stats.get("recent_form"),
     )
     expected_sets, comp_label = _expected_sets_from_gap(win_prob_gap, is_bo5)
-    # DFs are a per-serve volume stat like aces — use the ace/DF historical-sets
-    # denominator (~2.35 ATP), NOT the BP-tuned 2.60, which suppressed every
-    # per-match DF average over a mostly-BO3 season.
-    avg_hist_sets = _ACE_AVG_HISTORICAL_SETS.get(tour, 2.35)
+    # DFs are a per-serve volume stat like aces — use the same BO5-aware
+    # denominator: ~2.35 for BO3, ~3.4 for BO5 (the per-match average already
+    # embeds Grand Slam BO5 history, so scaling against 2.35 would double-count).
+    avg_hist_sets = _ACE_BO5_HISTORICAL_SETS.get(tour, 3.4) if is_bo5 \
+        else _ACE_AVG_HISTORICAL_SETS.get(tour, 2.35)
     per_set_scale = expected_sets / max(avg_hist_sets, 0.01)
 
     # Per-set service pts → total service pts for this expected match length
@@ -895,6 +879,16 @@ _AVG_HISTORICAL_SETS = {"WTA": 2.30, "ATP": 2.60}
 # systematically suppressing ace projections (worst for heavy favorites whose
 # expected_sets is low — exactly the big-server over-bet case).
 _ACE_AVG_HISTORICAL_SETS = {"WTA": 2.20, "ATP": 2.35}
+
+# BO5 (ATP Grand Slam) ace/DF denominator. The per-match ace average already
+# contains the player's Grand Slam BO5 matches, so for a BO5 projection the
+# expected-sets scaling must be measured against a BO5-appropriate baseline,
+# not the BO3-dominated 2.35 — otherwise a 4.1-set projection scales a
+# per-match figure that already includes long matches and roughly doubles it.
+# 3.4 lands Grand Slam big-server projections at book-realistic levels
+# (e.g. Mensik RG BO5 ~12-13 vs the 12.5 line). WTA never plays BO5 but the
+# key is kept for symmetry.
+_ACE_BO5_HISTORICAL_SETS = {"WTA": 2.20, "ATP": 3.40}
 
 
 def _is_bo5_match(tour: str, court: str) -> bool:
