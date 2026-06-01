@@ -350,34 +350,41 @@ def project_aces(
         opp_ace_against = ta_opp_ace_against
 
     have_real_ace_against = opp_ace_against is not None and opp_ace_against > 0
-    # opp_ace_against is a per-match figure from history. Scale it to THIS
-    # match's expected length so it's on the same footing as `base`.
-    if have_real_ace_against:
-        opp_ace_against_scaled = opp_ace_against * (expected_sets / max(avg_hist_sets, 0.01))
-    else:
-        # No data → fall back to the player's own baseline (blend is a no-op)
-        opp_ace_against_scaled = base
 
-    # ── CORE FORMULA — weighted blend of player baseline and opp ace-against ──
-    # The blend captures the entire matchup dynamic. Return quality only sets
-    # the WEIGHT (not a separate multiplier), per spec:
-    #   elite returner (ret1 > 40%)  → 55% player / 45% opp ace-against
-    #   weak returner  (ret1 < 30%)  → 75% player / 25% opp ace-against
-    #   otherwise                    → 65% player / 35% opp ace-against
-    if opp_ret1 > 40.0:
-        w_player = 0.55
-    elif opp_ret1 > 0 and opp_ret1 < 30.0:
-        w_player = 0.75
-    else:
-        w_player = 0.65
-    w_opp = 1.0 - w_player
-
+    # ── CORE: opponent effect is a RELATIVE factor, not an absolute blend ─────
+    # A previous version blended the player's ace base toward the opponent's
+    # ace-against COUNT. That is mathematically biased: a 12-ace server blended
+    # toward an opponent who concedes 6 always gets dragged down — even when
+    # that opponent is a BELOW-average returner who should BOOST aces. The
+    # opponent's ace-against only tells us whether they concede MORE or FEWER
+    # aces than a league-average returner; we apply that as a multiplier on the
+    # player's own baseline.
+    #
+    #   opp_factor = opp_ace_against / tour_avg_ace_against
+    #     > 1.0  opponent concedes more aces than average  → boost
+    #     < 1.0  opponent concedes fewer (good returner)   → suppress
+    #
+    # The factor's STRENGTH is governed by return quality (weak returners let
+    # the matchup move the number more; elite returners are already captured by
+    # their low ace-against). We damp the raw factor toward 1.0 so it nudges
+    # rather than dominates, then clamp.
+    tour_avg_ag = _TOUR_AVG_ACE_AGAINST.get(tour, 5.5)
     if have_real_ace_against:
-        blended = w_player * base + w_opp * opp_ace_against_scaled
-        # Floor: never pull a big server below 60% of their own baseline.
-        blended = max(blended, 0.60 * base)
+        raw_opp_factor = opp_ace_against / tour_avg_ag
+        # The opponent's return ability moves aces, but a player only serves
+        # aces on their OWN serve — so the opponent effect has a modest
+        # ceiling. Damp 70% toward neutral and clamp to ±22%: a 2x
+        # ace-conceder yields ~1.22x, a stingy returner ~0.80x.
+        opp_factor = 1.0 + (raw_opp_factor - 1.0) * 0.30
+        opp_factor = max(0.78, min(1.22, opp_factor))
+        blended = base * opp_factor
     else:
-        blended = base   # no opponent data → use player baseline alone
+        opp_factor = 1.0
+        blended = base   # no opponent data → player baseline alone
+    # Diagnostic-compat aliases
+    w_player = 1.0
+    w_opp = round(opp_factor, 3)
+    opp_ace_against_scaled = (opp_ace_against or 0.0) * (expected_sets / max(avg_hist_sets, 0.01))
 
     # ── L5: Court speed (ST Pace Index) — surface-relative multiplier ─────────
     from src.constants import GENERIC_SURFACE_CPR as _GEN_SURF_CPR
