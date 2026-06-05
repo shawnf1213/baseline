@@ -126,18 +126,27 @@ COURT_CPR = {
     "Sanremo Challenger":                24,    # [ST estimate]
     "Geneva Challenger":                 26,    # [ST estimate]
 
-    # ── ATP Grass ────────────────────────────────────────────────────────────
-    "Wimbledon":                         36.1,  # [ST confirmed, 2025 — significantly slower than prior est. 43]
-    "Queens Club":                       38,    # [ST estimate] legacy name
-    "Queens Club Championships":         38,    # [ST estimate]
-    "Halle":                             38,    # [ST estimate]
-    "Stuttgart Grass":                   37,    # [ST estimate]
-    "Eastbourne":                        36,    # [ST estimate] legacy name
-    "Eastbourne International":          36,    # [ST estimate]
-    "Mallorca Championships":            37,    # [ST estimate]
-    "Hertogenbosch Open":                38,    # [ST estimate]
-    "Ilkley Challenger":                 36,    # [ST estimate]
-    "Nottingham Challenger":             36,    # [ST estimate]
+    # ── ATP Grass (ST Pace Index, confirmed/estimated) ─────────────────────────
+    # Per Tennis Abstract Serve Impact: Stuttgart is the FASTEST grass on tour
+    # (faster than Wimbledon), then Halle ~ Queens, then the rest.
+    "Wimbledon":                         36.1,  # [ST confirmed 2025] Average
+    "Stuttgart":                         40,    # [ST est] Fastest grass (Serve Impact highest) — Fast
+    "Stuttgart Grass":                   40,    # legacy/alt name
+    "Halle":                             38,    # [ST est] Serve Impact 1.10
+    "Halle Open":                        38,    # alt name
+    "Queens Club":                       37,    # [ST est] Serve Impact 1.08, legacy name
+    "Queens Club Championships":         37,    # [ST est]
+    "s-Hertogenbosch":                   36,    # [ST est] Libema Open
+    "Hertogenbosch Open":                36,    # [ST est] alt name
+    "Libema Open":                       36,    # alt name
+    "Mallorca":                          36,    # [ST est] ~Wimbledon speed
+    "Mallorca Championships":            36,    # alt name
+    "Eastbourne":                        35,    # [ST est] slightly slower than Wimbledon, legacy name
+    "Eastbourne International":          35,    # [ST est]
+    "Birmingham":                        34,    # [ST est] Challenger 125 grass, Edgbaston Priory
+    "Birmingham Challenger":             34,    # alt name
+    "Ilkley Challenger":                 34,    # [ST est]
+    "Nottingham Challenger":             34,    # [ST est]
 
     # ── WTA Hard ─────────────────────────────────────────────────────────────
     # Roland Garros and Wimbledon WTA share the same court as ATP — same ST values.
@@ -188,13 +197,16 @@ COURT_CPR = {
     "Emilia-Romagna WTA 125 Clay":       23,
     "WTA 125 Clay (Generic)":            26,    # [ST estimate — user specified 26]
 
-    # ── WTA Grass ────────────────────────────────────────────────────────────
-    "Wimbledon WTA":                     36.1,  # [ST confirmed, 2025 — same court as ATP]
-    "Eastbourne WTA":                    36,
-    "Birmingham WTA":                    37,
-    "Hertogenbosch WTA":                 38,
-    "Mallorca WTA":                      37,
-    "Ilkley WTA 125 Grass":              36,
+    # ── WTA Grass (ST Pace Index — same venues as ATP) ─────────────────────────
+    "Wimbledon WTA":                     36.1,  # [ST confirmed 2025] same court as ATP
+    "Queens Club WTA":                   37,    # [ST est] WTA 500 — women play the week before men (Jun 8 2026)
+    "Bad Homburg WTA":                   36,    # [ST est] WTA 500
+    "Eastbourne WTA":                    35,    # [ST est]
+    "Birmingham WTA":                    34,    # [ST est] WTA 125, Edgbaston Priory (same venue as ATP)
+    "s-Hertogenbosch WTA":               36,    # [ST est] Libema Open
+    "Hertogenbosch WTA":                 36,    # alt name
+    "Mallorca WTA":                      36,    # [ST est]
+    "Ilkley WTA 125 Grass":              34,    # [ST est]
 }
 
 COURTS_BY_SURFACE = {
@@ -204,14 +216,15 @@ COURTS_BY_SURFACE = {
               "Dubai Duty Free Championships", "ATP Finals Turin"],
     "Clay":  ["Roland Garros", "Monte Carlo Masters", "Madrid Open", "Barcelona Open",
               "Italian Open Rome", "Hamburg Open", "Lyon Open"],
-    "Grass": ["Wimbledon", "Queens Club Championships", "Halle",
-              "Stuttgart Grass", "Eastbourne International"],
+    "Grass": ["Wimbledon", "Stuttgart", "Halle", "Queens Club Championships",
+              "s-Hertogenbosch", "Mallorca", "Eastbourne International",
+              "Birmingham"],
 }
 
 CPR_NEUTRAL = 35
 
 # Generic surface defaults for when no specific court is selected
-GENERIC_SURFACE_CPR   = {"Hard": 36, "Clay": 26, "Grass": 36}
+GENERIC_SURFACE_CPR   = {"Hard": 36, "Clay": 26, "Grass": 34}
 GENERIC_TIER_LABEL    = {"Hard": "Average", "Clay": "Slow", "Grass": "Average"}
 
 ATP_TOUR_AVERAGES = {

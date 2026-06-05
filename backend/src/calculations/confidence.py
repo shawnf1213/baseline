@@ -1,5 +1,8 @@
+import logging
 import statistics
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 VARIANCE_THRESHOLDS = {
     "aces":              (2.0, 4.0),
@@ -222,5 +225,34 @@ def calculate_confidence(
     breakdown["source_agreement"] = {"score": agree_score, "max": 8, "label": agree_label}
     total += agree_score
 
-    confidence = max(15, min(95, total))
+    # ── Cap total negative penalties at −40 ───────────────────────────────────
+    # A thin-grass player could stack ss_career −20, opponent −10, recency −10,
+    # ss_recent −8 = −48 in penalties alone, crushing an otherwise-fine player
+    # to the floor. Sum the negative-scoring components and, if they exceed −40,
+    # add back the overflow so no single matchup loses more than 40 points to
+    # penalties combined. Positive scores (sample size, H2H, consistency) are
+    # untouched.
+    penalty_sum = sum(
+        b["score"] for b in breakdown.values() if b.get("score", 0) < 0
+    )
+    if penalty_sum < -40:
+        overflow = -40 - penalty_sum   # positive number to add back
+        total += overflow
+        breakdown["penalty_cap"] = {
+            "score": round(overflow), "max": 0,
+            "label": f"Penalty cap applied — combined penalties limited to −40 "
+                     f"(was {penalty_sum})",
+        }
+
+    # ── Confidence floor 25 (was 15) ──────────────────────────────────────────
+    # The 15 floor was too punishing for WTA / grass props where surface
+    # samples are structurally small. Only an absolute no-data case (handled by
+    # the n == 0 early return above) should sit that low; everything else gets
+    # at least 25.
+    confidence = max(25, min(95, total))
+    logger.info(
+        "CONF | prop=%s | base_total=%d | penalty_sum=%d | final=%d | breakdown=%s",
+        prop_type, total, penalty_sum, confidence,
+        {k: v.get("score") for k, v in breakdown.items()},
+    )
     return {"confidence": confidence, "breakdown": breakdown}

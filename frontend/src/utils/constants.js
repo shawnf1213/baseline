@@ -85,17 +85,17 @@ export const TOURNAMENT_CONFIG = {
       { name: "Geneva Challenger",                       cpr: 26 },
     ],
     Grass: [
-      // Wimbledon 2025 ST = 36.1 — significantly slower than prior estimate of 43.
-      // No longer a "Very Fast" court on the ST scale — Average.
-      { name: "Wimbledon",               cpr: 36.1 },  // ST confirmed 2025
-      { name: "Queens Club Championships", cpr: 38 },  // ST estimate
-      { name: "Halle",                   cpr: 38 },    // ST estimate
-      { name: "Stuttgart Grass",         cpr: 37 },    // ST estimate
-      { name: "Eastbourne International", cpr: 36 },   // ST estimate
-      { name: "Mallorca Championships",  cpr: 37 },    // ST estimate
-      { name: "Hertogenbosch Open",      cpr: 38 },    // ST estimate
-      { name: "Ilkley Challenger",       cpr: 36 },    // ST estimate
-      { name: "Nottingham Challenger",   cpr: 36 },    // ST estimate
+      // Per Tennis Abstract Serve Impact: Stuttgart is the fastest grass on
+      // tour (faster than Wimbledon), then Halle ~ Queens. Wimbledon 36.1 is
+      // Average on the ST scale, not the old "Very Fast" 43.
+      { name: "Wimbledon",               cpr: 36.1 },  // ST confirmed 2025 — Average
+      { name: "Stuttgart",               cpr: 40 },    // ST est — fastest grass, Fast
+      { name: "Halle",                   cpr: 38 },    // ST est — Serve Impact 1.10
+      { name: "Queens Club Championships", cpr: 37 },  // ST est — Serve Impact 1.08
+      { name: "s-Hertogenbosch",         cpr: 36 },    // ST est — Libema Open
+      { name: "Mallorca",                cpr: 36 },    // ST est — ~Wimbledon
+      { name: "Eastbourne International", cpr: 35 },    // ST est
+      { name: "Birmingham",              cpr: 34 },    // ST est — Challenger 125, Edgbaston Priory
     ],
   },
 
@@ -149,11 +149,12 @@ export const TOURNAMENT_CONFIG = {
     ],
     Grass: [
       { name: "Wimbledon WTA",           cpr: 36.1 },  // ST confirmed 2025 — same court as ATP
-      { name: "Eastbourne WTA",          cpr: 36 },
-      { name: "Birmingham WTA",          cpr: 37 },
-      { name: "Hertogenbosch WTA",       cpr: 38 },
-      { name: "Mallorca WTA",            cpr: 37 },
-      { name: "Ilkley WTA 125 Grass",    cpr: 36 },
+      { name: "Queens Club WTA",         cpr: 37 },     // WTA 500, week before men (Jun 8 2026)
+      { name: "Bad Homburg WTA",         cpr: 36 },     // WTA 500
+      { name: "s-Hertogenbosch WTA",     cpr: 36 },     // Libema Open
+      { name: "Mallorca WTA",            cpr: 36 },
+      { name: "Eastbourne WTA",          cpr: 35 },
+      { name: "Birmingham WTA",          cpr: 34 },     // WTA 125, Edgbaston Priory (same venue as ATP)
     ],
   },
 }

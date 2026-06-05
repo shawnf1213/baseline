@@ -728,7 +728,7 @@ async def prop_calculate(req: PropRequest):
         # Sackmann thin-data penalty (applied before sanity check)
         sack_penalty = p1_blended.get("_confidence_penalty", 0)
         if sack_penalty:
-            confidence = max(15, confidence + sack_penalty)  # penalty is negative
+            confidence = max(25, confidence + sack_penalty)  # penalty is negative
 
         # ── Recent-data confidence penalty ───────────────────────────────────
         # Distinguish surface specialists from genuinely inactive players:
@@ -765,7 +765,7 @@ async def prop_calculate(req: PropRequest):
             p2_recent_meta["penalty"]      = p2_pen
             p2_recent_meta["penalty_kind"] = p2_pen_kind
         if total_recent_pen:
-            confidence = max(15, confidence + total_recent_pen)
+            confidence = max(25, confidence + total_recent_pen)
             logger.warning(
                 "RECENT_DATA_PENALTY | p1=%s(%+d) p2=%s(%+d) | total=%+d -> conf=%d",
                 p1_pen_kind, p1_pen, p2_pen_kind, p2_pen, total_recent_pen, confidence,
@@ -773,7 +773,7 @@ async def prop_calculate(req: PropRequest):
 
         # Sanity failure: projection fell outside realistic bounds → reduce confidence
         if result.get("sanity_failed"):
-            confidence = max(15, confidence - 25)
+            confidence = max(25, confidence - 25)
             logger.warning(
                 "Sanity check failed for %s %s — confidence reduced to %d",
                 req.prop_type, proj_val, confidence,
