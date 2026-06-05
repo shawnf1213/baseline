@@ -1281,20 +1281,26 @@ def project_break_points(
         df_bonus_added   = 0.4
         c1_opp_bp_faced += df_bonus_added
 
-    # ── Realistic floor on the opportunity pool (C1) ──────────────────────────
+    # ── Surface-aware floor on the opportunity pool (C1) ──────────────────────
     # C1 is the opponent's BP faced per match — the pool of break chances this
-    # player can convert. No server credibly faces fewer than ~55% of the tour
-    # average per match (e.g. ATP clay floor ≈ 5.4). Values below that are
-    # almost always a data artifact (stat-rich-only subset, per-set vs per-match
-    # mislabel, or tiny sample) rather than a real signal. A 2.9 reading for a
-    # solid server like Nakashima collapses the whole projection. Clamp up to
-    # the floor — this mirrors the _CONV_RATE_CAP ceiling already applied to C3.
-    c1_floor = tour_avg_bp * 0.55
+    # player can convert. On clay/hard a reading far below tour average is
+    # usually a data artifact (stat-rich-only subset, per-set mislabel, tiny
+    # sample) — we floor it. But on GRASS a low BP-faced count is REAL signal:
+    # grass is serve-dominant and produces genuinely few break chances, so a
+    # 3-4/match reading is accurate, not noise. Flooring it there manufactures
+    # a fake OVER edge by inflating the opportunity pool. So the floor is now
+    # surface-relative:
+    #   Clay  → 0.55 × tour avg  (clay breaks most; low reading = likely noise)
+    #   Hard  → 0.50 × tour avg
+    #   Grass → 0.25 × tour avg  (low readings are legitimate — barely floors)
+    #   None/challenger default → 0.50 (hard)
+    _c1_floor_mult = {"Clay": 0.55, "Hard": 0.50, "Grass": 0.25}.get(surface, 0.50)
+    c1_floor = tour_avg_bp * _c1_floor_mult
     c1_floored = False
     if c1_opp_bp_faced < c1_floor:
         c1_floored = True
         c1_opp_bp_faced = c1_floor
-        c1_source = f"{c1_source}+floor({c1_floor:.1f})"
+        c1_source = f"{c1_source}+floor({c1_floor:.1f}@{_c1_floor_mult:.2f})"
 
     logger.info(
         "BP_C1 | opp=%s | surf_raw=%s | overall=%s | opp_surf_n=%d | "
