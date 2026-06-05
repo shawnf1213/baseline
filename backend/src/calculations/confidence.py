@@ -65,22 +65,36 @@ def calculate_confidence(
     breakdown = {}
     total = 0
 
-    # 1. Sample size — foundation of confidence
+    # 1. Sample size — foundation of confidence.
+    # Surface-specific match count is the primary signal, BUT grass (and to a
+    # lesser extent clay) seasons are only 3-4 weeks/year, so a strong player
+    # legitimately has few surface matches. We credit OVERALL career depth as a
+    # partial backstop so a deep, in-form player isn't scored like an unknown
+    # just because the surface window is short — the projection itself leans on
+    # that all-surface data via the blended stats.
     n = len(player_surface_matches)
-    if n < 5:
-        sample_score, sample_label = 0, f"{n} matches — very limited data"
-    elif n <= 10:
-        sample_score, sample_label = 20, f"{n} matches — small sample"
-    elif n <= 20:
-        sample_score, sample_label = 35, f"{n} matches — moderate sample"
-    elif n <= 40:
-        sample_score, sample_label = 50, f"{n} matches — good sample"
+    overall_n = 0
+    if p1_blended:
+        overall_n = (p1_blended.get("overall_matches_played")
+                     or p1_blended.get("_ss_career_matches") or 0)
+    # Effective sample = surface matches + a discounted share of overall depth
+    # (overall data is less surface-relevant, so it counts at ~25%).
+    eff_n = n + min(overall_n, 60) * 0.25
+
+    if eff_n < 5:
+        sample_score, sample_label = 0, f"{n} surf / {overall_n} overall — very limited data"
+    elif eff_n <= 10:
+        sample_score, sample_label = 20, f"{n} surf / {overall_n} overall — small effective sample"
+    elif eff_n <= 20:
+        sample_score, sample_label = 35, f"{n} surf / {overall_n} overall — moderate effective sample"
+    elif eff_n <= 40:
+        sample_score, sample_label = 50, f"{n} surf / {overall_n} overall — good effective sample"
     else:
-        sample_score, sample_label = 60, f"{n} matches — large sample"
+        sample_score, sample_label = 60, f"{n} surf / {overall_n} overall — large effective sample"
     breakdown["sample_size"] = {"score": sample_score, "max": 60, "label": sample_label}
     total += sample_score
 
-    if n == 0:
+    if n == 0 and overall_n == 0:
         return {"confidence": 15, "breakdown": breakdown}
 
     # 2. H2H bonus
@@ -191,6 +205,13 @@ def calculate_confidence(
             if ss_career > 0 else
             "SS career: no surface matches found"
         )
+    # Halve the surface-thinness penalty when overall career depth is strong.
+    # The thin-surface count is already reflected in sample_size; a player with
+    # 30+ overall matches isn't an unknown just because the grass window is
+    # short, so we don't double-charge the same thinness at full weight.
+    if ss_career_score < 0 and overall_n >= 25:
+        ss_career_score = round(ss_career_score / 2)
+        ss_career_label += " | softened (strong overall sample)"
     breakdown["ta_career"] = {"score": ss_career_score, "max": 8, "label": ss_career_label}
     total += ss_career_score
 
