@@ -43,6 +43,36 @@ logger = logging.getLogger(__name__)
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+def _resolve_bp_won(m: dict):
+    """
+    Resolve the per-match raw break-points-WON count for the Last-5 chart.
+
+    Sofascore's per-match payload is inconsistent — especially on the WTA tour,
+    where the "Break Points Converted" N/N string is sometimes missing while
+    the parsed return-side counts or the conversion % survive. Fall through the
+    available representations so the chart populates whenever ANY BP data exists:
+
+      1. bp_converted_count   — direct raw won count ("3/5" -> 3)
+      2. return_bp_converted  — same value under the return-side key
+      3. bp_converted (%) x return_bp_opportunities — reconstruct the count
+    Returns None only when no BP information is present at all (genuine N/A).
+    """
+    v = m.get("bp_converted_count")
+    if v is not None:
+        return v
+    v = m.get("return_bp_converted")
+    if v is not None:
+        return v
+    pct  = m.get("bp_converted")
+    opps = m.get("return_bp_opportunities")
+    if pct is not None and opps:
+        try:
+            return round(float(pct) / 100.0 * float(opps))
+        except (TypeError, ValueError):
+            pass
+    return None
+
+
 def _norm_opp(name: str) -> str:
     """
     Reduce an opponent name to its surname for dedup key generation.
@@ -120,7 +150,7 @@ def normalize_sofascore_match(m: dict) -> dict:
         "bp_faced":           m.get("bp_faced_count"),
         "bp_saved_pct":       m.get("bp_saved"),
         # Return / break-point stats
-        "bp_won":             m.get("bp_converted_count"),
+        "bp_won":             _resolve_bp_won(m),
         "bp_won_pct":         m.get("bp_converted"),
         "opp_bp_faced":       None,   # not available per-match in SS
         "ret_pts_won_1st":    m.get("return_first_serve_pts_won"),
