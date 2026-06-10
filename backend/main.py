@@ -795,8 +795,19 @@ async def prop_calculate(req: PropRequest):
             bool(player_hand and opponent_hand and player_hand != opponent_hand)
         )
 
-        # Opponent ace-against (aces the opponent concedes per match as a returner)
-        opponent_ace_against = opponent_ta.get("ace_against_per_match") if opponent_ta else None
+        # Opponent ace-against (aces the opponent concedes per match as a
+        # returner ON THIS SURFACE). Sofascore is the real source — it's the
+        # same value injected into p2_blended above and used by project_aces.
+        # TA's ace_against_per_match is a placeholder that is always None
+        # (TA match rows don't expose opponent aces), so reading TA first
+        # left this field null and the "Aces Conceded/Match" row never
+        # rendered in the opponent stat card.
+        opponent_ace_against = (
+            result.get("opp_ace_against")          # what the ace model actually used
+            or p2_blended.get("ace_against_per_match")
+            or p2_ss_ace_ag
+            or (opponent_ta.get("ace_against_per_match") if opponent_ta else None)
+        )
 
         # Data source transparency fields
         p1_ta_career   = p1_blended.get("_ta_career_matches", 0)
