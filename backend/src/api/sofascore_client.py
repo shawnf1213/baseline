@@ -49,8 +49,32 @@ HEADERS = {
 }
 
 # Rotate through recent Chrome profiles and matching User-Agent strings.
-# Older chrome120 fingerprint was flagged — use 124/125 variants.
-_CHROME_PROFILES = ["chrome124", "chrome125", "chrome124", "chrome125", "chrome120"]
+# IMPORTANT: every profile must be supported by the INSTALLED curl_cffi build.
+# curl_cffi 0.15.0 does NOT support "chrome125" — picking it raised
+# ImpersonateError on every request for that session, returning empty results
+# that then got cached and looked like a persistent player-specific outage.
+# We filter the candidate list against what the installed build actually
+# supports so a version mismatch can never silently break fetching again.
+_CHROME_PROFILE_CANDIDATES = ["chrome124", "chrome123", "chrome120", "chrome131", "chrome119"]
+
+
+def _supported_chrome_profiles() -> list:
+    """Intersect our candidate profiles with what the installed curl_cffi
+    build supports. Falls back to chrome124 (proven working) if introspection
+    fails or yields nothing."""
+    try:
+        from curl_cffi.requests.impersonate import BrowserTypeLiteral
+        import typing
+        supported = set(typing.get_args(BrowserTypeLiteral))
+        usable = [p for p in _CHROME_PROFILE_CANDIDATES if p in supported]
+        if usable:
+            return usable
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("Could not introspect curl_cffi profiles: %s", exc)
+    return ["chrome124"]
+
+
+_CHROME_PROFILES = _supported_chrome_profiles()
 _UA_POOL = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.6367.207 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.6422.141 Safari/537.36",
