@@ -1011,23 +1011,64 @@ def search_players(query: str, tour: str = "ATP") -> list:
             "Sofascore returned 403 on all retry attempts — proxy IPs blocked"
         )
 
-    entities = []
-    for item in data.get("results", []):
-        entity = item.get("entity", {})
-        if entity.get("type") != 1:
-            continue
-        sport = entity.get("sport", {})
-        if sport.get("name", "").lower() != "tennis":
-            continue
-        entities.append(entity)
-
     gender_pref = "F" if tour.upper() == "WTA" else "M"
-    # Hard-filter: only include players whose gender matches the tour (skip unknowns)
-    entities = [e for e in entities if e.get("gender") == gender_pref]
-    entities.sort(key=lambda x: x.get("ranking") or x.get("teamRank") or 9999)
+
+    def _extract_tennis_entities(raw: dict) -> list:
+        result = []
+        for item in raw.get("results", []):
+            entity = item.get("entity", {})
+            if entity.get("type") != 1:
+                continue
+            sport = entity.get("sport", {})
+            if sport.get("name", "").lower() != "tennis":
+                continue
+            if entity.get("gender") != gender_pref:
+                continue
+            result.append(entity)
+        return result
+
+    entities = _extract_tennis_entities(data)
+
+    # Fallback: if no results, search each word individually and merge
+    if not entities:
+        seen_ids: set = set()
+        words = [w for w in query.strip().split() if len(w) >= 3]
+        for word in words:
+            if word.lower() == query.strip().lower():
+                continue  # same as the original query, skip
+            word_data = _get(f"{BASE_URL}/search/all", {"q": word})
+            for e in _extract_tennis_entities(word_data):
+                eid = e.get("id")
+                if eid not in seen_ids:
+                    entities.append(e)
+                    seen_ids.add(eid)
+
+    # Smart sort: exact last-name > partial last-name > first-name > other
+    # Within each tier, rank by ATP/WTA ranking (lower = better)
+    query_lower = query.strip().lower()
+
+    def _sort_key(e):
+        name_parts = (e.get("name") or "").lower().split()
+        last = name_parts[-1] if name_parts else ""
+        rank = e.get("ranking") or e.get("teamRank") or 9999
+        if last == query_lower:
+            return (0, rank)
+        if query_lower in last:
+            return (1, rank)
+        if any(query_lower in p for p in name_parts):
+            return (2, rank)
+        return (3, rank)
+
+    entities.sort(key=_sort_key)
 
     out = []
-    for e in entities[:5]:
+    seen_final: set = set()
+    for e in entities:
+        if e.get("id") in seen_final:
+            continue
+        seen_final.add(e.get("id"))
+        if len(out) >= 5:
+            break
         c = e.get("country") or {}
         country = (c.get("alpha3") or c.get("name") or "") if isinstance(c, dict) else ""
         out.append({
@@ -1051,8 +1092,11 @@ def get_player_stats_by_surface(player_id, tour: str = "ATP") -> dict:
         logger.info("SURFACE_CACHE_HIT | pid=%s | bucket=%s", pid, _bucket)
         return st.session_state[cache_key]
 
+    logger.info("[STATS_FLOW] START | player_id=%d tour=%s", pid, tour)
+
     now = time.time()
     events = _get_player_recent_events(pid, max_pages=MAX_PAGES_DEFAULT)
+    logger.info("[STATS_FLOW] EVENTS_RAW | fetched=%d", len(events))
 
     # Filter to finished singles events; log surface detection for debugging
     valid: list = []
@@ -1091,9 +1135,13 @@ def get_player_stats_by_surface(player_id, tour: str = "ATP") -> dict:
             surf_detected,
         )
 
+    logger.info("[STATS_FLOW] VALID_EVENTS | valid=%d (finished singles)", len(valid))
+
     # Fetch stats for the most recent 50 matches in parallel
     event_ids = [e.get("id", 0) for e in valid[:50]]
     stats_map = _fetch_stats_parallel(event_ids)
+    events_with_stats = sum(1 for eid in event_ids if stats_map.get(eid, {}).get("statistics"))
+    logger.info("[STATS_FLOW] STATS_FETCHED | requested=%d got_statistics=%d", len(event_ids), events_with_stats)
 
     # Build per-match records.
     # all_match_stats  — every finished single (for form/display/win-rate).
@@ -1337,6 +1385,17 @@ def get_player_stats_by_surface(player_id, tour: str = "ATP") -> dict:
         for lbl in ("All", "Hard", "Clay", "Grass")
     }
     logger.info("SS_TIERS_BUILT | pid=%d | all_time_matches=%s", pid, tier_summary)
+
+    logger.info(
+        "[STATS_FLOW] AVERAGES | Hard: n=%s aces=%s | Clay: n=%s aces=%s | Grass: n=%s aces=%s | All: n=%s",
+        surfaces.get("Hard", {}).get("matches_played"),
+        surfaces.get("Hard", {}).get("aces"),
+        surfaces.get("Clay", {}).get("matches_played"),
+        surfaces.get("Clay", {}).get("aces"),
+        surfaces.get("Grass", {}).get("matches_played"),
+        surfaces.get("Grass", {}).get("aces"),
+        surfaces.get("All", {}).get("matches_played"),
+    )
 
     st.session_state[cache_key] = surfaces
     return surfaces

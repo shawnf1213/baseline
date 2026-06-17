@@ -530,17 +530,27 @@ def project_double_faults(
         df_fallback = True
         logger.info("DF_FALLBACK | tour-avg DF rate %.2f used (no surface data)", base)
 
-    # ── Opponent pressure factor (Sofascore) ──────────────────────────────────
-    opp_ret1 = _safe(opponent_stats.get("return_first_serve_pts_won"))
-    opp_ret2 = _safe(opponent_stats.get("return_second_serve_pts_won"))
-    opp_ret_avg = (opp_ret1 + opp_ret2) / 2 if (opp_ret1 + opp_ret2) > 0 else 0
+    # ── Opponent pressure factor (2nd-serve return pts won only) ─────────────
+    # 2nd serve is where DF pressure lives — use 2nd-serve return pct as the
+    # signal, falling back to 1st-serve if 2nd unavailable.
+    _opp_ret2_raw = opponent_stats.get("return_second_serve_pts_won")
+    _opp_ret1_raw = opponent_stats.get("return_first_serve_pts_won")
+    if _opp_ret2_raw is not None:
+        opp_pressure_ret = float(_opp_ret2_raw)
+        # ATP tour avg 2nd-serve return pts won ~52%; WTA ~55%
+        tour_avg_ret = 55.0 if tour.upper() == "WTA" else 52.0
+    elif _opp_ret1_raw is not None:
+        opp_pressure_ret = float(_opp_ret1_raw)
+        tour_avg_ret = 40.0  # 1st-serve baseline unchanged
+    else:
+        opp_pressure_ret = 0.0
+        tour_avg_ret = 52.0
 
-    tour_avg_ret = 40.0
-    if opp_ret_avg > 0:
-        if opp_ret_avg > tour_avg_ret:
-            pressure = 1 + (opp_ret_avg - tour_avg_ret) / 200
+    if opp_pressure_ret > 0:
+        if opp_pressure_ret > tour_avg_ret:
+            pressure = 1 + (opp_pressure_ret - tour_avg_ret) / 200
         else:
-            pressure = 1 - (tour_avg_ret - opp_ret_avg) / 300
+            pressure = 1 - (tour_avg_ret - opp_pressure_ret) / 300
     else:
         pressure = 1.0
 

@@ -323,6 +323,10 @@ export default function PropProjection({ tour }) {
     result?.sofascore_surface_log || result?.player_surface_matches || [],
     statKey
   )
+  if (result) {
+    console.log('[Last5] sofascore_surface_log:', result?.sofascore_surface_log?.slice(0, 5))
+    console.log('[Last5] last5Data:', last5Data)
+  }
 
   return (
     <div>
