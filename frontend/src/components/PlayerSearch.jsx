@@ -3,17 +3,43 @@ import { motion, AnimatePresence } from 'motion/react'
 import { usePlayerSearch } from '../hooks/usePlayerSearch'
 import { Search, X } from 'lucide-react'
 
-// Convert ISO alpha-2 country code to flag emoji using Unicode regional indicators.
+// IOC/alpha-3 → alpha-2 mapping for the most common tennis nations.
+// Sofascore returns IOC codes (GER, SUI) not ISO alpha-3 (DEU, CHE).
+const _IOC_TO_A2 = {
+  ALG:'DZ',ARG:'AR',ARM:'AM',AUS:'AU',AUT:'AT',AZE:'AZ',BAH:'BS',BEL:'BE',
+  BIH:'BA',BLR:'BY',BRA:'BR',BUL:'BG',CAN:'CA',CHI:'CL',CHN:'CN',COL:'CO',
+  CRO:'HR',CZE:'CZ',DEN:'DK',ECU:'EC',EGY:'EG',ESP:'ES',EST:'EE',FIN:'FI',
+  FRA:'FR',GBR:'GB',GEO:'GE',GER:'DE',GRE:'GR',HUN:'HU',INA:'ID',IND:'IN',
+  IRL:'IE',ISR:'IL',ITA:'IT',JPN:'JP',KAZ:'KZ',KOR:'KR',LAT:'LV',LTU:'LT',
+  LUX:'LU',MAR:'MA',MEX:'MX',MON:'MC',NED:'NL',NOR:'NO',NZL:'NZ',PAR:'PY',
+  PER:'PE',POL:'PL',POR:'PT',ROU:'RO',RSA:'ZA',RUS:'RU',SLO:'SI',SRB:'RS',
+  SUI:'CH',SVK:'SK',SWE:'SE',TPE:'TW',TUN:'TN',TUR:'TR',UKR:'UA',URU:'UY',
+  USA:'US',UZB:'UZ',VEN:'VE',
+}
+
+// Convert a 2-letter ISO alpha-2 code to a flag emoji.
 // e.g. "IT" → 🇮🇹, "ES" → 🇪🇸, "US" → 🇺🇸
-function getFlagEmoji(alpha2) {
-  if (!alpha2 || alpha2.length !== 2) return ''
+function alpha2ToFlag(code) {
+  if (!code || code.length !== 2) return ''
   try {
     return String.fromCodePoint(
-      ...[...alpha2.toUpperCase()].map(c => 0x1F1E6 + c.charCodeAt(0) - 65)
+      ...[...code.toUpperCase()].map(c => 0x1F1E6 + c.charCodeAt(0) - 65)
     )
   } catch {
     return ''
   }
+}
+
+// Resolve flag emoji from a player object.
+// Prefers countryCode (alpha-2) if set by the backend.
+// Falls back to converting countryAcr (IOC/alpha-3) via the mapping table.
+function getPlayerFlag(player) {
+  const a2 = player?.countryCode
+  if (a2 && a2.length === 2) return alpha2ToFlag(a2)
+  const acr = (player?.countryAcr || '').toUpperCase()
+  const converted = _IOC_TO_A2[acr]
+  if (converted) return alpha2ToFlag(converted)
+  return ''
 }
 
 export default function PlayerSearch({ tour, onSelect, label = 'Search player…', selected }) {
@@ -93,7 +119,7 @@ export default function PlayerSearch({ tour, onSelect, label = 'Search player…
               )}
               {selected.countryAcr && (
                 <span style={{ fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 700, fontSize: 10, letterSpacing: 1, textTransform: 'uppercase', background: 'rgba(107, 159, 255, 0.1)', color: 'var(--hard-blue)', border: '1px solid rgba(107, 159, 255, 0.3)', padding: '3px 9px', borderRadius: 999, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-                  {getFlagEmoji(selected.countryCode) && <span style={{ fontSize: 12 }}>{getFlagEmoji(selected.countryCode)}</span>}
+                  {getPlayerFlag(selected) && <span style={{ fontSize: 12 }}>{getPlayerFlag(selected)}</span>}
                   {selected.countryAcr}
                 </span>
               )}
@@ -188,8 +214,8 @@ export default function PlayerSearch({ tour, onSelect, label = 'Search player…
                       onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
                     >
                       <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                        {getFlagEmoji(p.countryCode) && (
-                          <span style={{ fontSize: 18 }}>{getFlagEmoji(p.countryCode)}</span>
+                        {getPlayerFlag(p) && (
+                          <span style={{ fontSize: 18 }}>{getPlayerFlag(p)}</span>
                         )}
                         <div>
                           <div style={{ fontWeight: 800, fontSize: 14, fontFamily: '"Barlow Condensed", sans-serif', color: '#fff', letterSpacing: 0.5 }}>{p.name}</div>

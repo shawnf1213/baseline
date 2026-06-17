@@ -977,6 +977,30 @@ def _agg(matches: list) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# IOC/Olympic country code → ISO alpha-2 mapping
+# Sofascore uses IOC codes (e.g. GER, SUI, GRE) which differ from ISO alpha-3
+# (DEU, CHE, GRC). This table converts them to alpha-2 for flag emoji rendering.
+# ---------------------------------------------------------------------------
+_IOC_TO_ALPHA2 = {
+    "ALG": "DZ", "ARG": "AR", "ARM": "AM", "AUS": "AU", "AUT": "AT",
+    "AZE": "AZ", "BAH": "BS", "BEL": "BE", "BIH": "BA", "BLR": "BY",
+    "BOL": "BO", "BRA": "BR", "BUL": "BG", "CAN": "CA", "CHI": "CL",
+    "CHN": "CN", "COL": "CO", "CRO": "HR", "CYP": "CY", "CZE": "CZ",
+    "DEN": "DK", "ECU": "EC", "EGY": "EG", "ESP": "ES", "EST": "EE",
+    "FIN": "FI", "FRA": "FR", "GBR": "GB", "GEO": "GE", "GER": "DE",
+    "GRE": "GR", "HKG": "HK", "HUN": "HU", "INA": "ID", "IND": "IN",
+    "IRL": "IE", "ISR": "IL", "ITA": "IT", "JPN": "JP", "KAZ": "KZ",
+    "KOR": "KR", "KSA": "SA", "LAT": "LV", "LTU": "LT", "LUX": "LU",
+    "MAR": "MA", "MDA": "MD", "MEX": "MX", "MON": "MC", "MNE": "ME",
+    "NED": "NL", "NOR": "NO", "NZL": "NZ", "PAR": "PY", "PER": "PE",
+    "PHI": "PH", "POL": "PL", "POR": "PT", "QAT": "QA", "ROU": "RO",
+    "RSA": "ZA", "RUS": "RU", "SLO": "SI", "SRB": "RS", "SUI": "CH",
+    "SVK": "SK", "SWE": "SE", "THA": "TH", "TPE": "TW", "TUN": "TN",
+    "TUR": "TR", "UAE": "AE", "UKR": "UA", "URU": "UY", "USA": "US",
+    "UZB": "UZ", "VEN": "VE",
+}
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 def search_players(query: str, tour: str = "ATP") -> list:
@@ -1012,47 +1036,72 @@ def search_players(query: str, tour: str = "ATP") -> list:
             "Sofascore returned 403 on all retry attempts — proxy IPs blocked"
         )
 
+    raw_results = data.get("results", [])
+    logger.info("SEARCH_RAW | query=%r total_results=%d", query, len(raw_results))
+
+    # Log first 5 items so we can see exactly what Sofascore returned
+    for i, item in enumerate(raw_results[:5]):
+        e = item.get("entity") or {}
+        sp = e.get("sport") or {}
+        logger.info(
+            "SEARCH_RAW_ITEM[%d] | type=%s sport_id=%s sport_name=%r gender=%r name=%r ranking=%s",
+            i, e.get("type"), sp.get("id"), sp.get("name"), e.get("gender"),
+            e.get("name"), e.get("ranking"),
+        )
+
     gender_pref = "F" if tour.upper() == "WTA" else "M"
     opposite_gender = "F" if gender_pref == "M" else "M"
 
-    def _extract_tennis_entities(raw: dict) -> list:
-        """Extract tennis player entities; accepts null-gender (partial queries often omit it)."""
-        result = []
-        for item in raw.get("results", []):
-            entity = item.get("entity", {})
-            if entity.get("type") != 1:
-                continue
-            sport = entity.get("sport", {})
-            if sport.get("name", "").lower() != "tennis":
-                continue
-            # Drop explicit opposite-gender only — allow null/unknown through
-            if entity.get("gender") == opposite_gender:
-                continue
-            result.append(entity)
-        return result
+    def _is_tennis_player(item: dict) -> bool:
+        """
+        Accept a result item if it looks like a tennis player.
+        Sofascore tennis sport IDs: 5 (confirmed). Type 1 = individual athlete.
+        We accept type == 1 OR sport_id == 5 — either is sufficient.
+        Gender is not checked (partial-name queries often omit it).
+        """
+        e = item.get("entity") or {}
+        sp = e.get("sport") or {}
+        sport_id   = sp.get("id")
+        sport_name = (sp.get("name") or "").lower()
+        etype      = e.get("type")
+        gender     = e.get("gender")
 
-    entities = _extract_tennis_entities(data)
-    logger.info("SEARCH_ENTITIES | query=%r raw_results=%d tennis_entities=%d",
-                query, len(data.get("results", [])), len(entities))
+        is_tennis = (sport_id == 5 or "tennis" in sport_name)
+        is_person = (etype == 1)
+        is_wrong_gender = (gender == opposite_gender)
 
-    # Fallback: if no results, search each word of a multi-word query individually
+        if not is_tennis:
+            return False
+        if not is_person:
+            # Accept anyway if sport is definitely tennis — some responses omit type
+            pass
+        if is_wrong_gender:
+            return False
+        return True
+
+    entities = [item.get("entity") or {} for item in raw_results if _is_tennis_player(item)]
+    logger.info("SEARCH_FILTERED | query=%r tennis_players=%d", query, len(entities))
+
+    # Fallback for multi-word queries: try each word individually and merge
     if not entities:
         seen_ids: set = set()
         words = [w for w in query.strip().split() if len(w) >= 3 and w.lower() != query.strip().lower()]
         for word in words:
             word_data = _get(f"{BASE_URL}/search/all", {"q": word})
-            for e in _extract_tennis_entities(word_data):
-                eid = e.get("id")
-                if eid not in seen_ids:
-                    entities.append(e)
-                    seen_ids.add(eid)
+            for item in word_data.get("results", []):
+                if _is_tennis_player(item):
+                    e = item.get("entity") or {}
+                    eid = e.get("id")
+                    if eid and eid not in seen_ids:
+                        entities.append(e)
+                        seen_ids.add(eid)
         if words:
             logger.info("SEARCH_FALLBACK | words=%s entities_after=%d", words, len(entities))
 
-    # Score-based sort: exact last name=100, starts with=80, contains=60, first name=40
+    # Score-based sort: exact last name=100, starts-with=80, contains=60, first-name=40
     query_lower = query.strip().lower()
 
-    def _score(e) -> int:
+    def _score(e: dict) -> float:
         name_parts = (e.get("name") or "").lower().split()
         last = name_parts[-1] if name_parts else ""
         rank_penalty = (e.get("ranking") or e.get("teamRank") or 500) / 1000
@@ -1078,14 +1127,17 @@ def search_players(query: str, tour: str = "ATP") -> list:
         if len(out) >= 5:
             break
         c = e.get("country") or {}
-        country_alpha3 = (c.get("alpha3") or c.get("name") or "") if isinstance(c, dict) else ""
-        country_alpha2 = (c.get("alpha2") or "") if isinstance(c, dict) else ""
+        alpha3 = (c.get("alpha3") or "") if isinstance(c, dict) else ""
+        alpha2_raw = (c.get("alpha2") or "") if isinstance(c, dict) else ""
+        # Resolve alpha2: use API value first, then convert via IOC→alpha2 table
+        alpha2 = alpha2_raw.upper() or _IOC_TO_ALPHA2.get(alpha3.upper(), "")
+        country_display = alpha3 or (c.get("name") or "" if isinstance(c, dict) else "")
         out.append({
             "id":          eid,
             "name":        e.get("name") or e.get("shortName") or "",
             "currentRank": e.get("ranking") or e.get("teamRank"),
-            "countryAcr":  country_alpha3,
-            "countryCode": country_alpha2.upper(),
+            "countryAcr":  country_display,
+            "countryCode": alpha2,
             "gender":      e.get("gender") or "",
         })
     logger.info("SEARCH_RESULT | query=%r out=%s", query, [x["name"] for x in out])
