@@ -1,0 +1,670 @@
+"""
+Baseline Discord bot — a thin client over the existing Baseline FastAPI backend.
+
+It does NOT contain any projection/calculation logic. Every number it shows comes
+straight from the backend endpoints:
+    GET  /api/search          — player search (autocomplete)
+    POST /api/prop/calculate  — prop projection
+    POST /api/h2h             — head-to-head
+    POST /api/player/stats    — player stats
+
+Slash commands: /prop  /h2h  /player  /help
+"""
+
+import os
+import asyncio
+import logging
+
+import requests
+import discord
+from discord import app_commands
+from dotenv import load_dotenv
+
+load_dotenv()
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+)
+log = logging.getLogger("baseline-bot")
+
+# ── Config ────────────────────────────────────────────────────────────────────
+DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN", "").strip()
+API_BASE = os.getenv(
+    "BASELINE_API_URL", "https://backend-production-84ab.up.railway.app"
+).rstrip("/")
+
+LOGO_URL = "https://baseline-app-three.vercel.app/baseline-logo.png"
+
+# Embed colors — match the web app theme
+COLOR_OVER = 0x00E676   # green  — OVER lean / positive edge
+COLOR_UNDER = 0xFF4444  # red    — UNDER lean
+COLOR_NEUTRAL = 0x0A0A0A  # dark — neutral / informational
+COLOR_ERROR = 0xFF4444
+
+FOOTER_TEXT = "Baseline — Data Driven. Optimizer Backed."
+FOOTER_PROJECTION = (
+    "Baseline — Data Driven. Optimizer Backed. • Model projections, not betting advice."
+)
+
+# Per-request network timeouts (seconds). Prop calc is heavy (multi-source fetch).
+SEARCH_TIMEOUT = 8
+PROP_TIMEOUT = 90
+GENERIC_TIMEOUT = 45
+
+# ── Court lists per surface (display name → backend COURT_CPR key) ──────────────
+# The backend owns the CPI values; the bot only sends a recognised court name and
+# reads back court_pace_index. Names map 1:1 except the three noted exceptions.
+COURTS_BY_SURFACE = {
+    "Clay": [
+        "Roland Garros", "Monte Carlo", "Madrid", "Barcelona", "Rome",
+        "Hamburg", "Geneva", "Munich", "Lyon",
+    ],
+    "Hard": [
+        "Australian Open", "US Open", "Indian Wells", "Miami", "Cincinnati",
+        "Canada Montreal", "Paris Bercy", "Vienna", "Basel", "Rotterdam",
+        "Doha", "Dubai", "Shanghai", "ATP Finals",
+    ],
+    "Grass": [
+        "Wimbledon", "Queens Club", "Halle", "Stuttgart", "s-Hertogenbosch",
+        "Birmingham", "Nottingham", "Mallorca", "Eastbourne", "Berlin",
+        "Bad Homburg",
+    ],
+}
+# Display names whose backend COURT_CPR key differs from the display name.
+COURT_KEY_OVERRIDES = {
+    "Shanghai": "Shanghai Masters",
+    "Berlin": "Berlin WTA",
+    "Bad Homburg": "Bad Homburg WTA",
+}
+
+
+def backend_court_key(display: str) -> str:
+    return COURT_KEY_OVERRIDES.get(display, display)
+
+
+def surface_for_court(display: str):
+    for surf, courts in COURTS_BY_SURFACE.items():
+        if display in courts:
+            return surf
+    return None
+
+
+# ── HTTP helpers (run blocking requests off the event loop) ─────────────────────
+class BackendError(Exception):
+    """Generic backend failure (timeout, connection, 5xx)."""
+
+
+class DataUnavailable(Exception):
+    """Player data source (Sofascore) temporarily unavailable."""
+
+
+def _get(path: str, params: dict, timeout: int):
+    r = requests.get(f"{API_BASE}{path}", params=params, timeout=timeout)
+    r.raise_for_status()
+    return r.json()
+
+
+def _post(path: str, payload: dict, timeout: int):
+    r = requests.post(f"{API_BASE}{path}", json=payload, timeout=timeout)
+    r.raise_for_status()
+    return r.json()
+
+
+async def search_players(query: str, tour: str, timeout: int = SEARCH_TIMEOUT):
+    """Resolve a query to a list of player dicts via the backend search endpoint."""
+    try:
+        data = await asyncio.to_thread(
+            _get, "/api/search", {"query": query, "tour": tour}, timeout
+        )
+    except Exception as exc:  # noqa: BLE001 — autocomplete must never raise
+        log.warning("search failed q=%r tour=%s: %s", query, tour, exc)
+        return []
+    if isinstance(data, dict):  # backend returns a dict only on the block path
+        return []
+    return data or []
+
+
+async def search_both_tours(query: str):
+    """Search ATP and WTA concurrently and merge (men + women)."""
+    atp, wta = await asyncio.gather(
+        search_players(query, "ATP"),
+        search_players(query, "WTA"),
+    )
+    out = []
+    for tour, players in (("ATP", atp), ("WTA", wta)):
+        for p in players:
+            out.append({**p, "tour": tour})
+    return out
+
+
+def _is_block_response(data: dict) -> bool:
+    if not isinstance(data, dict):
+        return False
+    if data.get("data_unavailable"):
+        return True
+    note = (data.get("note") or "").lower()
+    return "temporarily unavailable" in note or "unable to load player match data" in note
+
+
+# ── Player reference encoding for autocomplete values ───────────────────────────
+# Discord autocomplete Choice.value carries the resolved selection so we don't have
+# to re-search on submit. Format: "id|tour|name" (≤100 chars).
+def encode_player(p: dict) -> str:
+    val = f"{p['id']}|{p.get('tour', 'ATP')}|{p.get('name', '')}"
+    return val[:100]
+
+
+def decode_player(value: str):
+    """Return (id, tour, name) from an encoded value, or (None, None, raw)."""
+    if value and "|" in value:
+        parts = value.split("|", 2)
+        if len(parts) == 3 and parts[0].isdigit():
+            return parts[0], parts[1], parts[2]
+    return None, None, value
+
+
+async def resolve_player(value: str):
+    """Resolve an autocomplete value (or free text) to (id, tour, name)."""
+    pid, tour, name = decode_player(value)
+    if pid:
+        return pid, tour, name
+    # Free text — search both tours and take the best match.
+    results = await search_both_tours(value)
+    if results:
+        top = results[0]
+        return str(top["id"]), top.get("tour", "ATP"), top.get("name", value)
+    return None, None, value
+
+
+# ── Embed builders ──────────────────────────────────────────────────────────────
+def error_embed(message: str) -> discord.Embed:
+    e = discord.Embed(title="⚠️ Error", description=message, color=COLOR_ERROR)
+    e.set_footer(text=FOOTER_TEXT)
+    return e
+
+
+def _form_emojis(matches, limit=5) -> str:
+    out = []
+    for m in (matches or [])[:limit]:
+        if isinstance(m, dict):
+            won = m.get("won")
+        else:
+            won = bool(m)
+        out.append("🟢" if won else "🔴")
+    return " ".join(out) if out else "—"
+
+
+def _shorten(text: str, n: int = 350) -> str:
+    if not text:
+        return ""
+    text = text.strip()
+    return text if len(text) <= n else text[: n - 1].rsplit(" ", 1)[0] + "…"
+
+
+def prop_embed(player, opponent, prop_type, surface, court_display, line, data) -> discord.Embed:
+    proj = data.get("model_projection")
+    lean = (data.get("lean") or "NEUTRAL").upper()
+    conf = data.get("confidence")
+    cpi = data.get("court_pace_index")
+    tier = data.get("court_speed_tier")
+
+    color = COLOR_OVER if lean == "OVER" else COLOR_UNDER if lean == "UNDER" else COLOR_NEUTRAL
+    lean_icon = "🟢 OVER" if lean == "OVER" else "🔴 UNDER" if lean == "UNDER" else "⚪ NEUTRAL"
+
+    edge = None
+    if proj is not None and line is not None:
+        edge = proj - line
+
+    e = discord.Embed(
+        title=f"{prop_type} — {player} vs {opponent}",
+        description=f"**{surface}** · {court_display}",
+        color=color,
+    )
+    e.set_thumbnail(url=LOGO_URL)
+
+    e.add_field(name="Model Projection", value=f"**{proj:.1f}**" if proj is not None else "—", inline=True)
+    e.add_field(name="Book Line", value=f"{line:g}" if line is not None else "—", inline=True)
+    if edge is not None:
+        sign = "+" if edge >= 0 else ""
+        e.add_field(name="Edge", value=f"{sign}{edge:.1f}", inline=True)
+
+    e.add_field(name="Lean", value=lean_icon, inline=True)
+    e.add_field(name="Confidence", value=f"{conf}%" if conf is not None else "—", inline=True)
+
+    court_val = court_display
+    if cpi is not None:
+        court_val = f"{court_display}\nST Pace Index {cpi:g}" + (f" · {tier}" if tier else "")
+    e.add_field(name="Tournament / Court", value=court_val, inline=True)
+
+    e.add_field(
+        name=f"Last 5 ({surface})",
+        value=_form_emojis(data.get("player_surface_matches")),
+        inline=False,
+    )
+
+    explanation = _shorten(data.get("plain_english_explanation", ""))
+    if explanation:
+        e.add_field(name="Why", value=explanation, inline=False)
+
+    # Limited-data disclosure (mirrors the web app warning)
+    notes = []
+    if data.get("player_limited_data"):
+        notes.append(f"{player}: limited surface data")
+    if data.get("opponent_limited_data"):
+        notes.append(f"{opponent}: limited surface data")
+    if data.get("data_stale"):
+        notes.append("served from cached snapshot")
+    if notes:
+        e.add_field(name="⚠️ Data note", value=" · ".join(notes), inline=False)
+
+    e.set_footer(text=FOOTER_PROJECTION)
+    return e
+
+
+def h2h_embed(p1, p2, surface, data) -> discord.Embed:
+    total = data.get("total", 0)
+    p1w = data.get("p1_wins", 0)
+    p2w = data.get("p2_wins", 0)
+
+    e = discord.Embed(
+        title=f"Head-to-Head — {p1} vs {p2}",
+        description=f"Surface filter: **{surface or 'All'}**",
+        color=COLOR_NEUTRAL,
+    )
+    e.set_thumbnail(url=LOGO_URL)
+    e.add_field(name="Overall Record", value=f"**{p1w} – {p2w}**  ({total} meetings)", inline=False)
+
+    if data.get("surface_matches"):
+        e.add_field(
+            name=f"On {surface}",
+            value=f"{data.get('surface_p1_wins', 0)} – {data.get('surface_p2_wins', 0)} "
+                  f"({data.get('surface_matches')} meetings)",
+            inline=False,
+        )
+
+    lines = []
+    for m in (data.get("matches") or [])[:5]:
+        if not isinstance(m, dict):
+            continue
+        date = m.get("date") or m.get("Date") or ""
+        tourn = m.get("tournament") or m.get("Tournament") or m.get("event") or ""
+        score = m.get("score") or m.get("Score") or ""
+        winner = m.get("winner") or m.get("Winner") or ""
+        piece = " · ".join(x for x in (date, tourn) if x)
+        detail = " · ".join(x for x in (winner, score) if x)
+        lines.append(f"• {piece} {('— ' + detail) if detail else ''}".strip())
+    if lines:
+        e.add_field(name="Recent Meetings", value="\n".join(lines)[:1024], inline=False)
+    elif total == 0:
+        e.add_field(name="Recent Meetings", value="No tour-level meetings found.", inline=False)
+
+    avgs = []
+    if data.get("games_avg") is not None:
+        avgs.append(f"Games: {data['games_avg']:.1f}")
+    if data.get("ace_avg") is not None:
+        avgs.append(f"Aces: {data['ace_avg']:.1f}")
+    if data.get("bp_avg") is not None:
+        avgs.append(f"BP won: {data['bp_avg']:.1f}")
+    if avgs:
+        e.add_field(name="H2H Averages", value=" · ".join(avgs), inline=False)
+
+    e.set_footer(text=FOOTER_TEXT)
+    return e
+
+
+def player_embed(name, surface, data) -> discord.Embed:
+    arch = data.get("archetype") or "—"
+    surf = data.get(surface, {}) or {}
+    form = data.get("form", [])
+
+    e = discord.Embed(
+        title=f"{name} — Player Profile",
+        description=f"Archetype: **{arch}**  ·  Surface: **{surface}**",
+        color=COLOR_NEUTRAL,
+    )
+    e.set_thumbnail(url=LOGO_URL)
+
+    def pct(v):
+        return f"{v:.0f}%" if isinstance(v, (int, float)) else "—"
+
+    def num(v):
+        return f"{v:.1f}" if isinstance(v, (int, float)) else "—"
+
+    e.add_field(name="Matches", value=str(surf.get("matches_played") or "—"), inline=True)
+    e.add_field(name="Win Rate", value=pct(surf.get("win_rate")), inline=True)
+    e.add_field(name="Aces/Match", value=num(surf.get("aces")), inline=True)
+    e.add_field(name="DFs/Match", value=num(surf.get("double_faults")), inline=True)
+    e.add_field(name="1st Srv Won", value=pct(surf.get("first_serve_pts_won")), inline=True)
+    e.add_field(name="2nd Srv Won", value=pct(surf.get("second_serve_pts_won")), inline=True)
+    e.add_field(name="BP Converted", value=pct(surf.get("bp_converted")), inline=True)
+
+    e.add_field(name="Last 10 Form", value=_form_emojis(form, limit=10), inline=False)
+    e.set_footer(text=FOOTER_TEXT)
+    return e
+
+
+# ── Discord client ──────────────────────────────────────────────────────────────
+class BaselineBot(discord.Client):
+    def __init__(self):
+        super().__init__(intents=discord.Intents.default())
+        self.tree = app_commands.CommandTree(self)
+
+    async def setup_hook(self):
+        await self.tree.sync()
+        log.info("Slash commands synced.")
+
+
+client = BaselineBot()
+
+PROP_CHOICES = [
+    app_commands.Choice(name="Aces", value="Aces"),
+    app_commands.Choice(name="Double Faults", value="Double Faults"),
+    app_commands.Choice(name="Break Points Won", value="Break Points Won"),
+    app_commands.Choice(name="Total Games", value="Total Games"),
+]
+SURFACE_CHOICES = [
+    app_commands.Choice(name="Hard", value="Hard"),
+    app_commands.Choice(name="Clay", value="Clay"),
+    app_commands.Choice(name="Grass", value="Grass"),
+]
+
+
+# ── Autocomplete callbacks ──────────────────────────────────────────────────────
+async def player_autocomplete(interaction: discord.Interaction, current: str):
+    current = (current or "").strip()
+    if len(current) < 3:
+        return []
+    results = await search_both_tours(current)
+    choices = []
+    seen = set()
+    for p in results[:25]:
+        key = (p["id"], p.get("tour"))
+        if key in seen:
+            continue
+        seen.add(key)
+        label = f"{p.get('name', '?')} ({p.get('tour')})"
+        rank = p.get("currentRank")
+        if rank:
+            label += f" · #{rank}"
+        choices.append(app_commands.Choice(name=label[:100], value=encode_player(p)))
+    return choices[:25]
+
+
+async def court_autocomplete(interaction: discord.Interaction, current: str):
+    current = (current or "").lower().strip()
+    surface = getattr(interaction.namespace, "surface", None)
+
+    if surface and surface in COURTS_BY_SURFACE:
+        pool = [("None", None)] + [(c, surface) for c in COURTS_BY_SURFACE[surface]]
+    else:
+        # Surface not chosen yet — show all, grouped/labelled by surface.
+        pool = [("None", None)]
+        for surf, courts in COURTS_BY_SURFACE.items():
+            pool += [(c, surf) for c in courts]
+
+    out = []
+    for display, surf in pool:
+        label = display if surf is None or not surface else display
+        if surf and not surface:
+            label = f"{display} ({surf})"
+        if current and current not in display.lower():
+            continue
+        out.append(app_commands.Choice(name=label[:100], value=display))
+    return out[:25]
+
+
+# ── /prop ─────────────────────────────────────────────────────────────────────
+@client.tree.command(name="prop", description="Get a Baseline prop projection for a matchup")
+@app_commands.describe(
+    player="Player (the one the prop is for) — type to search",
+    opponent="Opponent — type to search",
+    prop_type="Which prop to project",
+    surface="Court surface",
+    court="Tournament (optional) — choose one matching the surface, or None for generic",
+    line="The book line (e.g. 1.5)",
+)
+@app_commands.choices(prop_type=PROP_CHOICES, surface=SURFACE_CHOICES)
+@app_commands.autocomplete(player=player_autocomplete, opponent=player_autocomplete, court=court_autocomplete)
+@app_commands.checks.cooldown(1, 5.0, key=lambda i: i.user.id)
+async def prop(
+    interaction: discord.Interaction,
+    player: str,
+    opponent: str,
+    prop_type: app_commands.Choice[str],
+    surface: app_commands.Choice[str],
+    line: float,
+    court: str = "None",
+):
+    await interaction.response.defer(thinking=True)
+
+    surface_val = surface.value
+    court = (court or "None").strip()
+
+    # Validate court matches surface
+    if court and court != "None":
+        court_surf = surface_for_court(court)
+        if court_surf is None:
+            await interaction.followup.send(embed=error_embed(
+                f"`{court}` isn't a recognised tournament. Pick one from the court list or use None."
+            ))
+            return
+        if court_surf != surface_val:
+            await interaction.followup.send(embed=error_embed(
+                f"`{court}` is a **{court_surf}** event but you selected **{surface_val}**. "
+                f"Pick a court matching the surface, or use None."
+            ))
+            return
+
+    try:
+        p_id, p_tour, p_name = await resolve_player(player)
+        o_id, o_tour, o_name = await resolve_player(opponent)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("prop resolve failed: %s", exc)
+        await interaction.followup.send(embed=error_embed(
+            "Unable to fetch data right now — try again shortly."
+        ))
+        return
+
+    if not p_id or not o_id:
+        missing = player if not p_id else opponent
+        await interaction.followup.send(embed=error_embed(
+            f"Couldn't find a player matching `{missing}`. Try the autocomplete suggestions."
+        ))
+        return
+
+    tour = p_tour or "ATP"
+    court_key = "" if court == "None" else backend_court_key(court)
+    court_display = "Generic surface" if court == "None" else court
+
+    payload = {
+        "player_id": p_id, "opponent_id": o_id,
+        "player_name": p_name, "opponent_name": o_name,
+        "tour": tour, "surface": surface_val,
+        "court": court_key, "prop_type": prop_type.value,
+        "prop_line": float(line),
+    }
+
+    try:
+        data = await asyncio.to_thread(_post, "/api/prop/calculate", payload, PROP_TIMEOUT)
+    except requests.Timeout:
+        await interaction.followup.send(embed=error_embed(
+            "Unable to fetch data right now — try again shortly."
+        ))
+        return
+    except Exception as exc:  # noqa: BLE001
+        log.warning("prop calc failed: %s", exc)
+        await interaction.followup.send(embed=error_embed(
+            "Unable to fetch data right now — try again shortly."
+        ))
+        return
+
+    if _is_block_response(data):
+        await interaction.followup.send(embed=error_embed(
+            "Player data source temporarily unavailable. Please try again in a few minutes."
+        ))
+        return
+
+    if data.get("model_projection") is None:
+        await interaction.followup.send(embed=error_embed(
+            data.get("note") or "No projection available for this matchup/prop."
+        ))
+        return
+
+    await interaction.followup.send(
+        embed=prop_embed(p_name, o_name, prop_type.value, surface_val, court_display, float(line), data)
+    )
+
+
+# ── /h2h ────────────────────────────────────────────────────────────────────────
+@client.tree.command(name="h2h", description="Head-to-head record between two players")
+@app_commands.describe(
+    player1="First player — type to search",
+    player2="Second player — type to search",
+    surface="Optional surface filter",
+)
+@app_commands.choices(surface=SURFACE_CHOICES)
+@app_commands.autocomplete(player1=player_autocomplete, player2=player_autocomplete)
+async def h2h(
+    interaction: discord.Interaction,
+    player1: str,
+    player2: str,
+    surface: app_commands.Choice[str] = None,
+):
+    await interaction.response.defer(thinking=True)
+    surface_val = surface.value if surface else None
+
+    p1_id, p1_tour, p1_name = await resolve_player(player1)
+    p2_id, p2_tour, p2_name = await resolve_player(player2)
+    if not p1_id or not p2_id:
+        await interaction.followup.send(embed=error_embed(
+            "Couldn't resolve both players. Use the autocomplete suggestions."
+        ))
+        return
+
+    payload = {
+        "player1_id": p1_id, "player2_id": p2_id,
+        "tour": p1_tour or "ATP", "surface": surface_val,
+    }
+    try:
+        data = await asyncio.to_thread(_post, "/api/h2h", payload, GENERIC_TIMEOUT)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("h2h failed: %s", exc)
+        await interaction.followup.send(embed=error_embed(
+            "Unable to fetch data right now — try again shortly."
+        ))
+        return
+
+    await interaction.followup.send(embed=h2h_embed(p1_name, p2_name, surface_val, data))
+
+
+# ── /player ───────────────────────────────────────────────────────────────────
+@client.tree.command(name="player", description="Player profile, surface stats and recent form")
+@app_commands.describe(name="Player — type to search", surface="Surface to show stats for")
+@app_commands.choices(surface=SURFACE_CHOICES)
+@app_commands.autocomplete(name=player_autocomplete)
+async def player_cmd(
+    interaction: discord.Interaction,
+    name: str,
+    surface: app_commands.Choice[str],
+):
+    await interaction.response.defer(thinking=True)
+    p_id, p_tour, p_name = await resolve_player(name)
+    if not p_id:
+        await interaction.followup.send(embed=error_embed(
+            f"Couldn't find a player matching `{name}`."
+        ))
+        return
+
+    payload = {"player_id": p_id, "player_name": p_name, "tour": p_tour or "ATP"}
+    try:
+        data = await asyncio.to_thread(_post, "/api/player/stats", payload, GENERIC_TIMEOUT)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("player stats failed: %s", exc)
+        await interaction.followup.send(embed=error_embed(
+            "Unable to fetch data right now — try again shortly."
+        ))
+        return
+
+    if not (data.get(surface.value) or {}).get("matches_played") and not data.get("form"):
+        await interaction.followup.send(embed=error_embed(
+            "Player data source temporarily unavailable. Please try again in a few minutes."
+        ))
+        return
+
+    await interaction.followup.send(embed=player_embed(p_name, surface.value, data))
+
+
+# ── /help ───────────────────────────────────────────────────────────────────────
+@client.tree.command(name="help", description="How to use the Baseline bot")
+async def help_cmd(interaction: discord.Interaction):
+    e = discord.Embed(
+        title="Baseline Bot — Commands",
+        description="Tennis prop projections straight from the Baseline model.",
+        color=COLOR_OVER,
+    )
+    e.set_thumbnail(url=LOGO_URL)
+    e.add_field(
+        name="/prop",
+        value=(
+            "Project a prop for a matchup.\n"
+            "`/prop player:Sinner opponent:Alcaraz prop_type:Aces surface:Hard line:11.5`\n"
+            "• **player / opponent** — start typing, pick from autocomplete\n"
+            "• **prop_type** — Aces · Double Faults · Break Points Won · Total Games\n"
+            "• **surface** — Hard · Clay · Grass\n"
+            "• **court** *(optional)* — pick the tournament; the autocomplete only "
+            "shows events matching your chosen surface (e.g. Grass → Wimbledon, Halle). "
+            "Leave as None for the generic surface speed.\n"
+            "• **line** — the book line, e.g. 11.5"
+        ),
+        inline=False,
+    )
+    e.add_field(
+        name="/h2h",
+        value="Head-to-head record + recent meetings.\n`/h2h player1:Djokovic player2:Nadal surface:Clay`",
+        inline=False,
+    )
+    e.add_field(
+        name="/player",
+        value="Profile, surface stats and recent form.\n`/player name:Gauff surface:Grass`",
+        inline=False,
+    )
+    e.add_field(name="/help", value="This message.", inline=False)
+    e.set_footer(text=FOOTER_PROJECTION)
+    await interaction.response.send_message(embed=e, ephemeral=True)
+
+
+# ── Global error handler (cooldown + anything uncaught) ─────────────────────────
+@client.tree.error
+async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    if isinstance(error, app_commands.CommandOnCooldown):
+        msg = f"⏳ Slow down — try again in {error.retry_after:.1f}s."
+        embed = error_embed(msg)
+    else:
+        log.exception("command error: %s", error)
+        embed = error_embed("Unable to fetch data right now — try again shortly.")
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(embed=embed, ephemeral=True)
+        else:
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+@client.event
+async def on_ready():
+    log.info("Logged in as %s (id=%s) — API=%s", client.user, client.user.id, API_BASE)
+
+
+def main():
+    if not DISCORD_BOT_TOKEN:
+        raise SystemExit(
+            "DISCORD_BOT_TOKEN is not set. Add it to discord-bot/.env "
+            "(or the Railway service variables) before starting the bot."
+        )
+    client.run(DISCORD_BOT_TOKEN)
+
+
+if __name__ == "__main__":
+    main()
