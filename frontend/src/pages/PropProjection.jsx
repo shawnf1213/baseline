@@ -616,7 +616,19 @@ export default function PropProjection({ tour }) {
                 </div>
               )}
 
-              {hasProjection && (result.sanity_failed || result.used_opp_tour_avg || result.conv_rate_fallback) && (
+              {hasProjection && result.data_stale && (
+                <div className="glass-card" style={{
+                  padding: '12px 16px', background: 'rgba(255, 179, 0, 0.06)', borderColor: 'rgba(255, 179, 0, 0.3)',
+                  marginBottom: 14, fontSize: 12, display: 'flex', alignItems: 'center', gap: 10,
+                }}>
+                  <span style={{ color: 'var(--amber)', fontWeight: 800, fontFamily: '"Barlow Condensed", sans-serif', letterSpacing: 1 }}>⚠ STALE DATA</span>
+                  <span style={{ color: 'rgba(255, 179, 0, 0.7)' }}>
+                    Live Sofascore fetch unavailable — projection built from the most recent cached snapshot.
+                  </span>
+                </div>
+              )}
+
+              {hasProjection && (result.sanity_failed || result.player_limited_data || result.opponent_limited_data || result.conv_rate_fallback) && (
                 <div className="glass-card" style={{
                   padding: '12px 16px', background: 'rgba(255, 179, 0, 0.06)', borderColor: 'rgba(255, 179, 0, 0.3)',
                   marginBottom: 14, fontSize: 12, display: 'flex', alignItems: 'center', gap: 10,
@@ -624,8 +636,9 @@ export default function PropProjection({ tour }) {
                   <span style={{ color: 'var(--amber)', fontWeight: 800, fontFamily: '"Barlow Condensed", sans-serif', letterSpacing: 1 }}>⚠ LIMITED DATA</span>
                   <span style={{ color: 'rgba(255, 179, 0, 0.7)' }}>
                     {result.sanity_failed ? 'Projection outside normal bounds — confidence reduced. ' : ''}
-                    {result.used_opp_tour_avg ? 'Opponent has limited surface data — tour average used.' : ''}
-                    {result.conv_rate_fallback ? 'Player has limited recent conversion data on this surface — career/tour-average fallback used.' : ''}
+                    {result.player_limited_data ? `${p1?.name || 'Player'} has limited surface data (${result.player_surface_n ?? 0} matches < 10). ` : ''}
+                    {result.opponent_limited_data ? `${p2?.name || 'Opponent'} has limited surface data (${result.opponent_surface_n ?? 0} matches < 10). ` : ''}
+                    {result.conv_rate_fallback ? 'Limited recent conversion data on this surface — career/tour-average fallback used.' : ''}
                   </span>
                 </div>
               )}

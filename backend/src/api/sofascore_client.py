@@ -1183,6 +1183,47 @@ def get_player_stats_by_surface(player_id, tour: str = "ATP") -> dict:
     events = _get_player_recent_events(pid, max_pages=MAX_PAGES_DEFAULT)
     logger.info("[STATS_FLOW] EVENTS_RAW | fetched=%d", len(events))
 
+    # ── Stale-cache fallback when the live fetch comes back empty ─────────────
+    # An empty events list almost always means Sofascore served the Varnish JS
+    # challenge / 403'd every retry (see _get logging) rather than the player
+    # genuinely having no matches. Rather than caching an empty result for the
+    # next 2 hours and projecting on zero data, reuse the most recent non-empty
+    # snapshot from any PRIOR 2-hour bucket, flagged stale so the caller can
+    # surface a freshness warning.
+    if not events:
+        logger.warning(
+            "[STATS_FLOW] EMPTY_FETCH | pid=%d | likely Sofascore block (403/challenge) "
+            "— searching prior cache buckets for a stale snapshot", pid,
+        )
+        stale = None
+        stale_bucket = -1
+        _prefix = f"ss_surface_v6_{pid}_"
+        for k in list(st.session_state.keys()):
+            if not k.startswith(_prefix):
+                continue
+            try:
+                b = int(k.rsplit("_", 1)[1])
+            except (ValueError, IndexError):
+                continue
+            cached_val = st.session_state.get(k) or {}
+            if cached_val.get("all_matches") and b > stale_bucket:
+                stale, stale_bucket = cached_val, b
+        if stale is not None:
+            logger.warning(
+                "[STATS_FLOW] STALE_CACHE_USED | pid=%d | bucket=%d (current=%d) | matches=%d",
+                pid, stale_bucket, _bucket, len(stale.get("all_matches", [])),
+            )
+            stale = dict(stale)
+            stale["_stale_cache"] = True
+            stale["_stat_match_count"] = len([
+                m for m in stale.get("all_matches", []) if m.get("has_stats")
+            ])
+            return stale
+        logger.error(
+            "[STATS_FLOW] NO_DATA | pid=%d | empty fetch AND no prior cache — "
+            "projection caller should refuse rather than use tour-average defaults", pid,
+        )
+
     # Filter to finished singles events; log surface detection for debugging
     valid: list = []
     for event in events:
@@ -1481,6 +1522,11 @@ def get_player_stats_by_surface(player_id, tour: str = "ATP") -> dict:
         surfaces.get("Grass", {}).get("aces"),
         surfaces.get("All", {}).get("matches_played"),
     )
+
+    # Tag freshness + the real stat-row count so the projection caller can
+    # detect a total data gap and refuse rather than project on tour-averages.
+    surfaces["_stale_cache"] = False
+    surfaces["_stat_match_count"] = len(stat_matches)
 
     st.session_state[cache_key] = surfaces
     return surfaces

@@ -189,6 +189,8 @@ export default function PlayerSearch({ tour, onSelect, label = 'Search player…
                   borderRadius: 12,
                   marginTop: 6,
                   overflow: 'hidden',
+                  maxHeight: 320,
+                  overflowY: 'auto',
                   boxShadow: '0 12px 28px rgba(0, 0, 0, 0.6)',
                 }}
               >

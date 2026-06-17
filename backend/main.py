@@ -690,6 +690,54 @@ async def prop_calculate(req: PropRequest):
             court_for_calc or "generic", req.tour, _is_atp_gs, match_fmt,
         )
 
+        # ── Total data-availability guard (ISSUE 1) ─────────────────────────
+        # "SS 0 recent" means Sofascore returned zero matches (Varnish JS
+        # challenge / 403). When the unified pool (Sofascore + Sackmann) AND
+        # Tennis Abstract both return nothing for a player, every component
+        # below falls back to tour-average defaults and manufactures a
+        # projection from no data. Refuse to project instead of guessing.
+        p1_total_data = len(p1_unified or []) + (p1_blended.get("_ta_career_matches", 0) or 0)
+        p2_total_data = len(p2_unified or []) + (p2_blended.get("_ta_career_matches", 0) or 0)
+        p1_stale = bool(p1_data.get("_stale_cache"))
+        p2_stale = bool(p2_data.get("_stale_cache"))
+        logger.info(
+            "DATA_AVAIL | p1=%s total=%d stale=%s | p2=%s total=%d stale=%s",
+            req.player_name, p1_total_data, p1_stale,
+            req.opponent_name, p2_total_data, p2_stale,
+        )
+        _no_data = [
+            n for n, t in (
+                (req.player_name or "Player 1", p1_total_data),
+                (req.opponent_name or "Player 2", p2_total_data),
+            ) if t == 0
+        ]
+        if _no_data:
+            who = " and ".join(_no_data)
+            logger.error("DATA_GAP_REFUSE | no match data across any source for: %s", who)
+            return {
+                "model_projection": None,
+                "lean": None,
+                "confidence": 0,
+                "note": (
+                    f"Unable to load player match data — Sofascore temporarily "
+                    f"unavailable ({who}). Please try again in a few minutes."
+                ),
+                "data_unavailable": True,
+            }
+
+        # ── Limited-surface-data threshold (ISSUE 2) ─────────────────────────
+        # Fewer than 10 matches on the SELECTED surface (from the unified pool)
+        # flags limited data, applied consistently to both players. 10+ → none.
+        p1_surface_n = (p1_unified_surf or {}).get("matches", 0) or 0
+        p2_surface_n = (p2_unified_surf or {}).get("matches", 0) or 0
+        player_limited_data   = p1_surface_n < 10
+        opponent_limited_data = p2_surface_n < 10
+        logger.info(
+            "SURFACE_DATA | %s n=%d limited=%s | %s n=%d limited=%s (threshold=10)",
+            req.player_name, p1_surface_n, player_limited_data,
+            req.opponent_name, p2_surface_n, opponent_limited_data,
+        )
+
         # Run projection
         if req.prop_type == "Aces":
             result = project_aces(
@@ -963,6 +1011,13 @@ async def prop_calculate(req: PropRequest):
             "player_surface_fallback":   p1_fallback,
             "opponent_surface_fallback": p2_fallback,
             "data_quality":         data_quality,
+            # Limited-surface-data flags (ISSUE 2 — <10 surface matches)
+            "player_limited_data":     player_limited_data,
+            "opponent_limited_data":   opponent_limited_data,
+            "player_surface_n":        p1_surface_n,
+            "opponent_surface_n":      p2_surface_n,
+            # Stale-cache freshness (ISSUE 1 — served from a prior snapshot)
+            "data_stale":              p1_stale or p2_stale,
             # Projection quality flags
             "sanity_failed":        result.get("sanity_failed", False),
             "used_opp_tour_avg":    result.get("used_opp_tour_avg", False),

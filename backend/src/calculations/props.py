@@ -119,6 +119,14 @@ def sanity_check_projection(prop_type: str, projection: float,
     bounds = prop_bounds.get(bound_key) or prop_bounds.get(tour, {})
     if not bounds:
         return True
+
+    # Surface-aware floor for Break Points Won on grass. Grass is the most
+    # serve-dominant surface; against an elite server (e.g. a top-10 server at
+    # fast Halle) a legitimate projection can land below the generic 1.5 floor
+    # (realistic range ~0.8–1.8). Don't flag those as sanity failures — only the
+    # hard/clay floor stays at 1.5, where sub-1.5 usually signals a data issue.
+    if prop_type == "Break Points Won" and surface == "Grass" and match_format != "best_of_5":
+        bounds = {**bounds, "min": 0.6}
     if projection < bounds["min"] or projection > bounds["max"]:
         logger.warning(
             "SANITY_FAIL | player=%s | prop=%s | surface=%s | tour=%s | "
