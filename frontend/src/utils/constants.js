@@ -96,6 +96,7 @@ export const TOURNAMENT_CONFIG = {
       { name: "Mallorca",                cpr: 36 },    // ST est — ~Wimbledon
       { name: "Eastbourne International", cpr: 35 },    // ST est
       { name: "Birmingham",              cpr: 34 },    // ST est — Challenger 125, Edgbaston Priory
+      { name: "Nottingham",              cpr: 34 },    // ST est — Rothesay Open Nottingham, ATP 125
     ],
   },
 
@@ -155,6 +156,8 @@ export const TOURNAMENT_CONFIG = {
       { name: "Mallorca WTA",            cpr: 36 },
       { name: "Eastbourne WTA",          cpr: 35 },
       { name: "Birmingham WTA",          cpr: 34 },     // WTA 125, Edgbaston Priory (same venue as ATP)
+      { name: "Nottingham WTA",          cpr: 34 },     // ST est — Rothesay Open Nottingham, WTA 250
+      { name: "Berlin WTA",              cpr: 35 },     // ST est — bett1open Berlin, WTA 500 on grass
     ],
   },
 }

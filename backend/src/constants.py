@@ -146,7 +146,10 @@ COURT_CPR = {
     "Birmingham":                        34,    # [ST est] Challenger 125 grass, Edgbaston Priory
     "Birmingham Challenger":             34,    # alt name
     "Ilkley Challenger":                 34,    # [ST est]
-    "Nottingham Challenger":             34,    # [ST est]
+    "Nottingham":                        34,    # [ST est] Rothesay Open Nottingham, ATP 125 / WTA 250
+    "Nottingham Open":                   34,    # alt name
+    "Rothesay Open Nottingham":          34,    # full name
+    "Nottingham Challenger":             34,    # legacy alt name
 
     # ── WTA Hard ─────────────────────────────────────────────────────────────
     # Roland Garros and Wimbledon WTA share the same court as ATP — same ST values.
@@ -207,6 +210,11 @@ COURT_CPR = {
     "Hertogenbosch WTA":                 36,    # alt name
     "Mallorca WTA":                      36,    # [ST est]
     "Ilkley WTA 125 Grass":              34,    # [ST est]
+    "Nottingham WTA":                    34,    # [ST est] Rothesay Open Nottingham, WTA 250 (same venue as ATP 125)
+    "Nottingham Open WTA":               34,    # alt name
+    "Berlin WTA":                        35,    # [ST est] bett1open Berlin, WTA 500 on grass (LTTC Rot-Weiss)
+    "bett1open":                         35,    # alt name
+    "bett1open Berlin":                  35,    # alt name
 }
 
 COURTS_BY_SURFACE = {
@@ -218,7 +226,7 @@ COURTS_BY_SURFACE = {
               "Italian Open Rome", "Hamburg Open", "Lyon Open"],
     "Grass": ["Wimbledon", "Stuttgart", "Halle", "Queens Club Championships",
               "s-Hertogenbosch", "Mallorca", "Eastbourne International",
-              "Birmingham"],
+              "Birmingham", "Nottingham"],
 }
 
 CPR_NEUTRAL = 35
