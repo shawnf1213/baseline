@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
-BASE_URL = "https://api.sofascore.com/api/v1"
+BASE_URL = "https://www.sofascore.com/api/v1"
 
 HEADERS = {
     "Accept": "*/*",
@@ -42,6 +42,7 @@ HEADERS = {
     "Referer": "https://www.sofascore.com/",
     "Cache-Control": "no-cache",
     "Pragma": "no-cache",
+    "x-requested-with": "dd30ae",
 }
 
 # Rotate through recent Chrome profiles and matching User-Agent strings.
@@ -184,6 +185,7 @@ def _mark_bad(port: int) -> None:
 # ---------------------------------------------------------------------------
 def _get(url: str, params: dict = None) -> dict:
     global _proxy_session, _search_blocked, _search_blocked_ts
+
     if _proxy_session is None:
         _new_session(force_port=True)
 
