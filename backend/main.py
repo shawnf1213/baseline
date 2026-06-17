@@ -360,6 +360,46 @@ async def search_debug(q: str = "sinner"):
     return result
 
 
+@app.get("/api/proxy/health")
+async def proxy_health():
+    """Test every Decodo port against the proxy's OWN ip-check endpoint
+    (no Sofascore involved). Isolates a proxy account/credential failure
+    (all ports fail to tunnel) from a Sofascore-side block (tunnel ok,
+    Sofascore 403s)."""
+    from src.api.sofascore_client import (
+        _PROXY_PORTS, _PROXY_HOST, _PROXY_USER, _PROXY_PASS, _proxy_url,
+    )
+    loop = asyncio.get_event_loop()
+    def _check():
+        from curl_cffi import requests as cf
+        out = []
+        for port in _PROXY_PORTS:
+            pu = _proxy_url(port)
+            try:
+                s = cf.Session(impersonate="chrome124")
+                s.proxies = {"http": pu, "https": pu}
+                r = s.get("https://ip.decodo.com/json", timeout=8)
+                ip = ""
+                try:
+                    j = r.json()
+                    ip = (j.get("proxy") or {}).get("ip") or j.get("ip") or ""
+                except Exception:
+                    pass
+                out.append({"port": port, "status": r.status_code, "ext_ip": ip})
+            except Exception as e:
+                out.append({"port": port, "status": None, "error": f"{type(e).__name__}: {str(e)[:120]}"})
+        return out
+    results = await loop.run_in_executor(None, _check)
+    return {
+        "proxy_host": _PROXY_HOST,
+        "username_set": bool(_PROXY_USER),
+        "password_set": bool(_PROXY_PASS),
+        "ports_tested": len(_PROXY_PORTS),
+        "ports_ok": sum(1 for r in results if r.get("status") == 200),
+        "results": results,
+    }
+
+
 @app.get("/api/search/probe")
 async def search_probe(q: str = "alcaraz"):
     """Raw HTTP status + body snippet from Sofascore — distinguishes a 403
