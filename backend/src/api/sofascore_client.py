@@ -34,7 +34,10 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
-BASE_URL = "https://www.sofascore.com/api/v1"
+BASE_URL        = "https://www.sofascore.com/api/v1"
+# Search was confirmed working on api.sofascore.com before the www switch.
+# Use it as a fallback when www returns 0 tennis entities.
+SEARCH_BASE_URL = "https://api.sofascore.com/api/v1"
 
 HEADERS = {
     "Accept": "*/*",
@@ -1037,7 +1040,8 @@ def search_players(query: str, tour: str = "ATP") -> list:
         )
 
     raw_results = data.get("results", [])
-    logger.info("SEARCH_RAW | query=%r total_results=%d", query, len(raw_results))
+    logger.info("SEARCH_RAW | query=%r www_results=%d data_keys=%s",
+                query, len(raw_results), list(data.keys()))
 
     # Log first 5 items so we can see exactly what Sofascore returned
     for i, item in enumerate(raw_results[:5]):
@@ -1048,6 +1052,23 @@ def search_players(query: str, tour: str = "ATP") -> list:
             i, e.get("type"), sp.get("id"), sp.get("name"), e.get("gender"),
             e.get("name"), e.get("ranking"),
         )
+
+    # Fallback to api.sofascore.com if www returned nothing.
+    # Search was verified working on the api. subdomain before the BASE_URL switch.
+    if not raw_results:
+        logger.info("SEARCH_FALLBACK_URL | query=%r www returned 0 — trying api.sofascore.com", query)
+        data2 = _get(f"{SEARCH_BASE_URL}/search/all", {"q": query})
+        raw_results2 = data2.get("results", [])
+        logger.info("SEARCH_FALLBACK_URL_RAW | query=%r api_results=%d", query, len(raw_results2))
+        if raw_results2:
+            raw_results = raw_results2
+            for i, item in enumerate(raw_results[:5]):
+                e = item.get("entity") or {}
+                sp = e.get("sport") or {}
+                logger.info(
+                    "SEARCH_API_ITEM[%d] | type=%s sport_id=%s sport_name=%r gender=%r name=%r",
+                    i, e.get("type"), sp.get("id"), sp.get("name"), e.get("gender"), e.get("name"),
+                )
 
     gender_pref = "F" if tour.upper() == "WTA" else "M"
     opposite_gender = "F" if gender_pref == "M" else "M"
