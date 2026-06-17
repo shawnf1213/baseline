@@ -97,9 +97,8 @@ def _fresh_session_id() -> str:
     return ''.join(random.choices(string.ascii_lowercase + string.digits, k=8))
 
 
-def _proxy_url(port: int, session_id: str = "") -> str:
-    user = f"{_PROXY_USER}-session-{session_id}" if session_id else _PROXY_USER
-    return f"http://{user}:{_PROXY_PASS}@{_PROXY_HOST}:{port}"
+def _proxy_url(port: int) -> str:
+    return f"http://{_PROXY_USER}:{_PROXY_PASS}@{_PROXY_HOST}:{port}"
 
 
 def _choose_port() -> Optional[int]:
@@ -135,7 +134,7 @@ def _new_session(force_port: bool = True) -> None:
     s = cf.Session(impersonate=profile)
     s.headers.update({**HEADERS, "User-Agent": ua})
     if current_proxy_port and _proxy_ok():
-        pu = _proxy_url(current_proxy_port, _current_session_id)
+        pu = _proxy_url(current_proxy_port)
         s.proxies = {"http": pu, "https": pu}
     _proxy_session = s
     logger.info("New session: port=%s sid=%s profile=%s", current_proxy_port, _current_session_id, profile)
@@ -151,7 +150,7 @@ def _do_warmup() -> None:
     if _proxy_session is None:
         return
     try:
-        _proxy_session.get("https://www.sofascore.com", timeout=5)
+        _proxy_session.get("https://www.sofascore.com", timeout=3)
         logger.debug("Sofascore warm-up OK (port=%s sid=%s)", current_proxy_port, _current_session_id)
     except Exception as e:
         logger.debug("Sofascore warm-up failed (non-fatal): %s", e)
@@ -188,8 +187,9 @@ def _get(url: str, params: dict = None) -> dict:
     if _proxy_session is None:
         _new_session(force_port=True)
 
-    # Escalating waits before re-attempt after 403: 0s → 5s → 15s
-    _403_waits = [0, 5, 15]
+    # Short waits between 403 retries — long waits don't help when the block
+    # is network-wide; fail fast so the caller can surface an error quickly.
+    _403_waits = [0, 1, 2]
 
     for attempt in range(3):
         wait = _403_waits[attempt]
@@ -242,8 +242,7 @@ def _check_proxy_health() -> None:
     try:
         from curl_cffi import requests as cf
         for port in _PROXY_PORTS:
-            sid = _fresh_session_id()
-            pu  = _proxy_url(port, sid)
+            pu  = _proxy_url(port)
             try:
                 s = cf.Session(impersonate="chrome124")
                 s.proxies = {"http": pu, "https": pu}
