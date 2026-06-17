@@ -185,6 +185,43 @@ def _mark_bad(port: int) -> None:
 # ---------------------------------------------------------------------------
 # Core HTTP fetch
 # ---------------------------------------------------------------------------
+def probe_request(url: str, params: dict = None) -> dict:
+    """
+    Diagnostic-only: perform a single proxied GET and report the raw HTTP
+    status, a body snippet, and the proxy port used — WITHOUT the silent
+    {}-on-failure swallowing that _get does. Used to tell a 403 challenge /
+    407 proxy-auth failure apart from a genuine 200-with-empty response.
+    """
+    global _proxy_session
+    if _proxy_session is None:
+        _new_session(force_port=True)
+    try:
+        r = _proxy_session.get(url, params=params, timeout=8)
+        body = r.text or ""
+        ctype = r.headers.get("content-type", "")
+        n_results = None
+        if "json" in ctype.lower():
+            try:
+                n_results = len(r.json().get("results", []))
+            except Exception:
+                n_results = None
+        return {
+            "ok": r.status_code == 200,
+            "status": r.status_code,
+            "proxy_port": current_proxy_port,
+            "content_type": ctype,
+            "n_results": n_results,
+            "body_snippet": body[:400],
+        }
+    except Exception as e:
+        return {
+            "ok": False,
+            "status": None,
+            "proxy_port": current_proxy_port,
+            "error": f"{type(e).__name__}: {e}",
+        }
+
+
 def _get(url: str, params: dict = None) -> dict:
     global _proxy_session, _search_blocked, _search_blocked_ts
 

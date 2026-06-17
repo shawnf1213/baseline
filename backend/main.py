@@ -360,6 +360,21 @@ async def search_debug(q: str = "sinner"):
     return result
 
 
+@app.get("/api/search/probe")
+async def search_probe(q: str = "alcaraz"):
+    """Raw HTTP status + body snippet from Sofascore — distinguishes a 403
+    block / 407 proxy-auth failure from a genuine empty 200 response."""
+    from src.api.sofascore_client import probe_request, BASE_URL, SEARCH_BASE_URL
+    loop = asyncio.get_event_loop()
+    def _probe():
+        return {
+            "query": q,
+            "www": probe_request(f"{BASE_URL}/search/all", {"q": q}),
+            "api": probe_request(f"{SEARCH_BASE_URL}/search/all", {"q": q}),
+        }
+    return await loop.run_in_executor(None, _probe)
+
+
 @app.get("/api/search")
 async def search_get(query: str = "", tour: str = "ATP"):
     q = query.strip()
