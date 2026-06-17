@@ -858,6 +858,7 @@ def _get_player_recent_events(player_id: int, max_pages: int = MAX_PAGES_DEFAULT
     now = time.time()
     page = 0
     batch_num = 0
+    first_batch_retries = 0   # rotate-and-retry budget when page 0 comes back empty
 
     while page < max_pages:
         batch = list(range(page, min(page + 5, max_pages)))
@@ -900,6 +901,21 @@ def _get_player_recent_events(player_id: int, max_pages: int = MAX_PAGES_DEFAULT
         batch_num += 1
 
         if not got_any:
+            # An empty FIRST batch (nothing accumulated yet) for a real player
+            # almost always means the proxy port failed mid-fetch, not that the
+            # player has zero matches. Rotate to a fresh port and retry page 0
+            # a few times before concluding it's genuinely the end of history.
+            if not all_events and first_batch_retries < 3:
+                first_batch_retries += 1
+                logger.warning(
+                    "PAGE_SCAN | player_id=%s | first batch empty — likely proxy "
+                    "failure, rotating port and retrying (attempt %d/3)",
+                    player_id, first_batch_retries,
+                )
+                _new_session(force_port=True)
+                page = 0
+                batch_num = 0
+                continue
             logger.info(
                 "PAGE_SCAN | player_id=%s | empty batch at batch=%d page=%d — end of history",
                 player_id, batch_num, page,
@@ -930,7 +946,17 @@ def _get_player_recent_events(player_id: int, max_pages: int = MAX_PAGES_DEFAULT
     else:
         logger.warning("EVENTS_FETCHED | player_id=%s | no finished events found | total=%d", player_id, len(all_events))
 
-    st.session_state[cache_key] = all_events
+    # Never cache an empty fetch — caching empty would lock in a transient
+    # proxy failure for the whole 2-hour bucket, making it look player-specific
+    # and persistent (e.g. one bad Gauff fetch poisoning every later request).
+    # Leaving it uncached lets the next request re-fetch with a fresh port.
+    if all_events:
+        st.session_state[cache_key] = all_events
+    else:
+        logger.warning(
+            "EVENTS_EMPTY | player_id=%s | NOT caching empty result so the next "
+            "request retries with a fresh proxy port", player_id,
+        )
     return all_events
 
 
@@ -939,7 +965,9 @@ def _get_event_statistics(event_id: int) -> dict:
     if cache_key in st.session_state:
         return st.session_state[cache_key]
     data = _get(f"{BASE_URL}/event/{event_id}/statistics")
-    st.session_state[cache_key] = data
+    # Don't cache an empty/failed stat fetch — let it retry next time.
+    if data:
+        st.session_state[cache_key] = data
     return data
 
 
@@ -1573,7 +1601,15 @@ def get_player_stats_by_surface(player_id, tour: str = "ATP") -> dict:
     surfaces["_stale_cache"] = False
     surfaces["_stat_match_count"] = len(stat_matches)
 
-    st.session_state[cache_key] = surfaces
+    # Only cache a result that actually has matches. Caching an empty surfaces
+    # dict would lock in a transient proxy failure for the 2-hour bucket.
+    if all_match_stats:
+        st.session_state[cache_key] = surfaces
+    else:
+        logger.warning(
+            "SURFACE_EMPTY | pid=%d | NOT caching empty result so the next "
+            "request retries with a fresh proxy port", pid,
+        )
     return surfaces
 
 
