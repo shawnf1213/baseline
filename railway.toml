@@ -2,4 +2,6 @@
 builder = "NIXPACKS"
 
 [deploy]
-startCommand = "uvicorn main:app --app-dir /app/backend --host 0.0.0.0 --port $PORT"
+# Dispatcher — one repo, two Railway services share this config.
+# start.sh runs the Discord bot when SERVICE_ROLE=bot, otherwise the backend.
+startCommand = "bash start.sh"
