@@ -966,9 +966,12 @@ export default function PropProjection({ tour }) {
                             : (d.bp_faced_count != null ? fmt(d.bp_faced_count) : 'N/A')],
                         ['BP Faced (Overall)',
                           result?.bp_overall_opp_faced != null ? fmt(result.bp_overall_opp_faced) : 'N/A'],
-                        ['Opp BP Won (proj)', result?.bp_opp_projected != null
-                          ? <span style={{ color: 'var(--amber)', fontWeight: 800 }}>{fmt(result.bp_opp_projected)}</span>
-                          : 'N/A'],
+                        // 'Opp BP Won (proj)' removed here — it is the reverse-direction
+                        // projection (opponent's breaks against the selected player),
+                        // which only exists to feed the momentum bonus. Shown in the
+                        // opponent's serve-stat card it read as a contradiction of the
+                        // headline projection. It still appears, correctly labelled, in
+                        // the BREAK POINT BREAKDOWN panel as 'Opp Proj BP Won'.
                         ['Hold Rate (est)', result?.opp_hold_rate_pct != null ? `${result.opp_hold_rate_pct.toFixed(0)}%` : 'N/A'],
                         ['Serve Quality', serveTier
                           ? <span style={{ color: serveTierColor, fontWeight: 800 }}>{serveTier}</span>
