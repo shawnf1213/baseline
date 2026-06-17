@@ -26,11 +26,11 @@ export function usePlayerSearch(tour) {
       setLoading(true)
       setError(null)
 
-      // 10-second wall-clock guard — even if the backend call hangs,
-      // the UI will stop spinning and show a message.
+      // 18-second wall-clock guard.  Backend overhead (proxy warmup removed,
+      // throttle 0.2s, up to 3×6s attempts) fits inside this window.
       const timeoutId = setTimeout(() => {
         if (controller.current) controller.current.abort()
-      }, 10_000)
+      }, 18_000)
 
       try {
         const data = await searchPlayers(query, tour, controller.current.signal)

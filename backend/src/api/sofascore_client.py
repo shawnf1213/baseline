@@ -162,15 +162,14 @@ def _do_warmup() -> None:
 
 def _search_throttle() -> None:
     """
-    Enforce a minimum gap between search requests only.
-    NOT applied to parallel stats/H2H fetches — those use _get() without throttling
-    so ThreadPoolExecutor batches don't serialize on a lock.
+    Light rate-limit between search requests.  Keep short (≤0.3s) so that
+    the warmup removal savings aren't eaten back by a long sleep.
     """
     global _last_sofascore_request
     with _throttle_lock:
         now = time.time()
         gap = now - _last_sofascore_request
-        min_gap = 0.8 + random.uniform(0, 0.4)
+        min_gap = 0.2 + random.uniform(0, 0.1)   # 0.2–0.3s (was 0.8–1.2s)
         if gap < min_gap:
             time.sleep(min_gap - gap)
         _last_sofascore_request = time.time()
@@ -192,16 +191,17 @@ def _get(url: str, params: dict = None) -> dict:
     if _proxy_session is None:
         _new_session(force_port=True)
 
-    # Short waits between 403 retries — long waits don't help when the block
-    # is network-wide; fail fast so the caller can surface an error quickly.
-    _403_waits = [0, 1, 2]
+    # Fail fast: 6s per attempt keeps the total under the frontend's 10s wall-
+    # clock limit even with one retry.  Stats/events calls are not search calls
+    # so their latency budget is independent.
+    _403_waits = [0, 0.3, 0.5]
 
     for attempt in range(3):
         wait = _403_waits[attempt]
         if wait > 0:
             time.sleep(wait)
         try:
-            r = _proxy_session.get(url, params=params, timeout=15)
+            r = _proxy_session.get(url, params=params, timeout=6)
             if r.status_code == 200:
                 return r.json()
             if r.status_code == 407:
@@ -1024,10 +1024,11 @@ def search_players(query: str, tour: str = "ATP") -> list:
     # New search = new sticky proxy session + fresh Decodo session ID
     _new_session(force_port=True)
 
-    # Warm-up: GET sofascore.com to pick up session cookies (5s cap, non-fatal)
-    _do_warmup()
+    # Warmup removed: x-requested-with header handles auth; cookie warmup
+    # was eating 1-3s of the 10s frontend budget for no benefit.
 
-    # Throttle search requests to avoid triggering rate detection
+    # Light throttle to avoid rate detection — keep it short so slow proxy
+    # responses don't push the total past the frontend's 10s wall-clock limit.
     _search_throttle()
 
     logger.info("SEARCH_SOFASCORE | query=%r tour=%s", query, tour)
