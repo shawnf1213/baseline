@@ -261,8 +261,16 @@ def _get(url: str, params: dict = None) -> dict:
         except Exception as e:
             msg = str(e).lower()
             if any(x in msg for x in ("proxy", "tunnel", "connect", "407")):
+                # Dead proxy port (e.g. Decodo 502 CONNECT tunnel failure).
+                # Mark it bad AND rotate to a fresh port — without this the
+                # next attempt reuses the same dead port and all 3 retries
+                # fail even when other ports are healthy.
                 _mark_bad(current_proxy_port)
-            logger.debug("Error %s: %s", url, e)
+                logger.warning("PROXY_ERR %s attempt=%d port=%s — rotating: %s",
+                               url, attempt + 1, current_proxy_port, str(e)[:120])
+                _new_session(force_port=True)
+            else:
+                logger.debug("Error %s: %s", url, e)
             if attempt == 2:
                 return {}
     return {}
