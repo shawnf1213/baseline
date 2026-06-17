@@ -139,29 +139,35 @@ def _new_session(force_port: bool = True) -> None:
         s.proxies = {"http": pu, "https": pu}
     _proxy_session = s
     logger.info("New session: port=%s sid=%s profile=%s", current_proxy_port, _current_session_id, profile)
-    # Warm-up: visit the Sofascore homepage to establish a valid session cookie
-    # before making any API requests — mimics a real browser navigation.
-    _do_warmup()
 
 
 def _do_warmup() -> None:
-    """GET the Sofascore homepage so the session has valid cookies before API calls."""
+    """
+    GET the Sofascore homepage so the session has valid cookies before API calls.
+    Only called from search_players(), not from _new_session(), to avoid blocking
+    stats/H2H parallel fetches that don't need a warmed-up session.
+    Capped at 5s so a slow proxy response never stalls the search.
+    """
     if _proxy_session is None:
         return
     try:
-        _proxy_session.get("https://www.sofascore.com", timeout=12)
+        _proxy_session.get("https://www.sofascore.com", timeout=5)
         logger.debug("Sofascore warm-up OK (port=%s sid=%s)", current_proxy_port, _current_session_id)
     except Exception as e:
-        logger.debug("Sofascore warm-up failed: %s", e)
+        logger.debug("Sofascore warm-up failed (non-fatal): %s", e)
 
 
-def _throttle() -> None:
-    """Enforce a minimum 1.5 s gap plus random jitter between Sofascore API calls."""
+def _search_throttle() -> None:
+    """
+    Enforce a minimum gap between search requests only.
+    NOT applied to parallel stats/H2H fetches — those use _get() without throttling
+    so ThreadPoolExecutor batches don't serialize on a lock.
+    """
     global _last_sofascore_request
     with _throttle_lock:
         now = time.time()
         gap = now - _last_sofascore_request
-        min_gap = 1.5 + random.uniform(0, 0.5)
+        min_gap = 0.8 + random.uniform(0, 0.4)
         if gap < min_gap:
             time.sleep(min_gap - gap)
         _last_sofascore_request = time.time()
@@ -181,9 +187,6 @@ def _get(url: str, params: dict = None) -> dict:
     global _proxy_session, _search_blocked, _search_blocked_ts
     if _proxy_session is None:
         _new_session(force_port=True)
-
-    # Enforce human-like request spacing
-    _throttle()
 
     # Escalating waits before re-attempt after 403: 0s → 5s → 15s
     _403_waits = [0, 5, 15]
@@ -226,18 +229,14 @@ def _get(url: str, params: dict = None) -> dict:
 # ---------------------------------------------------------------------------
 # Session init / connection test
 # ---------------------------------------------------------------------------
-def init_session() -> None:
+def _check_proxy_health() -> None:
     """
-    Pick initial proxy port, create the shared Session, and test all ports at startup.
-    Logs per-port health so Railway logs show which IPs are clean before first search.
+    Test all proxy ports and log health. Runs in a background thread at startup
+    so it never delays the server becoming ready.
     """
-    _new_session(force_port=True)
     if not _proxy_ok():
-        logger.warning("No proxy configured — using direct connection")
-        logger.info("Sofascore client ready")
         return
-
-    logger.info("Testing %d proxy ports at startup...", len(_PROXY_PORTS))
+    logger.info("Proxy health check starting (%d ports)...", len(_PROXY_PORTS))
     healthy = 0
     unhealthy = 0
     try:
@@ -248,7 +247,7 @@ def init_session() -> None:
             try:
                 s = cf.Session(impersonate="chrome124")
                 s.proxies = {"http": pu, "https": pu}
-                r = s.get("https://ip.decodo.com/json", timeout=10)
+                r = s.get("https://ip.decodo.com/json", timeout=8)
                 if r.status_code == 200:
                     info    = r.json()
                     ext_ip  = (info.get("proxy") or {}).get("ip") or info.get("ip") or "?"
@@ -265,7 +264,7 @@ def init_session() -> None:
                 logger.warning("  Port %d: error — %s", port, e)
                 unhealthy += 1
     except Exception as e:
-        logger.warning("Startup health check error: %s", e)
+        logger.warning("Proxy health check error: %s", e)
 
     if unhealthy > 4:
         logger.warning(
@@ -275,6 +274,19 @@ def init_session() -> None:
     else:
         logger.info("Proxy health: %d/%d ports OK", healthy, len(_PROXY_PORTS))
 
+
+def init_session() -> None:
+    """
+    Pick initial proxy port and create the shared Session.
+    Proxy health check runs in a background thread so it doesn't delay startup.
+    """
+    _new_session(force_port=True)
+    if not _proxy_ok():
+        logger.warning("No proxy configured — using direct connection")
+    else:
+        # Non-blocking background health check — logs arrive ~30s after startup
+        t = threading.Thread(target=_check_proxy_health, daemon=True)
+        t.start()
     logger.info("Sofascore client ready (port=%s)", current_proxy_port)
 
 
@@ -984,8 +996,11 @@ def search_players(query: str, tour: str = "ATP") -> list:
     # New search = new sticky proxy session + fresh Decodo session ID
     _new_session(force_port=True)
 
-    # Human-like delay before issuing the search request
-    time.sleep(random.uniform(1.0, 2.5))
+    # Warm-up: GET sofascore.com to pick up session cookies (5s cap, non-fatal)
+    _do_warmup()
+
+    # Throttle search requests to avoid triggering rate detection
+    _search_throttle()
 
     data = _get(f"{BASE_URL}/search/all", {"q": query})
 
