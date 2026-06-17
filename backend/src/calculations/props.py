@@ -1763,6 +1763,16 @@ def project_break_points(
     expected_sets, comp_label = _expected_sets_from_gap(win_prob_gap, is_bo5)
     avg_hist_sets             = _AVG_HISTORICAL_SETS.get(tour, 2.45)
     c8_format_mult            = expected_sets / max(avg_hist_sets, 0.01)
+    # Per the documented C8 invariant ("Sofascore per-match bp_faced already
+    # embeds match length"), C8 must not scale a per-match break count ABOVE
+    # its own baseline — doing so double-counts match length. Down-scaling for
+    # an expected blowout (fewer service games → fewer breaks) is still valid.
+    # This only bites non-BO5: WTA's avg_historical_sets (2.30) sits below a
+    # competitive match's 2.6 sets, so every close WTA match was being inflated
+    # ~13%. ATP non-GS is unaffected (avg_hist 2.60 ≈ competitive 2.6 → ~1.0).
+    # BO5 Grand Slams keep the upward scaling (genuinely more sets/breaks).
+    if not is_bo5:
+        c8_format_mult = min(1.0, c8_format_mult)
     bo_scale                  = c8_format_mult   # alias for return-dict compat
 
     logger.info(
