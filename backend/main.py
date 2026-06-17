@@ -318,6 +318,48 @@ _SEARCH_UNAVAILABLE = JSONResponse(
 )
 
 
+@app.get("/api/search/debug")
+async def search_debug(q: str = "sinner"):
+    """Raw Sofascore response — for diagnosing search filter issues."""
+    from src.api.sofascore_client import _get, BASE_URL, SEARCH_BASE_URL, HEADERS
+    loop = asyncio.get_event_loop()
+    def _raw():
+        www = _get(f"{BASE_URL}/search/all", {"q": q})
+        api = _get(f"{SEARCH_BASE_URL}/search/all", {"q": q})
+        www_items = www.get("results", [])
+        api_items = api.get("results", [])
+        return {
+            "query": q,
+            "www_count": len(www_items),
+            "api_count": len(api_items),
+            "www_first5": [
+                {
+                    "name":    (i.get("entity") or {}).get("name"),
+                    "type":    (i.get("entity") or {}).get("type"),
+                    "sport":   ((i.get("entity") or {}).get("sport") or {}).get("name"),
+                    "sport_id":((i.get("entity") or {}).get("sport") or {}).get("id"),
+                    "gender":  (i.get("entity") or {}).get("gender"),
+                    "ranking": (i.get("entity") or {}).get("ranking"),
+                    "country": (i.get("entity") or {}).get("country"),
+                }
+                for i in www_items[:5]
+            ],
+            "api_first5": [
+                {
+                    "name":    (i.get("entity") or {}).get("name"),
+                    "type":    (i.get("entity") or {}).get("type"),
+                    "sport":   ((i.get("entity") or {}).get("sport") or {}).get("name"),
+                    "sport_id":((i.get("entity") or {}).get("sport") or {}).get("id"),
+                    "gender":  (i.get("entity") or {}).get("gender"),
+                    "ranking": (i.get("entity") or {}).get("ranking"),
+                }
+                for i in api_items[:5]
+            ],
+        }
+    result = await loop.run_in_executor(None, _raw)
+    return result
+
+
 @app.get("/api/search")
 async def search_get(query: str = "", tour: str = "ATP"):
     q = query.strip()
