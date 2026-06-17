@@ -1003,6 +1003,7 @@ def search_players(query: str, tour: str = "ATP") -> list:
     # Throttle search requests to avoid triggering rate detection
     _search_throttle()
 
+    logger.info("SEARCH_SOFASCORE | query=%r tour=%s", query, tour)
     data = _get(f"{BASE_URL}/search/all", {"q": query})
 
     # Raise if _get() set the block flag during this call
@@ -1012,8 +1013,10 @@ def search_players(query: str, tour: str = "ATP") -> list:
         )
 
     gender_pref = "F" if tour.upper() == "WTA" else "M"
+    opposite_gender = "F" if gender_pref == "M" else "M"
 
     def _extract_tennis_entities(raw: dict) -> list:
+        """Extract tennis player entities; accepts null-gender (partial queries often omit it)."""
         result = []
         for item in raw.get("results", []):
             entity = item.get("entity", {})
@@ -1022,62 +1025,70 @@ def search_players(query: str, tour: str = "ATP") -> list:
             sport = entity.get("sport", {})
             if sport.get("name", "").lower() != "tennis":
                 continue
-            if entity.get("gender") != gender_pref:
+            # Drop explicit opposite-gender only — allow null/unknown through
+            if entity.get("gender") == opposite_gender:
                 continue
             result.append(entity)
         return result
 
     entities = _extract_tennis_entities(data)
+    logger.info("SEARCH_ENTITIES | query=%r raw_results=%d tennis_entities=%d",
+                query, len(data.get("results", [])), len(entities))
 
-    # Fallback: if no results, search each word individually and merge
+    # Fallback: if no results, search each word of a multi-word query individually
     if not entities:
         seen_ids: set = set()
-        words = [w for w in query.strip().split() if len(w) >= 3]
+        words = [w for w in query.strip().split() if len(w) >= 3 and w.lower() != query.strip().lower()]
         for word in words:
-            if word.lower() == query.strip().lower():
-                continue  # same as the original query, skip
             word_data = _get(f"{BASE_URL}/search/all", {"q": word})
             for e in _extract_tennis_entities(word_data):
                 eid = e.get("id")
                 if eid not in seen_ids:
                     entities.append(e)
                     seen_ids.add(eid)
+        if words:
+            logger.info("SEARCH_FALLBACK | words=%s entities_after=%d", words, len(entities))
 
-    # Smart sort: exact last-name > partial last-name > first-name > other
-    # Within each tier, rank by ATP/WTA ranking (lower = better)
+    # Score-based sort: exact last name=100, starts with=80, contains=60, first name=40
     query_lower = query.strip().lower()
 
-    def _sort_key(e):
+    def _score(e) -> int:
         name_parts = (e.get("name") or "").lower().split()
         last = name_parts[-1] if name_parts else ""
-        rank = e.get("ranking") or e.get("teamRank") or 9999
+        rank_penalty = (e.get("ranking") or e.get("teamRank") or 500) / 1000
         if last == query_lower:
-            return (0, rank)
+            return 100 - rank_penalty
+        if last.startswith(query_lower):
+            return 80 - rank_penalty
         if query_lower in last:
-            return (1, rank)
+            return 60 - rank_penalty
         if any(query_lower in p for p in name_parts):
-            return (2, rank)
-        return (3, rank)
+            return 40 - rank_penalty
+        return 0 - rank_penalty
 
-    entities.sort(key=_sort_key)
+    entities.sort(key=_score, reverse=True)
 
     out = []
     seen_final: set = set()
     for e in entities:
-        if e.get("id") in seen_final:
+        eid = e.get("id")
+        if eid in seen_final:
             continue
-        seen_final.add(e.get("id"))
+        seen_final.add(eid)
         if len(out) >= 5:
             break
         c = e.get("country") or {}
-        country = (c.get("alpha3") or c.get("name") or "") if isinstance(c, dict) else ""
+        country_alpha3 = (c.get("alpha3") or c.get("name") or "") if isinstance(c, dict) else ""
+        country_alpha2 = (c.get("alpha2") or "") if isinstance(c, dict) else ""
         out.append({
-            "id":          e.get("id"),
+            "id":          eid,
             "name":        e.get("name") or e.get("shortName") or "",
             "currentRank": e.get("ranking") or e.get("teamRank"),
-            "countryAcr":  country,
+            "countryAcr":  country_alpha3,
+            "countryCode": country_alpha2.upper(),
             "gender":      e.get("gender") or "",
         })
+    logger.info("SEARCH_RESULT | query=%r out=%s", query, [x["name"] for x in out])
     return out
 
 

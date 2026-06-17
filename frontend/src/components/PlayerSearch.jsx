@@ -3,18 +3,17 @@ import { motion, AnimatePresence } from 'motion/react'
 import { usePlayerSearch } from '../hooks/usePlayerSearch'
 import { Search, X } from 'lucide-react'
 
-// Crude country → flag emoji mapping for the most common acronyms.
-// Falls back to no flag if not in the map.
-const FLAG = {
-  USA: '🇺🇸', GBR: '🇬🇧', ESP: '🇪🇸', ITA: '🇮🇹', FRA: '🇫🇷',
-  GER: '🇩🇪', SUI: '🇨🇭', SRB: '🇷🇸', RUS: '🇷🇺', AUS: '🇦🇺',
-  ARG: '🇦🇷', BRA: '🇧🇷', CAN: '🇨🇦', BUL: '🇧🇬', GRE: '🇬🇷',
-  POL: '🇵🇱', CZE: '🇨🇿', AUT: '🇦🇹', BEL: '🇧🇪', NED: '🇳🇱',
-  KAZ: '🇰🇿', JPN: '🇯🇵', CHN: '🇨🇳', BLR: '🇧🇾', UKR: '🇺🇦',
-  TUN: '🇹🇳', COL: '🇨🇴', NOR: '🇳🇴', DEN: '🇩🇰', LAT: '🇱🇻',
-  CRO: '🇭🇷', SVK: '🇸🇰', POR: '🇵🇹', CHI: '🇨🇱', PER: '🇵🇪',
-  ROU: '🇷🇴', HUN: '🇭🇺', FIN: '🇫🇮', SWE: '🇸🇪', IRL: '🇮🇪',
-  MEX: '🇲🇽',
+// Convert ISO alpha-2 country code to flag emoji using Unicode regional indicators.
+// e.g. "IT" → 🇮🇹, "ES" → 🇪🇸, "US" → 🇺🇸
+function getFlagEmoji(alpha2) {
+  if (!alpha2 || alpha2.length !== 2) return ''
+  try {
+    return String.fromCodePoint(
+      ...[...alpha2.toUpperCase()].map(c => 0x1F1E6 + c.charCodeAt(0) - 65)
+    )
+  } catch {
+    return ''
+  }
 }
 
 export default function PlayerSearch({ tour, onSelect, label = 'Search player…', selected }) {
@@ -94,7 +93,7 @@ export default function PlayerSearch({ tour, onSelect, label = 'Search player…
               )}
               {selected.countryAcr && (
                 <span style={{ fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 700, fontSize: 10, letterSpacing: 1, textTransform: 'uppercase', background: 'rgba(107, 159, 255, 0.1)', color: 'var(--hard-blue)', border: '1px solid rgba(107, 159, 255, 0.3)', padding: '3px 9px', borderRadius: 999, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-                  {FLAG[selected.countryAcr] && <span style={{ fontSize: 12 }}>{FLAG[selected.countryAcr]}</span>}
+                  {getFlagEmoji(selected.countryCode) && <span style={{ fontSize: 12 }}>{getFlagEmoji(selected.countryCode)}</span>}
                   {selected.countryAcr}
                 </span>
               )}
@@ -189,8 +188,8 @@ export default function PlayerSearch({ tour, onSelect, label = 'Search player…
                       onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
                     >
                       <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                        {p.countryAcr && FLAG[p.countryAcr] && (
-                          <span style={{ fontSize: 18 }}>{FLAG[p.countryAcr]}</span>
+                        {getFlagEmoji(p.countryCode) && (
+                          <span style={{ fontSize: 18 }}>{getFlagEmoji(p.countryCode)}</span>
                         )}
                         <div>
                           <div style={{ fontWeight: 800, fontSize: 14, fontFamily: '"Barlow Condensed", sans-serif', color: '#fff', letterSpacing: 0.5 }}>{p.name}</div>
