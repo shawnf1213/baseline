@@ -42,6 +42,7 @@ sys.modules["streamlit.runtime"] = types.ModuleType("streamlit.runtime")
 # ---------------------------------------------------------------------------
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Optional
 from dotenv import load_dotenv
@@ -54,6 +55,7 @@ from src.api.sofascore_client import (
     get_player_stats_by_surface,
     get_h2h_summary,
     get_h2h_stat_avg,
+    SofascoreBlockedError,
 )
 from src.api.tennis_abstract import get_player_ta_stats, build_props_ta_view
 from src.api.sackmann import (
@@ -307,6 +309,15 @@ def _build_explanation(req: PropRequest, result: dict, lean: str,
 # GET /api/search  -- GET avoids CORS preflight entirely
 # POST /api/search -- kept for backwards compat
 # ---------------------------------------------------------------------------
+_SEARCH_UNAVAILABLE = JSONResponse(
+    status_code=503,
+    content={
+        "error":   "data_source_unavailable",
+        "message": "Unable to reach player database — try again in a few minutes",
+    },
+)
+
+
 @app.get("/api/search")
 async def search_get(query: str = "", tour: str = "ATP"):
     q = query.strip()
@@ -319,14 +330,17 @@ async def search_get(query: str = "", tour: str = "ATP"):
         # so it never blocks the event loop and starves other endpoints.
         result = await asyncio.wait_for(
             loop.run_in_executor(None, search_players, q, tour),
-            timeout=8.0,
+            timeout=60.0,
         )
         elapsed = time.time() - t0
         logger.info("SEARCH | q=%r tour=%s t=%.2fs results=%d", q, tour, elapsed, len(result or []))
         return result or []
     except asyncio.TimeoutError:
-        logger.warning("SEARCH TIMEOUT | q=%r tour=%s after 8s", q, tour)
+        logger.warning("SEARCH TIMEOUT | q=%r tour=%s after 60s", q, tour)
         return []
+    except SofascoreBlockedError as e:
+        logger.error("SEARCH BLOCKED | q=%r tour=%s: %s", q, tour, e)
+        return _SEARCH_UNAVAILABLE
     except Exception as e:
         logger.error("SEARCH ERROR | q=%r tour=%s err=%s", q, tour, e)
         return []
@@ -341,14 +355,17 @@ async def search_post(req: SearchRequest):
     try:
         result = await asyncio.wait_for(
             loop.run_in_executor(None, search_players, q, req.tour),
-            timeout=8.0,
+            timeout=60.0,
         )
         elapsed = time.time() - t0
         logger.info("SEARCH | q=%r tour=%s t=%.2fs results=%d", q, req.tour, elapsed, len(result or []))
         return result or []
     except asyncio.TimeoutError:
-        logger.warning("SEARCH TIMEOUT | q=%r tour=%s after 8s", q, req.tour)
+        logger.warning("SEARCH TIMEOUT | q=%r tour=%s after 60s", q, req.tour)
         return []
+    except SofascoreBlockedError as e:
+        logger.error("SEARCH BLOCKED | q=%r tour=%s: %s", q, req.tour, e)
+        return _SEARCH_UNAVAILABLE
     except Exception as e:
         logger.error("SEARCH ERROR | q=%r tour=%s err=%s", q, req.tour, e)
         return []

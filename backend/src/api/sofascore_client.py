@@ -16,8 +16,10 @@ Public interface:
 import os
 import re
 import random
+import string
 import time
 import logging
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Optional
@@ -35,13 +37,23 @@ logger = logging.getLogger(__name__)
 BASE_URL = "https://api.sofascore.com/api/v1"
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:150.0) Gecko/20100101 Firefox/150.0",
     "Accept": "*/*",
     "Accept-Language": "en-US,en;q=0.9",
     "Referer": "https://www.sofascore.com/",
     "Cache-Control": "no-cache",
     "Pragma": "no-cache",
 }
+
+# Rotate through recent Chrome profiles and matching User-Agent strings.
+# Older chrome120 fingerprint was flagged — use 124/125 variants.
+_CHROME_PROFILES = ["chrome124", "chrome125", "chrome124", "chrome125", "chrome120"]
+_UA_POOL = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.6367.207 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.6422.141 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.6367.155 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.6367.207 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.6422.76 Safari/537.36",
+]
 
 # ---------------------------------------------------------------------------
 # Proxy
@@ -58,17 +70,36 @@ _PROXY_PORTS = [
 # One port + one Session for the lifetime of a player search session.
 # Only rotated when: new search starts, 407 received, or 403 persists.
 current_proxy_port: Optional[int] = None
+_current_session_id: str = ""
 _used_ports: list = []
 _bad_ports:  dict = {}          # port -> timestamp marked bad
 _proxy_session   = None         # curl_cffi Session — reused across all requests
+
+# Request throttle — enforces minimum gap between Sofascore calls
+_last_sofascore_request: float = 0.0
+_throttle_lock = threading.Lock()
+
+# 403 block state — set when all retry attempts exhaust on 403
+_search_blocked: bool = False
+_search_blocked_ts: float = 0.0
+
+
+class SofascoreBlockedError(Exception):
+    """Raised when Sofascore returns 403 across all retry attempts during search."""
 
 
 def _proxy_ok() -> bool:
     return bool(_PROXY_PORTS and _PROXY_USER and _PROXY_HOST)
 
 
-def _proxy_url(port: int) -> str:
-    return f"http://{_PROXY_USER}:{_PROXY_PASS}@{_PROXY_HOST}:{port}"
+def _fresh_session_id() -> str:
+    """Generate a random 8-char alphanumeric string for Decodo sticky-session rotation."""
+    return ''.join(random.choices(string.ascii_lowercase + string.digits, k=8))
+
+
+def _proxy_url(port: int, session_id: str = "") -> str:
+    user = f"{_PROXY_USER}-session-{session_id}" if session_id else _PROXY_USER
+    return f"http://{user}:{_PROXY_PASS}@{_PROXY_HOST}:{port}"
 
 
 def _choose_port() -> Optional[int]:
@@ -88,22 +119,52 @@ def _choose_port() -> Optional[int]:
 def _new_session(force_port: bool = True) -> None:
     """
     Create a new curl_cffi Session bound to a proxy port.
+    Uses a fresh Decodo session ID on every call to force a new residential IP.
     Called once per player search, and on 407 / persistent 403.
     """
-    global current_proxy_port, _used_ports, _proxy_session
+    global current_proxy_port, _used_ports, _proxy_session, _current_session_id
     if force_port or current_proxy_port is None:
         port = _choose_port()
         current_proxy_port = port
         if port is not None:
             _used_ports = (_used_ports + [port])[-4:]
-            logger.info("Proxy port -> %d", port)
+    _current_session_id = _fresh_session_id()
+    profile = random.choice(_CHROME_PROFILES)
+    ua      = random.choice(_UA_POOL)
     from curl_cffi import requests as cf
-    s = cf.Session(impersonate="chrome120")
-    s.headers.update(HEADERS)
+    s = cf.Session(impersonate=profile)
+    s.headers.update({**HEADERS, "User-Agent": ua})
     if current_proxy_port and _proxy_ok():
-        pu = _proxy_url(current_proxy_port)
+        pu = _proxy_url(current_proxy_port, _current_session_id)
         s.proxies = {"http": pu, "https": pu}
     _proxy_session = s
+    logger.info("New session: port=%s sid=%s profile=%s", current_proxy_port, _current_session_id, profile)
+    # Warm-up: visit the Sofascore homepage to establish a valid session cookie
+    # before making any API requests — mimics a real browser navigation.
+    _do_warmup()
+
+
+def _do_warmup() -> None:
+    """GET the Sofascore homepage so the session has valid cookies before API calls."""
+    if _proxy_session is None:
+        return
+    try:
+        _proxy_session.get("https://www.sofascore.com", timeout=12)
+        logger.debug("Sofascore warm-up OK (port=%s sid=%s)", current_proxy_port, _current_session_id)
+    except Exception as e:
+        logger.debug("Sofascore warm-up failed: %s", e)
+
+
+def _throttle() -> None:
+    """Enforce a minimum 1.5 s gap plus random jitter between Sofascore API calls."""
+    global _last_sofascore_request
+    with _throttle_lock:
+        now = time.time()
+        gap = now - _last_sofascore_request
+        min_gap = 1.5 + random.uniform(0, 0.5)
+        if gap < min_gap:
+            time.sleep(min_gap - gap)
+        _last_sofascore_request = time.time()
 
 
 def _mark_bad(port: int) -> None:
@@ -117,26 +178,39 @@ def _mark_bad(port: int) -> None:
 # Core HTTP fetch
 # ---------------------------------------------------------------------------
 def _get(url: str, params: dict = None) -> dict:
-    global _proxy_session
+    global _proxy_session, _search_blocked, _search_blocked_ts
     if _proxy_session is None:
         _new_session(force_port=True)
 
+    # Enforce human-like request spacing
+    _throttle()
+
+    # Escalating waits before re-attempt after 403: 0s → 5s → 15s
+    _403_waits = [0, 5, 15]
+
     for attempt in range(3):
+        wait = _403_waits[attempt]
+        if wait > 0:
+            time.sleep(wait)
         try:
             r = _proxy_session.get(url, params=params, timeout=15)
             if r.status_code == 200:
                 return r.json()
             if r.status_code == 407:
-                _mark_bad(current_proxy_port)    # rotates session internally
+                _mark_bad(current_proxy_port)
                 continue
             if r.status_code == 403:
-                logger.warning("403 %s attempt=%d", url, attempt + 1)
-                if attempt < 2:
-                    time.sleep(30 * (attempt + 1))
-                    continue
-                # 403 persists — rotate port and give up on this URL
+                logger.warning("403 %s attempt=%d port=%s sid=%s",
+                               url, attempt + 1, current_proxy_port, _current_session_id)
+                # Immediately rotate to a fresh port + new Decodo session ID
                 _new_session(force_port=True)
-                return {}
+                if attempt >= 2:
+                    # All 3 attempts exhausted across different ports
+                    _search_blocked = True
+                    _search_blocked_ts = time.time()
+                    logger.error("SOFASCORE BLOCKED: 403 on all 3 attempts for %s", url)
+                    return {}
+                continue
             logger.debug("HTTP %d %s", r.status_code, url)
             return {}
         except Exception as e:
@@ -153,25 +227,54 @@ def _get(url: str, params: dict = None) -> dict:
 # Session init / connection test
 # ---------------------------------------------------------------------------
 def init_session() -> None:
-    """Pick initial proxy port, create the shared Session, verify connectivity."""
+    """
+    Pick initial proxy port, create the shared Session, and test all ports at startup.
+    Logs per-port health so Railway logs show which IPs are clean before first search.
+    """
     _new_session(force_port=True)
     if not _proxy_ok():
         logger.warning("No proxy configured — using direct connection")
         logger.info("Sofascore client ready")
         return
+
+    logger.info("Testing %d proxy ports at startup...", len(_PROXY_PORTS))
+    healthy = 0
+    unhealthy = 0
     try:
-        r = _proxy_session.get("https://ip.decodo.com/json", timeout=15)
-        if r.status_code == 407:
-            logger.error("Proxy 407 — check credentials in .env")
-        elif r.status_code == 200:
-            info    = r.json()
-            ext_ip  = (info.get("proxy") or {}).get("ip") or info.get("ip") or "?"
-            country = (info.get("country") or {}).get("name") or ""
-            logger.info("Proxy OK -> %s (%s) port=%d", ext_ip, country, current_proxy_port)
-        else:
-            logger.warning("Proxy health check HTTP %d", r.status_code)
+        from curl_cffi import requests as cf
+        for port in _PROXY_PORTS:
+            sid = _fresh_session_id()
+            pu  = _proxy_url(port, sid)
+            try:
+                s = cf.Session(impersonate="chrome124")
+                s.proxies = {"http": pu, "https": pu}
+                r = s.get("https://ip.decodo.com/json", timeout=10)
+                if r.status_code == 200:
+                    info    = r.json()
+                    ext_ip  = (info.get("proxy") or {}).get("ip") or info.get("ip") or "?"
+                    country = (info.get("country") or {}).get("name") or ""
+                    logger.info("  Port %d OK -> %s (%s)", port, ext_ip, country)
+                    healthy += 1
+                elif r.status_code == 407:
+                    logger.error("  Port %d: 407 proxy auth failed", port)
+                    unhealthy += 1
+                else:
+                    logger.warning("  Port %d: HTTP %d", port, r.status_code)
+                    unhealthy += 1
+            except Exception as e:
+                logger.warning("  Port %d: error — %s", port, e)
+                unhealthy += 1
     except Exception as e:
-        logger.warning("Proxy health check failed: %s", e)
+        logger.warning("Startup health check error: %s", e)
+
+    if unhealthy > 4:
+        logger.warning(
+            "PROXY WARNING: %d/%d ports unhealthy — rotation may be impaired",
+            unhealthy, len(_PROXY_PORTS),
+        )
+    else:
+        logger.info("Proxy health: %d/%d ports OK", healthy, len(_PROXY_PORTS))
+
     logger.info("Sofascore client ready (port=%s)", current_proxy_port)
 
 
@@ -864,11 +967,34 @@ def _agg(matches: list) -> dict:
 # Public API
 # ---------------------------------------------------------------------------
 def search_players(query: str, tour: str = "ATP") -> list:
+    global _search_blocked, _search_blocked_ts
     if len(query) < 3:
         return []
-    # New search = new sticky proxy session for all subsequent requests
+
+    # Clear stale block flag (2-minute cooldown before retrying)
+    if _search_blocked and (time.time() - _search_blocked_ts) > 120:
+        _search_blocked = False
+        logger.info("SOFASCORE: block cooldown expired, resuming")
+
+    if _search_blocked:
+        raise SofascoreBlockedError(
+            "Sofascore search blocked — proxy IPs flagged, retrying too soon"
+        )
+
+    # New search = new sticky proxy session + fresh Decodo session ID
     _new_session(force_port=True)
+
+    # Human-like delay before issuing the search request
+    time.sleep(random.uniform(1.0, 2.5))
+
     data = _get(f"{BASE_URL}/search/all", {"q": query})
+
+    # Raise if _get() set the block flag during this call
+    if _search_blocked:
+        raise SofascoreBlockedError(
+            "Sofascore returned 403 on all retry attempts — proxy IPs blocked"
+        )
+
     entities = []
     for item in data.get("results", []):
         entity = item.get("entity", {})

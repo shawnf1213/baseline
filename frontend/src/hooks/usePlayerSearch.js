@@ -44,6 +44,12 @@ export function usePlayerSearch(tour) {
             setError('Search timed out — try again')
           }
           // If aborted by a new keystroke don't set an error
+        } else if (err?.response?.status === 503) {
+          // Sofascore proxy blocked — show clear unavailability message
+          const msg = err?.response?.data?.message || 'Player search temporarily unavailable — please try again in a few minutes'
+          console.warn('[search] 503 proxy block:', msg)
+          setError(msg)
+          setResults([])
         } else {
           console.error('[search] error:', err?.response?.status, err?.message)
           setError(err?.response?.data?.detail || err?.message || 'Search failed')
