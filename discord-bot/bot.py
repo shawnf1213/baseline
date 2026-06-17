@@ -125,17 +125,35 @@ async def search_players(query: str, tour: str, timeout: int = SEARCH_TIMEOUT):
     return data or []
 
 
-async def search_both_tours(query: str):
+async def search_both_tours(query: str, timeout: int = SEARCH_TIMEOUT):
     """Search ATP and WTA concurrently and merge (men + women)."""
     atp, wta = await asyncio.gather(
-        search_players(query, "ATP"),
-        search_players(query, "WTA"),
+        search_players(query, "ATP", timeout),
+        search_players(query, "WTA", timeout),
     )
     out = []
     for tour, players in (("ATP", atp), ("WTA", wta)):
         for p in players:
             out.append({**p, "tour": tour})
     return out
+
+
+# Discord gives autocomplete callbacks a hard ~3s deadline. The backend search
+# (Sofascore via proxy) is frequently slower than that, so the autocomplete must
+# bound its own wait and degrade gracefully — returning [] (Discord shows "no
+# options") instead of letting Discord time out with "Loading options failed".
+# The user can still type a full name; resolve_player re-searches on submit with
+# the full latency budget.
+AUTOCOMPLETE_DEADLINE = 2.4
+
+
+async def search_both_tours_fast(query: str):
+    try:
+        return await asyncio.wait_for(
+            search_both_tours(query, timeout=2), timeout=AUTOCOMPLETE_DEADLINE
+        )
+    except (asyncio.TimeoutError, Exception):  # noqa: BLE001 — never raise to Discord
+        return []
 
 
 def _is_block_response(data: dict) -> bool:
@@ -169,8 +187,10 @@ async def resolve_player(value: str):
     pid, tour, name = decode_player(value)
     if pid:
         return pid, tour, name
-    # Free text — search both tours and take the best match.
-    results = await search_both_tours(value)
+    # Free text — search both tours and take the best match. This runs after the
+    # command has deferred (15-min window), so it can use the full search budget
+    # rather than the tight autocomplete deadline.
+    results = await search_both_tours(value, timeout=20)
     if results:
         top = results[0]
         return str(top["id"]), top.get("tour", "ATP"), top.get("name", value)
@@ -375,7 +395,7 @@ async def player_autocomplete(interaction: discord.Interaction, current: str):
     current = (current or "").strip()
     if len(current) < 3:
         return []
-    results = await search_both_tours(current)
+    results = await search_both_tours_fast(current)
     choices = []
     seen = set()
     for p in results[:25]:
@@ -392,26 +412,29 @@ async def player_autocomplete(interaction: discord.Interaction, current: str):
 
 
 async def court_autocomplete(interaction: discord.Interaction, current: str):
-    current = (current or "").lower().strip()
-    surface = getattr(interaction.namespace, "surface", None)
+    # Pure-local, no network — but wrap defensively so it can never raise to
+    # Discord (which would surface as "Loading options failed").
+    try:
+        current = (current or "").lower().strip()
+        surface = getattr(interaction.namespace, "surface", None)
 
-    if surface and surface in COURTS_BY_SURFACE:
-        pool = [("None", None)] + [(c, surface) for c in COURTS_BY_SURFACE[surface]]
-    else:
-        # Surface not chosen yet — show all, grouped/labelled by surface.
-        pool = [("None", None)]
-        for surf, courts in COURTS_BY_SURFACE.items():
-            pool += [(c, surf) for c in courts]
+        if surface and surface in COURTS_BY_SURFACE:
+            pool = [("None", None)] + [(c, surface) for c in COURTS_BY_SURFACE[surface]]
+        else:
+            # Surface not chosen yet — show all, grouped/labelled by surface.
+            pool = [("None", None)]
+            for surf, courts in COURTS_BY_SURFACE.items():
+                pool += [(c, surf) for c in courts]
 
-    out = []
-    for display, surf in pool:
-        label = display if surf is None or not surface else display
-        if surf and not surface:
-            label = f"{display} ({surf})"
-        if current and current not in display.lower():
-            continue
-        out.append(app_commands.Choice(name=label[:100], value=display))
-    return out[:25]
+        out = []
+        for display, surf in pool:
+            label = f"{display} ({surf})" if (surf and not surface) else display
+            if current and current not in display.lower():
+                continue
+            out.append(app_commands.Choice(name=label[:100], value=display))
+        return out[:25]
+    except Exception:  # noqa: BLE001
+        return [app_commands.Choice(name="None", value="None")]
 
 
 # ── /prop ─────────────────────────────────────────────────────────────────────
