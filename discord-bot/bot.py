@@ -12,6 +12,7 @@ Slash commands: /prop  /h2h  /player  /help
 """
 
 import os
+import re
 import asyncio
 import logging
 
@@ -215,11 +216,121 @@ def _form_emojis(matches, limit=5) -> str:
     return " ".join(out) if out else "—"
 
 
-def _shorten(text: str, n: int = 350) -> str:
+def _shorten(text: str, n: int = 400) -> str:
     if not text:
         return ""
     text = text.strip()
     return text if len(text) <= n else text[: n - 1].rsplit(" ", 1)[0] + "…"
+
+
+# ── Formatting helpers ──────────────────────────────────────────────────────────
+def _num(v, d=1):
+    return f"{float(v):.{d}f}" if isinstance(v, (int, float)) else "—"
+
+
+def _pct(v):
+    return f"{float(v):.0f}%" if isinstance(v, (int, float)) else "—"
+
+
+def _conf_bar(pct):
+    """5-segment confidence bar with a Low/Medium/High label."""
+    if not isinstance(pct, (int, float)):
+        return "—"
+    filled = max(0, min(5, round(pct / 20)))
+    bar = "▰" * filled + "▱" * (5 - filled)
+    label = "Low" if pct < 50 else "Medium" if pct < 70 else "High"
+    return f"{bar}  {pct:.0f}% · {label}"
+
+
+def _hand_label(h):
+    if not h:
+        return None
+    h = str(h).upper()
+    if h.startswith("L"):
+        return "Left-handed"
+    if h.startswith("R"):
+        return "Right-handed"
+    return None
+
+
+def _clean_explanation(text: str) -> str:
+    """Strip internal model jargon so the read rens like a human scouting note."""
+    if not text:
+        return ""
+    t = text
+    t = re.sub(r"\((?:SS|TA)[^)]*\)", "", t)        # (SS:surface_only data)
+    t = re.sub(r"\bC\d+\b", "", t)                   # C8 / C1 component tokens
+    t = t.replace(" -- ", " — ").replace("--", "—")
+    t = re.sub(r"\s{2,}", " ", t).strip()
+    return _shorten(t, 400)
+
+
+def _last_name(full: str) -> str:
+    return (full or "").split()[-1] if full else full
+
+
+def _prop_stat_blocks(prop_type, data):
+    """Return (player_block, opponent_block) — the stats most relevant to the
+    selected prop, mirroring the web app's stat cards."""
+    ps = data.get("player_stats") or {}
+    os_ = data.get("opponent_stats") or {}
+
+    def block(lines, hand, arch):
+        rows = [f"{lbl}: **{val}**" for lbl, val in lines]
+        if arch:
+            rows.append(f"_{arch}_")
+        if hand:
+            rows.append(f"✋ {hand}")
+        return "\n".join(rows) if rows else "—"
+
+    if prop_type == "Aces":
+        p_lines = [
+            ("Aces/Match", _num(ps.get("aces"))),
+            ("1st Serve %", _pct(ps.get("first_serve_pct"))),
+            ("1st Srv Won", _pct(ps.get("first_serve_pts_won"))),
+        ]
+        o_lines = [
+            ("Aces Conceded/Match", _num(data.get("opponent_ace_against"))),
+            ("Return 1st Won", _pct(os_.get("return_first_serve_pts_won"))),
+            ("Own Aces/Match", _num(os_.get("aces"))),
+        ]
+    elif prop_type == "Double Faults":
+        p_lines = [
+            ("DFs/Match", _num(ps.get("double_faults"))),
+            ("2nd Srv Won", _pct(ps.get("second_serve_pts_won"))),
+            ("1st Serve %", _pct(ps.get("first_serve_pct"))),
+        ]
+        o_lines = [
+            ("Return 2nd Won", _pct(os_.get("return_second_serve_pts_won"))),
+            ("DFs/Match", _num(os_.get("double_faults"))),
+        ]
+    elif prop_type == "Break Points Won":
+        conv = data.get("bp_blended_conv_pct") or ps.get("bp_converted")
+        p_lines = [
+            ("BP Conversion", _pct(conv)),
+            ("Return 1st Won", _pct(ps.get("return_first_serve_pts_won"))),
+            ("Return 2nd Won", _pct(ps.get("return_second_serve_pts_won"))),
+        ]
+        o_lines = [
+            ("BP Faced/Match", _num(data.get("bp_blended_opp_faced"))),
+            ("Hold Rate", _pct(data.get("opp_hold_rate_pct"))),
+            ("Serve Quality", data.get("opp_serve_tier") or "—"),
+        ]
+    else:  # Total Games
+        p_lines = [
+            ("1st Srv Won", _pct(ps.get("first_serve_pts_won"))),
+            ("2nd Srv Won", _pct(ps.get("second_serve_pts_won"))),
+            ("Win Rate", _pct(ps.get("win_rate"))),
+        ]
+        o_lines = [
+            ("1st Srv Won", _pct(os_.get("first_serve_pts_won"))),
+            ("2nd Srv Won", _pct(os_.get("second_serve_pts_won"))),
+            ("Win Rate", _pct(os_.get("win_rate"))),
+        ]
+
+    p_block = block(p_lines, _hand_label(data.get("player_handedness")), data.get("player_archetype"))
+    o_block = block(o_lines, _hand_label(data.get("opponent_handedness")), data.get("opponent_archetype"))
+    return p_block, o_block
 
 
 def prop_embed(player, opponent, prop_type, surface, court_display, line, data) -> discord.Embed:
@@ -228,51 +339,68 @@ def prop_embed(player, opponent, prop_type, surface, court_display, line, data) 
     conf = data.get("confidence")
     cpi = data.get("court_pace_index")
     tier = data.get("court_speed_tier")
+    edge = (proj - line) if (proj is not None and line is not None) else None
 
     color = COLOR_OVER if lean == "OVER" else COLOR_UNDER if lean == "UNDER" else COLOR_NEUTRAL
-    lean_icon = "🟢 OVER" if lean == "OVER" else "🔴 UNDER" if lean == "UNDER" else "⚪ NEUTRAL"
+    dot = "🟢" if lean == "OVER" else "🔴" if lean == "UNDER" else "⚪"
+    edge_txt = f"{'+' if edge >= 0 else ''}{edge:.1f}" if edge is not None else "—"
 
-    edge = None
-    if proj is not None and line is not None:
-        edge = proj - line
+    # Strong-lean emphasis: confident AND a meaningful edge.
+    strong = bool(conf and conf >= 70 and edge is not None and abs(edge) >= 1.0 and lean in ("OVER", "UNDER"))
+    star = "  ⭐ **Strong lean**" if strong else ""
+
+    court_line = f"**{surface}** · {court_display}"
+    if cpi is not None:
+        court_line += f" · ST {cpi:g}" + (f" ({tier})" if tier else "")
+
+    # Verdict-led description — the takeaway reads instantly.
+    verdict = (
+        f"{dot} **{lean} {line:g}**  ·  Projection **{_num(proj)}**  ·  Edge **{edge_txt}**{star}\n"
+        f"Confidence  {_conf_bar(conf)}\n"
+        f"{court_line}"
+    )
 
     e = discord.Embed(
         title=f"{prop_type} — {player} vs {opponent}",
-        description=f"**{surface}** · {court_display}",
+        description=verdict[:4096],
         color=color,
     )
     e.set_thumbnail(url=LOGO_URL)
 
-    e.add_field(name="Model Projection", value=f"**{proj:.1f}**" if proj is not None else "—", inline=True)
-    e.add_field(name="Book Line", value=f"{line:g}" if line is not None else "—", inline=True)
-    if edge is not None:
-        sign = "+" if edge >= 0 else ""
-        e.add_field(name="Edge", value=f"{sign}{edge:.1f}", inline=True)
+    # Prop-relevant stat cards, side by side.
+    p_block, o_block = _prop_stat_blocks(prop_type, data)
+    e.add_field(name=f"🎾 {player}", value=p_block[:1024], inline=True)
+    e.add_field(name=f"🎾 {opponent}", value=o_block[:1024], inline=True)
 
-    e.add_field(name="Lean", value=lean_icon, inline=True)
-    e.add_field(name="Confidence", value=f"{conf}%" if conf is not None else "—", inline=True)
-
-    court_val = court_display
-    if cpi is not None:
-        court_val = f"{court_display}\nST Pace Index {cpi:g}" + (f" · {tier}" if tier else "")
-    e.add_field(name="Tournament / Court", value=court_val, inline=True)
+    # Matchup context line.
+    mp = []
+    if data.get("p1_win_prob") is not None and data.get("p2_win_prob") is not None:
+        mp.append(f"Win prob: {_last_name(player)} {data['p1_win_prob']:.0f}% / "
+                  f"{_last_name(opponent)} {data['p2_win_prob']:.0f}%")
+    if data.get("competitiveness"):
+        es = data.get("expected_sets")
+        mp.append(data["competitiveness"] + (f" · ~{es:.1f} sets" if isinstance(es, (int, float)) else ""))
+    if data.get("handedness_edge"):
+        mp.append("Handedness edge ✓")
+    if mp:
+        e.add_field(name="Matchup", value="\n".join(mp), inline=False)
 
     e.add_field(
-        name=f"Last 5 ({surface})",
+        name=f"Last 5 ({surface}) — {_last_name(player)}",
         value=_form_emojis(data.get("player_surface_matches")),
         inline=False,
     )
 
-    explanation = _shorten(data.get("plain_english_explanation", ""))
+    explanation = _clean_explanation(data.get("plain_english_explanation", ""))
     if explanation:
-        e.add_field(name="Why", value=explanation, inline=False)
+        e.add_field(name="Read", value=explanation, inline=False)
 
-    # Limited-data disclosure (mirrors the web app warning)
+    # Limited / stale data disclosure (mirrors the web app warning).
     notes = []
     if data.get("player_limited_data"):
-        notes.append(f"{player}: limited surface data")
+        notes.append(f"{_last_name(player)}: limited surface data")
     if data.get("opponent_limited_data"):
-        notes.append(f"{opponent}: limited surface data")
+        notes.append(f"{_last_name(opponent)}: limited surface data")
     if data.get("data_stale"):
         notes.append("served from cached snapshot")
     if notes:
@@ -287,24 +415,42 @@ def h2h_embed(p1, p2, surface, data) -> discord.Embed:
     p1w = data.get("p1_wins", 0)
     p2w = data.get("p2_wins", 0)
 
+    # Accent color by who leads the rivalry.
+    color = COLOR_OVER if p1w > p2w else COLOR_UNDER if p2w > p1w else COLOR_NEUTRAL
+    leader = p1 if p1w > p2w else p2 if p2w > p1w else None
+    headline = f"**{p1}  {p1w} – {p2w}  {p2}**"
+    if leader:
+        headline += f"\n{_last_name(leader)} leads · {total} meetings"
+    else:
+        headline += f"\n{total} meetings"
+
     e = discord.Embed(
         title=f"Head-to-Head — {p1} vs {p2}",
-        description=f"Surface filter: **{surface or 'All'}**",
-        color=COLOR_NEUTRAL,
+        description=headline,
+        color=color,
     )
     e.set_thumbnail(url=LOGO_URL)
-    e.add_field(name="Overall Record", value=f"**{p1w} – {p2w}**  ({total} meetings)", inline=False)
 
     if data.get("surface_matches"):
         e.add_field(
             name=f"On {surface}",
-            value=f"{data.get('surface_p1_wins', 0)} – {data.get('surface_p2_wins', 0)} "
+            value=f"**{data.get('surface_p1_wins', 0)} – {data.get('surface_p2_wins', 0)}** "
                   f"({data.get('surface_matches')} meetings)",
-            inline=False,
+            inline=True,
         )
 
+    avgs = []
+    if data.get("games_avg") is not None:
+        avgs.append(f"Games {data['games_avg']:.1f}")
+    if data.get("ace_avg") is not None:
+        avgs.append(f"Aces {data['ace_avg']:.1f}")
+    if data.get("bp_avg") is not None:
+        avgs.append(f"BP won {data['bp_avg']:.1f}")
+    if avgs:
+        e.add_field(name="H2H Averages", value=" · ".join(avgs), inline=True)
+
     lines = []
-    for m in (data.get("matches") or [])[:5]:
+    for m in (data.get("matches") or [])[:6]:
         if not isinstance(m, dict):
             continue
         date = m.get("date") or m.get("Date") or ""
@@ -313,21 +459,11 @@ def h2h_embed(p1, p2, surface, data) -> discord.Embed:
         winner = m.get("winner") or m.get("Winner") or ""
         piece = " · ".join(x for x in (date, tourn) if x)
         detail = " · ".join(x for x in (winner, score) if x)
-        lines.append(f"• {piece} {('— ' + detail) if detail else ''}".strip())
+        lines.append(f"• {piece}{(' — ' + detail) if detail else ''}".strip())
     if lines:
         e.add_field(name="Recent Meetings", value="\n".join(lines)[:1024], inline=False)
     elif total == 0:
         e.add_field(name="Recent Meetings", value="No tour-level meetings found.", inline=False)
-
-    avgs = []
-    if data.get("games_avg") is not None:
-        avgs.append(f"Games: {data['games_avg']:.1f}")
-    if data.get("ace_avg") is not None:
-        avgs.append(f"Aces: {data['ace_avg']:.1f}")
-    if data.get("bp_avg") is not None:
-        avgs.append(f"BP won: {data['bp_avg']:.1f}")
-    if avgs:
-        e.add_field(name="H2H Averages", value=" · ".join(avgs), inline=False)
 
     e.set_footer(text=FOOTER_TEXT)
     return e
@@ -337,27 +473,29 @@ def player_embed(name, surface, data) -> discord.Embed:
     arch = data.get("archetype") or "—"
     surf = data.get(surface, {}) or {}
     form = data.get("form", [])
+    ta = data.get("ta_stats") or {}
+    hand = _hand_label(ta.get("handedness"))
+
+    desc = f"**{arch}**  ·  {surface} court"
+    if hand:
+        desc += f"  ·  ✋ {hand}"
 
     e = discord.Embed(
         title=f"{name} — Player Profile",
-        description=f"Archetype: **{arch}**  ·  Surface: **{surface}**",
+        description=desc,
         color=COLOR_NEUTRAL,
     )
     e.set_thumbnail(url=LOGO_URL)
 
-    def pct(v):
-        return f"{v:.0f}%" if isinstance(v, (int, float)) else "—"
-
-    def num(v):
-        return f"{v:.1f}" if isinstance(v, (int, float)) else "—"
-
     e.add_field(name="Matches", value=str(surf.get("matches_played") or "—"), inline=True)
-    e.add_field(name="Win Rate", value=pct(surf.get("win_rate")), inline=True)
-    e.add_field(name="Aces/Match", value=num(surf.get("aces")), inline=True)
-    e.add_field(name="DFs/Match", value=num(surf.get("double_faults")), inline=True)
-    e.add_field(name="1st Srv Won", value=pct(surf.get("first_serve_pts_won")), inline=True)
-    e.add_field(name="2nd Srv Won", value=pct(surf.get("second_serve_pts_won")), inline=True)
-    e.add_field(name="BP Converted", value=pct(surf.get("bp_converted")), inline=True)
+    e.add_field(name="Win Rate", value=_pct(surf.get("win_rate")), inline=True)
+    e.add_field(name="BP Converted", value=_pct(surf.get("bp_converted")), inline=True)
+    e.add_field(name="Aces/Match", value=_num(surf.get("aces")), inline=True)
+    e.add_field(name="DFs/Match", value=_num(surf.get("double_faults")), inline=True)
+    e.add_field(name="1st Serve %", value=_pct(surf.get("first_serve_pct")), inline=True)
+    e.add_field(name="1st Srv Won", value=_pct(surf.get("first_serve_pts_won")), inline=True)
+    e.add_field(name="2nd Srv Won", value=_pct(surf.get("second_serve_pts_won")), inline=True)
+    e.add_field(name="Return 1st Won", value=_pct(surf.get("return_first_serve_pts_won")), inline=True)
 
     e.add_field(name="Last 10 Form", value=_form_emojis(form, limit=10), inline=False)
     e.set_footer(text=FOOTER_TEXT)
