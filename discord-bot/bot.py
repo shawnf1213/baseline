@@ -48,10 +48,22 @@ FOOTER_PROJECTION = (
     "Baseline — Data Driven. Optimizer Backed. • Model projections, not betting advice."
 )
 
-# Per-request network timeouts (seconds). Prop calc is heavy (multi-source fetch).
-SEARCH_TIMEOUT = 8
-PROP_TIMEOUT = 90
-GENERIC_TIMEOUT = 45
+# Per-request network timeouts (seconds). Lightweight endpoints are capped at
+# 10s (search/h2h/player all measured <2s). /prop is heavier: a COLD matchup
+# fetch (Sofascore + Tennis Abstract + Sackmann) measured ~22s before the
+# backend caches it (then ~0.5s). A 10s cap would fail the first request for
+# every new matchup, so /prop gets 30s. Because the slash command is deferred
+# (15-min Discord window) a 30s call shows "thinking…" and never hangs Discord;
+# any finite timeout already eliminates the indefinite-hang risk.
+SEARCH_TIMEOUT = 8     # autocomplete uses a much shorter deadline (see below)
+RESOLVE_TIMEOUT = 10   # submit-time name resolution
+PROP_TIMEOUT = 30      # cold multi-source fetch headroom
+GENERIC_TIMEOUT = 10   # h2h / player-stats
+
+# Cap concurrent backend calls so a traffic spike can't overwhelm Railway.
+# A 6th command-initiated call waits for a slot instead of firing immediately.
+MAX_CONCURRENT_BACKEND_CALLS = 5
+API_SEMAPHORE = asyncio.Semaphore(MAX_CONCURRENT_BACKEND_CALLS)
 
 # ── Court lists per surface (display name → backend COURT_CPR key) ──────────────
 # The backend owns the CPI values; the bot only sends a recognised court name and
@@ -112,12 +124,33 @@ def _post(path: str, payload: dict, timeout: int):
     return r.json()
 
 
-async def search_players(query: str, tour: str, timeout: int = SEARCH_TIMEOUT):
-    """Resolve a query to a list of player dicts via the backend search endpoint."""
+async def backend_get(path: str, params: dict, timeout: int):
+    """Semaphore-guarded GET — counts against the global concurrency cap."""
+    async with API_SEMAPHORE:
+        return await asyncio.to_thread(_get, path, params, timeout)
+
+
+async def backend_post(path: str, payload: dict, timeout: int):
+    """Semaphore-guarded POST — counts against the global concurrency cap."""
+    async with API_SEMAPHORE:
+        return await asyncio.to_thread(_post, path, payload, timeout)
+
+
+async def search_players(query: str, tour: str, timeout: int = SEARCH_TIMEOUT,
+                         guard: bool = False):
+    """Resolve a query to a list of player dicts via the backend search endpoint.
+
+    guard=True routes through the concurrency semaphore (used at command submit
+    time). Autocomplete passes guard=False so frequent keystroke searches never
+    block command traffic — they're already bounded by a short deadline.
+    """
     try:
-        data = await asyncio.to_thread(
-            _get, "/api/search", {"query": query, "tour": tour}, timeout
-        )
+        if guard:
+            data = await backend_get("/api/search", {"query": query, "tour": tour}, timeout)
+        else:
+            data = await asyncio.to_thread(
+                _get, "/api/search", {"query": query, "tour": tour}, timeout
+            )
     except Exception as exc:  # noqa: BLE001 — autocomplete must never raise
         log.warning("search failed q=%r tour=%s: %s", query, tour, exc)
         return []
@@ -126,11 +159,12 @@ async def search_players(query: str, tour: str, timeout: int = SEARCH_TIMEOUT):
     return data or []
 
 
-async def search_both_tours(query: str, timeout: int = SEARCH_TIMEOUT):
+async def search_both_tours(query: str, timeout: int = SEARCH_TIMEOUT,
+                            guard: bool = False):
     """Search ATP and WTA concurrently and merge (men + women)."""
     atp, wta = await asyncio.gather(
-        search_players(query, "ATP", timeout),
-        search_players(query, "WTA", timeout),
+        search_players(query, "ATP", timeout, guard=guard),
+        search_players(query, "WTA", timeout, guard=guard),
     )
     out = []
     for tour, players in (("ATP", atp), ("WTA", wta)):
@@ -188,10 +222,9 @@ async def resolve_player(value: str):
     pid, tour, name = decode_player(value)
     if pid:
         return pid, tour, name
-    # Free text — search both tours and take the best match. This runs after the
-    # command has deferred (15-min window), so it can use the full search budget
-    # rather than the tight autocomplete deadline.
-    results = await search_both_tours(value, timeout=20)
+    # Free text — search both tours and take the best match. Guarded by the
+    # concurrency semaphore (command-initiated) and capped at RESOLVE_TIMEOUT.
+    results = await search_both_tours(value, timeout=RESOLVE_TIMEOUT, guard=True)
     if results:
         top = results[0]
         return str(top["id"]), top.get("tour", "ATP"), top.get("name", value)
@@ -527,6 +560,26 @@ SURFACE_CHOICES = [
     app_commands.Choice(name="Grass", value="Grass"),
 ]
 
+# Standard user-facing messages.
+MSG_UNREACHABLE = "Unable to reach Baseline servers right now — try again shortly."
+MSG_GENERIC = "Something went wrong — please try again."
+MSG_BLOCK = "Player data source temporarily unavailable. Please try again in a few minutes."
+
+# Network failures that mean "backend unreachable / timed out" (vs a bug).
+NETWORK_ERRORS = (requests.Timeout, requests.ConnectionError)
+
+
+async def _send_error(interaction: discord.Interaction, message: str):
+    """Send an error embed regardless of whether the interaction was deferred."""
+    embed = error_embed(message)
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(embed=embed, ephemeral=True)
+        else:
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+    except Exception:  # noqa: BLE001
+        log.exception("failed to deliver error embed to user")
+
 
 # ── Autocomplete callbacks ──────────────────────────────────────────────────────
 async def player_autocomplete(interaction: discord.Interaction, current: str):
@@ -598,83 +651,74 @@ async def prop(
     court: str = "None",
 ):
     await interaction.response.defer(thinking=True)
-
-    surface_val = surface.value
-    court = (court or "None").strip()
-
-    # Validate court matches surface
-    if court and court != "None":
-        court_surf = surface_for_court(court)
-        if court_surf is None:
-            await interaction.followup.send(embed=error_embed(
-                f"`{court}` isn't a recognised tournament. Pick one from the court list or use None."
-            ))
-            return
-        if court_surf != surface_val:
-            await interaction.followup.send(embed=error_embed(
-                f"`{court}` is a **{court_surf}** event but you selected **{surface_val}**. "
-                f"Pick a court matching the surface, or use None."
-            ))
-            return
-
+    log.info("CMD /prop | user=%s | %s vs %s | %s | %s | court=%s | line=%s",
+             interaction.user.id, player, opponent, prop_type.value, surface.value, court, line)
     try:
-        p_id, p_tour, p_name = await resolve_player(player)
-        o_id, o_tour, o_name = await resolve_player(opponent)
-    except Exception as exc:  # noqa: BLE001
-        log.warning("prop resolve failed: %s", exc)
-        await interaction.followup.send(embed=error_embed(
-            "Unable to fetch data right now — try again shortly."
-        ))
-        return
+        surface_val = surface.value
+        court = (court or "None").strip()
 
-    if not p_id or not o_id:
-        missing = player if not p_id else opponent
-        await interaction.followup.send(embed=error_embed(
-            f"Couldn't find a player matching `{missing}`. Try the autocomplete suggestions."
-        ))
-        return
+        # Validate court matches surface
+        if court and court != "None":
+            court_surf = surface_for_court(court)
+            if court_surf is None:
+                await _send_error(interaction,
+                    f"`{court}` isn't a recognised tournament. Pick one from the court list or use None.")
+                return
+            if court_surf != surface_val:
+                await _send_error(interaction,
+                    f"`{court}` is a **{court_surf}** event but you selected **{surface_val}**. "
+                    f"Pick a court matching the surface, or use None.")
+                return
 
-    tour = p_tour or "ATP"
-    court_key = "" if court == "None" else backend_court_key(court)
-    court_display = "Generic surface" if court == "None" else court
+        # Resolve players (network) — distinguish unreachable from not-found.
+        try:
+            p_id, p_tour, p_name = await resolve_player(player)
+            o_id, o_tour, o_name = await resolve_player(opponent)
+        except NETWORK_ERRORS:
+            log.warning("prop resolve: backend unreachable")
+            await _send_error(interaction, MSG_UNREACHABLE)
+            return
 
-    payload = {
-        "player_id": p_id, "opponent_id": o_id,
-        "player_name": p_name, "opponent_name": o_name,
-        "tour": tour, "surface": surface_val,
-        "court": court_key, "prop_type": prop_type.value,
-        "prop_line": float(line),
-    }
+        if not p_id or not o_id:
+            missing = player if not p_id else opponent
+            await _send_error(interaction,
+                f"Couldn't find a player matching `{missing}`. Try the autocomplete suggestions.")
+            return
 
-    try:
-        data = await asyncio.to_thread(_post, "/api/prop/calculate", payload, PROP_TIMEOUT)
-    except requests.Timeout:
-        await interaction.followup.send(embed=error_embed(
-            "Unable to fetch data right now — try again shortly."
-        ))
-        return
-    except Exception as exc:  # noqa: BLE001
-        log.warning("prop calc failed: %s", exc)
-        await interaction.followup.send(embed=error_embed(
-            "Unable to fetch data right now — try again shortly."
-        ))
-        return
+        tour = p_tour or "ATP"
+        court_key = "" if court == "None" else backend_court_key(court)
+        court_display = "Generic surface" if court == "None" else court
 
-    if _is_block_response(data):
-        await interaction.followup.send(embed=error_embed(
-            "Player data source temporarily unavailable. Please try again in a few minutes."
-        ))
-        return
+        payload = {
+            "player_id": p_id, "opponent_id": o_id,
+            "player_name": p_name, "opponent_name": o_name,
+            "tour": tour, "surface": surface_val,
+            "court": court_key, "prop_type": prop_type.value,
+            "prop_line": float(line),
+        }
 
-    if data.get("model_projection") is None:
-        await interaction.followup.send(embed=error_embed(
-            data.get("note") or "No projection available for this matchup/prop."
-        ))
-        return
+        try:
+            data = await backend_post("/api/prop/calculate", payload, PROP_TIMEOUT)
+        except NETWORK_ERRORS:
+            log.warning("prop calc: backend timeout/unreachable")
+            await _send_error(interaction, MSG_UNREACHABLE)
+            return
 
-    await interaction.followup.send(
-        embed=prop_embed(p_name, o_name, prop_type.value, surface_val, court_display, float(line), data)
-    )
+        if _is_block_response(data):
+            await _send_error(interaction, MSG_BLOCK)
+            return
+
+        if data.get("model_projection") is None:
+            await _send_error(interaction,
+                data.get("note") or "No projection available for this matchup/prop.")
+            return
+
+        await interaction.followup.send(
+            embed=prop_embed(p_name, o_name, prop_type.value, surface_val, court_display, float(line), data)
+        )
+    except Exception:  # noqa: BLE001 — never let a command crash the process
+        log.exception("UNHANDLED /prop error")
+        await _send_error(interaction, MSG_GENERIC)
 
 
 # ── /h2h ────────────────────────────────────────────────────────────────────────
@@ -693,30 +737,38 @@ async def h2h(
     surface: app_commands.Choice[str] = None,
 ):
     await interaction.response.defer(thinking=True)
-    surface_val = surface.value if surface else None
-
-    p1_id, p1_tour, p1_name = await resolve_player(player1)
-    p2_id, p2_tour, p2_name = await resolve_player(player2)
-    if not p1_id or not p2_id:
-        await interaction.followup.send(embed=error_embed(
-            "Couldn't resolve both players. Use the autocomplete suggestions."
-        ))
-        return
-
-    payload = {
-        "player1_id": p1_id, "player2_id": p2_id,
-        "tour": p1_tour or "ATP", "surface": surface_val,
-    }
+    log.info("CMD /h2h | user=%s | %s vs %s | surface=%s",
+             interaction.user.id, player1, player2, surface.value if surface else "All")
     try:
-        data = await asyncio.to_thread(_post, "/api/h2h", payload, GENERIC_TIMEOUT)
-    except Exception as exc:  # noqa: BLE001
-        log.warning("h2h failed: %s", exc)
-        await interaction.followup.send(embed=error_embed(
-            "Unable to fetch data right now — try again shortly."
-        ))
-        return
+        surface_val = surface.value if surface else None
 
-    await interaction.followup.send(embed=h2h_embed(p1_name, p2_name, surface_val, data))
+        try:
+            p1_id, p1_tour, p1_name = await resolve_player(player1)
+            p2_id, p2_tour, p2_name = await resolve_player(player2)
+        except NETWORK_ERRORS:
+            await _send_error(interaction, MSG_UNREACHABLE)
+            return
+
+        if not p1_id or not p2_id:
+            await _send_error(interaction,
+                "Couldn't resolve both players. Use the autocomplete suggestions.")
+            return
+
+        payload = {
+            "player1_id": p1_id, "player2_id": p2_id,
+            "tour": p1_tour or "ATP", "surface": surface_val,
+        }
+        try:
+            data = await backend_post("/api/h2h", payload, GENERIC_TIMEOUT)
+        except NETWORK_ERRORS:
+            log.warning("h2h: backend timeout/unreachable")
+            await _send_error(interaction, MSG_UNREACHABLE)
+            return
+
+        await interaction.followup.send(embed=h2h_embed(p1_name, p2_name, surface_val, data))
+    except Exception:  # noqa: BLE001
+        log.exception("UNHANDLED /h2h error")
+        await _send_error(interaction, MSG_GENERIC)
 
 
 # ── /player ───────────────────────────────────────────────────────────────────
@@ -730,30 +782,35 @@ async def player_cmd(
     surface: app_commands.Choice[str],
 ):
     await interaction.response.defer(thinking=True)
-    p_id, p_tour, p_name = await resolve_player(name)
-    if not p_id:
-        await interaction.followup.send(embed=error_embed(
-            f"Couldn't find a player matching `{name}`."
-        ))
-        return
-
-    payload = {"player_id": p_id, "player_name": p_name, "tour": p_tour or "ATP"}
+    log.info("CMD /player | user=%s | name=%s | surface=%s",
+             interaction.user.id, name, surface.value)
     try:
-        data = await asyncio.to_thread(_post, "/api/player/stats", payload, GENERIC_TIMEOUT)
-    except Exception as exc:  # noqa: BLE001
-        log.warning("player stats failed: %s", exc)
-        await interaction.followup.send(embed=error_embed(
-            "Unable to fetch data right now — try again shortly."
-        ))
-        return
+        try:
+            p_id, p_tour, p_name = await resolve_player(name)
+        except NETWORK_ERRORS:
+            await _send_error(interaction, MSG_UNREACHABLE)
+            return
 
-    if not (data.get(surface.value) or {}).get("matches_played") and not data.get("form"):
-        await interaction.followup.send(embed=error_embed(
-            "Player data source temporarily unavailable. Please try again in a few minutes."
-        ))
-        return
+        if not p_id:
+            await _send_error(interaction, f"Couldn't find a player matching `{name}`.")
+            return
 
-    await interaction.followup.send(embed=player_embed(p_name, surface.value, data))
+        payload = {"player_id": p_id, "player_name": p_name, "tour": p_tour or "ATP"}
+        try:
+            data = await backend_post("/api/player/stats", payload, GENERIC_TIMEOUT)
+        except NETWORK_ERRORS:
+            log.warning("player stats: backend timeout/unreachable")
+            await _send_error(interaction, MSG_UNREACHABLE)
+            return
+
+        if not (data.get(surface.value) or {}).get("matches_played") and not data.get("form"):
+            await _send_error(interaction, MSG_BLOCK)
+            return
+
+        await interaction.followup.send(embed=player_embed(p_name, surface.value, data))
+    except Exception:  # noqa: BLE001
+        log.exception("UNHANDLED /player error")
+        await _send_error(interaction, MSG_GENERIC)
 
 
 # ── /help ───────────────────────────────────────────────────────────────────────
@@ -795,27 +852,52 @@ async def help_cmd(interaction: discord.Interaction):
     await interaction.response.send_message(embed=e, ephemeral=True)
 
 
-# ── Global error handler (cooldown + anything uncaught) ─────────────────────────
+# ── Global error handling — nothing should ever crash the process ───────────────
 @client.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    """Catch-all for slash-command errors not handled inside a command body
+    (notably the per-user cooldown, which fires before the handler runs)."""
     if isinstance(error, app_commands.CommandOnCooldown):
-        msg = f"⏳ Slow down — try again in {error.retry_after:.1f}s."
-        embed = error_embed(msg)
+        await _send_error(interaction, f"⏳ Slow down — try again in {error.retry_after:.1f}s.")
+        return
+    # Unwrap the original exception for clearer logs.
+    orig = getattr(error, "original", error)
+    log.exception("APP_COMMAND_ERROR: %r", orig)
+    if isinstance(orig, NETWORK_ERRORS):
+        await _send_error(interaction, MSG_UNREACHABLE)
     else:
-        log.exception("command error: %s", error)
-        embed = error_embed("Unable to fetch data right now — try again shortly.")
-    try:
-        if interaction.response.is_done():
-            await interaction.followup.send(embed=embed, ephemeral=True)
-        else:
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-    except Exception:  # noqa: BLE001
-        pass
+        await _send_error(interaction, MSG_GENERIC)
+
+
+@client.event
+async def on_error(event_method: str, *args, **kwargs):
+    """Global event-loop error handler. Any uncaught exception in any event is
+    logged with a full traceback and swallowed so the bot keeps running."""
+    log.exception("UNCAUGHT ERROR in event %s — bot continues running", event_method)
 
 
 @client.event
 async def on_ready():
-    log.info("Logged in as %s (id=%s) — API=%s", client.user, client.user.id, API_BASE)
+    log.info("Logged in as %s (id=%s) — API=%s | max_concurrent=%d",
+             client.user, client.user.id, API_BASE, MAX_CONCURRENT_BACKEND_CALLS)
+
+
+# ── Connection lifecycle logging (reconnect handled by discord.py itself) ───────
+@client.event
+async def on_connect():
+    log.info("Gateway connected.")
+
+
+@client.event
+async def on_disconnect():
+    # discord.py auto-reconnects (client.run(reconnect=True), the default). We
+    # only log here — we never call close() or override the reconnect loop.
+    log.warning("Gateway disconnected — discord.py will auto-reconnect.")
+
+
+@client.event
+async def on_resumed():
+    log.info("Gateway session resumed after reconnect.")
 
 
 def main():
@@ -824,7 +906,8 @@ def main():
             "DISCORD_BOT_TOKEN is not set. Add it to discord-bot/.env "
             "(or the Railway service variables) before starting the bot."
         )
-    client.run(DISCORD_BOT_TOKEN)
+    # reconnect=True is the default; stated explicitly so it is never removed.
+    client.run(DISCORD_BOT_TOKEN, reconnect=True)
 
 
 if __name__ == "__main__":
