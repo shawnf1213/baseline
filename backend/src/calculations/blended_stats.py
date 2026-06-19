@@ -351,7 +351,8 @@ def get_blended_stats(
     # return_bp_converted  — RETURN stat: avg BPs player wins as returner
     # All receive the same 4-tier weighted blending.
     STAT_KEYS = [
-        "aces", "double_faults", "first_serve_pts_won", "second_serve_pts_won",
+        "aces", "double_faults", "first_serve_pct",
+        "first_serve_pts_won", "second_serve_pts_won",
         "bp_converted", "win_rate", "bp_faced_count",
         "return_bp_opportunities", "return_bp_converted",  # return-side raw counts
     ]
@@ -413,12 +414,19 @@ def get_blended_stats(
                 primary_w * 100, sack_w * 100,
             )
 
-    # ── Return / BP fields (from SS log directly) ─────────────────────────────
+    # ── Return fields (from SS log directly) ──────────────────────────────────
+    # These are RETURNER stats — points the player wins when RECEIVING. They must
+    # be read from the return keys, never from "first_serve_pts_won" (a SERVE
+    # stat). A prior bug averaged "first_serve_pts_won" here, so every player's
+    # return-first showed their own serve number (~75-81%) instead of the real
+    # ~30-35%, inflating Break-Points-Won projections. Fall back to the career
+    # SS tier's return value when the recent log lacks it.
     ss_all = sofascore_surface_log[:10]
-    ret_1st = _avg_from_ss_log(ss_all, "first_serve_pts_won")
-    ret_2nd = None
+    ret_1st = _avg_from_ss_log(ss_all, "return_first_serve_pts_won")
+    ret_2nd = _avg_from_ss_log(ss_all, "return_second_serve_pts_won")
     if ret_1st is None and tier1:
         ret_1st = tier1.get("return_first_serve_pts_won")
+    if ret_2nd is None and tier1:
         ret_2nd = tier1.get("return_second_serve_pts_won")
 
     blended["return_first_serve_pts_won"]  = ret_1st
