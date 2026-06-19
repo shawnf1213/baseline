@@ -1,5 +1,22 @@
 from src.constants import ATP_TOUR_AVERAGES, WTA_TOUR_AVERAGES, ARCHETYPE_COLORS
 
+# Big Server gate — calibrated against real per-match data (`aces` here is
+# aces PER MATCH, not an ace percentage, consistent with how every other stat
+# in this module and the tour averages are expressed).
+#
+# The previous gate (aces > 18 and first_serve_pts_won > 78) only cleared
+# Isner-tier servers. Measured ATP All-surface aces/match: Isner 21.5,
+# Opelka 16.1, Mpetshi Perricard 14.5, Hurkacz 12.2, Shelton 11.0 — all
+# unanimous big servers, yet only Isner passed >18. Hurkacz/Shelton also fell
+# just under the >78 first-serve gate (~77.5). Baseliners sit far lower on aces
+# (Alcaraz 5.3, Sinner 7.2), so the ace gate is the clean discriminator.
+#
+# WTA serves produce far fewer aces, so its thresholds scale down accordingly.
+_BIG_SERVER = {
+    "ATP": {"aces_pm": 10.0, "first_won": 76.0, "ret_first": 40.0},
+    "WTA": {"aces_pm": 5.0,  "first_won": 68.0, "ret_first": 42.0},
+}
+
 
 def classify_archetype(stats: dict, tour: str = "ATP") -> str:
     avgs = ATP_TOUR_AVERAGES if tour == "ATP" else WTA_TOUR_AVERAGES
@@ -13,7 +30,10 @@ def classify_archetype(stats: dict, tour: str = "ATP") -> str:
     if ace_rate == 0 and first_serve_pts_won == 0:
         return "All-Court Player"
 
-    if ace_rate > 18 and first_serve_pts_won > 78 and return_first < 40:
+    bs = _BIG_SERVER.get(tour, _BIG_SERVER["ATP"])
+    if (ace_rate > bs["aces_pm"]
+            and first_serve_pts_won > bs["first_won"]
+            and return_first < bs["ret_first"]):
         return "Big Server"
 
     if (ace_rate > avgs["ace_rate"] and
