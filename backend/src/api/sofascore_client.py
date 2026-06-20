@@ -861,6 +861,15 @@ def _agg_split(all_m: list, stat_m: list) -> dict:
             result["return_bp_opportunities"] = round(_total_opps / len(_bp_pairs), 4)
             result["bp_converted_count"]    = round(_total_conv / len(_bp_pairs), 4)
 
+    # Fallback: if the raw return-BP counts weren't parsed for these matches
+    # (so sum/sum couldn't run), average the per-match bp_converted rates instead
+    # of leaving it blank. Less precise than sum/sum, but avoids an empty
+    # "Conv (Overall)" when per-match rates are present.
+    if result.get("bp_converted") is None:
+        _conv_vals = [m["bp_converted"] for m in stat_m if m.get("bp_converted") is not None]
+        if _conv_vals:
+            result["bp_converted"] = round(sum(_conv_vals) / len(_conv_vals), 4)
+
     return result
 
 
