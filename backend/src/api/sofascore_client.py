@@ -1867,14 +1867,18 @@ def get_player_stats_by_surface(player_id, tour: str = "ATP") -> dict:
     surfaces["_stale_cache"] = False
     surfaces["_stat_match_count"] = len(stat_matches)
 
-    # Only cache a result that actually has matches. Caching an empty surfaces
-    # dict would lock in a transient proxy failure for the 2-hour bucket.
-    if all_match_stats:
+    # Only cache when we actually got STAT-RICH matches. Events can succeed
+    # (e.g. 42 matches found) while the per-match statistics calls all come back
+    # empty (transient stats-API/proxy failure) — that yields N/A serve stats.
+    # Caching that would serve blank serve/return stats for the whole 6h window;
+    # leaving it uncached lets the next request re-fetch and recover.
+    if stat_matches:
         st.session_state[cache_key] = surfaces
     else:
         logger.warning(
-            "SURFACE_EMPTY | pid=%d | NOT caching empty result so the next "
-            "request retries with a fresh proxy port", pid,
+            "SURFACE_NO_STATS | pid=%d | %d events but 0 stat-rich matches — "
+            "NOT caching (would serve N/A serve stats); next request retries",
+            pid, len(all_match_stats),
         )
     return surfaces
 
