@@ -427,7 +427,10 @@ def run_session_format_test() -> dict:
     }
 
 
-def _get(url: str, params: dict = None) -> dict:
+def _get(url: str, params: dict = None, fast: bool = False) -> dict:
+    """fast=True is for latency-critical search/autocomplete calls (Discord has a
+    hard 3s autocomplete limit): on a 403 it fails immediately instead of doing
+    the 5-10s anti-block backoff, which would blow the autocomplete deadline."""
     global _proxy_session, _search_blocked, _search_blocked_ts
 
     if _proxy_session is None:
@@ -437,6 +440,7 @@ def _get(url: str, params: dict = None) -> dict:
     # detection signal) is handled differently: STEP 5 — do NOT rapid-cycle
     # ports (that itself looks automated). Back off 5-10s, rotate ONCE, retry
     # once; if it still 403s, give up and let the caller surface "unavailable".
+    # In fast mode (search), skip the backoff and fail immediately on 403.
     _403_retried = False
 
     for attempt in range(3):
@@ -449,7 +453,10 @@ def _get(url: str, params: dict = None) -> dict:
                 _mark_bad(current_proxy_port)
                 continue
             if r.status_code == 403:
-                logger.warning("403 %s port=%s", url, current_proxy_port)
+                logger.warning("403 %s port=%s fast=%s", url, current_proxy_port, fast)
+                if fast:
+                    # Search/autocomplete — fail immediately, no long backoff.
+                    return {}
                 if not _403_retried:
                     _403_retried = True
                     backoff = random.uniform(5, 10)
@@ -1348,6 +1355,17 @@ def search_players(query: str, tour: str = "ATP") -> list:
     if len(query) < 3:
         return []
 
+    # Short search cache (15-min bucket): autocomplete fires the same popular
+    # prefixes/names repeatedly across users, so caching makes those instant and
+    # avoids a live proxy request entirely. Cache-first before any block check.
+    _q_norm = query.strip().lower()
+    _scache_key = f"ss_search_{tour}_{_q_norm}_{int(time.time()) // 900}"
+    _cached = st.session_state.get(_scache_key)
+    if _cached is not None:
+        logger.info("SEARCH_CACHE_HIT | query=%r tour=%s", query, tour)
+        record_cache_hit()
+        return _cached
+
     # Clear stale block flag (2-minute cooldown before retrying)
     if _search_blocked and (time.time() - _search_blocked_ts) > 120:
         _search_blocked = False
@@ -1369,7 +1387,7 @@ def search_players(query: str, tour: str = "ATP") -> list:
     _search_throttle()
 
     logger.info("SEARCH_SOFASCORE | query=%r tour=%s", query, tour)
-    data = _get(f"{BASE_URL}/search/all", {"q": query})
+    data = _get(f"{BASE_URL}/search/all", {"q": query}, fast=True)
 
     # Raise if _get() set the block flag during this call
     if _search_blocked:
@@ -1395,7 +1413,7 @@ def search_players(query: str, tour: str = "ATP") -> list:
     # Search was verified working on the api. subdomain before the BASE_URL switch.
     if not raw_results:
         logger.info("SEARCH_FALLBACK_URL | query=%r www returned 0 — trying api.sofascore.com", query)
-        data2 = _get(f"{SEARCH_BASE_URL}/search/all", {"q": query})
+        data2 = _get(f"{SEARCH_BASE_URL}/search/all", {"q": query}, fast=True)
         raw_results2 = data2.get("results", [])
         logger.info("SEARCH_FALLBACK_URL_RAW | query=%r api_results=%d", query, len(raw_results2))
         if raw_results2:
@@ -1446,7 +1464,7 @@ def search_players(query: str, tour: str = "ATP") -> list:
         seen_ids: set = set()
         words = [w for w in query.strip().split() if len(w) >= 3 and w.lower() != query.strip().lower()]
         for word in words:
-            word_data = _get(f"{BASE_URL}/search/all", {"q": word})
+            word_data = _get(f"{BASE_URL}/search/all", {"q": word}, fast=True)
             for item in word_data.get("results", []):
                 if _is_tennis_player(item):
                     e = item.get("entity") or {}
@@ -1500,6 +1518,10 @@ def search_players(query: str, tour: str = "ATP") -> list:
             "gender":      e.get("gender") or "",
         })
     logger.info("SEARCH_RESULT | query=%r out=%s", query, [x["name"] for x in out])
+    # Cache non-empty results for the 15-min window (don't cache empties — a
+    # transient block shouldn't be remembered as "no such player").
+    if out:
+        st.session_state[_scache_key] = out
     return out
 
 

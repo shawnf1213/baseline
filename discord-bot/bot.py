@@ -187,13 +187,16 @@ async def search_both_tours(query: str, timeout: int = SEARCH_TIMEOUT,
 # options") instead of letting Discord time out with "Loading options failed".
 # The user can still type a full name; resolve_player re-searches on submit with
 # the full latency budget.
-AUTOCOMPLETE_DEADLINE = 2.4
+# A live backend search is ~2s (Sofascore via proxy); the backend now caches
+# searches for 15 min so repeats are instant. Give the call ~2.7s under Discord's
+# hard 3s autocomplete limit so a ~2s search reliably lands instead of timing out.
+AUTOCOMPLETE_DEADLINE = 2.7
 
 
 async def search_both_tours_fast(query: str):
     try:
         return await asyncio.wait_for(
-            search_both_tours(query, timeout=2), timeout=AUTOCOMPLETE_DEADLINE
+            search_both_tours(query, timeout=2.6), timeout=AUTOCOMPLETE_DEADLINE
         )
     except (asyncio.TimeoutError, Exception):  # noqa: BLE001 — never raise to Discord
         return []
