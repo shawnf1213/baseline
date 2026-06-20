@@ -44,8 +44,12 @@ COLOR_NEUTRAL = 0x0A0A0A  # dark — neutral / informational
 COLOR_ERROR = 0xFF4444
 
 FOOTER_TEXT = "Baseline — Data Driven. Optimizer Backed."
+# Player stats and projections are built from a recency-focused window — signal
+# that clearly so users know the data reflects current form, not career history.
+FOOTER_52W = "Baseline — Data Driven. Optimizer Backed. • Last 52 weeks"
 FOOTER_PROJECTION = (
-    "Baseline — Data Driven. Optimizer Backed. • Model projections, not betting advice."
+    "Baseline — Data Driven. Optimizer Backed. • Last 52 weeks • "
+    "Model projections, not betting advice."
 )
 
 # Per-request network timeouts (seconds). These are sized to the backend's
@@ -549,7 +553,7 @@ def player_embed(name, surface, data) -> discord.Embed:
     e.add_field(name="Return 1st Won", value=_pct(surf.get("return_first_serve_pts_won")), inline=True)
 
     e.add_field(name=form_label, value=_form_emojis(form, limit=10), inline=False)
-    e.set_footer(text=FOOTER_TEXT)
+    e.set_footer(text=FOOTER_52W)
     return e
 
 
