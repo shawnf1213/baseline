@@ -655,7 +655,7 @@ async def prop(
     line: float,
     court: str = "None",
 ):
-    await interaction.response.defer(thinking=True)
+    await interaction.response.defer(thinking=True, ephemeral=True)
     log.info("CMD /prop | user=%s | %s vs %s | %s | %s | court=%s | line=%s",
              interaction.user.id, player, opponent, prop_type.value, surface.value, court, line)
     try:
@@ -719,7 +719,8 @@ async def prop(
             return
 
         await interaction.followup.send(
-            embed=prop_embed(p_name, o_name, prop_type.value, surface_val, court_display, float(line), data)
+            embed=prop_embed(p_name, o_name, prop_type.value, surface_val, court_display, float(line), data),
+            ephemeral=True,
         )
     except Exception:  # noqa: BLE001 — never let a command crash the process
         log.exception("UNHANDLED /prop error")
@@ -741,7 +742,7 @@ async def h2h(
     player2: str,
     surface: app_commands.Choice[str] = None,
 ):
-    await interaction.response.defer(thinking=True)
+    await interaction.response.defer(thinking=True, ephemeral=True)
     log.info("CMD /h2h | user=%s | %s vs %s | surface=%s",
              interaction.user.id, player1, player2, surface.value if surface else "All")
     try:
@@ -770,7 +771,7 @@ async def h2h(
             await _send_error(interaction, MSG_UNREACHABLE)
             return
 
-        await interaction.followup.send(embed=h2h_embed(p1_name, p2_name, surface_val, data))
+        await interaction.followup.send(embed=h2h_embed(p1_name, p2_name, surface_val, data), ephemeral=True)
     except Exception:  # noqa: BLE001
         log.exception("UNHANDLED /h2h error")
         await _send_error(interaction, MSG_GENERIC)
@@ -786,7 +787,7 @@ async def player_cmd(
     name: str,
     surface: app_commands.Choice[str],
 ):
-    await interaction.response.defer(thinking=True)
+    await interaction.response.defer(thinking=True, ephemeral=True)
     log.info("CMD /player | user=%s | name=%s | surface=%s",
              interaction.user.id, name, surface.value)
     try:
@@ -812,7 +813,7 @@ async def player_cmd(
             await _send_error(interaction, MSG_BLOCK)
             return
 
-        await interaction.followup.send(embed=player_embed(p_name, surface.value, data))
+        await interaction.followup.send(embed=player_embed(p_name, surface.value, data), ephemeral=True)
     except Exception:  # noqa: BLE001
         log.exception("UNHANDLED /player error")
         await _send_error(interaction, MSG_GENERIC)
