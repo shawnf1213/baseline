@@ -210,10 +210,7 @@ def _search_throttle() -> None:
     with _throttle_lock:
         now = time.time()
         gap = now - _last_sofascore_request
-        # Intra-player batching jitter: 150-400ms between requests WITHIN one
-        # player's fetch. Inter-PLAYER spacing (1.5-3.5s) is handled separately
-        # in begin_player_session — that's the pattern that matters for blocking.
-        min_gap = 0.15 + random.uniform(0, 0.25)   # 0.15–0.40s
+        min_gap = 0.2 + random.uniform(0, 0.1)   # 0.2–0.3s — light, keeps it fast
         if gap < min_gap:
             time.sleep(min_gap - gap)
         _last_sofascore_request = time.time()
@@ -282,14 +279,8 @@ def begin_player_session() -> None:
     spaced 1.5-3.5s apart so the pattern reads as spaced-out human browsing.
     Only called on a cache MISS, so cached lookups incur no delay.
     """
-    global _last_player_session_ts
-    with _player_session_lock:
-        if _last_player_session_ts:
-            gap = time.time() - _last_player_session_ts
-            min_gap = random.uniform(1.5, 3.5)
-            if gap < min_gap:
-                time.sleep(min_gap - gap)
-        _last_player_session_ts = time.time()
+    # Simplified: just rotate to a fresh port (new sticky IP) per player. No
+    # artificial inter-player delay — that was slowing lookups for no clear gain.
     _new_session(force_port=True)
     logger.info("PLAYER_SESSION_START | port=%s", current_proxy_port)
 
@@ -436,20 +427,8 @@ def _get(url: str, params: dict = None, fast: bool = False) -> dict:
     if _proxy_session is None:
         _new_session(force_port=True)
 
-    # Fail FAST if we already know we're blocked. Without this, every request in
-    # a multi-request fetch (stats pulls ~50 calls) would independently hit a 403
-    # and each sleep 5-10s, ballooning the whole fetch far past the client
-    # timeout. One backoff per fetch is enough — the rest bail immediately.
-    if _search_blocked and (time.time() - _search_blocked_ts) < 120:
-        return {}
-
-    # Proxy/tunnel errors (dead port) get up to 3 quick rotations. A 403 (the
-    # detection signal) is handled differently: STEP 5 — do NOT rapid-cycle
-    # ports (that itself looks automated). Back off 5-10s, rotate ONCE, retry
-    # once; if it still 403s, give up and let the caller surface "unavailable".
-    # In fast mode (search), skip the backoff and fail immediately on 403.
-    _403_retried = False
-
+    # Simple, fast retry: on 403 or a dead-port error, rotate to a fresh port and
+    # retry quickly (no long sleeps). Search (fast=True) just fails on 403.
     for attempt in range(3):
         try:
             record_live_fetch()
@@ -462,19 +441,14 @@ def _get(url: str, params: dict = None, fast: bool = False) -> dict:
             if r.status_code == 403:
                 logger.warning("403 %s port=%s fast=%s", url, current_proxy_port, fast)
                 if fast:
-                    # Search/autocomplete — fail immediately, no long backoff.
                     return {}
-                if not _403_retried:
-                    _403_retried = True
-                    backoff = random.uniform(5, 10)
-                    logger.info("403 backoff %.1fs then ONE retry on a fresh port", backoff)
-                    time.sleep(backoff)
-                    _new_session(force_port=True)
-                    continue
-                _search_blocked = True
-                _search_blocked_ts = time.time()
-                logger.error("SOFASCORE BLOCKED: 403 persisted after backoff for %s", url)
-                return {}
+                _new_session(force_port=True)   # rotate port and retry
+                if attempt >= 2:
+                    _search_blocked = True
+                    _search_blocked_ts = time.time()
+                    logger.error("SOFASCORE BLOCKED: 403 on all attempts for %s", url)
+                    return {}
+                continue
             logger.debug("HTTP %d %s", r.status_code, url)
             return {}
         except Exception as e:
@@ -1293,9 +1267,7 @@ def _fetch_stats_parallel(event_ids: list) -> dict:
                 time.sleep(0.5)
         return event_id, {}
 
-    # Gentler concurrency (STEP 2): 4 in-flight instead of 10 so a cold fetch is
-    # a small, jittered batch rather than a 10-wide burst that looks automated.
-    with ThreadPoolExecutor(max_workers=4) as ex:
+    with ThreadPoolExecutor(max_workers=10) as ex:
         for eid, data in ex.map(_fetch_one, uncached):
             results[eid] = data
             # Update session state from main thread (map blocks until all done)

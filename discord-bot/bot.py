@@ -58,12 +58,9 @@ FOOTER_PROJECTION = (
 # Discord. Timeouts that are too short cause users to retry, which is what
 # actually spams Sofascore — so we give the first call room to finish once.
 SEARCH_TIMEOUT = 8     # autocomplete uses a much shorter deadline (see below)
-RESOLVE_TIMEOUT = 15   # submit-time name resolution (cold search)
-# Cold fetches now include inter-player spacing (1.5-3.5s) and a possible 5-10s
-# 403 backoff, so give them more room. The interaction is deferred (15-min
-# window) — the "thinking…" state persists, so a longer wait never hangs Discord.
-PROP_TIMEOUT = 90      # cold multi-source fetch + spacing + backoff headroom
-GENERIC_TIMEOUT = 60   # h2h / player-stats cold event pagination + spacing
+RESOLVE_TIMEOUT = 10   # submit-time name resolution
+PROP_TIMEOUT = 45      # multi-source fetch
+GENERIC_TIMEOUT = 30   # h2h / player-stats
 
 # Cap concurrent backend calls so a traffic spike can't overwhelm Railway or
 # spam the Sofascore proxy. A 6th command-initiated call waits for a slot rather
@@ -554,8 +551,9 @@ class BaselineBot(discord.Client):
         self.tree = app_commands.CommandTree(self)
 
     async def setup_hook(self):
+        # Keep a global registration so the bot works in any server it's added to.
         await self.tree.sync()
-        log.info("Slash commands synced.")
+        log.info("Global slash commands synced.")
 
 
 client = BaselineBot()
@@ -897,10 +895,27 @@ async def on_error(event_method: str, *args, **kwargs):
     log.exception("UNCAUGHT ERROR in event %s — bot continues running", event_method)
 
 
+_guild_synced = False
+
+
 @client.event
 async def on_ready():
-    log.info("Logged in as %s (id=%s) — API=%s | max_concurrent=%d",
-             client.user, client.user.id, API_BASE, MAX_CONCURRENT_BACKEND_CALLS)
+    global _guild_synced
+    # Register commands to every guild the bot is in — guild commands propagate
+    # INSTANTLY (global commands lag up to an hour and cause "This command is
+    # outdated"). A guild command overrides the same-named global command, so no
+    # duplicates appear. Done once per process.
+    if not _guild_synced:
+        _guild_synced = True
+        try:
+            for g in client.guilds:
+                client.tree.copy_global_to(guild=g)
+                await client.tree.sync(guild=g)
+            log.info("Commands guild-synced to %d guild(s) — instant availability.",
+                     len(client.guilds))
+        except Exception:
+            log.exception("guild command sync failed")
+    log.info("Logged in as %s (id=%s) — API=%s", client.user, client.user.id, API_BASE)
 
 
 # ── Connection lifecycle logging (reconnect handled by discord.py itself) ───────
