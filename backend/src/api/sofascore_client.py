@@ -436,6 +436,13 @@ def _get(url: str, params: dict = None, fast: bool = False) -> dict:
     if _proxy_session is None:
         _new_session(force_port=True)
 
+    # Fail FAST if we already know we're blocked. Without this, every request in
+    # a multi-request fetch (stats pulls ~50 calls) would independently hit a 403
+    # and each sleep 5-10s, ballooning the whole fetch far past the client
+    # timeout. One backoff per fetch is enough — the rest bail immediately.
+    if _search_blocked and (time.time() - _search_blocked_ts) < 120:
+        return {}
+
     # Proxy/tunnel errors (dead port) get up to 3 quick rotations. A 403 (the
     # detection signal) is handled differently: STEP 5 — do NOT rapid-cycle
     # ports (that itself looks automated). Back off 5-10s, rotate ONCE, retry
