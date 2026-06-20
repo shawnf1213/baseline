@@ -284,6 +284,26 @@ def run_session_format_test() -> dict:
     call3 = _fetch_ip(u2)   # different session -> expect different IP
     control = _fetch_ip(_PROXY_USER)
 
+    # Port behaviour: 3 back-to-back plain-username calls on the SAME port —
+    # identical IPs => port is sticky; differing IPs => rotates per request.
+    same_port_ips = [_fetch_ip(_PROXY_USER).get("ip") for _ in range(3)]
+    # One call on each of up to 3 different ports.
+    diff_port = {}
+    for p in _PROXY_PORTS[:3]:
+        pu = f"http://{_PROXY_USER}:{_PROXY_PASS}@{_PROXY_HOST}:{p}"
+        try:
+            s = cf.Session(impersonate="chrome124")
+            s.proxies = {"http": pu, "https": pu}
+            r = s.get("https://ip.decodo.com/json", timeout=10)
+            ip = ""
+            try:
+                j = r.json(); ip = (j.get("proxy") or {}).get("ip") or j.get("ip") or ""
+            except Exception:
+                pass
+            diff_port[str(p)] = ip
+        except Exception as e:
+            diff_port[str(p)] = f"ERR {type(e).__name__}"
+
     # Real Sofascore call through a session username (the 403/200 proof).
     sofa: dict
     try:
@@ -308,9 +328,13 @@ def run_session_format_test() -> dict:
         "session1_call2_same_id": call2,
         "session2_diff_id": call3,
         "plain_username_control": control,
+        "username_session_supported": bool(call1.get("status") == 200),
         "sticky_ok": bool(call1.get("ip") and call1.get("ip") == call2.get("ip")),
         "rotation_ok": bool(call1.get("ip") and call3.get("ip")
                             and call1.get("ip") != call3.get("ip")),
+        "same_port_repeated_ips": same_port_ips,
+        "same_port_is_sticky": len(set(i for i in same_port_ips if i)) == 1 and bool(same_port_ips[0]),
+        "different_port_ips": diff_port,
         "sofascore_via_session": sofa,
     }
 
