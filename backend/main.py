@@ -400,6 +400,13 @@ async def proxy_health():
     }
 
 
+@app.get("/api/proxy/usage")
+async def proxy_usage():
+    """Live proxy-vs-cache counts for the current day (STEP 7)."""
+    from src.api.sofascore_client import proxy_usage_stats
+    return proxy_usage_stats()
+
+
 @app.get("/api/proxy/session-test")
 async def proxy_session_test():
     """Proof that the Decodo sticky-session username format works (sticky +

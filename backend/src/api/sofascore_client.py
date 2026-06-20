@@ -107,6 +107,23 @@ _proxy_session   = None         # curl_cffi Session — reused across all reques
 _last_sofascore_request: float = 0.0
 _throttle_lock = threading.Lock()
 
+# Inter-player session spacing (STEP 2): new player lookups are spaced 1.5-3.5s
+# apart so one IP isn't seen firing many unrelated lookups back-to-back.
+_last_player_session_ts: float = 0.0
+_player_session_lock = threading.Lock()
+
+# Cache bucket window. Decodo block risk is driven by live-request volume, so we
+# cache aggressively: a player's events/surface stats are reused for 6h (props
+# evaluate matches that don't change minute-to-minute).
+_CACHE_BUCKET_SECS = 6 * 3600
+
+# Proxy-usage / cache counters (STEP 7) — logged daily so the cache hit rate and
+# live proxy volume are visible in Railway without reproducing issues live.
+_counter_lock = threading.Lock()
+_proxy_live_count: int = 0
+_cache_served_count: int = 0
+_counter_day: Optional[str] = None
+
 # 403 block state — set when all retry attempts exhaust on 403
 _search_blocked: bool = False
 _search_blocked_ts: float = 0.0
@@ -193,7 +210,10 @@ def _search_throttle() -> None:
     with _throttle_lock:
         now = time.time()
         gap = now - _last_sofascore_request
-        min_gap = 0.2 + random.uniform(0, 0.1)   # 0.2–0.3s (was 0.8–1.2s)
+        # Intra-player batching jitter: 150-400ms between requests WITHIN one
+        # player's fetch. Inter-PLAYER spacing (1.5-3.5s) is handled separately
+        # in begin_player_session — that's the pattern that matters for blocking.
+        min_gap = 0.15 + random.uniform(0, 0.25)   # 0.15–0.40s
         if gap < min_gap:
             time.sleep(min_gap - gap)
         _last_sofascore_request = time.time()
@@ -204,6 +224,74 @@ def _mark_bad(port: int) -> None:
     logger.warning("Port %d marked bad — rotating", port)
     _bad_ports[port] = time.time()
     _new_session(force_port=True)
+
+
+# ---------------------------------------------------------------------------
+# Proxy-usage counters (STEP 7) + cache hit/miss visibility (STEP 3)
+# ---------------------------------------------------------------------------
+def _roll_counter_day_locked() -> None:
+    global _counter_day, _proxy_live_count, _cache_served_count
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    if _counter_day != today:
+        if _counter_day is not None:
+            logger.info(
+                "PROXY_DAILY_SUMMARY | day=%s | live_proxy_requests=%d | cache_served=%d",
+                _counter_day, _proxy_live_count, _cache_served_count,
+            )
+        _counter_day = today
+        _proxy_live_count = 0
+        _cache_served_count = 0
+
+
+def record_live_fetch(n: int = 1) -> None:
+    """One live proxy request actually sent to Sofascore."""
+    global _proxy_live_count
+    with _counter_lock:
+        _roll_counter_day_locked()
+        _proxy_live_count += n
+
+
+def record_cache_hit(n: int = 1) -> None:
+    """A player lookup served entirely from cache (no proxy request)."""
+    global _cache_served_count
+    with _counter_lock:
+        _roll_counter_day_locked()
+        _cache_served_count += n
+
+
+def proxy_usage_stats() -> dict:
+    with _counter_lock:
+        _roll_counter_day_locked()
+        total = _proxy_live_count + _cache_served_count
+        return {
+            "day": _counter_day,
+            "live_proxy_requests": _proxy_live_count,
+            "cache_served": _cache_served_count,
+            "cache_hit_rate_pct": round(_cache_served_count / total * 100, 1) if total else 0.0,
+        }
+
+
+def begin_player_session() -> None:
+    """Start a fresh sticky session for a NEW player lookup.
+
+    On this Decodo plan each PORT maps to a distinct sticky residential IP
+    (verified via /api/proxy/session-test: same port -> same IP, different port
+    -> different IP; the username "-session-{id}" format is NOT supported and
+    407s). So rotating the port per player gives each player its own IP and keeps
+    one IP from being seen firing many unrelated lookups. New player sessions are
+    spaced 1.5-3.5s apart so the pattern reads as spaced-out human browsing.
+    Only called on a cache MISS, so cached lookups incur no delay.
+    """
+    global _last_player_session_ts
+    with _player_session_lock:
+        if _last_player_session_ts:
+            gap = time.time() - _last_player_session_ts
+            min_gap = random.uniform(1.5, 3.5)
+            if gap < min_gap:
+                time.sleep(min_gap - gap)
+        _last_player_session_ts = time.time()
+    _new_session(force_port=True)
+    logger.info("PLAYER_SESSION_START | port=%s", current_proxy_port)
 
 
 # ---------------------------------------------------------------------------
@@ -345,34 +433,34 @@ def _get(url: str, params: dict = None) -> dict:
     if _proxy_session is None:
         _new_session(force_port=True)
 
-    # Fail fast: 6s per attempt keeps the total under the frontend's 10s wall-
-    # clock limit even with one retry.  Stats/events calls are not search calls
-    # so their latency budget is independent.
-    _403_waits = [0, 0.3, 0.5]
+    # Proxy/tunnel errors (dead port) get up to 3 quick rotations. A 403 (the
+    # detection signal) is handled differently: STEP 5 — do NOT rapid-cycle
+    # ports (that itself looks automated). Back off 5-10s, rotate ONCE, retry
+    # once; if it still 403s, give up and let the caller surface "unavailable".
+    _403_retried = False
 
     for attempt in range(3):
-        wait = _403_waits[attempt]
-        if wait > 0:
-            time.sleep(wait)
         try:
-            r = _proxy_session.get(url, params=params, timeout=6)
+            record_live_fetch()
+            r = _proxy_session.get(url, params=params, timeout=8)
             if r.status_code == 200:
                 return r.json()
             if r.status_code == 407:
                 _mark_bad(current_proxy_port)
                 continue
             if r.status_code == 403:
-                logger.warning("403 %s attempt=%d port=%s sid=%s",
-                               url, attempt + 1, current_proxy_port, _current_session_id)
-                # Immediately rotate to a fresh port + new Decodo session ID
-                _new_session(force_port=True)
-                if attempt >= 2:
-                    # All 3 attempts exhausted across different ports
-                    _search_blocked = True
-                    _search_blocked_ts = time.time()
-                    logger.error("SOFASCORE BLOCKED: 403 on all 3 attempts for %s", url)
-                    return {}
-                continue
+                logger.warning("403 %s port=%s", url, current_proxy_port)
+                if not _403_retried:
+                    _403_retried = True
+                    backoff = random.uniform(5, 10)
+                    logger.info("403 backoff %.1fs then ONE retry on a fresh port", backoff)
+                    time.sleep(backoff)
+                    _new_session(force_port=True)
+                    continue
+                _search_blocked = True
+                _search_blocked_ts = time.time()
+                logger.error("SOFASCORE BLOCKED: 403 persisted after backoff for %s", url)
+                return {}
             logger.debug("HTTP %d %s", r.status_code, url)
             return {}
         except Exception as e:
@@ -441,18 +529,74 @@ def _check_proxy_health() -> None:
         logger.info("Proxy health: %d/%d ports OK", healthy, len(_PROXY_PORTS))
 
 
+def _proxy_health_once() -> None:
+    """One scheduled pass (STEP 4): test up to 3 random ports against a
+    lightweight Sofascore endpoint and log OK/403. Warn loudly if >=3 sampled
+    ports return 403 so a brewing block is visible early. Also emits the daily
+    proxy-usage summary so cache effectiveness is visible in Railway logs."""
+    if not _proxy_ok():
+        return
+    from curl_cffi import requests as cf
+    sample = random.sample(_PROXY_PORTS, min(3, len(_PROXY_PORTS)))
+    ok = blocked = 0
+    for p in sample:
+        pu = _proxy_url(p)
+        try:
+            s = cf.Session(impersonate="chrome124")
+            s.headers.update(HEADERS)
+            s.proxies = {"http": pu, "https": pu}
+            r = s.get(f"{BASE_URL}/search/all", params={"q": "sinner"}, timeout=10)
+            if r.status_code == 200:
+                ok += 1
+                logger.info("PROXY_HEALTH | port=%d OK", p)
+            elif r.status_code == 403:
+                blocked += 1
+                logger.warning("PROXY_HEALTH | port=%d 403", p)
+            else:
+                logger.warning("PROXY_HEALTH | port=%d HTTP %d", p, r.status_code)
+        except Exception as e:
+            logger.warning("PROXY_HEALTH | port=%d err %s", p, str(e)[:80])
+        time.sleep(random.uniform(1.5, 3.5))   # space the checks too
+    if blocked >= 3:
+        logger.warning(
+            "PROXY_HEALTH_ALERT | %d/%d sampled ports returning 403 — possible "
+            "brewing Sofascore block, investigate before users hit 'no players found'",
+            blocked, len(sample),
+        )
+    logger.info("PROXY_HEALTH_SUMMARY | ok=%d blocked=%d | usage=%s",
+                ok, blocked, proxy_usage_stats())
+
+
+def _proxy_health_scheduler() -> None:
+    """Run a health pass every 30 minutes, independent of user traffic."""
+    while True:
+        time.sleep(1800)
+        try:
+            _proxy_health_once()
+        except Exception as e:  # noqa: BLE001 — a monitor must never crash
+            logger.warning("proxy health scheduler error: %s", e)
+
+
+_health_scheduler_started = False
+
+
 def init_session() -> None:
     """
     Pick initial proxy port and create the shared Session.
     Proxy health check runs in a background thread so it doesn't delay startup.
     """
+    global _health_scheduler_started
     _new_session(force_port=True)
     if not _proxy_ok():
         logger.warning("No proxy configured — using direct connection")
     else:
-        # Non-blocking background health check — logs arrive ~30s after startup
-        t = threading.Thread(target=_check_proxy_health, daemon=True)
-        t.start()
+        # Non-blocking startup health check — logs arrive ~30s after startup
+        threading.Thread(target=_check_proxy_health, daemon=True).start()
+        # Recurring 30-min health monitor (STEP 4) — start once
+        if not _health_scheduler_started:
+            _health_scheduler_started = True
+            threading.Thread(target=_proxy_health_scheduler, daemon=True).start()
+            logger.info("Proxy health scheduler started (every 30 min)")
     logger.info("Sofascore client ready (port=%s)", current_proxy_port)
 
 
@@ -958,18 +1102,19 @@ def _get_player_recent_events(player_id: int, max_pages: int = MAX_PAGES_DEFAULT
       than 2 hours without a fresh Sofascore fetch.
     - PAGE_SCAN lines logged per batch so Railway shows pagination progress.
     """
-    # 2-hour time bucket: forces a fresh fetch every 2 hours regardless of process age.
-    # int(time.time()) // 7200 advances by 1 every 7200 seconds (2 hours).
-    _bucket = int(time.time()) // 7200
+    # 6-hour cache bucket (STEP 3): match history doesn't change minute-to-minute,
+    # so reusing it for 6h sharply cuts live proxy volume.
+    _bucket = int(time.time()) // _CACHE_BUCKET_SECS
     cache_key = f"ss_events_v2_{player_id}_{_bucket}"
     if cache_key in st.session_state:
         logger.info("EVENTS_CACHE_HIT | player_id=%s | bucket=%s", player_id, _bucket)
+        record_cache_hit()
         return st.session_state[cache_key]
 
-    # Rotate proxy port before fetching fresh events — avoids serving cached
-    # responses from a sticky port that may have been seeded on an earlier date.
-    logger.info("EVENTS_FETCH | player_id=%s | bucket=%s | rotating proxy port", player_id, _bucket)
-    _new_session(force_port=True)
+    # Cache miss → fresh sticky session for THIS player (new port = new IP),
+    # spaced 1.5-3.5s from the previous player's lookup (STEP 1+2).
+    logger.info("EVENTS_CACHE_MISS | player_id=%s | bucket=%s | starting player session", player_id, _bucket)
+    begin_player_session()
 
     all_events: list = []
     now = time.time()
@@ -1134,7 +1279,9 @@ def _fetch_stats_parallel(event_ids: list) -> dict:
                 time.sleep(0.5)
         return event_id, {}
 
-    with ThreadPoolExecutor(max_workers=10) as ex:
+    # Gentler concurrency (STEP 2): 4 in-flight instead of 10 so a cold fetch is
+    # a small, jittered batch rather than a 10-wide burst that looks automated.
+    with ThreadPoolExecutor(max_workers=4) as ex:
         for eid, data in ex.map(_fetch_one, uncached):
             results[eid] = data
             # Update session state from main thread (map blocks until all done)
@@ -1359,12 +1506,13 @@ def search_players(query: str, tour: str = "ATP") -> list:
 def get_player_stats_by_surface(player_id, tour: str = "ATP") -> dict:
     pid = int(player_id)
     # v6: full-history pagination, SS aggregation tiers, ace-against extraction.
-    # Cache key includes the same 2-hour bucket as the events cache so surface stats
-    # are rebuilt whenever the events cache refreshes — never stale > 2 hours.
-    _bucket = int(time.time()) // 7200
+    # Cache key uses the same 6h bucket as the events cache (STEP 3) so surface
+    # stats refresh together and live proxy volume stays low.
+    _bucket = int(time.time()) // _CACHE_BUCKET_SECS
     cache_key = f"ss_surface_v6_{pid}_{_bucket}"
     if cache_key in st.session_state:
         logger.info("SURFACE_CACHE_HIT | pid=%s | bucket=%s", pid, _bucket)
+        record_cache_hit()
         return st.session_state[cache_key]
 
     logger.info("[STATS_FLOW] START | player_id=%d tour=%s", pid, tour)
