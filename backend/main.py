@@ -491,22 +491,27 @@ async def search_post(req: SearchRequest):
 async def player_stats(req: PlayerStatsRequest):
     try:
         _loop2 = asyncio.get_event_loop()
-        data      = await _loop2.run_in_executor(
-            None, get_player_stats_by_surface, req.player_id, req.tour
+
+        # Fetch Sofascore stats and Tennis Abstract CONCURRENTLY (was sequential,
+        # which made a cold /player ~17s Sofascore + up to 30s TA = ~33s+ and blew
+        # the bot timeout). Now cold ~= max(Sofascore, TA); TA capped at 12s.
+        async def _ta_safe():
+            if not req.player_name:
+                return None
+            try:
+                return await asyncio.wait_for(
+                    get_player_ta_stats(req.player_name, req.tour), timeout=12.0
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning("TA fetch failed for stats endpoint: %s", e)
+                return None
+
+        data, ta_data = await asyncio.gather(
+            _loop2.run_in_executor(None, get_player_stats_by_surface, req.player_id, req.tour),
+            _ta_safe(),
         )
         all_stats = data.get("All", {}) or {}
         archetype = classify_archetype(all_stats, req.tour)
-
-        # Fetch Tennis Abstract data if player name is provided
-        ta_data = None
-        if req.player_name:
-            try:
-                ta_data = await asyncio.wait_for(
-                    get_player_ta_stats(req.player_name, req.tour),
-                    timeout=30.0,
-                )
-            except Exception as e:
-                logger.warning("TA fetch failed for stats endpoint: %s", e)
 
         return {
             "All":   data.get("All", {}),

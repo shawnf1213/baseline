@@ -63,7 +63,7 @@ RESOLVE_TIMEOUT = 15   # submit-time name resolution (cold search)
 # 403 backoff, so give them more room. The interaction is deferred (15-min
 # window) — the "thinking…" state persists, so a longer wait never hangs Discord.
 PROP_TIMEOUT = 90      # cold multi-source fetch + spacing + backoff headroom
-GENERIC_TIMEOUT = 45   # h2h / player-stats cold event pagination + spacing
+GENERIC_TIMEOUT = 60   # h2h / player-stats cold event pagination + spacing
 
 # Cap concurrent backend calls so a traffic spike can't overwhelm Railway or
 # spam the Sofascore proxy. A 6th command-initiated call waits for a slot rather
