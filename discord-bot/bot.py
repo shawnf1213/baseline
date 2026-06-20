@@ -513,9 +513,18 @@ def h2h_embed(p1, p2, surface, data) -> discord.Embed:
 def player_embed(name, surface, data) -> discord.Embed:
     arch = data.get("archetype") or "—"
     surf = data.get(surface, {}) or {}
-    form = data.get("form", [])
     ta = data.get("ta_stats") or {}
     hand = _hand_label(ta.get("handedness"))
+
+    # Form must match the selected surface (otherwise e.g. Sinner's Hard card
+    # shows 100% win rate but a red from a clay loss). For a specific surface use
+    # that surface's recent matches; for All, use the cross-surface form list.
+    if surface == "All":
+        form = data.get("form", [])
+        form_label = "Last 10 Form"
+    else:
+        form = data.get(f"{surface}_matches", []) or []
+        form_label = f"Last 10 Form ({surface})"
 
     surf_label = "All surfaces" if surface == "All" else f"{surface} court"
     desc = f"**{arch}**  ·  {surf_label}"
@@ -539,7 +548,7 @@ def player_embed(name, surface, data) -> discord.Embed:
     e.add_field(name="2nd Srv Won", value=_pct(surf.get("second_serve_pts_won")), inline=True)
     e.add_field(name="Return 1st Won", value=_pct(surf.get("return_first_serve_pts_won")), inline=True)
 
-    e.add_field(name="Last 10 Form", value=_form_emojis(form, limit=10), inline=False)
+    e.add_field(name=form_label, value=_form_emojis(form, limit=10), inline=False)
     e.set_footer(text=FOOTER_TEXT)
     return e
 
