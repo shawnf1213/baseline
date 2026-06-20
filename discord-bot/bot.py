@@ -358,6 +358,9 @@ def _prop_stat_blocks(prop_type, data):
         ]
         o_lines = [
             ("BP Faced/Match", _num(data.get("bp_blended_opp_faced"))),
+            ("1st Serve %", _pct(os_.get("first_serve_pct"))),
+            ("1st Srv Won", _pct(os_.get("first_serve_pts_won"))),
+            ("2nd Srv Won", _pct(os_.get("second_serve_pts_won"))),
             ("Hold Rate", _pct(data.get("opp_hold_rate_pct"))),
             ("Serve Quality", data.get("opp_serve_tier") or "—"),
         ]
