@@ -48,20 +48,25 @@ FOOTER_PROJECTION = (
     "Baseline — Data Driven. Optimizer Backed. • Model projections, not betting advice."
 )
 
-# Per-request network timeouts (seconds). Lightweight endpoints are capped at
-# 10s (search/h2h/player all measured <2s). /prop is heavier: a COLD matchup
-# fetch (Sofascore + Tennis Abstract + Sackmann) measured ~22s before the
-# backend caches it (then ~0.5s). A 10s cap would fail the first request for
-# every new matchup, so /prop gets 30s. Because the slash command is deferred
-# (15-min Discord window) a 30s call shows "thinking…" and never hangs Discord;
-# any finite timeout already eliminates the indefinite-hang risk.
+# Per-request network timeouts (seconds). These are sized to the backend's
+# COLD-fetch latency, not the warm-cache case. The backend caches per player per
+# 2-hour bucket, so only the FIRST request for a given matchup/player pays the
+# Sofascore event-pagination cost; everything after is ~0.5s. Measured cold:
+# search ~6-12s, player/h2h ~15-20s (event pagination), prop ~22-40s (both
+# players + Tennis Abstract + Sackmann). The slash command is deferred (15-min
+# Discord window), so a longer wait just shows "thinking…" and never hangs
+# Discord. Timeouts that are too short cause users to retry, which is what
+# actually spams Sofascore — so we give the first call room to finish once.
 SEARCH_TIMEOUT = 8     # autocomplete uses a much shorter deadline (see below)
-RESOLVE_TIMEOUT = 10   # submit-time name resolution
-PROP_TIMEOUT = 30      # cold multi-source fetch headroom
-GENERIC_TIMEOUT = 10   # h2h / player-stats
+RESOLVE_TIMEOUT = 15   # submit-time name resolution (cold search)
+PROP_TIMEOUT = 60      # cold multi-source fetch headroom
+GENERIC_TIMEOUT = 30   # h2h / player-stats cold event pagination
 
-# Cap concurrent backend calls so a traffic spike can't overwhelm Railway.
-# A 6th command-initiated call waits for a slot instead of firing immediately.
+# Cap concurrent backend calls so a traffic spike can't overwhelm Railway or
+# spam the Sofascore proxy. A 6th command-initiated call waits for a slot rather
+# than firing immediately — this IS the anti-spam guard (alongside Discord slow
+# mode and the per-user cooldown), so longer timeouts are safe: at most 5 cold
+# Sofascore fetches are ever in flight at once.
 MAX_CONCURRENT_BACKEND_CALLS = 5
 API_SEMAPHORE = asyncio.Semaphore(MAX_CONCURRENT_BACKEND_CALLS)
 
