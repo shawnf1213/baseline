@@ -400,6 +400,15 @@ async def proxy_health():
     }
 
 
+@app.get("/api/proxy/session-test")
+async def proxy_session_test():
+    """Proof that the Decodo sticky-session username format works (sticky +
+    rotation + Sofascore 200) before switching the main path over."""
+    from src.api.sofascore_client import run_session_format_test
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, run_session_format_test)
+
+
 @app.get("/api/search/probe")
 async def search_probe(q: str = "alcaraz"):
     """Raw HTTP status + body snippet from Sofascore — distinguishes a 403

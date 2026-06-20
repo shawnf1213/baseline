@@ -246,6 +246,75 @@ def probe_request(url: str, params: dict = None) -> dict:
         }
 
 
+def run_session_format_test() -> dict:
+    """Isolated, read-only proof that the Decodo sticky-session username format
+    works BEFORE switching the main fetch path over. Tests, on one port:
+      - same session id twice  -> should return the SAME residential IP (sticky)
+      - a different session id  -> should return a DIFFERENT IP (rotation works)
+      - the plain username      -> control
+      - a real Sofascore call via a session username -> confirms not 403
+    Returns raw status/IP/body so the format can be confirmed from the logs.
+    """
+    from curl_cffi import requests as cf
+    if not _proxy_ok():
+        return {"error": "proxy not configured"}
+    port = _PROXY_PORTS[0]
+
+    def _fetch_ip(session_username: str) -> dict:
+        pu = f"http://{session_username}:{_PROXY_PASS}@{_PROXY_HOST}:{port}"
+        try:
+            s = cf.Session(impersonate="chrome124")
+            s.proxies = {"http": pu, "https": pu}
+            r = s.get("https://ip.decodo.com/json", timeout=10)
+            ip = ""
+            try:
+                j = r.json()
+                ip = (j.get("proxy") or {}).get("ip") or j.get("ip") or ""
+            except Exception:
+                pass
+            return {"status": r.status_code, "ip": ip}
+        except Exception as e:
+            return {"status": None, "error": f"{type(e).__name__}: {str(e)[:120]}"}
+
+    sid1, sid2 = _fresh_session_id(), _fresh_session_id()
+    u1 = f"{_PROXY_USER}-session-{sid1}"
+    u2 = f"{_PROXY_USER}-session-{sid2}"
+    call1 = _fetch_ip(u1)
+    call2 = _fetch_ip(u1)   # same session -> expect same IP
+    call3 = _fetch_ip(u2)   # different session -> expect different IP
+    control = _fetch_ip(_PROXY_USER)
+
+    # Real Sofascore call through a session username (the 403/200 proof).
+    sofa: dict
+    try:
+        pu = f"http://{u1}:{_PROXY_PASS}@{_PROXY_HOST}:{port}"
+        s = cf.Session(impersonate="chrome124")
+        s.headers.update(HEADERS)
+        s.proxies = {"http": pu, "https": pu}
+        r = s.get(f"{BASE_URL}/search/all", params={"q": "sinner"}, timeout=12)
+        n = None
+        try:
+            n = len(r.json().get("results", []))
+        except Exception:
+            pass
+        sofa = {"status": r.status_code, "n_results": n, "body_snippet": (r.text or "")[:160]}
+    except Exception as e:
+        sofa = {"error": f"{type(e).__name__}: {str(e)[:150]}"}
+
+    return {
+        "session_username_format": f"{_PROXY_USER}-session-<id>",
+        "port_tested": port,
+        "session1_call1": call1,
+        "session1_call2_same_id": call2,
+        "session2_diff_id": call3,
+        "plain_username_control": control,
+        "sticky_ok": bool(call1.get("ip") and call1.get("ip") == call2.get("ip")),
+        "rotation_ok": bool(call1.get("ip") and call3.get("ip")
+                            and call1.get("ip") != call3.get("ip")),
+        "sofascore_via_session": sofa,
+    }
+
+
 def _get(url: str, params: dict = None) -> dict:
     global _proxy_session, _search_blocked, _search_blocked_ts
 
