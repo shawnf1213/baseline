@@ -514,7 +514,8 @@ def player_embed(name, surface, data) -> discord.Embed:
     ta = data.get("ta_stats") or {}
     hand = _hand_label(ta.get("handedness"))
 
-    desc = f"**{arch}**  ·  {surface} court"
+    surf_label = "All surfaces" if surface == "All" else f"{surface} court"
+    desc = f"**{arch}**  ·  {surf_label}"
     if hand:
         desc += f"  ·  ✋ {hand}"
 
@@ -560,6 +561,14 @@ PROP_CHOICES = [
     app_commands.Choice(name="Total Games", value="Total Games"),
 ]
 SURFACE_CHOICES = [
+    app_commands.Choice(name="Hard", value="Hard"),
+    app_commands.Choice(name="Clay", value="Clay"),
+    app_commands.Choice(name="Grass", value="Grass"),
+]
+# /player can also show overall (all-surface) stats. "All" only makes sense here,
+# not for /prop or /h2h which must be tied to a specific surface.
+PLAYER_SURFACE_CHOICES = [
+    app_commands.Choice(name="All (overall)", value="All"),
     app_commands.Choice(name="Hard", value="Hard"),
     app_commands.Choice(name="Clay", value="Clay"),
     app_commands.Choice(name="Grass", value="Grass"),
@@ -779,8 +788,8 @@ async def h2h(
 
 # ── /player ───────────────────────────────────────────────────────────────────
 @client.tree.command(name="player", description="Player profile, surface stats and recent form")
-@app_commands.describe(name="Player — type to search", surface="Surface to show stats for")
-@app_commands.choices(surface=SURFACE_CHOICES)
+@app_commands.describe(name="Player — type to search", surface="Surface (or All for overall)")
+@app_commands.choices(surface=PLAYER_SURFACE_CHOICES)
 @app_commands.autocomplete(name=player_autocomplete)
 async def player_cmd(
     interaction: discord.Interaction,
