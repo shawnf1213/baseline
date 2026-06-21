@@ -880,6 +880,11 @@ def _agg_split(all_m: list, stat_m: list) -> dict:
         if _conv_vals:
             result["bp_converted"] = round(sum(_conv_vals) / len(_conv_vals), 4)
 
+    # Strength-of-schedule: average competition tier across ALL matches (win_rate
+    # uses all_m, so schedule strength should too). Feeds the win-prob estimator.
+    _tiers = [m["comp_tier"] for m in all_m if m.get("comp_tier") is not None]
+    result["competition_level"] = round(sum(_tiers) / len(_tiers), 3) if _tiers else None
+
     return result
 
 
@@ -895,6 +900,27 @@ def _build_score_str(event: dict) -> str:
         else:
             break
     return " ".join(sets)
+
+
+def _competition_tier(event: dict) -> float:
+    """Strength-of-field proxy from the Sofascore category/tournament name.
+    Tour (ATP/WTA) = 3, Challenger = 2, ITF / qualifying / exhibition = 1.
+    Higher = tougher opponents. Used so a player's stats earned against weak
+    fields (Challengers) aren't treated as equal to stats vs the main tour."""
+    tournament = event.get("tournament") or {}
+    category   = tournament.get("category") or {}
+    blob = " ".join([
+        (category.get("slug") or ""),
+        (category.get("name") or ""),
+        (tournament.get("name") or ""),
+    ]).lower()
+    if any(x in blob for x in ("itf", "exhibition", "liga pro", "utr", "futures")):
+        return 1.0
+    if "challenger" in blob:
+        return 2.0
+    if "atp" in blob or "wta" in blob or "grand slam" in blob:
+        return 3.0
+    return 2.5   # unknown — neutral, between challenger and tour
 
 
 def _calc_total_match_games(event: dict) -> Optional[int]:
@@ -1662,6 +1688,7 @@ def get_player_stats_by_surface(player_id, tour: str = "ATP") -> dict:
             "opponent_name":     opp.get("name", "Unknown"),
             "score":             score_str,
             "total_match_games": tmg,
+            "comp_tier":         _competition_tier(event),   # strength-of-field
         }
 
         # Diagnostic: log first match's raw score/side fields to confirm win detection

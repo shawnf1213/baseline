@@ -766,6 +766,8 @@ async def prop_calculate(req: PropRequest):
             _s["overall_second_serve_pts_won"]        = _at.get("second_serve_pts_won")
             _s["overall_return_first_serve_pts_won"]  = _at.get("return_first_serve_pts_won")
             _s["overall_return_second_serve_pts_won"] = _at.get("return_second_serve_pts_won")
+            # Strength-of-schedule: career competition tier (ATP=3 / Chall=2 / ITF=1)
+            _s["competition_level"]                   = _at.get("competition_level")
 
         # ── Match format: strict rules, logged for every request ────────────────
         # ATP Grand Slams only → best_of_5. ALL WTA events → best_of_3 (no

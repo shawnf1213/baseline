@@ -942,41 +942,41 @@ def _estimate_win_prob(p_stats: dict, o_stats: dict,
     """
     import math
 
-    # On a thin surface sample, surface-specific stats are noise (e.g. 3 grass
-    # matches → 36% 2nd-serve-won, or 0 matches → missing). Blend each surface
-    # stat toward the player's ALL-SURFACE value by sample size, so thin-surface
-    # noise can't invert the matchup. Full surface weight at >=15 matches.
     def _surf_n(stats: dict) -> float:
         return stats.get("surface_matches") or stats.get("matches_played") or 0
 
-    def _blend(surf_v, overall_v, n: float, default: float) -> float:
-        if surf_v is None:
-            return overall_v if overall_v is not None else default
-        if overall_v is None:
-            return surf_v
-        w = min(1.0, n / 15.0)
-        return surf_v * w + overall_v * (1.0 - w)
+    # ── Win rate: all-surface base + a CAPPED surface adjustment ──
+    # Overall win rate is the reliable signal. A surface specialist (Golubic on
+    # grass) gets a bonus, but it's capped (±8pp) and scaled by sample size so a
+    # 90%-on-9-matches surface record can't dominate the estimate.
+    def _eff_wr(stats: dict) -> float:
+        ov = stats.get("overall_win_rate")
+        sf = stats.get("win_rate")
+        base = ov if ov is not None else (sf if sf is not None else 50.0)
+        if sf is not None and ov is not None:
+            w = min(1.0, _surf_n(stats) / 15.0)
+            base += max(-8.0, min(8.0, (sf - ov) * w))
+        return base
 
-    p_n, o_n = _surf_n(p_stats), _surf_n(o_stats)
-
-    # ── Component 1: win-rate difference (surface shrunk toward overall) ──
-    p_wr = _blend(p_stats.get("win_rate"), p_stats.get("overall_win_rate"), p_n, 50.0)
-    o_wr = _blend(o_stats.get("win_rate"), o_stats.get("overall_win_rate"), o_n, 50.0)
-    wr_share = max(5.0, min(95.0, 50.0 + (p_wr - o_wr) * 1.5))
-
-    # ── Component 2: serve + return dominance (also surface-shrunk-to-overall) ──
-    # Win rate is only ONE factor; underlying serve/return quality is a strong,
-    # less-noisy skill signal. Each component blends the surface value toward the
-    # player's overall so a corrupted thin-surface serve/return can't dominate.
-    def _dominance(s: dict, n: float):
-        s1 = _blend(s.get("first_serve_pts_won"),  s.get("overall_first_serve_pts_won"),  n, 68.0)
-        s2 = _blend(s.get("second_serve_pts_won"), s.get("overall_second_serve_pts_won"), n, 50.0)
-        r1 = _blend(s.get("return_first_serve_pts_won"),  s.get("overall_return_first_serve_pts_won"),  n, 32.0)
-        r2 = _blend(s.get("return_second_serve_pts_won"), s.get("overall_return_second_serve_pts_won"), n, 52.0)
+    # ── Serve + return dominance (all-surface — less noisy than thin surface) ──
+    def _dominance(s: dict):
+        s1 = _safe(s.get("overall_first_serve_pts_won"),  _safe(s.get("first_serve_pts_won"),  68.0))
+        s2 = _safe(s.get("overall_second_serve_pts_won"), _safe(s.get("second_serve_pts_won"), 50.0))
+        r1 = _safe(s.get("overall_return_first_serve_pts_won"),  _safe(s.get("return_first_serve_pts_won"),  32.0))
+        r2 = _safe(s.get("overall_return_second_serve_pts_won"), _safe(s.get("return_second_serve_pts_won"), 52.0))
         return (s1 + s2) / 2.0 + (r1 + r2) / 2.0
 
-    dom_diff  = _dominance(p_stats, p_n) - _dominance(o_stats, o_n)
-    dom_share = max(5.0, min(95.0, 50.0 + dom_diff * 1.6))
+    # ── Strength-of-schedule: tier gap (ATP 3 / Challenger 2 / ITF 1) ──
+    # Stats earned vs a weak field are worth less. Adds directly to the win-rate
+    # and dominance gaps. Zero effect when both players play the same tier
+    # (Sinner/Sonego, Golubic/Navarro) — only bites cross-tier matchups.
+    sos = (p_stats.get("competition_level") or 2.5) - (o_stats.get("competition_level") or 2.5)
+
+    wr_diff  = (_eff_wr(p_stats) - _eff_wr(o_stats)) + sos * 18.0
+    wr_share = max(5.0, min(95.0, 50.0 + wr_diff * 1.2))
+
+    dom_diff  = (_dominance(p_stats) - _dominance(o_stats)) + sos * 12.0
+    dom_share = max(5.0, min(95.0, 50.0 + dom_diff * 1.4))
 
     have_rank = p_rank and o_rank and p_rank > 0 and o_rank > 0
     components = []
