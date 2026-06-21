@@ -755,6 +755,11 @@ async def prop_calculate(req: PropRequest):
         _p2_recent_matches = p2_data.get(f"{req.surface}_matches", []) or []
         p1_s["form"] = [{"won": bool(m.get("won"))} for m in _p1_recent_matches[:10]]
         p2_s["form"] = [{"won": bool(m.get("won"))} for m in _p2_recent_matches[:10]]
+        # All-surface win rate — the win-prob estimator shrinks a thin-sample
+        # surface win rate toward this so e.g. a 3-grass-match record can't invert
+        # the matchup.
+        p1_s["overall_win_rate"] = (p1_data.get("All_all_time_stats") or {}).get("win_rate")
+        p2_s["overall_win_rate"] = (p2_data.get("All_all_time_stats") or {}).get("win_rate")
 
         # ── Match format: strict rules, logged for every request ────────────────
         # ATP Grand Slams only → best_of_5. ALL WTA events → best_of_3 (no

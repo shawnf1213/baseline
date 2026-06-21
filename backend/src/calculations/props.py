@@ -941,30 +941,60 @@ def _estimate_win_prob(p_stats: dict, o_stats: dict,
     Falls back to higher win-rate weight when rank is missing.
     """
     import math
-    p_wr = _safe(p_stats.get("win_rate"), 50.0)
-    o_wr = _safe(o_stats.get("win_rate"), 50.0)
+
+    # Surface win rate on a thin sample is noise (e.g. 3 grass matches, or 0).
+    # Shrink it toward the player's all-surface win rate by sample size so a
+    # tiny-sample surface record can't invert the matchup. Full surface weight
+    # at >=15 surface matches; below that, lean on the overall record.
+    def _eff_wr(stats: dict) -> float:
+        surf_wr    = stats.get("win_rate")
+        overall_wr = stats.get("overall_win_rate")
+        surf_n     = stats.get("surface_matches") or stats.get("matches_played") or 0
+        if surf_wr is None:
+            return overall_wr if overall_wr is not None else 50.0
+        if overall_wr is None:
+            return surf_wr
+        w = min(1.0, surf_n / 15.0)
+        return surf_wr * w + overall_wr * (1.0 - w)
+
+    p_wr = _eff_wr(p_stats)
+    o_wr = _eff_wr(o_stats)
 
     # ── Component 1: surface win-rate difference ──
     # k=1.5 means a 20pp gap (e.g. 75% vs 55%) → 30pp share lead.
     wr_share = 50.0 + (p_wr - o_wr) * 1.5
     wr_share = max(5.0, min(95.0, wr_share))
 
+    # ── Component 2: serve + return dominance ──
+    # Win rate is only ONE factor. Underlying serve/return quality is a strong,
+    # less-noisy skill signal — a player can have a poor thin-sample surface win
+    # rate yet clearly better serve+return numbers. Dominance = average serve
+    # points won + average return points won; the player with the higher combined
+    # figure wins more points and, usually, more matches.
+    def _dominance(s: dict):
+        srv = (_safe(s.get("first_serve_pts_won"), 68.0)
+               + _safe(s.get("second_serve_pts_won"), 50.0)) / 2.0
+        ret = (_safe(s.get("return_first_serve_pts_won"), 32.0)
+               + _safe(s.get("return_second_serve_pts_won"), 52.0)) / 2.0
+        return srv + ret
+
+    dom_diff  = _dominance(p_stats) - _dominance(o_stats)
+    dom_share = max(5.0, min(95.0, 50.0 + dom_diff * 1.6))
+
     have_rank = p_rank and o_rank and p_rank > 0 and o_rank > 0
     components = []
 
     if have_rank:
-        # Ranking is the strongest signal — weight it more than win rate.
-        components.append((wr_share, 0.35))
-
-        # log10 rank diff: #1 vs #20 → log10(20) - log10(1) = 1.30
-        # k=18 means that diff is worth a 23pp share lead.
         rank_diff = math.log10(o_rank) - math.log10(p_rank)
-        rank_share = 50.0 + rank_diff * 18.0
-        rank_share = max(5.0, min(95.0, rank_share))
-        components.append((rank_share, 0.55))
+        rank_share = max(5.0, min(95.0, 50.0 + rank_diff * 18.0))
+        components.append((rank_share, 0.40))
+        components.append((wr_share,   0.25))
+        components.append((dom_share,  0.25))
     else:
-        # No ranking — lean heavily on win rate
-        components.append((wr_share, 0.90))
+        # No ranking — split between win rate and serve/return dominance so a
+        # single thin-sample surface win rate can't dominate the estimate.
+        components.append((wr_share,   0.50))
+        components.append((dom_share,  0.50))
 
     # ── Component 3: recent form (last-10 W/L list) ──
     def _form_pct(form):
