@@ -755,11 +755,17 @@ async def prop_calculate(req: PropRequest):
         _p2_recent_matches = p2_data.get(f"{req.surface}_matches", []) or []
         p1_s["form"] = [{"won": bool(m.get("won"))} for m in _p1_recent_matches[:10]]
         p2_s["form"] = [{"won": bool(m.get("won"))} for m in _p2_recent_matches[:10]]
-        # All-surface win rate — the win-prob estimator shrinks a thin-sample
-        # surface win rate toward this so e.g. a 3-grass-match record can't invert
-        # the matchup.
-        p1_s["overall_win_rate"] = (p1_data.get("All_all_time_stats") or {}).get("win_rate")
-        p2_s["overall_win_rate"] = (p2_data.get("All_all_time_stats") or {}).get("win_rate")
+        # All-surface stats — the win-prob estimator shrinks thin-sample surface
+        # win rate AND serve/return toward these, so a few (or zero) grass matches
+        # with corrupted stats can't invert the matchup.
+        _p1_at = p1_data.get("All_all_time_stats") or {}
+        _p2_at = p2_data.get("All_all_time_stats") or {}
+        for _s, _at in ((p1_s, _p1_at), (p2_s, _p2_at)):
+            _s["overall_win_rate"]                    = _at.get("win_rate")
+            _s["overall_first_serve_pts_won"]         = _at.get("first_serve_pts_won")
+            _s["overall_second_serve_pts_won"]        = _at.get("second_serve_pts_won")
+            _s["overall_return_first_serve_pts_won"]  = _at.get("return_first_serve_pts_won")
+            _s["overall_return_second_serve_pts_won"] = _at.get("return_second_serve_pts_won")
 
         # ── Match format: strict rules, logged for every request ────────────────
         # ATP Grand Slams only → best_of_5. ALL WTA events → best_of_3 (no

@@ -942,43 +942,40 @@ def _estimate_win_prob(p_stats: dict, o_stats: dict,
     """
     import math
 
-    # Surface win rate on a thin sample is noise (e.g. 3 grass matches, or 0).
-    # Shrink it toward the player's all-surface win rate by sample size so a
-    # tiny-sample surface record can't invert the matchup. Full surface weight
-    # at >=15 surface matches; below that, lean on the overall record.
-    def _eff_wr(stats: dict) -> float:
-        surf_wr    = stats.get("win_rate")
-        overall_wr = stats.get("overall_win_rate")
-        surf_n     = stats.get("surface_matches") or stats.get("matches_played") or 0
-        if surf_wr is None:
-            return overall_wr if overall_wr is not None else 50.0
-        if overall_wr is None:
-            return surf_wr
-        w = min(1.0, surf_n / 15.0)
-        return surf_wr * w + overall_wr * (1.0 - w)
+    # On a thin surface sample, surface-specific stats are noise (e.g. 3 grass
+    # matches → 36% 2nd-serve-won, or 0 matches → missing). Blend each surface
+    # stat toward the player's ALL-SURFACE value by sample size, so thin-surface
+    # noise can't invert the matchup. Full surface weight at >=15 matches.
+    def _surf_n(stats: dict) -> float:
+        return stats.get("surface_matches") or stats.get("matches_played") or 0
 
-    p_wr = _eff_wr(p_stats)
-    o_wr = _eff_wr(o_stats)
+    def _blend(surf_v, overall_v, n: float, default: float) -> float:
+        if surf_v is None:
+            return overall_v if overall_v is not None else default
+        if overall_v is None:
+            return surf_v
+        w = min(1.0, n / 15.0)
+        return surf_v * w + overall_v * (1.0 - w)
 
-    # ── Component 1: surface win-rate difference ──
-    # k=1.5 means a 20pp gap (e.g. 75% vs 55%) → 30pp share lead.
-    wr_share = 50.0 + (p_wr - o_wr) * 1.5
-    wr_share = max(5.0, min(95.0, wr_share))
+    p_n, o_n = _surf_n(p_stats), _surf_n(o_stats)
 
-    # ── Component 2: serve + return dominance ──
-    # Win rate is only ONE factor. Underlying serve/return quality is a strong,
-    # less-noisy skill signal — a player can have a poor thin-sample surface win
-    # rate yet clearly better serve+return numbers. Dominance = average serve
-    # points won + average return points won; the player with the higher combined
-    # figure wins more points and, usually, more matches.
-    def _dominance(s: dict):
-        srv = (_safe(s.get("first_serve_pts_won"), 68.0)
-               + _safe(s.get("second_serve_pts_won"), 50.0)) / 2.0
-        ret = (_safe(s.get("return_first_serve_pts_won"), 32.0)
-               + _safe(s.get("return_second_serve_pts_won"), 52.0)) / 2.0
-        return srv + ret
+    # ── Component 1: win-rate difference (surface shrunk toward overall) ──
+    p_wr = _blend(p_stats.get("win_rate"), p_stats.get("overall_win_rate"), p_n, 50.0)
+    o_wr = _blend(o_stats.get("win_rate"), o_stats.get("overall_win_rate"), o_n, 50.0)
+    wr_share = max(5.0, min(95.0, 50.0 + (p_wr - o_wr) * 1.5))
 
-    dom_diff  = _dominance(p_stats) - _dominance(o_stats)
+    # ── Component 2: serve + return dominance (also surface-shrunk-to-overall) ──
+    # Win rate is only ONE factor; underlying serve/return quality is a strong,
+    # less-noisy skill signal. Each component blends the surface value toward the
+    # player's overall so a corrupted thin-surface serve/return can't dominate.
+    def _dominance(s: dict, n: float):
+        s1 = _blend(s.get("first_serve_pts_won"),  s.get("overall_first_serve_pts_won"),  n, 68.0)
+        s2 = _blend(s.get("second_serve_pts_won"), s.get("overall_second_serve_pts_won"), n, 50.0)
+        r1 = _blend(s.get("return_first_serve_pts_won"),  s.get("overall_return_first_serve_pts_won"),  n, 32.0)
+        r2 = _blend(s.get("return_second_serve_pts_won"), s.get("overall_return_second_serve_pts_won"), n, 52.0)
+        return (s1 + s2) / 2.0 + (r1 + r2) / 2.0
+
+    dom_diff  = _dominance(p_stats, p_n) - _dominance(o_stats, o_n)
     dom_share = max(5.0, min(95.0, 50.0 + dom_diff * 1.6))
 
     have_rank = p_rank and o_rank and p_rank > 0 and o_rank > 0
