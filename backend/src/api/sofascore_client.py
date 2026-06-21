@@ -916,6 +916,10 @@ def _competition_tier(event: dict) -> float:
     ]).lower()
     if any(x in blob for x in ("itf", "exhibition", "liga pro", "utr", "futures")):
         return 1.0
+    # Qualifying (even at an ATP/WTA event) is played against Challenger-level
+    # opposition, so it must NOT count as full main-tour strength.
+    if "qualif" in blob:
+        return 2.0
     if "challenger" in blob:
         return 2.0
     if "atp" in blob or "wta" in blob or "grand slam" in blob:
