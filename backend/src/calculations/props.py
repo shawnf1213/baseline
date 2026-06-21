@@ -972,10 +972,10 @@ def _estimate_win_prob(p_stats: dict, o_stats: dict,
     # (Sinner/Sonego, Golubic/Navarro) — only bites cross-tier matchups.
     sos = (p_stats.get("competition_level") or 2.5) - (o_stats.get("competition_level") or 2.5)
 
-    wr_diff  = (_eff_wr(p_stats) - _eff_wr(o_stats)) + sos * 18.0
+    wr_diff  = (_eff_wr(p_stats) - _eff_wr(o_stats)) + sos * 26.0
     wr_share = max(5.0, min(95.0, 50.0 + wr_diff * 1.2))
 
-    dom_diff  = (_dominance(p_stats) - _dominance(o_stats)) + sos * 12.0
+    dom_diff  = (_dominance(p_stats) - _dominance(o_stats)) + sos * 18.0
     dom_share = max(5.0, min(95.0, 50.0 + dom_diff * 1.4))
 
     have_rank = p_rank and o_rank and p_rank > 0 and o_rank > 0
