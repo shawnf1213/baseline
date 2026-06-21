@@ -760,14 +760,24 @@ async def prop_calculate(req: PropRequest):
         # with corrupted stats can't invert the matchup.
         _p1_at = p1_data.get("All_all_time_stats") or {}
         _p2_at = p2_data.get("All_all_time_stats") or {}
-        for _s, _at in ((p1_s, _p1_at), (p2_s, _p2_at)):
+        # Strength-of-schedule must reflect the player's CURRENT level, not their
+        # whole career (a player who climbed through ITF/Challenger has a low
+        # career tier but plays ATP now). Use the last-20-matches tier, falling
+        # back to the 3-year then all-time average.
+        _p1_recent = p1_data.get("All_last_20") or {}
+        _p2_recent = p2_data.get("All_last_20") or {}
+        _p1_3yr = p1_data.get("All_recent_3yr_stats") or {}
+        _p2_3yr = p2_data.get("All_recent_3yr_stats") or {}
+        for _s, _at, _rec, _3y in ((p1_s, _p1_at, _p1_recent, _p1_3yr),
+                                   (p2_s, _p2_at, _p2_recent, _p2_3yr)):
             _s["overall_win_rate"]                    = _at.get("win_rate")
             _s["overall_first_serve_pts_won"]         = _at.get("first_serve_pts_won")
             _s["overall_second_serve_pts_won"]        = _at.get("second_serve_pts_won")
             _s["overall_return_first_serve_pts_won"]  = _at.get("return_first_serve_pts_won")
             _s["overall_return_second_serve_pts_won"] = _at.get("return_second_serve_pts_won")
-            # Strength-of-schedule: career competition tier (ATP=3 / Chall=2 / ITF=1)
-            _s["competition_level"]                   = _at.get("competition_level")
+            _s["competition_level"] = (_rec.get("competition_level")
+                                       or _3y.get("competition_level")
+                                       or _at.get("competition_level"))
 
         # ── Match format: strict rules, logged for every request ────────────────
         # ATP Grand Slams only → best_of_5. ALL WTA events → best_of_3 (no
