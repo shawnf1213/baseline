@@ -20,6 +20,16 @@ import string
 import time
 import logging
 import threading
+import unicodedata
+
+
+def _strip_accents(s: str) -> str:
+    """Fold diacritics so 'molcan' matches 'Molčan' (č), 'cilic' matches
+    'Čilić', etc. Used by search scoring so accented names aren't down-ranked."""
+    return "".join(
+        c for c in unicodedata.normalize("NFKD", s or "")
+        if not unicodedata.combining(c)
+    )
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Optional
@@ -1463,11 +1473,14 @@ def search_players(query: str, tour: str = "ATP") -> list:
         if words:
             logger.info("SEARCH_FALLBACK | words=%s entities_after=%d", words, len(entities))
 
-    # Score-based sort: exact last name=100, starts-with=80, contains=60, first-name=40
-    query_lower = query.strip().lower()
+    # Score-based sort: exact last name=100, starts-with=80, contains=60, first-name=40.
+    # Accent-insensitive: a query "molcan" must exact-match "Molčan" — otherwise
+    # the č broke the exact match and an unrelated "Molcan" outranked the real
+    # accented player.
+    query_lower = _strip_accents(query.strip().lower())
 
     def _score(e: dict) -> float:
-        name_parts = (e.get("name") or "").lower().split()
+        name_parts = [_strip_accents(p) for p in (e.get("name") or "").lower().split()]
         last = name_parts[-1] if name_parts else ""
         rank_penalty = (e.get("ranking") or e.get("teamRank") or 500) / 1000
         if last == query_lower:
