@@ -400,16 +400,37 @@ def prop_embed(player, opponent, prop_type, surface, court_display, line, data) 
     court_line = f"**{surface}** · {court_display}"
     if cpi is not None:
         court_line += f" · ST {cpi:g}" + (f" ({tier})" if tier else "")
-    # Match format — show it clearly so the user can confirm BO5 vs BO3 was
-    # applied (matters for ATP Grand Slam main draw vs qualifying).
     fmt_label = data.get("match_format_label") or "Best of 3"
 
-    # Verdict-led description — the takeaway reads instantly.
+    # ── Win probability + expected sets (context first — who's favored and how
+    # long the match runs — before the projection itself). Star the favorite. ──
+    p1wp, p2wp = data.get("p1_win_prob"), data.get("p2_win_prob")
+    win_line = ""
+    if p1wp is not None and p2wp is not None:
+        pn, on = _last_name(player), _last_name(opponent)
+        if p1wp >= p2wp:
+            win_line = f"⭐ **{pn} {p1wp:.0f}%**  —  {on} {p2wp:.0f}%"
+        else:
+            win_line = f"{pn} {p1wp:.0f}%  —  ⭐ **{on} {p2wp:.0f}%**"
+    exp_sets = data.get("expected_sets")
+    sets_line = ""
+    if isinstance(exp_sets, (int, float)):
+        comp = data.get("competitiveness")
+        sets_line = (f"Expected Sets **{exp_sets:.1f}** · {fmt_label}"
+                     + (f" · {comp}" if comp else ""))
+
+    top = ""
+    if win_line:
+        top += win_line + "\n"
+    if sets_line:
+        top += sets_line + "\n"
+
+    # Verdict — context (win prob / sets) first, then the projection takeaway.
     verdict = (
-        f"{dot} **{lean} {line:g}**  ·  Projection **{_num(proj)}**  ·  Edge **{edge_txt}**{star}\n"
-        f"Confidence  {_conf_bar(conf)}\n"
+        top +
         f"{court_line}\n"
-        f"📋 {fmt_label}"
+        f"{dot} **{lean} {line:g}**  ·  Projection **{_num(proj)}**  ·  Edge **{edge_txt}**{star}\n"
+        f"Confidence  {_conf_bar(conf)}"
     )
 
     e = discord.Embed(
@@ -424,18 +445,9 @@ def prop_embed(player, opponent, prop_type, surface, court_display, line, data) 
     e.add_field(name=f"🎾 {player}", value=p_block[:1024], inline=True)
     e.add_field(name=f"🎾 {opponent}", value=o_block[:1024], inline=True)
 
-    # Matchup context line.
-    mp = []
-    if data.get("p1_win_prob") is not None and data.get("p2_win_prob") is not None:
-        mp.append(f"Win prob: {_last_name(player)} {data['p1_win_prob']:.0f}% / "
-                  f"{_last_name(opponent)} {data['p2_win_prob']:.0f}%")
-    if data.get("competitiveness"):
-        es = data.get("expected_sets")
-        mp.append(data["competitiveness"] + (f" · ~{es:.1f} sets" if isinstance(es, (int, float)) else ""))
+    # Handedness edge note (win prob + expected sets now live at the top).
     if data.get("handedness_edge"):
-        mp.append("Handedness edge ✓")
-    if mp:
-        e.add_field(name="Matchup", value="\n".join(mp), inline=False)
+        e.add_field(name="Matchup", value="Handedness edge ✓", inline=False)
 
     e.add_field(
         name=f"Last 5 ({surface}) — {_last_name(player)}",
