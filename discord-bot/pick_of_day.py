@@ -115,6 +115,11 @@ def _parse_board(board: dict) -> list:
         prop_type = PROP_MAP.get((attr.get("stat_type") or "").strip().lower())
         if not prop_type:
             continue
+        # Only ever use the STANDARD line. PrizePicks also lists "demon" (boosted,
+        # higher line) and "goblin" (reduced, lower line) variants — never pick
+        # those, and never fabricate a line when no standard one exists; just skip.
+        if (attr.get("odds_type") or "standard").lower() != "standard":
+            continue
         line = attr.get("line_score")
         if line is None:
             continue
@@ -230,18 +235,24 @@ async def generate_pick():
             log.info("POD: no eligible tennis props on the board")
             return None
 
-        # One evaluation per (player, prop) — the projection is line-independent,
-        # so different PrizePicks lines for the same matchup+prop would just
-        # repeat the same backend call. Cap the number evaluated for responsiveness.
-        seen, uniq = set(), []
+        # One evaluation per (player, prop) — the projection is line-independent.
+        seen, by_type = set(), {}
         for pr in props:
             k = (_norm(pr["player"]), pr["prop_type"])
             if k in seen:
                 continue
             seen.add(k)
-            uniq.append(pr)
-            if len(uniq) >= MAX_PROPS:
-                break
+            by_type.setdefault(pr["prop_type"], []).append(pr)
+
+        # Balance the capped sample across ALL prop types (round-robin) so Total
+        # Games doesn't crowd out Aces / Double Faults / Break Points Won.
+        uniq, lists = [], [v for v in by_type.values()]
+        while len(uniq) < MAX_PROPS and any(lists):
+            for lst in lists:
+                if lst:
+                    uniq.append(lst.pop(0))
+                    if len(uniq) >= MAX_PROPS:
+                        break
 
         sem = asyncio.Semaphore(MAX_CONCURRENT)
         results = await asyncio.gather(*[_evaluate(pr, sem) for pr in uniq],
