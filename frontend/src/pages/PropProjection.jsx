@@ -229,6 +229,8 @@ export default function PropProjection({ tour }) {
   const [p2, setP2] = useState(null)
   const [surface,  setSurface]  = useState('Hard')
   const [court,    setCourt]    = useState('None')
+  // ATP Grand Slam qualifying rounds are best-of-3 (main draw is best-of-5).
+  const [qualifying, setQualifying] = useState(false)
   const [propType, setPropType] = useState('Aces')
   const [propLine, setPropLine] = useState(0)
   const [result,   setResult]   = useState(null)
@@ -252,6 +254,11 @@ export default function PropProjection({ tour }) {
 
   useEffect(() => { setCourt('None') }, [tour])
 
+  // ATP Grand Slam → the Main Draw / Qualifying toggle is relevant (BO5 vs BO3).
+  const ATP_GRAND_SLAMS = ['Australian Open', 'US Open', 'Roland Garros', 'Wimbledon']
+  const isAtpGs = tourKey === 'ATP' && ATP_GRAND_SLAMS.includes(court)
+  useEffect(() => { if (!isAtpGs) setQualifying(false) }, [isAtpGs])
+
   const currentPair = p1 && p2 ? `${p1.id}-${p2.id}` : null
   const hasNewPair  = currentPair !== ranFor
 
@@ -265,6 +272,8 @@ export default function PropProjection({ tour }) {
       opponent_name: p2.name || '',
       tour, surface, court: court === 'None' ? '' : court,
       prop_type: propType, prop_line: propLine,
+      // ATP Grand Slam qualifying = best-of-3 (only applies for an ATP GS court)
+      qualifying: isAtpGs ? qualifying : false,
       // Rankings feed the expected-sets win-prob estimator
       player_rank:   p1.currentRank || null,
       opponent_rank: p2.currentRank || null,
@@ -285,7 +294,7 @@ export default function PropProjection({ tour }) {
     } catch(e) {
       setError(e.response?.data?.detail || e.message)
     } finally { setLoading(false) }
-  }, [p1, p2, tour, surface, court, propType, propLine, currentPair])
+  }, [p1, p2, tour, surface, court, propType, propLine, qualifying, isAtpGs, currentPair])
 
   const statKey = PROP_STAT_KEY[propType]
   const hasProjection = result != null && result.model_projection != null
@@ -450,6 +459,42 @@ export default function PropProjection({ tour }) {
               </div>
             )
           })()}
+
+          {/* ATP Grand Slam — Main Draw (BO5) vs Qualifying (BO3) toggle.
+              Only shown for an ATP Grand Slam court (WTA GS and non-GS are
+              always BO3, so no toggle there). Defaults to Main Draw. */}
+          {isAtpGs && (
+            <div style={{ marginTop: 12 }}>
+              <div style={{
+                fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 800,
+                fontSize: 11, letterSpacing: 2, textTransform: 'uppercase',
+                color: 'var(--muted)', marginBottom: 6,
+              }}>Round</div>
+              <div style={{ display: 'inline-flex', gap: 8 }}>
+                {[
+                  { label: 'Main Draw · BO5', q: false },
+                  { label: 'Qualifying · BO3', q: true },
+                ].map(opt => {
+                  const active = qualifying === opt.q
+                  return (
+                    <button
+                      key={opt.label}
+                      onClick={() => { setQualifying(opt.q); setResult(null) }}
+                      style={{
+                        padding: '8px 16px', borderRadius: 999, cursor: 'pointer',
+                        fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 800,
+                        fontSize: 12, letterSpacing: 1,
+                        background: active ? 'rgba(0, 230, 118, 0.15)' : 'rgba(14, 24, 18, 0.55)',
+                        border: `1px solid ${active ? 'var(--green-bright)' : 'var(--card-border)'}`,
+                        color: active ? 'var(--green-bright)' : 'var(--muted)',
+                        outline: 'none', transition: 'all 150ms ease',
+                      }}
+                    >{opt.label}</button>
+                  )
+                })}
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
@@ -814,6 +859,18 @@ export default function PropProjection({ tour }) {
                       fontFamily: '"Barlow Condensed", sans-serif',
                       fontWeight: 700, fontSize: 11, color: '#ff9f43',
                     }}>{result.court_yoy_note}</span>
+                  )}
+                  {/* Match format — confirm BO5 (ATP GS main draw) vs BO3 was applied */}
+                  {result.match_format_label && (
+                    <span style={{
+                      padding: '3px 10px', borderRadius: 999,
+                      background: result.match_format === 'best_of_5'
+                        ? 'rgba(170, 102, 255, 0.15)' : 'rgba(107, 159, 255, 0.12)',
+                      border: `1px solid ${result.match_format === 'best_of_5' ? '#aa66ff55' : '#6b9fff44'}`,
+                      color: result.match_format === 'best_of_5' ? '#aa66ff' : 'var(--hard-blue)',
+                      fontFamily: '"Barlow Condensed", sans-serif',
+                      fontWeight: 800, fontSize: 11, letterSpacing: 0.5,
+                    }}>📋 {result.match_format_label}</span>
                   )}
                   <span style={{
                     marginLeft: 'auto', fontSize: 9, color: 'rgba(255,255,255,0.2)',
