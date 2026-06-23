@@ -400,12 +400,16 @@ def prop_embed(player, opponent, prop_type, surface, court_display, line, data) 
     court_line = f"**{surface}** · {court_display}"
     if cpi is not None:
         court_line += f" · ST {cpi:g}" + (f" ({tier})" if tier else "")
+    # Match format — show it clearly so the user can confirm BO5 vs BO3 was
+    # applied (matters for ATP Grand Slam main draw vs qualifying).
+    fmt_label = data.get("match_format_label") or "Best of 3"
 
     # Verdict-led description — the takeaway reads instantly.
     verdict = (
         f"{dot} **{lean} {line:g}**  ·  Projection **{_num(proj)}**  ·  Edge **{edge_txt}**{star}\n"
         f"Confidence  {_conf_bar(conf)}\n"
-        f"{court_line}"
+        f"{court_line}\n"
+        f"📋 {fmt_label}"
     )
 
     e = discord.Embed(
@@ -585,6 +589,13 @@ SURFACE_CHOICES = [
     app_commands.Choice(name="Clay", value="Clay"),
     app_commands.Choice(name="Grass", value="Grass"),
 ]
+# ATP Grand Slam round — only meaningful for an ATP Grand Slam court. Main draw
+# is best-of-5, qualifying is best-of-3. Ignored for WTA / non-GS / non-ATP.
+ROUND_CHOICES = [
+    app_commands.Choice(name="Main Draw (best of 5)", value="main"),
+    app_commands.Choice(name="Qualifying (best of 3)", value="qualifying"),
+]
+ATP_GRAND_SLAMS = {"Australian Open", "US Open", "Roland Garros", "Wimbledon"}
 # /player can also show overall (all-surface) stats. "All" only makes sense here,
 # not for /prop or /h2h which must be tied to a specific surface.
 PLAYER_SURFACE_CHOICES = [
@@ -671,8 +682,9 @@ async def court_autocomplete(interaction: discord.Interaction, current: str):
     surface="Court surface",
     court="Tournament (optional) — choose one matching the surface, or None for generic",
     line="The book line (e.g. 1.5)",
+    gs_round="ATP Grand Slam only: Main Draw (best of 5) or Qualifying (best of 3). Default Main Draw.",
 )
-@app_commands.choices(prop_type=PROP_CHOICES, surface=SURFACE_CHOICES)
+@app_commands.choices(prop_type=PROP_CHOICES, surface=SURFACE_CHOICES, gs_round=ROUND_CHOICES)
 @app_commands.autocomplete(player=player_autocomplete, opponent=player_autocomplete, court=court_autocomplete)
 @app_commands.checks.cooldown(1, 5.0, key=lambda i: i.user.id)
 async def prop(
@@ -683,6 +695,7 @@ async def prop(
     surface: app_commands.Choice[str],
     line: float,
     court: str = "None",
+    gs_round: app_commands.Choice[str] = None,
 ):
     await interaction.response.defer(thinking=True, ephemeral=True)
     log.info("CMD /prop | user=%s | %s vs %s | %s | %s | court=%s | line=%s",
@@ -723,12 +736,18 @@ async def prop(
         court_key = "" if court == "None" else backend_court_key(court)
         court_display = "Generic surface" if court == "None" else court
 
+        # ATP Grand Slam qualifying = best-of-3. Only applies for an ATP Grand
+        # Slam court; ignored otherwise (default Main Draw / best-of-5 at a GS).
+        is_atp_gs  = (court in ATP_GRAND_SLAMS) and (tour == "ATP")
+        qualifying = is_atp_gs and gs_round is not None and gs_round.value == "qualifying"
+
         payload = {
             "player_id": p_id, "opponent_id": o_id,
             "player_name": p_name, "opponent_name": o_name,
             "tour": tour, "surface": surface_val,
             "court": court_key, "prop_type": prop_type.value,
             "prop_line": float(line),
+            "qualifying": qualifying,
         }
 
         try:
@@ -868,7 +887,9 @@ async def help_cmd(interaction: discord.Interaction):
             "• **court** *(optional)* — pick the tournament; the autocomplete only "
             "shows events matching your chosen surface (e.g. Grass → Wimbledon, Halle). "
             "Leave as None for the generic surface speed.\n"
-            "• **line** — the book line, e.g. 11.5"
+            "• **line** — the book line, e.g. 11.5\n"
+            "• **gs_round** *(ATP Grand Slam only)* — Main Draw (best of 5) or "
+            "Qualifying (best of 3). Defaults to Main Draw."
         ),
         inline=False,
     )
