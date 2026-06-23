@@ -14,12 +14,16 @@ Slash commands: /prop  /h2h  /player  /help
 import os
 import re
 import asyncio
+import datetime
 import logging
 
 import requests
 import discord
 from discord import app_commands
+from discord.ext import tasks
 from dotenv import load_dotenv
+
+import pick_of_day  # isolated Pick of the Day feature (own failure handling)
 
 load_dotenv()
 
@@ -920,6 +924,83 @@ async def help_cmd(interaction: discord.Interaction):
     await interaction.response.send_message(embed=e, ephemeral=True)
 
 
+# ── Pick of the Day ─────────────────────────────────────────────────────────────
+MEMBER_ROLE_NAME = os.getenv("BASELINE_MEMBER_ROLE", "Baseline Member")
+POD_CHANNEL_ID = int(os.getenv("POD_CHANNEL_ID", "0") or "0")
+POD_HOUR_UTC = int(os.getenv("POD_HOUR_UTC", "15") or "15")
+MSG_NO_PICK = (
+    "No Pick of the Day right now — nothing on the board cleared the "
+    "confidence threshold (or the board is unavailable). Try again later."
+)
+
+
+def _member_gate(interaction: discord.Interaction) -> bool:
+    """Soft Baseline Member gate: if the guild HAS the role, require it;
+    if the role doesn't exist (or it's a DM), allow — never hard-breaks."""
+    guild = interaction.guild
+    if guild is None:
+        return True
+    role = discord.utils.get(guild.roles, name=MEMBER_ROLE_NAME)
+    if role is None:
+        return True
+    member = interaction.user
+    return isinstance(member, discord.Member) and role in member.roles
+
+
+def pick_embed(pick: dict) -> discord.Embed:
+    """Build the Pick of the Day embed, reusing the /prop embed style."""
+    e = prop_embed(
+        pick["player"], pick["opponent"], pick["prop_type"],
+        pick["surface"], "PrizePicks line", pick["line"], pick["data"],
+    )
+    e.set_author(name="🏆 Pick of the Day")
+    return e
+
+
+@client.tree.command(name="pickoftheday", description="Today's single best Baseline edge from the PrizePicks board")
+async def pickoftheday(interaction: discord.Interaction):
+    await interaction.response.defer(thinking=True)
+    log.info("CMD /pickoftheday | user=%s", interaction.user.id)
+    try:
+        if not _member_gate(interaction):
+            await _send_error(interaction,
+                f"This command is for **{MEMBER_ROLE_NAME}** members.")
+            return
+        pick = await pick_of_day.generate_pick()
+        if not pick:
+            await interaction.followup.send(embed=error_embed(MSG_NO_PICK), ephemeral=True)
+            return
+        await interaction.followup.send(embed=pick_embed(pick))
+    except Exception:  # noqa: BLE001 — isolate: never crash or affect other commands
+        log.exception("UNHANDLED /pickoftheday error")
+        await _send_error(interaction, "Unable to generate a pick right now.")
+
+
+# ── Optional daily auto-post (STEP 6) ────────────────────────────────────────────
+@tasks.loop(time=datetime.time(hour=POD_HOUR_UTC, minute=0, tzinfo=datetime.timezone.utc))
+async def daily_pick_of_day():
+    if not POD_CHANNEL_ID:
+        return
+    try:
+        channel = client.get_channel(POD_CHANNEL_ID)
+        if channel is None:
+            log.warning("POD daily: channel %s not found", POD_CHANNEL_ID)
+            return
+        pick = await pick_of_day.generate_pick()
+        if not pick:
+            log.info("POD daily: no pick cleared the threshold — skipping post")
+            return
+        await channel.send(embed=pick_embed(pick))
+        log.info("POD daily: posted pick %s %s", pick["player"], pick["prop_type"])
+    except Exception:  # noqa: BLE001
+        log.exception("POD daily auto-post failed")
+
+
+@daily_pick_of_day.before_loop
+async def _before_daily_pick():
+    await client.wait_until_ready()
+
+
 # ── Global error handling — nothing should ever crash the process ───────────────
 @client.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
@@ -964,6 +1045,15 @@ async def on_ready():
                      len(client.guilds))
         except Exception:
             log.exception("guild command sync failed")
+    # Start the optional daily Pick of the Day auto-post (only if a channel is
+    # configured). Guarded so it never starts twice or breaks startup.
+    if POD_CHANNEL_ID and not daily_pick_of_day.is_running():
+        try:
+            daily_pick_of_day.start()
+            log.info("Pick of the Day daily auto-post scheduled at %02d:00 UTC -> channel %s",
+                     POD_HOUR_UTC, POD_CHANNEL_ID)
+        except Exception:
+            log.exception("failed to start daily Pick of the Day loop")
     log.info("Logged in as %s (id=%s) — API=%s", client.user, client.user.id, API_BASE)
 
 
