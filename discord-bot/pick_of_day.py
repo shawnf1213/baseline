@@ -33,13 +33,16 @@ BROWSER_UA = (
 )
 
 # PrizePicks stat_type (lowercased) -> Baseline prop_type. Only these four.
+# NOTE: PrizePicks has BOTH "Total Games" (the match total, what Baseline's
+# "Total Games" projects) and "Total Games Won" (a single player's games won) —
+# these are different stats. Baseline has no per-player games-won model, so
+# "Total Games Won" is deliberately NOT mapped and is skipped.
 PROP_MAP = {
     "aces":             "Aces",
     "double faults":    "Double Faults",
     "double fault":     "Double Faults",
     "break points won": "Break Points Won",
-    "total games":      "Total Games",
-    "total games won":  "Total Games",
+    "total games":      "Total Games",   # match total only — NOT "Total Games Won"
 }
 
 MIN_CONFIDENCE  = 60      # don't force a weak pick below this
