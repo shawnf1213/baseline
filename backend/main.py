@@ -174,6 +174,9 @@ class PropRequest(BaseModel):
     # Optional: client may send rankings to improve win-prob estimation
     player_rank: Optional[int] = None
     opponent_rank: Optional[int] = None
+    # ATP Grand Slam qualifying rounds are best-of-3 (main draw is best-of-5).
+    # Only meaningful for ATP Grand Slam courts; ignored otherwise.
+    qualifying: bool = False
 
 
 class H2HRequest(BaseModel):
@@ -780,13 +783,22 @@ async def prop_calculate(req: PropRequest):
                                        or _at.get("competition_level"))
 
         # ── Match format: strict rules, logged for every request ────────────────
-        # ATP Grand Slams only → best_of_5. ALL WTA events → best_of_3 (no
-        # exceptions; WTA Grand Slams are NEVER BO5).  All ATP non-GS → best_of_3.
-        _is_atp_gs = court_for_calc in GRAND_SLAMS and req.tour == "ATP"
-        match_fmt  = "best_of_5" if _is_atp_gs else "best_of_3"
+        # ATP Grand Slam MAIN DRAW → best_of_5. ATP Grand Slam QUALIFYING →
+        # best_of_3. ALL WTA events → best_of_3 (no exceptions; WTA Grand Slams
+        # are NEVER BO5). All ATP non-GS → best_of_3.
+        _is_atp_gs   = court_for_calc in GRAND_SLAMS and req.tour == "ATP"
+        _qualifying  = bool(req.qualifying) and _is_atp_gs
+        match_fmt    = "best_of_5" if (_is_atp_gs and not _qualifying) else "best_of_3"
+        # Human-readable label for the UI/bot so the format is confirmable.
+        if _is_atp_gs:
+            _round_lbl = "Qualifying" if _qualifying else "Main Draw"
+            _fmt_lbl = "Best of 5" if match_fmt == "best_of_5" else "Best of 3"
+            match_format_label = f"{court_for_calc} — {_round_lbl} — {_fmt_lbl}"
+        else:
+            match_format_label = "Best of 3"
         logger.info(
-            "MATCH_FORMAT | court=%s | tour=%s | is_atp_gs=%s | match_fmt=%s",
-            court_for_calc or "generic", req.tour, _is_atp_gs, match_fmt,
+            "MATCH_FORMAT | court=%s | tour=%s | is_atp_gs=%s | qualifying=%s | match_fmt=%s",
+            court_for_calc or "generic", req.tour, _is_atp_gs, _qualifying, match_fmt,
         )
 
         # ── Total data-availability guard (ISSUE 1) ─────────────────────────
@@ -857,6 +869,7 @@ async def prop_calculate(req: PropRequest):
             result = project_total_games(
                 p1_s, p2_s, req.surface, h2h_games_avg,
                 tour=req.tour, court=court_for_calc,
+                match_format=match_fmt,
                 player_ta=player_ta_props, opponent_ta=opponent_ta_props,
             )
         else:  # Break Points Won
@@ -1150,6 +1163,9 @@ async def prop_calculate(req: PropRequest):
             "p1_ret":                result.get("p1_ret"),
             "p2_srv":                result.get("p2_srv"),
             "match_format":          result.get("match_format", match_fmt),
+            "match_format_label":    match_format_label,
+            "is_atp_gs":             _is_atp_gs,
+            "qualifying":            _qualifying,
             # ── Expected-sets engine (all prop types expose these) ────────────
             "expected_sets":         result.get("expected_sets"),
             "competitiveness":       result.get("competitiveness"),

@@ -219,7 +219,8 @@ def project_aces(
       L5 — surface/court CPR (court pace rating)
     """
     # ── Expected sets — driven by matchup competitiveness, not flat BO5 ──
-    is_bo5 = _is_bo5_match(tour, court)
+    # match_format is the source of truth (respects the ATP GS Qualifying toggle).
+    is_bo5 = (match_format == "best_of_5")
     _p_form = player_stats.get("form") or player_stats.get("recent_form")
     _o_form = opponent_stats.get("form") or opponent_stats.get("recent_form")
     p_prob, o_prob, win_prob_gap = _estimate_win_prob(
@@ -483,7 +484,7 @@ def project_double_faults(
     Scale by (expected_sets / avg_historical_sets).
     """
     # ── Expected sets — driven by matchup competitiveness ──
-    is_bo5 = _is_bo5_match(tour, court) or match_format == "best_of_5"
+    is_bo5 = (match_format == "best_of_5")   # respects ATP GS Qualifying toggle
     p_prob, o_prob, win_prob_gap = _estimate_win_prob(
         player_stats, opponent_stats,
         p_rank=player_stats.get("rank") or player_stats.get("currentRank"),
@@ -1089,6 +1090,7 @@ def project_total_games(
     court: str = "",
     player_ta: dict = None,
     opponent_ta: dict = None,
+    match_format: str = "best_of_3",
 ) -> dict:
     ta_used = False
     ta_surface_matches = 0
@@ -1143,7 +1145,9 @@ def project_total_games(
     # ── Expected sets — driven by win-probability gap, not flat tour avg ──
     p1_wr = _safe(player_stats.get("win_rate"), 50.0)
     p2_wr = _safe(opponent_stats.get("win_rate"), 50.0)
-    is_bo5 = _is_bo5_match(tour, court)
+    # match_format is the source of truth (set by the caller; respects the ATP
+    # Grand Slam Qualifying toggle), NOT the court alone.
+    is_bo5 = (match_format == "best_of_5")
     p_prob, o_prob, win_prob_gap = _estimate_win_prob(
         player_stats, opponent_stats,
         p_rank=player_stats.get("rank") or player_stats.get("currentRank"),
