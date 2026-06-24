@@ -243,6 +243,19 @@ async def _evaluate(prop: dict, sem: asyncio.Semaphore):
         }
 
 
+def _passes_quality(pk: dict) -> bool:
+    """Quality gate for a candidate pick:
+      • Total Games (a match total, independent of who wins) → confidence > 90%.
+      • Any player-specific prop (Aces / Double Faults / Break Points Won) →
+        there must be a clear favorite, i.e. one player's win chance > 85%.
+    Win probabilities are on a 0–100 scale.
+    """
+    if pk.get("prop_type") == "Total Games":
+        return (pk.get("confidence") or 0) > 90
+    wps = [w for w in (pk.get("p1_win_prob"), pk.get("p2_win_prob")) if isinstance(w, (int, float))]
+    return bool(wps) and max(wps) > 85
+
+
 # ── STEPS 4 + 7: select the best picks, fully isolated ──────────────────────
 async def generate_picks(n: int = 3):
     """Return up to ``n`` picks ranked best-first (list, possibly empty). Each
@@ -277,7 +290,8 @@ async def generate_picks(n: int = 3):
         results = await asyncio.gather(*[_evaluate(pr, sem) for pr in uniq],
                                        return_exceptions=True)
         picks = [r for r in results
-                 if isinstance(r, dict) and (r.get("confidence") or 0) >= MIN_CONFIDENCE]
+                 if isinstance(r, dict) and (r.get("confidence") or 0) >= MIN_CONFIDENCE
+                 and _passes_quality(r)]
         log.info("POD: evaluated=%d eligible=%d", len(uniq), len(picks))
         picks.sort(key=lambda x: x["score"], reverse=True)
         # Keep only each player's single best-scoring play so the top N are N
