@@ -153,9 +153,17 @@ def _parse_board(board: dict) -> list:
 
 
 # ── STEP 3: fuzzy match + projections (max 3 concurrent) ────────────────────
-async def _resolve(name: str):
+async def _resolve(name: str, tours: tuple = ("ATP", "WTA")):
     """Fuzzy-match a PrizePicks name to a Baseline player (>=0.8). Returns
-    (id, tour, name) or None. Searches both tours by last name."""
+    (id, tour, name) or None.
+
+    ``tours`` restricts the search — pass a single tour for an opponent so a
+    WTA player never resolves to a same-surname ATP player (and vice-versa),
+    since both halves of a tennis prop are always on the same tour.
+
+    Scoring weights the FULL-name similarity over the last-name match so that
+    e.g. 'Xinyu Wang' beats 'Aoran Wang' instead of every 'Wang' tying at 1.0.
+    """
     if not name:
         return None
     nnorm = _norm(name)
@@ -163,7 +171,7 @@ async def _resolve(name: str):
     last = parts[-1] if parts else nnorm
     query = last if len(last) >= 3 else nnorm
     candidates = []
-    for tour in ("ATP", "WTA"):
+    for tour in tours:
         try:
             res = await asyncio.to_thread(_get, "/api/search",
                                           {"query": query, "tour": tour}, SEARCH_TIMEOUT)
@@ -177,7 +185,9 @@ async def _resolve(name: str):
     for c in candidates:
         cn = _norm(c.get("name", ""))
         c_last = cn.split()[-1] if cn.split() else cn
-        score = max(_ratio(nnorm, cn), _ratio(last, c_last))
+        # Full name dominates; last-name agreement only breaks near-ties. This
+        # stops same-surname players from all tying at a perfect last-name 1.0.
+        score = 0.75 * _ratio(nnorm, cn) + 0.25 * _ratio(last, c_last)
         if score > best_score:
             best_score, best = score, c
     if best and best_score >= MATCH_THRESHOLD:
@@ -199,11 +209,18 @@ async def _evaluate(prop: dict, sem: asyncio.Semaphore):
     async with sem:
         try:
             p = await _resolve(prop["player"])
-            o = await _resolve(prop["opponent"]) if prop["opponent"] else None
-            if not p or not o:
-                log.info("POD skip (no match): %r vs %r", prop["player"], prop["opponent"])
+            if not p:
+                log.info("POD skip (no player match): %r", prop["player"])
                 return None
             p_id, tour, p_name = p
+            # Opponent is in the SAME match, so the SAME tour — restrict the
+            # search to avoid resolving a WTA player's opponent to a same-surname
+            # ATP player (e.g. 'Xinyu Wang' -> 'Aoran Wang').
+            o = await _resolve(prop["opponent"], tours=(tour,)) if prop["opponent"] else None
+            if not o:
+                log.info("POD skip (no opponent match): %r vs %r on %s",
+                         prop["player"], prop["opponent"], tour)
+                return None
             o_id, _, o_name = o
 
             # Real surface + tournament from the player's UPCOMING match (so we
