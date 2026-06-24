@@ -1948,7 +1948,8 @@ def get_player_next_match(player_id, tour: str = "ATP") -> dict:
 
     result: dict = {}
     try:
-        data = _get(f"{BASE_URL}/team/{pid}/events/next/0", fast=True)
+        data = _get(f"{BASE_URL}/team/{pid}/events/next/0")
+        result["_debug_keys"] = list(data.keys()) if isinstance(data, dict) else str(type(data))
         _raw = data.get("events", []) or []
         result["_debug_raw_count"] = len(_raw)
         if _raw:
