@@ -936,6 +936,11 @@ MSG_NO_PICK = (
     "No Pick of the Day right now — nothing on the board cleared the "
     "confidence threshold (or the board is unavailable). Try again later."
 )
+MSG_NO_PICK_DAILY = (
+    "No qualifying plays today — nothing on the board cleared our quality bar "
+    "(Total Games over 90% confidence, or a player prop with a 85%+ favorite). "
+    "We'd rather sit out than force a weak play. Check back tomorrow. 🎾"
+)
 
 
 def _member_gate(interaction: discord.Interaction) -> bool:
@@ -1019,7 +1024,10 @@ async def daily_pick_of_day():
             return
         picks = await pick_of_day.generate_picks(3)
         if not picks:
-            log.info("POD daily: no pick cleared the threshold — skipping post")
+            log.info("POD daily: no pick cleared the threshold — posting no-play notice")
+            no_play = discord.Embed(description=MSG_NO_PICK_DAILY, color=COLOR_NEUTRAL)
+            no_play.set_author(name="🏆 Pick of the Day")
+            await channel.send(embed=no_play)
             return
         await channel.send(embed=picks_embed(picks))
         log.info("POD daily: posted %d picks, #1 %s %s",
