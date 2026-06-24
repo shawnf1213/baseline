@@ -932,6 +932,11 @@ except Exception:  # pragma: no cover — fall back to a fixed EST offset
     POD_TZINFO = datetime.timezone(datetime.timedelta(hours=-5))
 POD_HOUR = int(os.getenv("POD_HOUR", "0") or "0")
 POD_MINUTE = int(os.getenv("POD_MINUTE", "0") or "0")
+# TEMPORARY verification flag: post once on startup so we can confirm the bot
+# auto-posts without waiting for midnight. Defaults ON for this test; turn off
+# (or set POD_POST_ON_START=0) once verified.
+POD_POST_ON_START = (os.getenv("POD_POST_ON_START", "1") or "1") not in ("0", "false", "False")
+_pod_startup_done = False
 MSG_NO_PICK = (
     "No Pick of the Day right now — nothing on the board cleared the "
     "confidence threshold (or the board is unavailable). Try again later."
@@ -1099,6 +1104,25 @@ async def on_ready():
                      POD_HOUR, POD_MINUTE, POD_TZINFO, POD_CHANNEL_ID)
         except Exception:
             log.exception("failed to start daily Pick of the Day loop")
+
+    # TEMPORARY: one-shot post on startup to verify the autonomous path end-to-end
+    # without waiting for midnight. Remove once confirmed (set POD_POST_ON_START off).
+    global _pod_startup_done
+    if POD_POST_ON_START and POD_CHANNEL_ID and not _pod_startup_done:
+        _pod_startup_done = True
+        ch = client.get_channel(POD_CHANNEL_ID)
+        if ch is None:
+            log.warning("POD startup test: channel %s not found / not visible to bot", POD_CHANNEL_ID)
+        else:
+            try:
+                status = await _post_pick_of_day(ch)
+                log.info("POD startup test post -> %s", status)
+            except discord.Forbidden:
+                log.error("POD startup test: missing Send Messages / Embed Links in channel %s",
+                          POD_CHANNEL_ID)
+            except Exception:
+                log.exception("POD startup test post failed")
+
     log.info("Logged in as %s (id=%s) — API=%s", client.user, client.user.id, API_BASE)
 
 
