@@ -46,7 +46,8 @@ PROP_MAP = {
 }
 
 MIN_CONFIDENCE  = 60      # don't force a weak pick below this
-MAX_CONCURRENT  = 2       # concurrent backend prop calcs (lower = less backend contention)
+MAX_CONCURRENT  = 1       # serialize backend calcs — the heavy prop calc 502s under
+                          # concurrent load; one-at-a-time also warms its cache
 MATCH_THRESHOLD = 0.80    # fuzzy name-match threshold
 MAX_PROPS       = 25      # cap evaluations so the command stays responsive
 MAX_LOOKAHEAD_HOURS = 24  # only pick matches that play within this many hours
@@ -55,7 +56,7 @@ TG_DF_MIN_CONF   = 90     # Total Games / Double Faults: confidence must EXCEED 
 
 SEARCH_TIMEOUT = 10
 CALC_TIMEOUT   = 90       # backend prop calc can be slow on a cold proxy cache
-CALC_RETRIES   = 2        # the first (timed-out) attempt warms the cache; retry lands fast
+CALC_RETRIES   = 3        # retry timeouts + 5xx; first try also warms the backend cache
 
 
 # ── small helpers ───────────────────────────────────────────────────────────
@@ -255,13 +256,22 @@ async def _evaluate(prop: dict, sem: asyncio.Semaphore):
                 try:
                     data = await asyncio.to_thread(_post, "/api/prop/calculate", payload, CALC_TIMEOUT)
                     break
-                except requests.exceptions.ReadTimeout:
-                    # The aborted attempt still warms the backend's player cache,
-                    # so a retry typically returns quickly. Last attempt re-raises.
+                except (requests.exceptions.Timeout,
+                        requests.exceptions.ConnectionError,
+                        requests.exceptions.HTTPError) as exc:
+                    # Retry transient failures only: timeouts, connection drops,
+                    # and 5xx (e.g. a 502 while the backend is busy/restarting).
+                    # A 4xx is a real client error — don't retry. The aborted
+                    # attempt also warms the backend's player cache, so retries
+                    # usually return quickly.
+                    status = getattr(getattr(exc, "response", None), "status_code", None)
+                    if status is not None and status < 500:
+                        raise
                     if attempt == CALC_RETRIES - 1:
                         raise
-                    log.info("POD calc timeout for %r — retrying (%d/%d)",
-                             p_name, attempt + 2, CALC_RETRIES)
+                    log.info("POD calc %s for %r — retrying (%d/%d)",
+                             status or type(exc).__name__, p_name, attempt + 2, CALC_RETRIES)
+                    await asyncio.sleep(2.0 * (attempt + 1))
         except Exception as exc:  # noqa: BLE001
             log.warning("POD evaluate failed for %r: %s", prop.get("player"), exc)
             return None
