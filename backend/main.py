@@ -88,6 +88,7 @@ from src.calculations.props import (
 from src.constants import (
     COURT_CPR, CPR_NEUTRAL, GENERIC_SURFACE_CPR,
     get_speed_tier, ST_PACE_PREVIOUS_YEAR, ST_YOY_THRESHOLD,
+    resolve_court_name,
 )
 from src.api.string_tension import lookup_pace_index
 
@@ -585,7 +586,10 @@ async def prop_calculate(req: PropRequest):
         h2h_games_avg    = h2h_stats.get("games_avg")
         h2h_surf_matches = h2h_summary.get("surface_matches", 0)
 
-        court_for_calc = "" if req.court in ("", "None") else req.court
+        # Canonicalize a free-form court/tournament name (e.g. Sofascore's
+        # "Bad Homburg, Germany") to a COURT_CPR key so the right ST Pace Index
+        # is used. Exact keys (website, /prop) pass through unchanged.
+        court_for_calc = "" if req.court in ("", "None") else resolve_court_name(req.court, req.tour)
 
         # ── ST Pace Index lookup — dynamic first, hardcoded fallback ─────────
         _fallback_cpr = COURT_CPR.get(court_for_calc,

@@ -245,10 +245,16 @@ async def _evaluate(prop: dict, sem: asyncio.Semaphore):
             surface = nm.get("surface") or _season_surface()
             tournament = nm.get("tournament") or None
 
+            # Pass the real tournament so the backend uses that court's ST Pace
+            # Index (e.g. Bad Homburg = 36, not the generic grass 34). Flag
+            # qualifying so a Grand Slam quallie stays best-of-3, not best-of-5.
+            is_qualifying = bool(tournament) and "qualif" in tournament.lower()
+
             payload = {
                 "player_id": p_id, "opponent_id": o_id,
                 "player_name": p_name, "opponent_name": o_name,
-                "tour": tour, "surface": surface, "court": "",
+                "tour": tour, "surface": surface,
+                "court": tournament or "", "qualifying": is_qualifying,
                 "prop_type": prop["prop_type"], "prop_line": prop["line"],
             }
             data = None

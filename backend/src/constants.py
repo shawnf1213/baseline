@@ -235,6 +235,52 @@ CPR_NEUTRAL = 35
 GENERIC_SURFACE_CPR   = {"Hard": 36, "Clay": 26, "Grass": 34}
 GENERIC_TIER_LABEL    = {"Hard": "Average", "Clay": "Slow", "Grass": "Average"}
 
+
+def _norm_court(s: str) -> str:
+    """Lowercase, accent-fold, drop ATP/WTA tour tags and punctuation."""
+    import re as _re
+    import unicodedata as _ud
+    s = "".join(c for c in _ud.normalize("NFKD", s or "") if not _ud.combining(c))
+    s = _re.sub(r"\b(atp|wta)\b", " ", s.lower())
+    return _re.sub(r"[^a-z0-9 ]", " ", s).strip()
+
+
+def resolve_court_name(raw: str, tour: str = "ATP") -> str:
+    """Map a free-form tournament name (e.g. Sofascore's 'Bad Homburg, Germany')
+    to a canonical COURT_CPR key (e.g. 'Bad Homburg WTA') so the right ST Pace
+    Index is used. Exact COURT_CPR keys pass straight through unchanged, so the
+    website and /prop (which already send canonical keys) are unaffected.
+
+    The city/core is taken from the part before the first comma, then matched
+    against COURT_CPR keys; when both an ATP and a WTA variant exist (e.g.
+    'Wimbledon' vs 'Wimbledon WTA'), the one matching ``tour`` is preferred.
+    Returns ``raw`` unchanged if nothing matches (downstream then uses the
+    generic surface default).
+    """
+    if not raw or raw in ("None",):
+        return ""
+    if raw in COURT_CPR:            # already canonical
+        return raw
+    core = _norm_court(raw.split(",")[0])
+    if not core:
+        return raw
+    is_wta = (tour or "").upper() == "WTA"
+    matches = []
+    for key in COURT_CPR:
+        kcore = _norm_court(key)
+        if kcore and (kcore == core or core.startswith(kcore + " ")
+                      or kcore.startswith(core + " ") or core == kcore):
+            matches.append(key)
+    if not matches:
+        return raw
+    wta_keys = [k for k in matches if k.strip().endswith("WTA")]
+    atp_keys = [k for k in matches if not k.strip().endswith("WTA")]
+    if is_wta and wta_keys:
+        return wta_keys[0]
+    if not is_wta and atp_keys:
+        return atp_keys[0]
+    return matches[0]
+
 ATP_TOUR_AVERAGES = {
     "ace_rate":                     10.0,
     "first_serve_pts_won":          75.0,
