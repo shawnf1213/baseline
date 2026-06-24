@@ -280,7 +280,16 @@ async def generate_picks(n: int = 3):
                  if isinstance(r, dict) and (r.get("confidence") or 0) >= MIN_CONFIDENCE]
         log.info("POD: evaluated=%d eligible=%d", len(uniq), len(picks))
         picks.sort(key=lambda x: x["score"], reverse=True)
-        return picks[:max(1, n)]
+        # Keep only each player's single best-scoring play so the top N are N
+        # different players (no same player twice for different props).
+        best_per_player, ordered = set(), []
+        for pk in picks:
+            key = _norm(pk["player"])
+            if key in best_per_player:
+                continue
+            best_per_player.add(key)
+            ordered.append(pk)
+        return ordered[:max(1, n)]
     except Exception as exc:  # noqa: BLE001 — total isolation
         log.exception("POD generate_picks failed: %s", exc)
         return []
