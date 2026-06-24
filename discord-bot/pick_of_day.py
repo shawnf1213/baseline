@@ -243,9 +243,10 @@ async def _evaluate(prop: dict, sem: asyncio.Semaphore):
         }
 
 
-# ── STEPS 4 + 7: select the single best pick, fully isolated ────────────────
-async def generate_pick():
-    """Return the best pick dict (or None). Never raises."""
+# ── STEPS 4 + 7: select the best picks, fully isolated ──────────────────────
+async def generate_picks(n: int = 3):
+    """Return up to ``n`` picks ranked best-first (list, possibly empty). Each
+    is the same dict shape as ``generate_pick``. Never raises."""
     try:
         board = await asyncio.to_thread(_fetch_board)
         props = _parse_board(board)
@@ -278,9 +279,15 @@ async def generate_pick():
         picks = [r for r in results
                  if isinstance(r, dict) and (r.get("confidence") or 0) >= MIN_CONFIDENCE]
         log.info("POD: evaluated=%d eligible=%d", len(uniq), len(picks))
-        if not picks:
-            return None
-        return max(picks, key=lambda x: x["score"])
+        picks.sort(key=lambda x: x["score"], reverse=True)
+        return picks[:max(1, n)]
     except Exception as exc:  # noqa: BLE001 — total isolation
-        log.exception("POD generate_pick failed: %s", exc)
-        return None
+        log.exception("POD generate_picks failed: %s", exc)
+        return []
+
+
+async def generate_pick():
+    """Return the single best pick dict (or None). Never raises.
+    Backwards-compatible wrapper around generate_picks()."""
+    picks = await generate_picks(1)
+    return picks[0] if picks else None

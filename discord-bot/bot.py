@@ -942,17 +942,41 @@ def _member_gate(interaction: discord.Interaction) -> bool:
     return isinstance(member, discord.Member) and role in member.roles
 
 
-def pick_embed(pick: dict) -> discord.Embed:
-    """Build the Pick of the Day embed, reusing the /prop embed style. The
-    tournament + surface come from the player's UPCOMING match on Sofascore
+def _pick_line(pick: dict) -> str:
+    """One compact line summarising a pick for the 'Also Today' list."""
+    proj = pick.get("projection")
+    lean = (pick.get("lean") or "").upper() or ("OVER" if (pick.get("edge") or 0) >= 0 else "UNDER")
+    arrow = "🔼" if lean == "OVER" else "🔽"
+    loc = pick.get("tournament") or f"{pick.get('surface','')} court"
+    proj_txt = f"proj {proj:.1f}" if isinstance(proj, (int, float)) else "proj —"
+    return (f"{arrow} **{pick['player']}** {lean} {pick['line']:g} {pick['prop_type']}  "
+            f"· {proj_txt} · {pick.get('confidence', 0):.0f}% conf\n"
+            f"┕ vs {pick['opponent']} · {loc}")
+
+
+def picks_embed(picks: list) -> discord.Embed:
+    """Build the Pick of the Day embed: #1 is the full /prop-style breakdown,
+    #2 and #3 (if any) are listed compactly as additional top plays. The
+    tournament + surface come from each player's UPCOMING match on Sofascore
     (PrizePicks doesn't provide them)."""
-    court_display = pick.get("tournament") or f"{pick['surface']} court"
+    top = picks[0]
+    court_display = top.get("tournament") or f"{top['surface']} court"
     e = prop_embed(
-        pick["player"], pick["opponent"], pick["prop_type"],
-        pick["surface"], court_display, pick["line"], pick["data"],
+        top["player"], top["opponent"], top["prop_type"],
+        top["surface"], court_display, top["line"], top["data"],
     )
     e.set_author(name="🏆 Pick of the Day")
+    extra = picks[1:3]
+    if extra:
+        labels = ["🥈 #2", "🥉 #3"]
+        body = "\n\n".join(f"{labels[i]}  {_pick_line(p)}" for i, p in enumerate(extra))
+        e.add_field(name="📋 Also Today — Top Plays", value=body, inline=False)
     return e
+
+
+def pick_embed(pick: dict) -> discord.Embed:
+    """Single-pick embed (kept for compatibility)."""
+    return picks_embed([pick])
 
 
 @client.tree.command(name="pickoftheday", description="Today's single best Baseline edge from the PrizePicks board")
@@ -964,11 +988,11 @@ async def pickoftheday(interaction: discord.Interaction):
             await _send_error(interaction,
                 f"This command is for **{MEMBER_ROLE_NAME}** members.")
             return
-        pick = await pick_of_day.generate_pick()
-        if not pick:
+        picks = await pick_of_day.generate_picks(3)
+        if not picks:
             await interaction.followup.send(embed=error_embed(MSG_NO_PICK), ephemeral=True)
             return
-        await interaction.followup.send(embed=pick_embed(pick))
+        await interaction.followup.send(embed=picks_embed(picks))
     except Exception:  # noqa: BLE001 — isolate: never crash or affect other commands
         log.exception("UNHANDLED /pickoftheday error")
         await _send_error(interaction, "Unable to generate a pick right now.")
@@ -984,12 +1008,13 @@ async def daily_pick_of_day():
         if channel is None:
             log.warning("POD daily: channel %s not found", POD_CHANNEL_ID)
             return
-        pick = await pick_of_day.generate_pick()
-        if not pick:
+        picks = await pick_of_day.generate_picks(3)
+        if not picks:
             log.info("POD daily: no pick cleared the threshold — skipping post")
             return
-        await channel.send(embed=pick_embed(pick))
-        log.info("POD daily: posted pick %s %s", pick["player"], pick["prop_type"])
+        await channel.send(embed=picks_embed(picks))
+        log.info("POD daily: posted %d picks, #1 %s %s",
+                 len(picks), picks[0]["player"], picks[0]["prop_type"])
     except Exception:  # noqa: BLE001
         log.exception("POD daily auto-post failed")
 
