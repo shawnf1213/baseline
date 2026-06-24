@@ -1949,9 +1949,20 @@ def get_player_next_match(player_id, tour: str = "ATP") -> dict:
     result: dict = {}
     try:
         data = _get(f"{BASE_URL}/team/{pid}/events/next/0", fast=True)
+        _raw = data.get("events", []) or []
+        result["_debug_raw_count"] = len(_raw)
+        if _raw:
+            _e0 = _raw[0]
+            result["_debug_first"] = {
+                "tournament": (_e0.get("tournament") or {}).get("name"),
+                "ts": _e0.get("startTimestamp"),
+                "status": (_e0.get("status") or {}).get("type"),
+                "home": (_e0.get("homeTeam") or {}).get("name"),
+                "away": (_e0.get("awayTeam") or {}).get("name"),
+            }
         now = time.time()
         upcoming = []
-        for e in (data.get("events", []) or []):
+        for e in _raw:
             ts = e.get("startTimestamp", 0) or 0
             if ts < now:
                 continue
