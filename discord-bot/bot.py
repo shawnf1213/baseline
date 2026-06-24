@@ -922,7 +922,16 @@ async def help_cmd(interaction: discord.Interaction):
 # ── Pick of the Day ─────────────────────────────────────────────────────────────
 MEMBER_ROLE_NAME = os.getenv("BASELINE_MEMBER_ROLE", "Baseline Member")
 POD_CHANNEL_ID = int(os.getenv("POD_CHANNEL_ID", "0") or "0")
-POD_HOUR_UTC = int(os.getenv("POD_HOUR_UTC", "15") or "15")
+# Daily auto-post local time. Defaults to midnight (00:00) US Eastern, which
+# auto-handles EST/EDT via the zoneinfo database (no manual DST adjustment).
+# Override POD_TZ (IANA name) and POD_HOUR/POD_MINUTE if needed.
+try:
+    from zoneinfo import ZoneInfo
+    POD_TZINFO = ZoneInfo(os.getenv("POD_TZ", "America/New_York"))
+except Exception:  # pragma: no cover — fall back to a fixed EST offset
+    POD_TZINFO = datetime.timezone(datetime.timedelta(hours=-5))
+POD_HOUR = int(os.getenv("POD_HOUR", "0") or "0")
+POD_MINUTE = int(os.getenv("POD_MINUTE", "0") or "0")
 MSG_NO_PICK = (
     "No Pick of the Day right now — nothing on the board cleared the "
     "confidence threshold (or the board is unavailable). Try again later."
@@ -999,7 +1008,7 @@ async def pickoftheday(interaction: discord.Interaction):
 
 
 # ── Optional daily auto-post (STEP 6) ────────────────────────────────────────────
-@tasks.loop(time=datetime.time(hour=POD_HOUR_UTC, minute=0, tzinfo=datetime.timezone.utc))
+@tasks.loop(time=datetime.time(hour=POD_HOUR, minute=POD_MINUTE, tzinfo=POD_TZINFO))
 async def daily_pick_of_day():
     if not POD_CHANNEL_ID:
         return
@@ -1073,8 +1082,8 @@ async def on_ready():
     if POD_CHANNEL_ID and not daily_pick_of_day.is_running():
         try:
             daily_pick_of_day.start()
-            log.info("Pick of the Day daily auto-post scheduled at %02d:00 UTC -> channel %s",
-                     POD_HOUR_UTC, POD_CHANNEL_ID)
+            log.info("Pick of the Day daily auto-post scheduled at %02d:%02d %s -> channel %s",
+                     POD_HOUR, POD_MINUTE, POD_TZINFO, POD_CHANNEL_ID)
         except Exception:
             log.exception("failed to start daily Pick of the Day loop")
     log.info("Logged in as %s (id=%s) — API=%s", client.user, client.user.id, API_BASE)
