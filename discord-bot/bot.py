@@ -930,12 +930,12 @@ try:
     POD_TZINFO = ZoneInfo(os.getenv("POD_TZ", "America/New_York"))
 except Exception:  # pragma: no cover — fall back to a fixed EST offset
     POD_TZINFO = datetime.timezone(datetime.timedelta(hours=-5))
-POD_HOUR = int(os.getenv("POD_HOUR", "0") or "0")
-# TEMPORARY: 12:30 AM ET for a live scheduled-fire test. Revert to "0" for
-# clean midnight once confirmed.
-POD_MINUTE = int(os.getenv("POD_MINUTE", "30") or "30")
-# TEMPORARY verification flag: post once on startup. Disabled now that we're
-# testing the scheduled loop firing live at 12:30.
+# Trigger at 11:50 PM ET, not midnight: the serialized generation run takes
+# ~10 min, so starting early lands the post in #potd right around 12:00 AM.
+# (Adjust POD_HOUR/POD_MINUTE if run time drifts as the board/tournaments change.)
+POD_HOUR = int(os.getenv("POD_HOUR", "23") or "23")
+POD_MINUTE = int(os.getenv("POD_MINUTE", "50") or "50")
+# Optional one-shot post on startup for verifying a deploy (off by default).
 POD_POST_ON_START = (os.getenv("POD_POST_ON_START", "0") or "0") not in ("0", "false", "False")
 _pod_startup_done = False
 MSG_NO_PICK = (
