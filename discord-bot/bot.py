@@ -938,8 +938,8 @@ MSG_NO_PICK = (
 )
 MSG_NO_PICK_DAILY = (
     "No qualifying plays today — nothing on the board cleared our quality bar "
-    "(Total Games over 90% confidence, or a player prop with a 85%+ favorite). "
-    "We'd rather sit out than force a weak play. Check back tomorrow. 🎾"
+    "(Aces / Break Points at 65%+ confidence, Total Games / Double Faults at "
+    "90%+). We'd rather sit out than force a weak play. Check back tomorrow. 🎾"
 )
 
 

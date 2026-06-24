@@ -50,6 +50,8 @@ MAX_CONCURRENT  = 3       # concurrent backend prop calcs
 MATCH_THRESHOLD = 0.80    # fuzzy name-match threshold
 MAX_PROPS       = 25      # cap evaluations so the command stays responsive
 MAX_LOOKAHEAD_HOURS = 24  # only pick matches that play within this many hours
+ACES_BP_MIN_CONF = 65     # Aces / Break Points Won: minimum confidence to use
+TG_DF_MIN_CONF   = 90     # Total Games / Double Faults: confidence must EXCEED this
 
 SEARCH_TIMEOUT = 10
 CALC_TIMEOUT   = 60
@@ -272,20 +274,14 @@ async def _evaluate(prop: dict, sem: asyncio.Semaphore):
 
 
 def _passes_quality(pk: dict) -> bool:
-    """Quality gate for a candidate pick:
-      • Total Games (a match total, independent of who wins) → confidence > 90%.
-      • Any player-specific prop (Aces / Double Faults / Break Points Won) →
-        confidence > 90% OR a clear favorite (one player's win chance > 85%).
-        A high-confidence projection stands on its own even in an even matchup.
-    Win probabilities are on a 0–100 scale.
+    """Quality gate for a candidate pick, by prop type:
+      • Aces / Break Points Won → confidence >= 65% (our most trusted props).
+      • Total Games / Double Faults → confidence > 90%.
     """
     conf = pk.get("confidence") or 0
-    if pk.get("prop_type") == "Total Games":
-        return conf > 90
-    if conf > 90:
-        return True
-    wps = [w for w in (pk.get("p1_win_prob"), pk.get("p2_win_prob")) if isinstance(w, (int, float))]
-    return bool(wps) and max(wps) > 85
+    if pk.get("prop_type") in ("Aces", "Break Points Won"):
+        return conf >= ACES_BP_MIN_CONF
+    return conf > TG_DF_MIN_CONF
 
 
 # ── STEPS 4 + 7: select the best picks, fully isolated ──────────────────────
