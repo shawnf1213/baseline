@@ -46,7 +46,7 @@ PROP_MAP = {
 }
 
 MIN_CONFIDENCE  = 60      # don't force a weak pick below this
-MAX_CONCURRENT  = 3       # concurrent backend prop calcs
+MAX_CONCURRENT  = 2       # concurrent backend prop calcs (lower = less backend contention)
 MATCH_THRESHOLD = 0.80    # fuzzy name-match threshold
 MAX_PROPS       = 25      # cap evaluations so the command stays responsive
 MAX_LOOKAHEAD_HOURS = 24  # only pick matches that play within this many hours
@@ -54,7 +54,8 @@ ACES_BP_MIN_CONF = 65     # Aces / Break Points Won: minimum confidence to use
 TG_DF_MIN_CONF   = 90     # Total Games / Double Faults: confidence must EXCEED this
 
 SEARCH_TIMEOUT = 10
-CALC_TIMEOUT   = 60
+CALC_TIMEOUT   = 90       # backend prop calc can be slow on a cold proxy cache
+CALC_RETRIES   = 2        # the first (timed-out) attempt warms the cache; retry lands fast
 
 
 # ── small helpers ───────────────────────────────────────────────────────────
@@ -249,7 +250,18 @@ async def _evaluate(prop: dict, sem: asyncio.Semaphore):
                 "tour": tour, "surface": surface, "court": "",
                 "prop_type": prop["prop_type"], "prop_line": prop["line"],
             }
-            data = await asyncio.to_thread(_post, "/api/prop/calculate", payload, CALC_TIMEOUT)
+            data = None
+            for attempt in range(CALC_RETRIES):
+                try:
+                    data = await asyncio.to_thread(_post, "/api/prop/calculate", payload, CALC_TIMEOUT)
+                    break
+                except requests.exceptions.ReadTimeout:
+                    # The aborted attempt still warms the backend's player cache,
+                    # so a retry typically returns quickly. Last attempt re-raises.
+                    if attempt == CALC_RETRIES - 1:
+                        raise
+                    log.info("POD calc timeout for %r — retrying (%d/%d)",
+                             p_name, attempt + 2, CALC_RETRIES)
         except Exception as exc:  # noqa: BLE001
             log.warning("POD evaluate failed for %r: %s", prop.get("player"), exc)
             return None
