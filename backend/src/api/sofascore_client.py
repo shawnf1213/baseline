@@ -1948,55 +1948,32 @@ def get_player_next_match(player_id, tour: str = "ATP") -> dict:
 
     result: dict = {}
     try:
-        _new_session(force_port=True)
-        for _name, _url in (
-            ("next", f"{BASE_URL}/team/{pid}/events/next/0"),
-            ("near", f"{BASE_URL}/team/{pid}/near-events"),
-        ):
-            _p = probe_request(_url)
-            result[f"_dbg_{_name}_status"] = _p.get("status")
-            result[f"_dbg_{_name}_body"] = (_p.get("body_snippet") or _p.get("error") or "")[:300]
-        data = {}
-        _raw = data.get("events", []) or []
-        result["_debug_raw_count"] = len(_raw)
-        if _raw:
-            _e0 = _raw[0]
-            result["_debug_first"] = {
-                "tournament": (_e0.get("tournament") or {}).get("name"),
-                "ts": _e0.get("startTimestamp"),
-                "status": (_e0.get("status") or {}).get("type"),
-                "home": (_e0.get("homeTeam") or {}).get("name"),
-                "away": (_e0.get("awayTeam") or {}).get("name"),
-            }
+        # team/{id}/events/next/0 404s for tennis players whose upcoming match
+        # isn't yet in the team "next" feed, but near-events returns it reliably
+        # as `nextEvent` (alongside the most recent `previousEvent`).
+        data = _get(f"{BASE_URL}/team/{pid}/near-events")
+        ev = (data or {}).get("nextEvent") or {}
         now = time.time()
-        upcoming = []
-        for e in _raw:
-            ts = e.get("startTimestamp", 0) or 0
-            if ts < now:
-                continue
-            ht = e.get("homeTeam", {}).get("name", "")
-            at = e.get("awayTeam", {}).get("name", "")
-            if "/" in ht or "/" in at:   # doubles
-                continue
-            upcoming.append(e)
-        upcoming.sort(key=lambda e: e.get("startTimestamp", 0) or 0)
-        if upcoming:
-            ev = upcoming[0]
-            home_id = ev.get("homeTeam", {}).get("id")
-            side = "home" if home_id == pid else "away"
-            opp = ev.get("awayTeam" if side == "home" else "homeTeam", {})
+        ts = ev.get("startTimestamp", 0) or 0
+        ht = (ev.get("homeTeam") or {}).get("name", "")
+        at = (ev.get("awayTeam") or {}).get("name", "")
+        is_doubles = "/" in ht or "/" in at
+        if ev and ts >= now - 6 * 3600 and not is_doubles:
+            home_id = (ev.get("homeTeam") or {}).get("id")
+            opp = ev.get("awayTeam" if home_id == pid else "homeTeam", {}) or {}
             result = {
-                "tournament": ev.get("tournament", {}).get("name", ""),
+                "tournament": (ev.get("tournament") or {}).get("name", ""),
                 "surface": _infer_surface_from_event(ev),
                 "opponent_name": opp.get("name", ""),
                 "opponent_id": opp.get("id"),
-                "start_timestamp": ev.get("startTimestamp"),
+                "start_timestamp": ts,
             }
     except Exception as exc:  # noqa: BLE001
         logger.warning("next-match fetch failed for pid=%s: %s", pid, exc)
         result = {}
 
-    st.session_state[cache_key] = result
+    if result:
+        st.session_state[cache_key] = result
     return result
 
 
