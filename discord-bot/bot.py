@@ -1014,8 +1014,8 @@ async def pickoftheday(interaction: discord.Interaction):
 
 # ── Optional daily auto-post (STEP 6) ────────────────────────────────────────────
 async def _post_pick_of_day(channel) -> str:
-    """Generate and post the top-3 Pick of the Day to ``channel``. Shared by the
-    daily loop and the /potdtest command. Returns a short status string."""
+    """Generate and post the top-3 Pick of the Day to ``channel``. Returns a
+    short status string."""
     picks = await pick_of_day.generate_picks(3)
     if not picks:
         no_play = discord.Embed(description=MSG_NO_PICK_DAILY, color=COLOR_NEUTRAL)
@@ -1039,44 +1039,6 @@ async def daily_pick_of_day():
         log.info("POD daily: %s", status)
     except Exception:  # noqa: BLE001
         log.exception("POD daily auto-post failed")
-
-
-@client.tree.command(name="potdtest",
-                     description="Admin: post the Pick of the Day to the configured channel right now")
-async def potdtest(interaction: discord.Interaction):
-    """Manual trigger to verify the daily auto-post end-to-end without waiting
-    for midnight. Restricted to server admins."""
-    await interaction.response.defer(thinking=True, ephemeral=True)
-    perms = getattr(interaction.user, "guild_permissions", None)
-    if not (perms and perms.administrator):
-        await interaction.followup.send(
-            embed=error_embed("This test command is for server admins only."), ephemeral=True)
-        return
-    if not POD_CHANNEL_ID:
-        await interaction.followup.send(embed=error_embed(
-            "`POD_CHANNEL_ID` isn't set on the bot service — set it and redeploy first."),
-            ephemeral=True)
-        return
-    channel = client.get_channel(POD_CHANNEL_ID)
-    if channel is None:
-        await interaction.followup.send(embed=error_embed(
-            f"Channel `{POD_CHANNEL_ID}` not found, or the bot can't see it. Check the ID and "
-            "that the bot has View Channel / Send Messages / Embed Links there."), ephemeral=True)
-        return
-    try:
-        status = await _post_pick_of_day(channel)
-        log.info("POD test by %s: %s", interaction.user.id, status)
-        await interaction.followup.send(
-            embed=discord.Embed(description=f"✅ Done — {status}\nPosted to <#{POD_CHANNEL_ID}>.",
-                                color=COLOR_NEUTRAL), ephemeral=True)
-    except discord.Forbidden:
-        await interaction.followup.send(embed=error_embed(
-            "The bot lacks permission to post in that channel (needs Send Messages + Embed Links)."),
-            ephemeral=True)
-    except Exception:  # noqa: BLE001
-        log.exception("POD test post failed")
-        await interaction.followup.send(
-            embed=error_embed("Failed to post — check the bot logs."), ephemeral=True)
 
 
 @daily_pick_of_day.before_loop
