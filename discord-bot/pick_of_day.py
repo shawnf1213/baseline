@@ -185,6 +185,16 @@ async def _resolve(name: str):
     return None
 
 
+async def _next_match(player_id: str, tour: str) -> dict:
+    """The player's next scheduled match (tournament + surface) from Sofascore."""
+    try:
+        nm = await asyncio.to_thread(_get, "/api/player/next-match",
+                                     {"player_id": player_id, "tour": tour}, SEARCH_TIMEOUT)
+        return nm if isinstance(nm, dict) else {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
 async def _evaluate(prop: dict, sem: asyncio.Semaphore):
     async with sem:
         try:
@@ -195,10 +205,18 @@ async def _evaluate(prop: dict, sem: asyncio.Semaphore):
                 return None
             p_id, tour, p_name = p
             o_id, _, o_name = o
+
+            # Real surface + tournament from the player's UPCOMING match (so we
+            # don't guess the surface or show a stale completed event). Falls back
+            # to the calendar-season surface if Sofascore has no scheduled match.
+            nm = await _next_match(p_id, tour)
+            surface = nm.get("surface") or _season_surface()
+            tournament = nm.get("tournament") or None
+
             payload = {
                 "player_id": p_id, "opponent_id": o_id,
                 "player_name": p_name, "opponent_name": o_name,
-                "tour": tour, "surface": _season_surface(), "court": "",
+                "tour": tour, "surface": surface, "court": "",
                 "prop_type": prop["prop_type"], "prop_line": prop["line"],
             }
             data = await asyncio.to_thread(_post, "/api/prop/calculate", payload, CALC_TIMEOUT)
@@ -215,7 +233,7 @@ async def _evaluate(prop: dict, sem: asyncio.Semaphore):
         return {
             "player": p_name, "opponent": o_name,
             "prop_type": prop["prop_type"], "line": line,
-            "surface": payload["surface"],
+            "surface": payload["surface"], "tournament": tournament,
             "projection": proj, "edge": edge, "edge_mag": abs(edge),
             "confidence": conf, "lean": data.get("lean"),
             "p1_win_prob": data.get("p1_win_prob"), "p2_win_prob": data.get("p2_win_prob"),

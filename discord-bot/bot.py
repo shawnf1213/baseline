@@ -944,15 +944,9 @@ def _member_gate(interaction: discord.Interaction) -> bool:
 
 def pick_embed(pick: dict) -> discord.Embed:
     """Build the Pick of the Day embed, reusing the /prop embed style. The
-    tournament comes from the Sofascore match data (PrizePicks doesn't provide
-    it) — the player's most recent match on this surface."""
-    data = pick["data"]
-    recent = data.get("player_surface_matches") or []
-    tourn = None
-    if recent and isinstance(recent[0], dict):
-        tourn = recent[0].get("tournament")
-    court_display = tourn or f"{pick['surface']} court"
-
+    tournament + surface come from the player's UPCOMING match on Sofascore
+    (PrizePicks doesn't provide them)."""
+    court_display = pick.get("tournament") or f"{pick['surface']} court"
     e = prop_embed(
         pick["player"], pick["opponent"], pick["prop_type"],
         pick["surface"], court_display, pick["line"], pick["data"],

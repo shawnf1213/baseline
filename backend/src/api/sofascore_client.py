@@ -1936,6 +1936,51 @@ def get_player_stats_by_surface(player_id, tour: str = "ATP") -> dict:
     return surfaces
 
 
+def get_player_next_match(player_id, tour: str = "ATP") -> dict:
+    """Return the player's NEXT scheduled singles match from Sofascore:
+    {tournament, surface, opponent_name, start_timestamp}. Used so a feature can
+    show the upcoming event (e.g. 'Bad Homburg') and its surface rather than the
+    most recent completed match. Returns {} if none / on failure. Cached 1h."""
+    pid = int(player_id)
+    cache_key = f"ss_next_{pid}_{int(time.time()) // 3600}"
+    if cache_key in st.session_state:
+        return st.session_state[cache_key]
+
+    result: dict = {}
+    try:
+        data = _get(f"{BASE_URL}/team/{pid}/events/next/0", fast=True)
+        now = time.time()
+        upcoming = []
+        for e in (data.get("events", []) or []):
+            ts = e.get("startTimestamp", 0) or 0
+            if ts < now:
+                continue
+            ht = e.get("homeTeam", {}).get("name", "")
+            at = e.get("awayTeam", {}).get("name", "")
+            if "/" in ht or "/" in at:   # doubles
+                continue
+            upcoming.append(e)
+        upcoming.sort(key=lambda e: e.get("startTimestamp", 0) or 0)
+        if upcoming:
+            ev = upcoming[0]
+            home_id = ev.get("homeTeam", {}).get("id")
+            side = "home" if home_id == pid else "away"
+            opp = ev.get("awayTeam" if side == "home" else "homeTeam", {})
+            result = {
+                "tournament": ev.get("tournament", {}).get("name", ""),
+                "surface": _infer_surface_from_event(ev),
+                "opponent_name": opp.get("name", ""),
+                "opponent_id": opp.get("id"),
+                "start_timestamp": ev.get("startTimestamp"),
+            }
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("next-match fetch failed for pid=%s: %s", pid, exc)
+        result = {}
+
+    st.session_state[cache_key] = result
+    return result
+
+
 def _get_player_events_paged(player_id: int, max_pages: int = 10) -> list:
     """
     Fetch up to max_pages pages of recent events for a player.

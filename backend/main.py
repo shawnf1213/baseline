@@ -53,6 +53,7 @@ from src.api.sofascore_client import (
     init_session,
     search_players,
     get_player_stats_by_surface,
+    get_player_next_match,
     get_h2h_summary,
     get_h2h_stat_avg,
     SofascoreBlockedError,
@@ -401,6 +402,22 @@ async def proxy_health():
         "ports_ok": sum(1 for r in results if r.get("status") == 200),
         "results": results,
     }
+
+
+@app.get("/api/player/next-match")
+async def player_next_match(player_id: str = "", tour: str = "ATP"):
+    """The player's next scheduled match (tournament + surface + opponent)."""
+    if not player_id:
+        return {}
+    loop = asyncio.get_event_loop()
+    try:
+        return await asyncio.wait_for(
+            loop.run_in_executor(None, get_player_next_match, player_id, tour),
+            timeout=20.0,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("next-match endpoint error pid=%s: %s", player_id, e)
+        return {}
 
 
 @app.get("/api/proxy/usage")
