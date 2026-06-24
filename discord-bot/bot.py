@@ -423,19 +423,14 @@ def prop_embed(player, opponent, prop_type, surface, court_display, line, data) 
         sets_line = (f"Expected Sets **{exp_sets:.1f}** · {fmt_label}"
                      + (f" · {comp}" if comp else ""))
 
-    top = ""
-    if win_line:
-        top += win_line + "\n"
-    if sets_line:
-        top += sets_line + "\n"
-
-    # Verdict — context (win prob / sets) first, then the projection takeaway.
-    verdict = (
-        top +
-        f"{court_line}\n"
+    # Verdict — grouped with blank lines for readability: context (win prob /
+    # sets) first, then court, then the projection takeaway.
+    g_context = "\n".join(x for x in (win_line, sets_line) if x)
+    g_proj = (
         f"{dot} **{lean} {line:g}**  ·  Projection **{_num(proj)}**  ·  Edge **{edge_txt}**{star}\n"
         f"Confidence  {_conf_bar(conf)}"
     )
+    verdict = "\n\n".join(x for x in (g_context, court_line, g_proj) if x)
 
     e = discord.Embed(
         title=f"{prop_type} — {player} vs {opponent}",
@@ -948,10 +943,19 @@ def _member_gate(interaction: discord.Interaction) -> bool:
 
 
 def pick_embed(pick: dict) -> discord.Embed:
-    """Build the Pick of the Day embed, reusing the /prop embed style."""
+    """Build the Pick of the Day embed, reusing the /prop embed style. The
+    tournament comes from the Sofascore match data (PrizePicks doesn't provide
+    it) — the player's most recent match on this surface."""
+    data = pick["data"]
+    recent = data.get("player_surface_matches") or []
+    tourn = None
+    if recent and isinstance(recent[0], dict):
+        tourn = recent[0].get("tournament")
+    court_display = tourn or f"{pick['surface']} court"
+
     e = prop_embed(
         pick["player"], pick["opponent"], pick["prop_type"],
-        pick["surface"], "PrizePicks line", pick["line"], pick["data"],
+        pick["surface"], court_display, pick["line"], pick["data"],
     )
     e.set_author(name="🏆 Pick of the Day")
     return e
