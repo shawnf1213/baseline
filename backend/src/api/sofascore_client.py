@@ -1948,6 +1948,9 @@ def get_player_next_match(player_id, tour: str = "ATP") -> dict:
 
     result: dict = {}
     try:
+        _probe = probe_request(f"{BASE_URL}/team/{pid}/events/next/0")
+        result["_debug_probe"] = {"status": _probe.get("status"),
+                                  "body": (_probe.get("body_snippet") or _probe.get("error") or "")[:200]}
         data = _get(f"{BASE_URL}/team/{pid}/events/next/0")
         result["_debug_keys"] = list(data.keys()) if isinstance(data, dict) else str(type(data))
         _raw = data.get("events", []) or []
