@@ -1952,14 +1952,6 @@ def get_player_next_match(player_id, tour: str = "ATP") -> dict:
         # isn't yet in the team "next" feed, but near-events returns it reliably
         # as `nextEvent` (alongside the most recent `previousEvent`).
         data = _get(f"{BASE_URL}/team/{pid}/near-events")
-        result["_dbg_data_keys"] = list((data or {}).keys())
-        _nv = (data or {}).get("nextEvent") or {}
-        result["_dbg_next"] = {
-            "tournament": (_nv.get("tournament") or {}).get("name"),
-            "ts": _nv.get("startTimestamp"),
-            "home": (_nv.get("homeTeam") or {}).get("name"),
-            "away": (_nv.get("awayTeam") or {}).get("name"),
-        }
         ev = (data or {}).get("nextEvent") or {}
         now = time.time()
         ts = ev.get("startTimestamp", 0) or 0
