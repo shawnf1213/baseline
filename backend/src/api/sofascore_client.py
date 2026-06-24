@@ -1948,11 +1948,15 @@ def get_player_next_match(player_id, tour: str = "ATP") -> dict:
 
     result: dict = {}
     try:
+        _new_session(force_port=True)
         _probe = probe_request(f"{BASE_URL}/team/{pid}/events/next/0")
-        result["_debug_probe"] = {"status": _probe.get("status"),
-                                  "body": (_probe.get("body_snippet") or _probe.get("error") or "")[:200]}
-        data = _get(f"{BASE_URL}/team/{pid}/events/next/0")
-        result["_debug_keys"] = list(data.keys()) if isinstance(data, dict) else str(type(data))
+        result["_debug_status"] = _probe.get("status")
+        result["_debug_body"] = (_probe.get("body_snippet") or _probe.get("error") or "")[:220]
+        import json as _json
+        try:
+            data = _json.loads(_probe.get("body_snippet") or "{}") if _probe.get("status") == 200 else {}
+        except Exception:
+            data = {}
         _raw = data.get("events", []) or []
         result["_debug_raw_count"] = len(_raw)
         if _raw:
