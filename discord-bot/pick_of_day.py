@@ -49,6 +49,7 @@ MIN_CONFIDENCE  = 60      # don't force a weak pick below this
 MAX_CONCURRENT  = 3       # concurrent backend prop calcs
 MATCH_THRESHOLD = 0.80    # fuzzy name-match threshold
 MAX_PROPS       = 25      # cap evaluations so the command stays responsive
+MAX_LOOKAHEAD_HOURS = 24  # only pick matches that play within this many hours
 
 SEARCH_TIMEOUT = 10
 CALC_TIMEOUT   = 60
@@ -224,9 +225,19 @@ async def _evaluate(prop: dict, sem: asyncio.Semaphore):
             o_id, _, o_name = o
 
             # Real surface + tournament from the player's UPCOMING match (so we
-            # don't guess the surface or show a stale completed event). Falls back
-            # to the calendar-season surface if Sofascore has no scheduled match.
+            # don't guess the surface or show a stale completed event).
             nm = await _next_match(p_id, tour)
+
+            # Only consider matches that actually play within the next 24h. A
+            # prop sitting on the board for a match 2-3 days out isn't a "play of
+            # the day". Requires a known scheduled start time within the window.
+            start = nm.get("start_timestamp")
+            now = datetime.now(timezone.utc).timestamp()
+            if not start or start > now + MAX_LOOKAHEAD_HOURS * 3600 or start < now - 6 * 3600:
+                log.info("POD skip (match not within %dh): %r vs %r start=%s",
+                         MAX_LOOKAHEAD_HOURS, p_name, o_name, start)
+                return None
+
             surface = nm.get("surface") or _season_surface()
             tournament = nm.get("tournament") or None
 
