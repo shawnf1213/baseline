@@ -714,6 +714,26 @@ def _hold_rate_proxy(stats: dict) -> float:
     return fin * sp1w + (1.0 - fin) * sp2w
 
 
+def _serve_tier_and_adj(hold_proxy: float, tour: str) -> tuple:
+    """Classify a server's hold proxy into Elite / Good / Weak, RELATIVE TO THE
+    TOUR, and return the matching C4 multiplier.
+
+    WTA serve numbers run ~7pp below ATP across the board, so a WTA player must
+    be judged against WTA peers — comparing them to an ATP yardstick mislabels
+    an average WTA server (≈0.57–0.60 proxy) as "Weak". Cutoffs are shifted down
+    ~7pp for WTA so the label means the same thing on either tour.
+    """
+    if (tour or "ATP").upper() == "WTA":
+        elite_cut, good_cut = 0.63, 0.56
+    else:
+        elite_cut, good_cut = 0.70, 0.63
+    if hold_proxy > elite_cut:
+        return "Elite", 0.85
+    if hold_proxy >= good_cut:
+        return "Good", 1.00
+    return "Weak", 1.10
+
+
 def detect_environment(p1_stats: dict, p2_stats: dict,
                        surface: str = "Hard", tour: str = "ATP") -> str:
     """
@@ -1538,26 +1558,13 @@ def project_break_points(
     # UI shows a real value (Elite / Good / Weak). The frontend maps exactly
     # these three strings to colors and the scouting report keys on them — the
     # old "Neutral(player_C1,...)" debug string left the cell uncolored/blank.
-    if opp_hold_proxy > 0.70:
-        opp_serve_tier = "Elite"
-    elif opp_hold_proxy >= 0.63:
-        opp_serve_tier = "Good"
-    else:
-        opp_serve_tier = "Weak"
+    # Cutoffs are TOUR-RELATIVE (WTA judged vs WTA, ATP vs ATP).
+    opp_serve_tier, c4_full = _serve_tier_and_adj(opp_hold_proxy, tour)
 
     # The C4 MULTIPLIER is only applied when C1 came from the tour-average
     # fallback. When C1 is the opponent's actual bp_faced, their serve weakness
     # is already embedded in C1, so applying C4 on top would double-count it.
-    # (Multiplier values unchanged — calculation intact.)
-    if used_opp_tour_avg:
-        if opp_hold_proxy > 0.70:
-            c4_serve_qual = 0.85
-        elif opp_hold_proxy >= 0.63:
-            c4_serve_qual = 1.00
-        else:
-            c4_serve_qual = 1.10
-    else:
-        c4_serve_qual = 1.00
+    c4_serve_qual = c4_full if used_opp_tour_avg else 1.00
 
     logger.info(
         "BP_C4 | hold_proxy=%.3f | tier=%s | c4=%.2f",
