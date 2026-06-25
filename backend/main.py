@@ -122,6 +122,24 @@ async def startup():
         database.init_db()
     except Exception:  # noqa: BLE001
         logger.exception("Results DB init failed — tracker disabled")
+
+    # Pre-warm today's slate cache in the background so /slate (Feature 4) hits a
+    # warm cache instead of a slow cold full-day fetch right after each redeploy.
+    def _warm_slate():
+        import time as _t
+        _t.sleep(8)
+        try:
+            from src import features
+            n = features.get_slate("").get("count", 0)
+            logger.info("slate pre-warm complete (%s matches)", n)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("slate pre-warm failed: %s", exc)
+    try:
+        import threading
+        threading.Thread(target=_warm_slate, daemon=True).start()
+    except Exception:  # noqa: BLE001
+        pass
+
     logger.info("Backend ready.")
 
 

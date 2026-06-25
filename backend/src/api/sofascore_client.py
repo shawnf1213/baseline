@@ -1998,6 +1998,11 @@ def get_player_next_match(player_id, tour: str = "ATP") -> dict:
     return result
 
 
+# Last successful scheduled-events result per date — survives the hourly cache
+# bucket so a slow/failed refresh can serve stale data instead of an empty slate.
+_SCHED_LAST_GOOD: dict = {}
+
+
 def get_scheduled_events(date_str: str = "", tours=("ATP", "WTA")) -> list:
     """Today's (or a given date's) scheduled ATP/WTA SINGLES matches from
     Sofascore. Returns a list of normalized dicts:
@@ -2014,6 +2019,7 @@ def get_scheduled_events(date_str: str = "", tours=("ATP", "WTA")) -> list:
         return st.session_state[cache_key]
 
     out: list = []
+    _last_good = _SCHED_LAST_GOOD.get(date_str)
     try:
         data = _get(f"{BASE_URL}/sport/tennis/scheduled-events/{date_str}")
         for e in (data.get("events", []) or []):
@@ -2041,6 +2047,13 @@ def get_scheduled_events(date_str: str = "", tours=("ATP", "WTA")) -> list:
 
     if out:
         st.session_state[cache_key] = out
+        _SCHED_LAST_GOOD[date_str] = out
+    elif _last_good:
+        # A cold/slow fetch returned nothing — serve the last good result rather
+        # than an empty "unavailable" slate.
+        logger.info("scheduled-events: serving last-good for %s (%d events)",
+                    date_str, len(_last_good))
+        out = _last_good
     return out
 
 
