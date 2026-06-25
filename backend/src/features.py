@@ -367,10 +367,15 @@ def get_court_report(tournament: str, tour: str = "ATP", surface_hint: str = "")
         try:
             seen = set()
             tkey = _norm(tournament.split(",")[0])
+            want_tour = (tour or "ATP").upper()
             for off in range(0, 3):
                 ds = (datetime.utcnow() + timedelta(days=off)).strftime("%Y-%m-%d")
                 for e in (get_scheduled_events(ds) or []):
                     if _norm(e.get("tournament", "").split(",")[0]) != tkey:
+                        continue
+                    # Same venue can host ATP and WTA the same week — only the
+                    # selected tour's entrants belong in this report.
+                    if (e.get("tour") or "").upper() != want_tour:
                         continue
                     if not surface and e.get("surface"):
                         surface = e["surface"]
