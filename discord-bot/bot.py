@@ -951,8 +951,8 @@ except Exception:  # pragma: no cover — fall back to a fixed EST offset
 # Trigger at 11:50 PM ET, not midnight: the serialized generation run takes
 # ~10 min, so starting early lands the post in #potd right around 12:00 AM.
 # (Adjust POD_HOUR/POD_MINUTE if run time drifts as the board/tournaments change.)
-POD_HOUR = int(os.getenv("POD_HOUR", "23") or "23")
-POD_MINUTE = int(os.getenv("POD_MINUTE", "50") or "50")
+POD_HOUR = int(os.getenv("POD_HOUR", "0") or "0")
+POD_MINUTE = int(os.getenv("POD_MINUTE", "30") or "30")
 # Optional one-shot post on startup for verifying a deploy (off by default).
 POD_POST_ON_START = (os.getenv("POD_POST_ON_START", "0") or "0") not in ("0", "false", "False")
 _pod_startup_done = False
