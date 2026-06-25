@@ -680,6 +680,28 @@ _GROUND_TYPE_MAP: dict = {
 }
 
 
+def _ground_str_to_surface(s: str):
+    """Map a Sofascore groundType string to a surface, handling COMPOUND names.
+    Sofascore reports e.g. 'Red clay indoor', 'Green clay', 'Hardcourt outdoor'
+    — exact-match misses these, so fall back to substring matching on the
+    authoritative groundType BEFORE the tournament-name keyword guess. Fixes
+    e.g. WTA Stuttgart (indoor clay) being mislabeled grass via the 'stuttgart'
+    grass keyword."""
+    if not s:
+        return None
+    s = s.lower()
+    exact = _GROUND_TYPE_MAP.get(s)
+    if exact:
+        return exact
+    if "grass" in s:
+        return "Grass"
+    if "clay" in s:          # red clay, green clay, clay indoor, terre battue
+        return "Clay"
+    if "hard" in s or "carpet" in s:
+        return "Hard"
+    return None
+
+
 def _infer_surface_from_event(event: dict, log_missing: bool = False) -> str:
     """
     Try Sofascore native groundType fields first (numeric or string),
@@ -725,13 +747,12 @@ def _infer_surface_from_event(event: dict, log_missing: bool = False) -> str:
                     return mapped
             except (ValueError, TypeError):
                 pass
-            mapped = _GROUND_TYPE_MAP.get(gt_raw.lower())
+            mapped = _ground_str_to_surface(gt_raw)
             if mapped:
                 return mapped
         elif isinstance(gt_raw, dict):
             # Some API versions nest as {"name": "clay"}
-            name_val = (gt_raw.get("name") or "").lower()
-            mapped = _GROUND_TYPE_MAP.get(name_val)
+            mapped = _ground_str_to_surface(gt_raw.get("name") or "")
             if mapped:
                 return mapped
 
