@@ -160,6 +160,14 @@ async def results_log(req: ResultLogRequest):
     return {"ok": True, "pick": stored}
 
 
+@app.get("/api/results/health")
+async def results_health():
+    """Diagnostic: is the results DB connected? (does not expose the URL)."""
+    from src import database
+    return {"ready": database.is_ready(),
+            "database_url_present": bool(database.DATABASE_URL)}
+
+
 @app.get("/api/results/record")
 async def results_record():
     """Full pick log plus aggregate record (W/L, win rate, avg confidence on
