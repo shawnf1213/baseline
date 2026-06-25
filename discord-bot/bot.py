@@ -1582,10 +1582,18 @@ async def on_ready():
     if not _guild_synced:
         _guild_synced = True
         try:
+            # Push the current command set to each guild (instant availability).
             for g in client.guilds:
                 client.tree.copy_global_to(guild=g)
                 await client.tree.sync(guild=g)
-            log.info("Commands guild-synced to %d guild(s) — instant availability.",
+            # CLEANUP: a stale GLOBAL command set (from an earlier global sync)
+            # shows up alongside the guild copies as DUPLICATES. Clear the global
+            # scope and push an empty global set so only the guild copies remain.
+            # The decorators re-register all commands globally on the next restart,
+            # so this is safe to run every startup.
+            client.tree.clear_commands(guild=None)
+            await client.tree.sync()
+            log.info("Commands guild-synced to %d guild(s); global scope cleared (no dupes).",
                      len(client.guilds))
         except Exception:
             log.exception("guild command sync failed")
