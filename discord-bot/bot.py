@@ -1300,6 +1300,11 @@ async def slate(interaction: discord.Interaction):
         # Cold full-day scheduled-events fetch can be slow; allow plenty of time
         # (the interaction is deferred, so a longer wait is safe). Cached 1h after.
         data = await backend_get("/api/slate/today", {}, 80)
+        # One retry if the very first cold fetch came back unavailable — the
+        # backend pre-warms, so a second call almost always hits a warm cache.
+        if not data or not data.get("available"):
+            await asyncio.sleep(2)
+            data = await backend_get("/api/slate/today", {}, 80)
         await interaction.followup.send(embed=slate_embed(data))
     except Exception:  # noqa: BLE001
         log.exception("/slate failed")
@@ -1466,8 +1471,11 @@ async def courtreport(interaction: discord.Interaction, tournament: str,
     await interaction.response.defer(thinking=True)
     try:
         tval = tour.value if tour else "ATP"
+        # The bot knows each autocompleted court's surface — pass it so the
+        # report always shows a surface even for courts not in the backend map.
+        shint = surface_for_court(tournament) or ""
         data = await backend_get("/api/courtreport",
-                                 {"tournament": tournament, "tour": tval}, GENERIC_TIMEOUT)
+                                 {"tournament": tournament, "tour": tval, "surface": shint}, 75)
         await interaction.followup.send(embed=courtreport_embed(data))
     except Exception:  # noqa: BLE001
         log.exception("/courtreport failed")

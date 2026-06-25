@@ -12,7 +12,7 @@ import re
 import time
 import logging
 import unicodedata
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from src.api.sofascore_client import (
     search_players, get_player_stats_by_surface, get_scheduled_events,
@@ -300,19 +300,36 @@ def _speed_category(cpi: float) -> str:
         return "Average"
 
 
-def get_court_report(tournament: str, tour: str = "ATP") -> dict:
+_COURT_REPORT_CACHE: dict = {}
+_COURT_REPORT_TTL = 12 * 3600     # cache court reports for 12h (Feature 7)
+
+
+def _resolve_surface(key: str, tournament: str, surface_hint: str) -> str:
+    """Surface for a court from the RELIABLE sources only: explicit hint →
+    COURTS_BY_SURFACE. Returns '' if neither matches, so the caller can fill it
+    from the scheduled event (authoritative) before falling back to a keyword
+    guess. (Keyword inference defaults to Hard, so it must NOT run here or it
+    would block the scheduled-event backfill.)"""
+    if surface_hint:
+        return surface_hint.title()
+    from src.constants import COURTS_BY_SURFACE
+    for surf, courts in COURTS_BY_SURFACE.items():
+        if key in courts:
+            return surf
+    return ""
+
+
+def get_court_report(tournament: str, tour: str = "ATP", surface_hint: str = "") -> dict:
     """Pre-tournament conditions summary built from COURT_CPR + YoY data +
-    scheduled entrants. Never raises."""
+    UPCOMING scheduled entrants. Cached 12h. Never raises."""
+    cache_key = f"{_norm(tournament)}|{(tour or 'ATP').upper()}"
+    cached = _COURT_REPORT_CACHE.get(cache_key)
+    if cached and (time.time() - cached[0]) < _COURT_REPORT_TTL:
+        return cached[1]
     try:
         key = resolve_court_name(tournament, tour)
         cpi = COURT_CPR.get(key)
-        # Infer surface from COURTS_BY_SURFACE membership when possible.
-        from src.constants import COURTS_BY_SURFACE
-        surface = ""
-        for surf, courts in COURTS_BY_SURFACE.items():
-            if key in courts:
-                surface = surf
-                break
+        surface = _resolve_surface(key, tournament, surface_hint)
         if cpi is None:
             cpi = GENERIC_SURFACE_CPR.get(surface or "Hard", CPR_NEUTRAL)
         tier = _speed_category(cpi)
@@ -343,34 +360,50 @@ def get_court_report(tournament: str, tour: str = "ATP") -> dict:
         else:
             reliable = ["Total Games", "Break Points Won"]
 
-        # Players to watch — entrants from today's slate at this tournament.
-        # Also backfill the surface from a matched scheduled event when the
-        # court key isn't in COURTS_BY_SURFACE (e.g. WTA-only courts).
+        # Players to watch — players with UPCOMING (not-yet-started) matches at
+        # this tournament, scanning today + the next 2 days of scheduled events.
+        # Also backfill the surface from a matched scheduled event when needed.
         watch = []
         try:
-            events = get_scheduled_events() or []
             seen = set()
             tkey = _norm(tournament.split(",")[0])
-            for e in events:
-                if _norm(e.get("tournament", "").split(",")[0]) != tkey:
-                    continue
-                if not surface and e.get("surface"):
-                    surface = e["surface"]
-                for nm in (e.get("p1_name"), e.get("p2_name")):
-                    n = _norm(nm)
-                    if nm and n not in seen:
-                        seen.add(n)
-                        watch.append(nm)
+            for off in range(0, 3):
+                ds = (datetime.utcnow() + timedelta(days=off)).strftime("%Y-%m-%d")
+                for e in (get_scheduled_events(ds) or []):
+                    if _norm(e.get("tournament", "").split(",")[0]) != tkey:
+                        continue
+                    if not surface and e.get("surface"):
+                        surface = e["surface"]
+                    # Only upcoming/live matches — skip ones already finished.
+                    if (e.get("status") or "").lower() not in ("notstarted", "inprogress", ""):
+                        continue
+                    for nm in (e.get("p1_name"), e.get("p2_name")):
+                        n = _norm(nm)
+                        if nm and n not in seen:
+                            seen.add(n)
+                            watch.append(nm)
+                if len(watch) >= 3:
+                    break
             watch = watch[:3]
         except Exception:  # noqa: BLE001
             watch = []
 
-        return {
+        # Last-resort surface: tournament-name keyword inference (defaults Hard).
+        if not surface:
+            try:
+                from src.api.sofascore_client import _infer_surface
+                surface = _infer_surface(tournament)
+            except Exception:  # noqa: BLE001
+                surface = ""
+
+        result = {
             "available": True, "tournament": tournament, "court_key": key,
             "cpi": cpi, "speed_tier": tier, "surface": surface,
             "yoy": yoy, "ace_note": ace_note, "bp_note": bp_note,
             "reliable_props": reliable, "players_to_watch": watch,
         }
+        _COURT_REPORT_CACHE[cache_key] = (time.time(), result)
+        return result
     except Exception as exc:  # noqa: BLE001
         logger.warning("get_court_report failed for %r: %s", tournament, exc)
         return {"available": False, "tournament": tournament}
