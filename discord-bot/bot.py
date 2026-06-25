@@ -1553,27 +1553,55 @@ async def courtreport(interaction: discord.Interaction, tournament: str,
 
 
 # ── Feature 1 — 11pm EST auto-resolution job ─────────────────────────────────
-RESOLVE_HOUR = int(os.getenv("RESOLVE_HOUR", "23") or "23")
+RESOLVE_EVERY_HOURS = int(os.getenv("RESOLVE_EVERY_HOURS", "2") or "2")
+RESOLVE_GIVEUP_HOURS = 36     # after this long unresolved → NEEDS REVIEW
 
 
-@tasks.loop(time=datetime.time(hour=RESOLVE_HOUR, minute=0, tzinfo=POD_TZINFO))
+def _pick_age_hours(pk: dict) -> float:
+    """Hours since the pick was logged (generated_at). Large default if unknown."""
+    raw = pk.get("generated_at")
+    if not raw:
+        return 0.0
+    try:
+        dt = datetime.datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=datetime.timezone.utc)
+        return (datetime.datetime.now(datetime.timezone.utc) - dt).total_seconds() / 3600.0
+    except Exception:  # noqa: BLE001
+        return 0.0
+
+
+@tasks.loop(hours=RESOLVE_EVERY_HOURS)
 async def daily_resolve_results():
+    """Grade pending picks from completed-match stats. Runs every couple hours
+    (and on startup) so results update through the day, not just once at night.
+    A pick whose match hasn't finished stays PENDING and is retried next cycle;
+    only after RESOLVE_GIVEUP_HOURS is an unresolved pick flagged NEEDS REVIEW."""
     try:
         pending = await asyncio.to_thread(results_tracker.get_pending)
         if not pending:
             log.info("POD resolve: nothing pending")
             return
-        resolved = 0
+        graded = 0
         for pk in pending:
             res = await asyncio.to_thread(results_tracker.resolve_pick, pk)
-            outcome = (res.get("result") or "NEEDS REVIEW").upper()
-            if outcome not in ("W", "L", "NEEDS REVIEW"):
-                outcome = "NEEDS REVIEW"
-            ok = await asyncio.to_thread(results_tracker.update_result, pk["id"], outcome)
-            resolved += 1 if ok else 0
-            log.info("POD resolve: pick #%s %s %s -> %s",
-                     pk.get("id"), pk.get("player"), pk.get("prop_type"), outcome)
-        log.info("POD resolve: processed %d pending picks", resolved)
+            outcome = (res.get("result") or "").upper()
+            if outcome in ("W", "L"):
+                ok = await asyncio.to_thread(results_tracker.update_result, pk["id"], outcome)
+                graded += 1 if ok else 0
+                log.info("POD resolve: pick #%s %s %s -> %s (val=%s)",
+                         pk.get("id"), pk.get("player"), pk.get("prop_type"),
+                         outcome, res.get("value"))
+            elif _pick_age_hours(pk) > RESOLVE_GIVEUP_HOURS:
+                # Match still unresolved after a day and a half — flag for review.
+                await asyncio.to_thread(results_tracker.update_result, pk["id"], "NEEDS REVIEW")
+                log.info("POD resolve: pick #%s %s -> NEEDS REVIEW (stale, %s)",
+                         pk.get("id"), pk.get("player"), res.get("reason"))
+            else:
+                # Match not finished yet — leave PENDING, retry next cycle.
+                log.info("POD resolve: pick #%s %s still pending (%s)",
+                         pk.get("id"), pk.get("player"), res.get("reason"))
+        log.info("POD resolve: graded %d of %d pending", graded, len(pending))
     except Exception:  # noqa: BLE001
         log.exception("daily_resolve_results failed")
 
@@ -1687,11 +1715,11 @@ async def on_ready():
         except Exception:
             log.exception("failed to start daily Pick of the Day loop")
 
-    # Feature 1 — nightly results auto-resolution (always on; harmless if no picks).
+    # Feature 1 — results auto-resolution (runs on startup + every few hours).
     if not daily_resolve_results.is_running():
         try:
             daily_resolve_results.start()
-            log.info("Results auto-resolution scheduled at %02d:00 %s", RESOLVE_HOUR, POD_TZINFO)
+            log.info("Results auto-resolution running every %dh", RESOLVE_EVERY_HOURS)
         except Exception:
             log.exception("failed to start results resolution loop")
 
