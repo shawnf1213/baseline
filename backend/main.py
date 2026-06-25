@@ -1004,11 +1004,22 @@ async def prop_calculate(req: PropRequest):
         # best_of_3. ALL WTA events → best_of_3 (no exceptions; WTA Grand Slams
         # are NEVER BO5). All ATP non-GS → best_of_3.
         _is_atp_gs   = court_for_calc in GRAND_SLAMS and req.tour == "ATP"
-        _qualifying  = bool(req.qualifying) and _is_atp_gs
+        # Wimbledon ATP FINAL qualifying round (3rd round) is played best-of-5 —
+        # treat it like a main-draw round, not best-of-3 like the earlier qual
+        # rounds. Detected from the raw court/tournament string (which carries the
+        # round, e.g. "Wimbledon, London, GB, Qualifying, 3rd Round").
+        _raw_court_l = (req.court or "").lower()
+        _wimb_final_qual = (req.tour == "ATP" and "wimbledon" in _raw_court_l
+                            and "qualif" in _raw_court_l
+                            and ("3rd round" in _raw_court_l or "final" in _raw_court_l))
+        _qualifying  = bool(req.qualifying) and _is_atp_gs and not _wimb_final_qual
         match_fmt    = "best_of_5" if (_is_atp_gs and not _qualifying) else "best_of_3"
         # Human-readable label for the UI/bot so the format is confirmable.
         if _is_atp_gs:
-            _round_lbl = "Qualifying" if _qualifying else "Main Draw"
+            if _wimb_final_qual:
+                _round_lbl = "Final Qualifying Round"
+            else:
+                _round_lbl = "Qualifying" if _qualifying else "Main Draw"
             _fmt_lbl = "Best of 5" if match_fmt == "best_of_5" else "Best of 3"
             match_format_label = f"{court_for_calc} — {_round_lbl} — {_fmt_lbl}"
         else:
