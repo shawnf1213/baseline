@@ -1977,6 +1977,52 @@ def get_player_next_match(player_id, tour: str = "ATP") -> dict:
     return result
 
 
+def get_scheduled_events(date_str: str = "", tours=("ATP", "WTA")) -> list:
+    """Today's (or a given date's) scheduled ATP/WTA SINGLES matches from
+    Sofascore. Returns a list of normalized dicts:
+        {tour, tournament, surface, p1_name, p1_id, p2_name, p2_id,
+         start_timestamp, status}
+    Cached 1h (scheduled matches barely change intraday). Empty list on failure.
+    Used by the slate (Feature 4) and court report (Feature 7) — never raises.
+    """
+    if not date_str:
+        date_str = datetime.utcnow().strftime("%Y-%m-%d")
+    want = {t.upper() for t in tours}
+    cache_key = f"ss_sched_{date_str}_{int(time.time()) // 3600}"
+    if cache_key in st.session_state:
+        return st.session_state[cache_key]
+
+    out: list = []
+    try:
+        data = _get(f"{BASE_URL}/sport/tennis/scheduled-events/{date_str}")
+        for e in (data.get("events", []) or []):
+            tour = (((e.get("tournament") or {}).get("category") or {}).get("name") or "").upper()
+            if tour not in want:           # ATP/WTA main tours only (skip ITF/Challenger)
+                continue
+            ht = (e.get("homeTeam") or {})
+            at = (e.get("awayTeam") or {})
+            hn, an = ht.get("name", ""), at.get("name", "")
+            if not hn or not an or "/" in hn or "/" in an:   # need both, singles only
+                continue
+            out.append({
+                "tour": tour,
+                "tournament": (e.get("tournament") or {}).get("name", ""),
+                "surface": _infer_surface_from_event(e),
+                "p1_name": hn, "p1_id": ht.get("id"),
+                "p2_name": an, "p2_id": at.get("id"),
+                "start_timestamp": e.get("startTimestamp", 0) or 0,
+                "status": ((e.get("status") or {}).get("type") or ""),
+            })
+        out.sort(key=lambda m: m.get("start_timestamp", 0))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("scheduled-events fetch failed for %s: %s", date_str, exc)
+        out = []
+
+    if out:
+        st.session_state[cache_key] = out
+    return out
+
+
 def _get_player_events_paged(player_id: int, max_pages: int = 10) -> list:
     """
     Fetch up to max_pages pages of recent events for a player.

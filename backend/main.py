@@ -116,7 +116,170 @@ app.add_middleware(
 async def startup():
     logger.info("Initialising Sofascore client / proxy session...")
     init_session()
+    # Results tracker DB (Feature 1). Isolated: failure only disables the tracker.
+    try:
+        from src import database
+        database.init_db()
+    except Exception:  # noqa: BLE001
+        logger.exception("Results DB init failed — tracker disabled")
     logger.info("Backend ready.")
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Feature 1 — Pick of the Day results tracker (durable Postgres-backed record)
+# ════════════════════════════════════════════════════════════════════════════
+class ResultLogRequest(BaseModel):
+    player: str
+    opponent: str = ""
+    prop_type: str
+    line: float | None = None
+    model_projection: float | None = None
+    lean: str = ""                      # OVER / UNDER
+    confidence: float | None = None
+    result: str = "PENDING"             # W / L / PENDING / NEEDS REVIEW
+    original_line: float | None = None
+    tournament: str = ""
+    surface: str = ""
+
+
+class ResultUpdateRequest(BaseModel):
+    id: int
+    result: str                          # W / L / PENDING / NEEDS REVIEW
+
+
+@app.post("/api/results/log")
+async def results_log(req: ResultLogRequest):
+    """Insert one pick record into the durable results log."""
+    from src import database
+    rec = req.dict()
+    if rec.get("original_line") is None:
+        rec["original_line"] = rec.get("line")
+    stored = database.log_pick(rec)
+    if not stored:
+        return {"ok": False, "error": "results DB unavailable"}
+    return {"ok": True, "pick": stored}
+
+
+@app.get("/api/results/record")
+async def results_record():
+    """Full pick log plus aggregate record (W/L, win rate, avg confidence on
+    winners vs losers, current streak). Public — used as a sales record."""
+    from src import database
+    return database.record_summary()
+
+
+@app.get("/api/results/pending")
+async def results_pending():
+    """Picks still awaiting a result — used by the auto-resolution job."""
+    from src import database
+    return {"pending": database.pending_picks()}
+
+
+@app.post("/api/results/update")
+async def results_update(req: ResultUpdateRequest):
+    """Set a pick's result (manual admin override or the auto-resolver)."""
+    from src import database
+    ok = database.update_result(req.id, req.result)
+    return {"ok": ok}
+
+
+class ResolveRequest(BaseModel):
+    player: str
+    opponent: str = ""
+    prop_type: str
+    line: float
+    lean: str
+
+
+@app.post("/api/results/resolve")
+async def results_resolve(req: ResolveRequest):
+    """Auto-resolve a pending pick from Sofascore's completed-match stats.
+    Returns {result: W/L/NEEDS REVIEW, value, ...}. Used by the 11pm job."""
+    from src import features
+    loop = asyncio.get_event_loop()
+    try:
+        return await asyncio.wait_for(loop.run_in_executor(
+            None, features.resolve_pick, req.player, req.opponent,
+            req.prop_type, req.line, req.lean), timeout=90.0)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("resolve endpoint error: %s", exc)
+        return {"result": "NEEDS REVIEW", "reason": "resolver error"}
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Features 4-7 — slate, form, history, court report (read-only, isolated)
+# ════════════════════════════════════════════════════════════════════════════
+@app.get("/api/slate/today")
+async def slate_today():
+    """Feature 4 — today's ATP/WTA singles with tournament, surface, CPI."""
+    from src import features
+    loop = asyncio.get_event_loop()
+    try:
+        return await asyncio.wait_for(
+            loop.run_in_executor(None, features.get_slate, ""), timeout=30.0)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("slate endpoint error: %s", exc)
+        return {"available": False, "atp": [], "wta": [], "count": 0}
+
+
+@app.get("/api/player/form")
+async def player_form(player_id: str = "", tour: str = "ATP"):
+    """Feature 5 — last-15 form, streak, last-10 results, last5-vs-prev5 trend."""
+    if not player_id:
+        return {}
+    from src import features
+    loop = asyncio.get_event_loop()
+    try:
+        return await asyncio.wait_for(
+            loop.run_in_executor(None, features.get_form, player_id, tour), timeout=60.0)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("form endpoint error: %s", exc)
+        return {}
+
+
+@app.get("/api/player/streak")
+async def player_streak(player_id: str = "", tour: str = "ATP"):
+    """Feature 5 — lightweight streak only (for the midnight board scan)."""
+    if not player_id:
+        return {}
+    from src import features
+    loop = asyncio.get_event_loop()
+    try:
+        return await asyncio.wait_for(
+            loop.run_in_executor(None, features.streak_only, player_id, tour), timeout=60.0)
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+@app.get("/api/history")
+async def history(player_id: str = "", tour: str = "ATP", prop: str = "",
+                  surface: str = "", line: float = 0.0):
+    """Feature 6 — over/under counts vs line for a prop on a surface."""
+    if not player_id or not prop:
+        return {}
+    from src import features
+    loop = asyncio.get_event_loop()
+    try:
+        return await asyncio.wait_for(loop.run_in_executor(
+            None, features.get_history, player_id, tour, prop, surface, line), timeout=60.0)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("history endpoint error: %s", exc)
+        return {}
+
+
+@app.get("/api/courtreport")
+async def courtreport(tournament: str = "", tour: str = "ATP"):
+    """Feature 7 — pre-tournament conditions summary for prop betting."""
+    if not tournament:
+        return {"available": False}
+    from src import features
+    loop = asyncio.get_event_loop()
+    try:
+        return await asyncio.wait_for(loop.run_in_executor(
+            None, features.get_court_report, tournament, tour), timeout=45.0)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("courtreport endpoint error: %s", exc)
+        return {"available": False, "tournament": tournament}
 
 
 @app.get("/")
@@ -1022,6 +1185,17 @@ async def prop_calculate(req: PropRequest):
         lean = _resolve_lean(proj_val, req.prop_line, result.get("lean", ""))
         confidence = _edge_cap(confidence, proj_val, req.prop_line)
 
+        # ── Feature 3 — data freshness / injury-withdrawal flag ──────────────
+        # Advisory only — never blocks the projection. >21d → amber warning;
+        # >45d → red warning AND a 15-point confidence reduction.
+        try:
+            from src import features as _feat
+            _freshness = _feat.freshness_from_matches(p1_data.get("all_matches", []) or [])
+        except Exception:  # noqa: BLE001
+            _freshness = {"level": "", "message": "", "days_since_last": None, "confidence_penalty": 0}
+        if _freshness.get("confidence_penalty"):
+            confidence = max(15, confidence - _freshness["confidence_penalty"])
+
         # Archetypes
         p1_arch = classify_archetype(p1_all, req.tour)
         p2_arch = classify_archetype(p2_all, req.tour)
@@ -1124,6 +1298,10 @@ async def prop_calculate(req: PropRequest):
             "lean":                 lean,
             "confidence":           confidence,
             "confidence_breakdown": conf_result["breakdown"],
+            # Feature 3 — data freshness / injury flag (advisory)
+            "freshness_level":      _freshness.get("level", ""),
+            "freshness_message":    _freshness.get("message", ""),
+            "freshness_days":       _freshness.get("days_since_last"),
             "environment":          env_key,
             "environment_label":    env_label,
             "player_stats":         p1_s,
