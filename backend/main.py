@@ -231,7 +231,7 @@ async def slate_today():
     loop = asyncio.get_event_loop()
     try:
         return await asyncio.wait_for(
-            loop.run_in_executor(None, features.get_slate, ""), timeout=30.0)
+            loop.run_in_executor(None, features.get_slate, ""), timeout=70.0)
     except Exception as exc:  # noqa: BLE001
         logger.warning("slate endpoint error: %s", exc)
         return {"available": False, "atp": [], "wta": [], "count": 0}

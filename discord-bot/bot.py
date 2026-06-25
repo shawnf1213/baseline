@@ -1297,7 +1297,9 @@ def slate_embed(data: dict) -> discord.Embed:
 async def slate(interaction: discord.Interaction):
     await interaction.response.defer(thinking=True)
     try:
-        data = await backend_get("/api/slate/today", {}, GENERIC_TIMEOUT)
+        # Cold full-day scheduled-events fetch can be slow; allow plenty of time
+        # (the interaction is deferred, so a longer wait is safe). Cached 1h after.
+        data = await backend_get("/api/slate/today", {}, 80)
         await interaction.followup.send(embed=slate_embed(data))
     except Exception:  # noqa: BLE001
         log.exception("/slate failed")
