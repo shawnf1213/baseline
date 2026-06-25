@@ -344,6 +344,8 @@ def get_court_report(tournament: str, tour: str = "ATP") -> dict:
             reliable = ["Total Games", "Break Points Won"]
 
         # Players to watch — entrants from today's slate at this tournament.
+        # Also backfill the surface from a matched scheduled event when the
+        # court key isn't in COURTS_BY_SURFACE (e.g. WTA-only courts).
         watch = []
         try:
             events = get_scheduled_events() or []
@@ -352,6 +354,8 @@ def get_court_report(tournament: str, tour: str = "ATP") -> dict:
             for e in events:
                 if _norm(e.get("tournament", "").split(",")[0]) != tkey:
                     continue
+                if not surface and e.get("surface"):
+                    surface = e["surface"]
                 for nm in (e.get("p1_name"), e.get("p2_name")):
                     n = _norm(nm)
                     if nm and n not in seen:
