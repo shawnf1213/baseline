@@ -279,13 +279,17 @@ def get_slate(date_str: str = "") -> dict:
         return {"available": False, "atp": [], "wta": []}
     out = {"available": True, "atp": [], "wta": [], "count": 0}
     for e in events:
+        status = (e.get("status") or "").lower()
+        # Drop matches that have already been played — a slate is the day AHEAD.
+        if status in ("finished", "aftermatch", "ended"):
+            continue
         cpi, tier = _court_cpi(e.get("tournament", ""), e.get("surface", ""), e.get("tour", ""))
         row = {
             "p1": e.get("p1_name", ""), "p2": e.get("p2_name", ""),
             "tournament": e.get("tournament", ""), "surface": e.get("surface", ""),
             "cpi": cpi, "speed_tier": tier,
             "start_timestamp": e.get("start_timestamp", 0),
-            "tour": e.get("tour", ""),
+            "tour": e.get("tour", ""), "status": status,
         }
         (out["atp"] if e.get("tour") == "ATP" else out["wta"]).append(row)
     out["count"] = len(out["atp"]) + len(out["wta"])

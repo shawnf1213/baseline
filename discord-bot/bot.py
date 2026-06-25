@@ -957,9 +957,10 @@ POD_MINUTE = int(os.getenv("POD_MINUTE", "50") or "50")
 POD_POST_ON_START = (os.getenv("POD_POST_ON_START", "0") or "0") not in ("0", "false", "False")
 _pod_startup_done = False
 
-# Feature 4 — daily Slate auto-post to the 📋・slate channel (like Pick of the Day).
+# Feature 4 — daily Slate auto-post to the 📋・slate channel, at midnight ET
+# alongside the Pick of the Day.
 SLATE_CHANNEL_ID = int(os.getenv("SLATE_CHANNEL_ID", "1519546971344470027") or "0")
-SLATE_HOUR = int(os.getenv("SLATE_HOUR", "8") or "8")      # 8:00 AM ET default
+SLATE_HOUR = int(os.getenv("SLATE_HOUR", "0") or "0")      # 12:00 AM ET
 SLATE_MINUTE = int(os.getenv("SLATE_MINUTE", "0") or "0")
 MSG_NO_PICK = (
     "No Pick of the Day right now — nothing on the board cleared the "
@@ -1268,10 +1269,11 @@ results_group = app_commands.Group(name="results",
 
 @results_group.command(name="show", description="Baseline's automated win/loss record")
 async def results_show(interaction: discord.Interaction):
-    await interaction.response.defer(thinking=True, ephemeral=True)
+    # Public — the track record is a sales tool, visible to everyone.
+    await interaction.response.defer(thinking=True)
     try:
         rec = await asyncio.to_thread(results_tracker.get_record)
-        await interaction.followup.send(embed=results_embed(rec), ephemeral=True)
+        await interaction.followup.send(embed=results_embed(rec))
     except Exception:  # noqa: BLE001
         log.exception("/results show failed")
         await _send_error(interaction, "Unable to load the record right now.")
@@ -1337,8 +1339,12 @@ def slate_embed(data: dict) -> discord.Embed:
         name = f"{label} ({len(rows)})"
         buf, first, shown, used = "", True, 0, 0
         for m in rows:
+            st = (m.get("status") or "")
+            tag = (" · ❌ Cancelled" if "cancel" in st else
+                   " · ⏸️ Postponed" if "postpone" in st else
+                   " · 🔴 Live" if st in ("inprogress", "interrupted", "suspended") else "")
             line = (f"`{_fmt_et(m.get('start_timestamp'))}` **{m['p1']}** vs **{m['p2']}** · "
-                    f"{m.get('surface','')} {m['cpi']:g} · {(m.get('tournament','') or '')[:22]}")
+                    f"{m.get('surface','')} {m['cpi']:g} · {(m.get('tournament','') or '')[:22]}{tag}")
             add = ("\n" if buf else "") + line
             if used + len(add) > PER_TOUR_CHARS or len(e.fields) >= FIELD_BUDGET:
                 break
