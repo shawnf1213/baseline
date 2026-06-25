@@ -679,10 +679,17 @@ async def court_autocomplete(interaction: discord.Interaction, current: str):
         if surface and surface in COURTS_BY_SURFACE:
             pool = [("None", None)] + [(c, surface) for c in COURTS_BY_SURFACE[surface]]
         else:
-            # Surface not chosen yet — show all, grouped/labelled by surface.
+            # Surface not chosen — INTERLEAVE across surfaces so the 25-item cap
+            # doesn't truncate whole surfaces (grass is last and was getting cut
+            # to just Wimbledon). Round-robin one court per surface at a time.
+            from itertools import zip_longest
             pool = [("None", None)]
-            for surf, courts in COURTS_BY_SURFACE.items():
-                pool += [(c, surf) for c in courts]
+            per_surface = [[(c, surf) for c in courts]
+                           for surf, courts in COURTS_BY_SURFACE.items()]
+            for group in zip_longest(*per_surface):
+                for item in group:
+                    if item:
+                        pool.append(item)
 
         out = []
         for display, surf in pool:
@@ -1279,17 +1286,39 @@ def slate_embed(data: dict) -> discord.Embed:
         e.description = "No matches scheduled today."
         e.set_footer(text=FOOTER_GENERIC)
         return e
+
+    # A full day can be 130+ matches — well over Discord's 6000-char / 25-field
+    # embed limit. Give each tour an equal slice of a conservative budget so both
+    # ATP and WTA show, with compact one-line entries and a remainder note.
+    PER_TOUR_CHARS, FIELD_BUDGET = 2500, 22
+
+    def _flush(name, buf):
+        e.add_field(name=name, value=buf, inline=False)
+
     for tour, label in (("atp", "🟦 ATP"), ("wta", "🟪 WTA")):
         rows = data.get(tour, [])
-        if not rows:
+        if not rows or len(e.fields) >= FIELD_BUDGET:
             continue
-        lines = []
-        for m in rows[:30]:
-            lines.append(
-                f"`{_fmt_et(m.get('start_timestamp'))}` **{m['p1']}** vs **{m['p2']}**\n"
-                f"┕ {m['tournament']} · {m['surface']} · CPI {m['cpi']:g} ({m.get('speed_tier','')})")
-        _add_lines_field(e, f"{label} ({len(rows)})", lines)
-    e.set_footer(text=FOOTER_GENERIC + " • Scheduled matches, EST")
+        name = f"{label} ({len(rows)})"
+        buf, first, shown, used = "", True, 0, 0
+        for m in rows:
+            line = (f"`{_fmt_et(m.get('start_timestamp'))}` **{m['p1']}** vs **{m['p2']}** · "
+                    f"{m.get('surface','')} {m['cpi']:g} · {(m.get('tournament','') or '')[:22]}")
+            add = ("\n" if buf else "") + line
+            if used + len(add) > PER_TOUR_CHARS or len(e.fields) >= FIELD_BUDGET:
+                break
+            if len(buf) + len(add) > 1024:
+                _flush(name if first else f"{label} (cont.)", buf)
+                first, buf = False, line
+            else:
+                buf += add
+            used += len(add)
+            shown += 1
+        if buf and len(e.fields) < FIELD_BUDGET:
+            _flush(name if first else f"{label} (cont.)", buf)
+        if shown < len(rows) and len(e.fields) < FIELD_BUDGET:
+            _flush("​", f"…and {len(rows) - shown} more — use /prop for any matchup")
+    e.set_footer(text=FOOTER_GENERIC + " • Scheduled, EST")
     return e
 
 
