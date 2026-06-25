@@ -159,6 +159,22 @@ def update_result(pick_id: int, result: str) -> bool:
         return False
 
 
+def delete_pick(pick_id: int) -> bool:
+    """Delete one pick row (admin cleanup / removing a bad entry)."""
+    if not _READY:
+        return False
+    try:
+        with _session() as s:
+            row = s.get(Pick, int(pick_id))
+            if row is None:
+                return False
+            s.delete(row)
+            return True
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("delete_pick failed: %s", exc)
+        return False
+
+
 def all_picks() -> list:
     """All pick rows as dicts, most recent first."""
     if not _READY:

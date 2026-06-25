@@ -191,6 +191,13 @@ async def results_update(req: ResultUpdateRequest):
     return {"ok": ok}
 
 
+@app.delete("/api/results/{pick_id}")
+async def results_delete(pick_id: int):
+    """Delete a pick row (admin cleanup)."""
+    from src import database
+    return {"ok": database.delete_pick(pick_id)}
+
+
 class ResolveRequest(BaseModel):
     player: str
     opponent: str = ""
