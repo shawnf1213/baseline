@@ -956,6 +956,11 @@ POD_MINUTE = int(os.getenv("POD_MINUTE", "50") or "50")
 # Optional one-shot post on startup for verifying a deploy (off by default).
 POD_POST_ON_START = (os.getenv("POD_POST_ON_START", "0") or "0") not in ("0", "false", "False")
 _pod_startup_done = False
+
+# Feature 4 — daily Slate auto-post to the 📋・slate channel (like Pick of the Day).
+SLATE_CHANNEL_ID = int(os.getenv("SLATE_CHANNEL_ID", "1519546971344470027") or "0")
+SLATE_HOUR = int(os.getenv("SLATE_HOUR", "8") or "8")      # 8:00 AM ET default
+SLATE_MINUTE = int(os.getenv("SLATE_MINUTE", "0") or "0")
 MSG_NO_PICK = (
     "No Pick of the Day right now — nothing on the board cleared the "
     "confidence threshold (or the board is unavailable). Try again later."
@@ -1154,6 +1159,36 @@ async def _before_daily_pick():
     await client.wait_until_ready()
 
 
+# ── Feature 4 — daily Slate auto-post (📋・slate channel) ─────────────────────────
+async def _post_slate(channel) -> str:
+    data = await backend_get("/api/slate/today", {}, 80)
+    if not data or not data.get("available"):
+        await asyncio.sleep(2)
+        data = await backend_get("/api/slate/today", {}, 80)
+    await channel.send(embed=slate_embed(data))
+    return f"posted slate ({(data or {}).get('count', 0)} matches)"
+
+
+@tasks.loop(time=datetime.time(hour=SLATE_HOUR, minute=SLATE_MINUTE, tzinfo=POD_TZINFO))
+async def daily_slate():
+    if not SLATE_CHANNEL_ID:
+        return
+    try:
+        channel = client.get_channel(SLATE_CHANNEL_ID)
+        if channel is None:
+            log.warning("daily slate: channel %s not found", SLATE_CHANNEL_ID)
+            return
+        status = await _post_slate(channel)
+        log.info("daily slate: %s", status)
+    except Exception:  # noqa: BLE001
+        log.exception("daily slate post failed")
+
+
+@daily_slate.before_loop
+async def _before_daily_slate():
+    await client.wait_until_ready()
+
+
 # ════════════════════════════════════════════════════════════════════════════
 # Shared small helpers for the new commands
 # ════════════════════════════════════════════════════════════════════════════
@@ -1233,10 +1268,10 @@ results_group = app_commands.Group(name="results",
 
 @results_group.command(name="show", description="Baseline's automated win/loss record")
 async def results_show(interaction: discord.Interaction):
-    await interaction.response.defer(thinking=True)
+    await interaction.response.defer(thinking=True, ephemeral=True)
     try:
         rec = await asyncio.to_thread(results_tracker.get_record)
-        await interaction.followup.send(embed=results_embed(rec))
+        await interaction.followup.send(embed=results_embed(rec), ephemeral=True)
     except Exception:  # noqa: BLE001
         log.exception("/results show failed")
         await _send_error(interaction, "Unable to load the record right now.")
@@ -1392,14 +1427,14 @@ def form_embed(name: str, data: dict) -> discord.Embed:
 @app_commands.describe(player="Player name")
 @app_commands.autocomplete(player=player_autocomplete)
 async def form(interaction: discord.Interaction, player: str):
-    await interaction.response.defer(thinking=True)
+    await interaction.response.defer(thinking=True, ephemeral=True)
     try:
         pid, tour, name = await resolve_player(player)
         if not pid:
             await _send_error(interaction, "Couldn't find that player.")
             return
         data = await backend_get("/api/player/form", {"player_id": pid, "tour": tour}, PROP_TIMEOUT)
-        await interaction.followup.send(embed=form_embed(name, data))
+        await interaction.followup.send(embed=form_embed(name, data), ephemeral=True)
     except Exception:  # noqa: BLE001
         log.exception("/form failed")
         await _send_error(interaction, "Unable to load form right now.")
@@ -1440,7 +1475,7 @@ def history_embed(name: str, prop: str, surface: str, line: float, data: dict) -
 @app_commands.autocomplete(player=player_autocomplete)
 async def history(interaction: discord.Interaction, player: str,
                   prop: app_commands.Choice[str], surface: app_commands.Choice[str], line: float):
-    await interaction.response.defer(thinking=True)
+    await interaction.response.defer(thinking=True, ephemeral=True)
     try:
         if not _member_gate(interaction):
             await _send_error(interaction, f"This command is for **{MEMBER_ROLE_NAME}** members.")
@@ -1453,7 +1488,7 @@ async def history(interaction: discord.Interaction, player: str,
             "player_id": pid, "tour": tour, "prop": prop.value,
             "surface": surface.value, "line": line}, PROP_TIMEOUT)
         await interaction.followup.send(
-            embed=history_embed(name, prop.value, surface.value, line, data))
+            embed=history_embed(name, prop.value, surface.value, line, data), ephemeral=True)
     except Exception:  # noqa: BLE001
         log.exception("/history failed")
         await _send_error(interaction, "Unable to load history right now.")
@@ -1497,7 +1532,7 @@ def courtreport_embed(data: dict) -> discord.Embed:
                             app_commands.Choice(name="WTA", value="WTA")])
 async def courtreport(interaction: discord.Interaction, tournament: str,
                       tour: app_commands.Choice[str] = None):
-    await interaction.response.defer(thinking=True)
+    await interaction.response.defer(thinking=True, ephemeral=True)
     try:
         tval = tour.value if tour else "ATP"
         # The bot knows each autocompleted court's surface — pass it so the
@@ -1505,10 +1540,10 @@ async def courtreport(interaction: discord.Interaction, tournament: str,
         shint = surface_for_court(tournament) or ""
         data = await backend_get("/api/courtreport",
                                  {"tournament": tournament, "tour": tval, "surface": shint}, 75)
-        await interaction.followup.send(embed=courtreport_embed(data))
+        await interaction.followup.send(embed=courtreport_embed(data), ephemeral=True)
     except Exception:  # noqa: BLE001
         log.exception("/courtreport failed")
-        await interaction.followup.send(embed=courtreport_embed({"tournament": tournament}))
+        await interaction.followup.send(embed=courtreport_embed({"tournament": tournament}), ephemeral=True)
 
 
 # ── Feature 1 — 11pm EST auto-resolution job ─────────────────────────────────
@@ -1653,6 +1688,15 @@ async def on_ready():
             log.info("Results auto-resolution scheduled at %02d:00 %s", RESOLVE_HOUR, POD_TZINFO)
         except Exception:
             log.exception("failed to start results resolution loop")
+
+    # Feature 4 — daily Slate auto-post to the 📋・slate channel.
+    if SLATE_CHANNEL_ID and not daily_slate.is_running():
+        try:
+            daily_slate.start()
+            log.info("Daily slate auto-post scheduled at %02d:%02d %s -> channel %s",
+                     SLATE_HOUR, SLATE_MINUTE, POD_TZINFO, SLATE_CHANNEL_ID)
+        except Exception:
+            log.exception("failed to start daily slate loop")
 
     # Feature 7 — Monday 9am court-report auto-post (only if a channel is set).
     if (COURTREPORT_CHANNEL_ID or POD_CHANNEL_ID) and not weekly_court_report.is_running():
