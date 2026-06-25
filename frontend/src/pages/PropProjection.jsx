@@ -316,7 +316,10 @@ export default function PropProjection({ tour }) {
       const ts = stats.all_matches[0]?.timestamp
       if (!ts) return
       const days = Math.floor((Date.now() - ts * 1000) / 86400000)
-      if (days > 21) warnings.push({ name: player.name, days })
+      // Feature 3 — injury/withdrawal flag: >21d amber, >45d red (+ the backend
+      // also reduces confidence 15 pts for red, reflected in the gauge).
+      if (days > 45) warnings.push({ name: player.name, days, level: 'red' })
+      else if (days > 21) warnings.push({ name: player.name, days, level: 'amber' })
     }
     check(p1, p1PrefetchStats)
     check(p2, p2PrefetchStats)
@@ -353,21 +356,27 @@ export default function PropProjection({ tour }) {
       {/* Inactivity warnings */}
       {inactivityWarnings.length > 0 && (
         <div style={{ marginBottom: 16 }}>
-          {inactivityWarnings.map((w, i) => (
-            <div key={i} className="glass-card" style={{
-              display: 'flex', alignItems: 'center', gap: 10,
-              padding: '10px 16px', marginBottom: 8, borderColor: 'rgba(255, 179, 0, 0.3)',
-              background: 'rgba(255, 179, 0, 0.06)',
-            }}>
-              <span style={{ fontSize: 16, color: 'var(--amber)' }}>⚠</span>
-              <span style={{
-                fontSize: 12, fontWeight: 700, color: 'var(--amber)',
-                fontFamily: '"Barlow Condensed", sans-serif', letterSpacing: 0.5,
+          {inactivityWarnings.map((w, i) => {
+            const isRed = w.level === 'red'
+            const c = isRed ? 'var(--red-bright)' : 'var(--amber)'
+            const rgb = isRed ? '255, 68, 68' : '255, 179, 0'
+            return (
+              <div key={i} className="glass-card" style={{
+                display: 'flex', alignItems: 'center', gap: 10,
+                padding: '10px 16px', marginBottom: 8, borderColor: `rgba(${rgb}, 0.35)`,
+                background: `rgba(${rgb}, 0.06)`,
               }}>
-                {w.name} may be inactive or injured — last match was {w.days} days ago
-              </span>
-            </div>
-          ))}
+                <span style={{ fontSize: 16, color: c }}>⚠</span>
+                <span style={{
+                  fontSize: 12, fontWeight: 700, color: c,
+                  fontFamily: '"Barlow Condensed", sans-serif', letterSpacing: 0.5,
+                }}>
+                  {w.name} may be inactive or injured — last match was {w.days} days ago.
+                  Data may not reflect current form.{isRed ? ' Confidence reduced 15 points.' : ''}
+                </span>
+              </div>
+            )
+          })}
         </div>
       )}
 
