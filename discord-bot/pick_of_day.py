@@ -290,8 +290,11 @@ async def _evaluate(prop: dict, sem: asyncio.Semaphore):
         edge = proj - line
         return {
             "player": p_name, "opponent": o_name,
-            "prop_type": prop["prop_type"], "line": line,
+            "player_id": p_id, "tour": tour,
+            "pp_player": prop["player"],              # original PrizePicks name (board matching)
+            "prop_type": prop["prop_type"], "line": line, "original_line": line,
             "surface": payload["surface"], "tournament": tournament,
+            "start_timestamp": nm.get("start_timestamp"),
             "projection": proj, "edge": edge, "edge_mag": abs(edge),
             "confidence": conf, "lean": data.get("lean"),
             "p1_win_prob": data.get("p1_win_prob"), "p2_win_prob": data.get("p2_win_prob"),
@@ -299,6 +302,21 @@ async def _evaluate(prop: dict, sem: asyncio.Semaphore):
             "score": conf * abs(edge),
             "data": data,
         }
+
+
+def current_board_lines() -> dict:
+    """Re-fetch the PrizePicks board and return {(norm_player, prop_type): line}
+    for the standard lines only. Used by the line-movement monitor. Empty on
+    failure — never raises."""
+    try:
+        board = _fetch_board()
+        out = {}
+        for pr in _parse_board(board):
+            out[(_norm(pr["player"]), pr["prop_type"])] = pr["line"]
+        return out
+    except Exception as exc:  # noqa: BLE001
+        log.warning("current_board_lines failed: %s", exc)
+        return {}
 
 
 def _passes_quality(pk: dict) -> bool:

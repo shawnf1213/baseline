@@ -23,7 +23,9 @@ from discord import app_commands
 from discord.ext import tasks
 from dotenv import load_dotenv
 
-import pick_of_day  # isolated Pick of the Day feature (own failure handling)
+import pick_of_day      # isolated Pick of the Day feature (own failure handling)
+import results_tracker   # Feature 1 — durable results log (own failure handling)
+import line_monitor      # Feature 2 — automated line-movement monitor (bot-only)
 
 load_dotenv()
 
@@ -438,6 +440,15 @@ def prop_embed(player, opponent, prop_type, surface, court_display, line, data) 
         color=color,
     )
     e.set_thumbnail(url=LOGO_URL)
+
+    # ── Feature 3 — data freshness / injury-withdrawal flag (amber/red) ──────
+    _fresh_level = data.get("freshness_level")
+    _fresh_msg = data.get("freshness_message")
+    if _fresh_level and _fresh_msg:
+        _icon = "🔴" if _fresh_level == "red" else "🟡"
+        _suffix = " Confidence reduced 15 points." if _fresh_level == "red" else ""
+        e.add_field(name=f"{_icon} Data Freshness",
+                    value=f"{_fresh_msg}{_suffix}", inline=False)
 
     # Prop-relevant stat cards, side by side.
     p_block, o_block = _prop_stat_blocks(prop_type, data)
@@ -962,6 +973,39 @@ def _member_gate(interaction: discord.Interaction) -> bool:
     return isinstance(member, discord.Member) and role in member.roles
 
 
+async def _fetch_streak(player_id, tour):
+    if not player_id:
+        return {}
+    try:
+        return await backend_get("/api/player/streak",
+                                 {"player_id": player_id, "tour": tour or "ATP"}, GENERIC_TIMEOUT)
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+async def _annotate_form_alerts(picks: list):
+    """Feature 5 — tag each pick whose player is on a 5+ win/loss streak so the
+    top-3 output can show a small form-alert note. Best-effort; never raises."""
+    try:
+        streaks = await asyncio.gather(
+            *[_fetch_streak(p.get("player_id"), p.get("tour", "ATP")) for p in picks],
+            return_exceptions=True,
+        )
+    except Exception:  # noqa: BLE001
+        streaks = [{} for _ in picks]
+    for p, s in zip(picks, streaks):
+        p["form_alert"] = ""
+        if isinstance(s, dict) and (s.get("streak_len") or 0) >= 5:
+            t = s.get("streak_type")
+            icon = "🔥" if t == "W" else "❄️"
+            p["form_alert"] = f"{icon} {t}{s.get('streak_len')} streak"
+
+
+def _form_note(pick: dict) -> str:
+    fa = pick.get("form_alert")
+    return f"  ·  {fa}" if fa else ""
+
+
 def _pick_line(pick: dict) -> str:
     """One compact line summarising a pick for the 'Also Today' list."""
     proj = pick.get("projection")
@@ -969,7 +1013,7 @@ def _pick_line(pick: dict) -> str:
     arrow = "🔼" if lean == "OVER" else "🔽"
     loc = pick.get("tournament") or f"{pick.get('surface','')} court"
     proj_txt = f"proj {proj:.1f}" if isinstance(proj, (int, float)) else "proj —"
-    return (f"{arrow} **{pick['player']}** {lean} {pick['line']:g} {pick['prop_type']}  "
+    return (f"{arrow} **{pick['player']}** {lean} {pick['line']:g} {pick['prop_type']}{_form_note(pick)}  "
             f"· {proj_txt} · {pick.get('confidence', 0):.0f}% conf\n"
             f"┕ vs {pick['opponent']} · {loc}")
 
@@ -986,6 +1030,9 @@ def picks_embed(picks: list) -> discord.Embed:
         top["surface"], court_display, top["line"], top["data"],
     )
     e.set_author(name="🏆 Pick of the Day")
+    if top.get("form_alert"):
+        e.add_field(name="🔥 Form Alert",
+                    value=f"**{top['player']}** is on a {top['form_alert']}.", inline=False)
     extra = picks[1:3]
     if extra:
         labels = ["🥈 #2", "🥉 #3"]
@@ -1012,23 +1059,71 @@ async def pickoftheday(interaction: discord.Interaction):
         if not picks:
             await interaction.followup.send(embed=error_embed(MSG_NO_PICK), ephemeral=True)
             return
+        await _annotate_form_alerts(picks)
         await interaction.followup.send(embed=picks_embed(picks))
     except Exception:  # noqa: BLE001 — isolate: never crash or affect other commands
         log.exception("UNHANDLED /pickoftheday error")
         await _send_error(interaction, "Unable to generate a pick right now.")
 
 
-# ── Optional daily auto-post (STEP 6) ────────────────────────────────────────────
-async def _post_pick_of_day(channel) -> str:
-    """Generate and post the top-3 Pick of the Day to ``channel``. Returns a
-    short status string."""
+# ── Daily auto-post + results logging + line monitor ────────────────────────────
+_line_monitor_task = None
+
+
+def _pick_to_record(p: dict) -> dict:
+    return {
+        "player": p.get("player", ""), "opponent": p.get("opponent", ""),
+        "prop_type": p.get("prop_type", ""), "line": p.get("line"),
+        "model_projection": p.get("projection"), "lean": (p.get("lean") or "").upper(),
+        "confidence": p.get("confidence"), "result": "PENDING",
+        "original_line": p.get("original_line", p.get("line")),
+        "tournament": p.get("tournament") or "", "surface": p.get("surface") or "",
+    }
+
+
+async def _log_picks_pending(picks: list):
+    """Feature 1 — log each pick to the durable results tracker as PENDING."""
+    for p in picks:
+        rec = await asyncio.to_thread(results_tracker.log_pick, _pick_to_record(p))
+        if rec:
+            p["pick_id"] = rec.get("id")
+    log.info("POD: logged %d picks to results tracker",
+             sum(1 for p in picks if p.get("pick_id")))
+
+
+def _start_line_monitor(channel, picks: list):
+    """Feature 2 — start the bot-only line-movement monitor for these picks."""
+    global _line_monitor_task
+    try:
+        if _line_monitor_task and not _line_monitor_task.done():
+            _line_monitor_task.cancel()
+
+        async def _post_alert(text):
+            await channel.send(text)
+
+        _line_monitor_task = asyncio.create_task(
+            line_monitor.monitor(picks, pick_of_day.current_board_lines, _post_alert))
+        log.info("POD: line monitor started for %d picks", len(picks))
+    except Exception:  # noqa: BLE001
+        log.exception("failed to start line monitor")
+
+
+async def _post_pick_of_day(channel, track: bool = False) -> str:
+    """Generate and post the top-3 Pick of the Day to ``channel``. When
+    ``track`` is set (the midnight run), also log the picks as PENDING and start
+    the line-movement monitor. Returns a short status string."""
     picks = await pick_of_day.generate_picks(3)
     if not picks:
         no_play = discord.Embed(description=MSG_NO_PICK_DAILY, color=COLOR_NEUTRAL)
         no_play.set_author(name="🏆 Pick of the Day")
         await channel.send(embed=no_play)
         return "no qualifying plays — posted no-play notice"
+    await _annotate_form_alerts(picks)
+    if track:
+        await _log_picks_pending(picks)
     await channel.send(embed=picks_embed(picks))
+    if track:
+        _start_line_monitor(channel, picks)
     return f"posted {len(picks)} picks, #1 {picks[0]['player']} {picks[0]['prop_type']}"
 
 
@@ -1041,7 +1136,7 @@ async def daily_pick_of_day():
         if channel is None:
             log.warning("POD daily: channel %s not found", POD_CHANNEL_ID)
             return
-        status = await _post_pick_of_day(channel)
+        status = await _post_pick_of_day(channel, track=True)
         log.info("POD daily: %s", status)
     except Exception:  # noqa: BLE001
         log.exception("POD daily auto-post failed")
@@ -1049,6 +1144,404 @@ async def daily_pick_of_day():
 
 @daily_pick_of_day.before_loop
 async def _before_daily_pick():
+    await client.wait_until_ready()
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Shared small helpers for the new commands
+# ════════════════════════════════════════════════════════════════════════════
+FOOTER_GENERIC = "Baseline — Data Driven. Optimizer Backed."
+
+
+def _fmt_et(ts) -> str:
+    if not ts:
+        return "TBD"
+    try:
+        dt = datetime.datetime.fromtimestamp(int(ts), datetime.timezone.utc).astimezone(POD_TZINFO)
+        return dt.strftime("%I:%M %p ET").lstrip("0")
+    except Exception:  # noqa: BLE001
+        return "TBD"
+
+
+def _add_lines_field(e: discord.Embed, name: str, lines: list, limit: int = 1024):
+    """Add ``lines`` as one or more fields, each under Discord's 1024 char cap."""
+    buf, first = "", True
+    for ln in lines:
+        add = ("\n" if buf else "") + ln
+        if len(buf) + len(add) > limit:
+            e.add_field(name=name if first else f"{name} (cont.)", value=buf or "—", inline=False)
+            first, buf = False, ln
+        else:
+            buf += add
+    if buf:
+        e.add_field(name=name if first else f"{name} (cont.)", value=buf, inline=False)
+
+
+def _is_admin(interaction: discord.Interaction) -> bool:
+    perms = getattr(interaction.user, "guild_permissions", None)
+    return bool(perms and perms.administrator)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Feature 1 — /results (public) and /results update (admin)
+# ════════════════════════════════════════════════════════════════════════════
+def results_embed(rec: dict) -> discord.Embed:
+    if not rec or not rec.get("total"):
+        e = discord.Embed(title="📊 Baseline Track Record", color=COLOR_NEUTRAL,
+                           description="No graded picks yet — check back after today's plays resolve.")
+        e.set_footer(text=FOOTER_GENERIC)
+        return e
+    wins, losses = rec.get("wins", 0), rec.get("losses", 0)
+    win_rate = rec.get("win_rate", 0.0)
+    color = COLOR_OVER if win_rate >= 50 else COLOR_UNDER
+    st_type, st_len = rec.get("streak_type"), rec.get("streak_len", 0)
+    streak_txt = (f"{'🔥' if st_type == 'W' else '🧊'} {st_len} {('win' if st_type=='W' else 'loss')}"
+                  f"{'s' if st_len != 1 else ''} in a row") if st_type else "—"
+    e = discord.Embed(title="📊 Baseline Track Record", color=color)
+    e.description = (
+        f"**Record:** {wins}-{losses}   ·   **Win rate:** {win_rate:g}%\n"
+        f"**Current streak:** {streak_txt}\n"
+        f"Total graded: {wins + losses}  ·  Pending: {rec.get('pending', 0)}"
+        + (f"  ·  Needs review: {rec.get('needs_review', 0)}" if rec.get("needs_review") else "")
+    )
+    cw, cl = rec.get("avg_confidence_wins"), rec.get("avg_confidence_losses")
+    if cw is not None or cl is not None:
+        e.add_field(name="Avg confidence",
+                    value=f"Winners: **{cw if cw is not None else '—'}%**  ·  "
+                          f"Losers: **{cl if cl is not None else '—'}%**", inline=False)
+    last = [p for p in rec.get("picks", []) if p.get("result") in ("W", "L")][:10]
+    if last:
+        icon = {"W": "🟢", "L": "🔴"}
+        rows = [f"{icon.get(p['result'],'⚪')} **{p['player']}** {p.get('lean','')} "
+                f"{p.get('line','')}{'' if p.get('line') is None else ''} {p['prop_type']}"
+                for p in last]
+        _add_lines_field(e, "Last 10", rows)
+    e.set_footer(text=FOOTER_GENERIC)
+    return e
+
+
+results_group = app_commands.Group(name="results",
+                                   description="Baseline's automated public track record")
+
+
+@results_group.command(name="show", description="Baseline's automated win/loss record")
+async def results_show(interaction: discord.Interaction):
+    await interaction.response.defer(thinking=True)
+    try:
+        rec = await asyncio.to_thread(results_tracker.get_record)
+        await interaction.followup.send(embed=results_embed(rec))
+    except Exception:  # noqa: BLE001
+        log.exception("/results show failed")
+        await _send_error(interaction, "Unable to load the record right now.")
+
+
+_RESULT_CHOICES = [
+    app_commands.Choice(name="Win", value="W"),
+    app_commands.Choice(name="Loss", value="L"),
+    app_commands.Choice(name="Pending", value="PENDING"),
+    app_commands.Choice(name="Needs Review", value="NEEDS REVIEW"),
+]
+
+
+@results_group.command(name="update", description="Admin: manually set a pick's result")
+@app_commands.describe(pick_id="The pick id (from the record)", result="Correct result")
+@app_commands.choices(result=_RESULT_CHOICES)
+async def results_update_cmd(interaction: discord.Interaction, pick_id: int,
+                             result: app_commands.Choice[str]):
+    await interaction.response.defer(thinking=True, ephemeral=True)
+    if not _is_admin(interaction):
+        await interaction.followup.send(embed=error_embed("Admins only."), ephemeral=True)
+        return
+    try:
+        ok = await asyncio.to_thread(results_tracker.update_result, pick_id, result.value)
+        msg = (f"✅ Pick #{pick_id} set to **{result.value}**." if ok
+               else f"⚠️ Could not update pick #{pick_id}.")
+        await interaction.followup.send(embed=discord.Embed(description=msg, color=COLOR_NEUTRAL),
+                                        ephemeral=True)
+    except Exception:  # noqa: BLE001
+        log.exception("/results update failed")
+        await interaction.followup.send(embed=error_embed("Update failed."), ephemeral=True)
+
+
+client.tree.add_command(results_group)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Feature 4 — /slate (public)
+# ════════════════════════════════════════════════════════════════════════════
+def slate_embed(data: dict) -> discord.Embed:
+    e = discord.Embed(title="🎾 Today's Slate", color=COLOR_NEUTRAL)
+    if not data or not data.get("available"):
+        e.description = "Slate data unavailable — try again shortly."
+        e.set_footer(text=FOOTER_GENERIC)
+        return e
+    if not data.get("count"):
+        e.description = "No matches scheduled today."
+        e.set_footer(text=FOOTER_GENERIC)
+        return e
+    for tour, label in (("atp", "🟦 ATP"), ("wta", "🟪 WTA")):
+        rows = data.get(tour, [])
+        if not rows:
+            continue
+        lines = []
+        for m in rows[:30]:
+            lines.append(
+                f"`{_fmt_et(m.get('start_timestamp'))}` **{m['p1']}** vs **{m['p2']}**\n"
+                f"┕ {m['tournament']} · {m['surface']} · CPI {m['cpi']:g} ({m.get('speed_tier','')})")
+        _add_lines_field(e, f"{label} ({len(rows)})", lines)
+    e.set_footer(text=FOOTER_GENERIC + " • Scheduled matches, EST")
+    return e
+
+
+@client.tree.command(name="slate", description="Today's ATP & WTA matches with surface and court speed")
+async def slate(interaction: discord.Interaction):
+    await interaction.response.defer(thinking=True)
+    try:
+        data = await backend_get("/api/slate/today", {}, GENERIC_TIMEOUT)
+        await interaction.followup.send(embed=slate_embed(data))
+    except Exception:  # noqa: BLE001
+        log.exception("/slate failed")
+        await interaction.followup.send(
+            embed=slate_embed({"available": False}))
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Feature 5 — /form (public)
+# ════════════════════════════════════════════════════════════════════════════
+def form_embed(name: str, data: dict) -> discord.Embed:
+    if not data or not data.get("last10"):
+        e = discord.Embed(title=f"📈 Form — {name}", color=COLOR_NEUTRAL,
+                           description="Not enough recent match data.")
+        e.set_footer(text=FOOTER_GENERIC)
+        return e
+    st_type, st_len = data.get("streak_type"), data.get("streak_len", 0)
+    alert = data.get("form_alert")
+    color = COLOR_OVER if st_type == "W" else COLOR_UNDER if st_type == "L" else COLOR_NEUTRAL
+    e = discord.Embed(title=f"📈 Form — {name}", color=color)
+    if alert:
+        word = "WIN" if st_type == "W" else "LOSS"
+        e.description = f"## {'🔥' if st_type=='W' else '🧊'} FORM ALERT — {st_len}-match {word} streak"
+    else:
+        e.description = (f"Current streak: **{st_len} {('win' if st_type=='W' else 'loss')}"
+                         f"{'s' if st_len != 1 else ''}**" if st_type else "Current streak: —")
+
+    icon = {True: "🟢", False: "🔴"}
+    rows = [f"{icon[bool(m['won'])]} vs {m['opponent']} ({m['surface'] or '—'})"
+            for m in data.get("last10", [])]
+    _add_lines_field(e, "Last 10", rows)
+
+    trend = data.get("trend", {})
+    arrow = {"up": "🔼", "down": "🔽", "flat": "➡️"}
+    tl = []
+    for key, lbl in (("aces", "Aces"), ("break_points_won", "Break Points Won"),
+                     ("double_faults", "Double Faults")):
+        t = trend.get(key, {})
+        r, p = t.get("recent5"), t.get("prev5")
+        if r is None and p is None:
+            continue
+        tl.append(f"{arrow.get(t.get('direction','flat'),'➡️')} **{lbl}** "
+                  f"{r if r is not None else '—'} (last 5) vs {p if p is not None else '—'} (prev 5)")
+    if tl:
+        e.add_field(name="Trend (last 5 vs previous 5)", value="\n".join(tl), inline=False)
+
+    fr = data.get("freshness") or {}
+    if fr.get("message"):
+        e.add_field(name=("🔴" if fr.get("level") == "red" else "🟡") + " Data Freshness",
+                    value=fr["message"], inline=False)
+    e.set_footer(text=FOOTER_GENERIC + " • Last 15 matches")
+    return e
+
+
+@client.tree.command(name="form", description="A player's current form, streak and stat trend")
+@app_commands.describe(player="Player name")
+@app_commands.autocomplete(player=player_autocomplete)
+async def form(interaction: discord.Interaction, player: str):
+    await interaction.response.defer(thinking=True)
+    try:
+        pid, tour, name = await resolve_player(player)
+        if not pid:
+            await _send_error(interaction, "Couldn't find that player.")
+            return
+        data = await backend_get("/api/player/form", {"player_id": pid, "tour": tour}, PROP_TIMEOUT)
+        await interaction.followup.send(embed=form_embed(name, data))
+    except Exception:  # noqa: BLE001
+        log.exception("/form failed")
+        await _send_error(interaction, "Unable to load form right now.")
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Feature 6 — /history (members only)
+# ════════════════════════════════════════════════════════════════════════════
+def history_embed(name: str, prop: str, surface: str, line: float, data: dict) -> discord.Embed:
+    if not data or not data.get("player_matches"):
+        e = discord.Embed(title=f"📚 {prop} History — {name}", color=COLOR_NEUTRAL,
+                           description=f"No {surface} matches with {prop} data found.")
+        e.set_footer(text=FOOTER_GENERIC)
+        return e
+    over, under = data.get("over", 0), data.get("under", 0)
+    n = data.get("player_matches", 0)
+    hit = data.get("hit_rate")
+    e = discord.Embed(
+        title=f"📚 {prop} History — {name}",
+        color=COLOR_OVER if (hit or 0) >= 50 else COLOR_UNDER,
+        description=(f"**{name}** has gone **OVER {line:g}** {prop} on **{surface or 'all surfaces'}** "
+                     f"in **{over} of their last {n}** — **{hit:g}% hit rate**."),
+    )
+    e.add_field(name="Split", value=f"🔼 Over: **{over}**  ·  🔽 Under: **{under}**  ·  "
+                                    f"Avg: **{data.get('average')}**", inline=False)
+    last = data.get("last10", [])
+    if last:
+        rows = [f"{'🔼' if m['over'] else '🔽'} `{m.get('date','')}` vs {m.get('opponent','')}: "
+                f"**{m.get('value')}**" for m in last]
+        _add_lines_field(e, f"Last {len(last)} matches", rows)
+    e.set_footer(text=FOOTER_GENERIC + " • Surface match log")
+    return e
+
+
+@client.tree.command(name="history", description="How often a player has gone over/under a prop line")
+@app_commands.describe(player="Player", prop="Prop type", surface="Surface", line="The line to test")
+@app_commands.choices(prop=PROP_CHOICES, surface=SURFACE_CHOICES)
+@app_commands.autocomplete(player=player_autocomplete)
+async def history(interaction: discord.Interaction, player: str,
+                  prop: app_commands.Choice[str], surface: app_commands.Choice[str], line: float):
+    await interaction.response.defer(thinking=True)
+    try:
+        if not _member_gate(interaction):
+            await _send_error(interaction, f"This command is for **{MEMBER_ROLE_NAME}** members.")
+            return
+        pid, tour, name = await resolve_player(player)
+        if not pid:
+            await _send_error(interaction, "Couldn't find that player.")
+            return
+        data = await backend_get("/api/history", {
+            "player_id": pid, "tour": tour, "prop": prop.value,
+            "surface": surface.value, "line": line}, PROP_TIMEOUT)
+        await interaction.followup.send(
+            embed=history_embed(name, prop.value, surface.value, line, data))
+    except Exception:  # noqa: BLE001
+        log.exception("/history failed")
+        await _send_error(interaction, "Unable to load history right now.")
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Feature 7 — /courtreport (public) + Monday 9am auto-post
+# ════════════════════════════════════════════════════════════════════════════
+def courtreport_embed(data: dict) -> discord.Embed:
+    name = data.get("tournament", "Tournament")
+    if not data or not data.get("available"):
+        e = discord.Embed(title=f"🏟️ Court Report — {name}", color=COLOR_NEUTRAL,
+                           description="Court data unavailable for that tournament.")
+        e.set_footer(text=FOOTER_GENERIC)
+        return e
+    cpi, tier = data.get("cpi"), data.get("speed_tier", "")
+    e = discord.Embed(title=f"🏟️ Court Report — {name}", color=COLOR_NEUTRAL)
+    cond = [f"**Surface:** {data.get('surface') or '—'}",
+            f"**ST Pace Index:** {cpi:g} ({tier})" if isinstance(cpi, (int, float)) else "**ST Pace Index:** —"]
+    yoy = data.get("yoy")
+    if yoy:
+        cond.append(f"**YoY change:** {yoy['previous']:g} → {yoy['current']:g} "
+                    f"({'+' if yoy['delta'] >= 0 else ''}{yoy['delta']:g}, {yoy['direction']})")
+    e.add_field(name="🎾 Surface Conditions", value="\n".join(cond), inline=False)
+    outlook = [data.get("ace_note", ""), data.get("bp_note", "")]
+    rel = data.get("reliable_props") or []
+    if rel:
+        outlook.append("**Most reliable here:** " + ", ".join(rel))
+    e.add_field(name="📊 Prop Outlook", value="\n".join(x for x in outlook if x), inline=False)
+    watch = data.get("players_to_watch") or []
+    if watch:
+        e.add_field(name="👀 Players to Watch", value="\n".join(f"• {w}" for w in watch), inline=False)
+    e.set_footer(text=FOOTER_GENERIC)
+    return e
+
+
+@client.tree.command(name="courtreport", description="Pre-tournament conditions & prop outlook for an event")
+@app_commands.describe(tournament="Tournament / court", tour="Tour (for WTA/ATP variants)")
+@app_commands.autocomplete(tournament=court_autocomplete)
+@app_commands.choices(tour=[app_commands.Choice(name="ATP", value="ATP"),
+                            app_commands.Choice(name="WTA", value="WTA")])
+async def courtreport(interaction: discord.Interaction, tournament: str,
+                      tour: app_commands.Choice[str] = None):
+    await interaction.response.defer(thinking=True)
+    try:
+        tval = tour.value if tour else "ATP"
+        data = await backend_get("/api/courtreport",
+                                 {"tournament": tournament, "tour": tval}, GENERIC_TIMEOUT)
+        await interaction.followup.send(embed=courtreport_embed(data))
+    except Exception:  # noqa: BLE001
+        log.exception("/courtreport failed")
+        await interaction.followup.send(embed=courtreport_embed({"tournament": tournament}))
+
+
+# ── Feature 1 — 11pm EST auto-resolution job ─────────────────────────────────
+RESOLVE_HOUR = int(os.getenv("RESOLVE_HOUR", "23") or "23")
+
+
+@tasks.loop(time=datetime.time(hour=RESOLVE_HOUR, minute=0, tzinfo=POD_TZINFO))
+async def daily_resolve_results():
+    try:
+        pending = await asyncio.to_thread(results_tracker.get_pending)
+        if not pending:
+            log.info("POD resolve: nothing pending")
+            return
+        resolved = 0
+        for pk in pending:
+            res = await asyncio.to_thread(results_tracker.resolve_pick, pk)
+            outcome = (res.get("result") or "NEEDS REVIEW").upper()
+            if outcome not in ("W", "L", "NEEDS REVIEW"):
+                outcome = "NEEDS REVIEW"
+            ok = await asyncio.to_thread(results_tracker.update_result, pk["id"], outcome)
+            resolved += 1 if ok else 0
+            log.info("POD resolve: pick #%s %s %s -> %s",
+                     pk.get("id"), pk.get("player"), pk.get("prop_type"), outcome)
+        log.info("POD resolve: processed %d pending picks", resolved)
+    except Exception:  # noqa: BLE001
+        log.exception("daily_resolve_results failed")
+
+
+@daily_resolve_results.before_loop
+async def _before_resolve():
+    await client.wait_until_ready()
+
+
+# ── Feature 7 — Monday 9am EST court-report auto-post ────────────────────────
+COURTREPORT_CHANNEL_ID = int(os.getenv("COURTREPORT_CHANNEL_ID", str(POD_CHANNEL_ID or 0)) or "0")
+
+
+@tasks.loop(time=datetime.time(hour=9, minute=0, tzinfo=POD_TZINFO))
+async def weekly_court_report():
+    # tasks.loop with a single time fires daily; gate to Mondays only.
+    if datetime.datetime.now(POD_TZINFO).weekday() != 0:
+        return
+    chan_id = COURTREPORT_CHANNEL_ID or POD_CHANNEL_ID
+    if not chan_id:
+        return
+    try:
+        channel = client.get_channel(chan_id)
+        if channel is None:
+            log.warning("weekly court report: channel %s not found", chan_id)
+            return
+        slate = await backend_get("/api/slate/today", {}, GENERIC_TIMEOUT)
+        seen, posted = set(), 0
+        for m in (slate.get("atp", []) + slate.get("wta", [])):
+            t = (m.get("tournament") or "").strip()
+            tour = m.get("tour", "ATP")
+            key = t.lower()
+            if not t or key in seen:
+                continue
+            seen.add(key)
+            data = await backend_get("/api/courtreport", {"tournament": t, "tour": tour}, GENERIC_TIMEOUT)
+            if data and data.get("available"):
+                await channel.send(embed=courtreport_embed(data))
+                posted += 1
+            if posted >= 4:                 # cap weekly volume
+                break
+        log.info("weekly court report: posted %d reports", posted)
+    except Exception:  # noqa: BLE001
+        log.exception("weekly_court_report failed")
+
+
+@weekly_court_report.before_loop
+async def _before_weekly_report():
     await client.wait_until_ready()
 
 
@@ -1105,6 +1598,23 @@ async def on_ready():
                      POD_HOUR, POD_MINUTE, POD_TZINFO, POD_CHANNEL_ID)
         except Exception:
             log.exception("failed to start daily Pick of the Day loop")
+
+    # Feature 1 — nightly results auto-resolution (always on; harmless if no picks).
+    if not daily_resolve_results.is_running():
+        try:
+            daily_resolve_results.start()
+            log.info("Results auto-resolution scheduled at %02d:00 %s", RESOLVE_HOUR, POD_TZINFO)
+        except Exception:
+            log.exception("failed to start results resolution loop")
+
+    # Feature 7 — Monday 9am court-report auto-post (only if a channel is set).
+    if (COURTREPORT_CHANNEL_ID or POD_CHANNEL_ID) and not weekly_court_report.is_running():
+        try:
+            weekly_court_report.start()
+            log.info("Weekly court report scheduled Mon 09:00 %s -> channel %s",
+                     POD_TZINFO, COURTREPORT_CHANNEL_ID or POD_CHANNEL_ID)
+        except Exception:
+            log.exception("failed to start weekly court report loop")
 
     # TEMPORARY: one-shot post on startup to verify the autonomous path end-to-end
     # without waiting for midnight. Remove once confirmed (set POD_POST_ON_START off).
