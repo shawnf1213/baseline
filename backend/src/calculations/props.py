@@ -266,6 +266,19 @@ def project_aces(
 
     # ── L1: Base ace rate — TA surface stats preferred ────────────────────────
     sofascore_base_raw = _safe(player_stats.get("aces"))
+    # Small-sample regression: when the surface has only a few stat-bearing
+    # matches, a single big-ace match (e.g. a clay grinder's one 14-ace grass
+    # win) shouldn't define the projection. Shrink the surface ace rate toward
+    # the player's all-surface ace rate, weighted by the surface sample size.
+    _overall_aces = _safe(player_stats.get("overall_aces"), 0.0)
+    _ace_surf_n = int(_safe(player_stats.get("ace_surface_n"), 0))
+    if _overall_aces > 0 and 0 < _ace_surf_n < 5:
+        _k = 3.0
+        _w = _ace_surf_n / (_ace_surf_n + _k)
+        _regressed = _w * sofascore_base_raw + (1.0 - _w) * _overall_aces
+        logger.info("ACE_REGRESS | surf_n=%d w=%.2f surf=%.1f overall=%.1f -> %.2f",
+                    _ace_surf_n, _w, sofascore_base_raw, _overall_aces, _regressed)
+        sofascore_base_raw = _regressed
     # Per-set scaling: divide per-match by historical avg sets, then multiply
     # by THIS match's expected sets. Replaces the flat BO5_SS_SCALE multiplier.
     sofascore_base = sofascore_base_raw * per_set_scale
