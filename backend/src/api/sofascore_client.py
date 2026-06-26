@@ -2018,7 +2018,10 @@ def get_scheduled_events(date_str: str = "", tours=("ATP", "WTA")) -> list:
     """
     if not date_str:
         date_str = datetime.utcnow().strftime("%Y-%m-%d")
-    cache_key = f"ss_sched_{date_str}_{int(time.time()) // 3600}"
+    # 5-minute cache (was 1h): which matches exist barely changes, but their
+    # STATUS (upcoming → live → finished) does, and the slate must reflect the
+    # current state when it's run rather than a stale snapshot.
+    cache_key = f"ss_sched_{date_str}_{int(time.time()) // 300}"
     if cache_key in st.session_state:
         return st.session_state[cache_key]
 

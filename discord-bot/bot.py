@@ -1333,16 +1333,28 @@ client.tree.add_command(results_group)
 # ════════════════════════════════════════════════════════════════════════════
 # Feature 4 — /slate (public)
 # ════════════════════════════════════════════════════════════════════════════
+def _slate_title(data: dict) -> str:
+    ds = data.get("date") if isinstance(data, dict) else None
+    if ds:
+        try:
+            d = datetime.datetime.strptime(ds, "%Y-%m-%d")
+            return f"🎾 Slate — {d.strftime('%a %b %d')}"
+        except Exception:  # noqa: BLE001
+            pass
+    return "🎾 Today's Slate"
+
+
 def slate_embed(data: dict) -> discord.Embed:
-    e = discord.Embed(title="🎾 Today's Slate", color=COLOR_NEUTRAL)
+    e = discord.Embed(title=_slate_title(data), color=COLOR_NEUTRAL)
     if not data or not data.get("available"):
         e.description = "Slate data unavailable — try again shortly."
         e.set_footer(text=FOOTER_GENERIC)
         return e
     if not data.get("count"):
-        e.description = "No matches scheduled today."
+        e.description = "No live or upcoming matches left today."
         e.set_footer(text=FOOTER_GENERIC)
         return e
+    e.description = "🟢 Upcoming · 🔴 Live · ❌ Cancelled · ⏸️ Postponed"
 
     # A full day can be 130+ matches — well over Discord's 6000-char / 25-field
     # embed limit. Give each tour an equal slice of a conservative budget so both
@@ -1359,12 +1371,13 @@ def slate_embed(data: dict) -> discord.Embed:
         name = f"{label} ({len(rows)})"
         buf, first, shown, used = "", True, 0, 0
         for m in rows:
-            st = (m.get("status") or "")
-            tag = (" · ❌ Cancelled" if "cancel" in st else
-                   " · ⏸️ Postponed" if "postpone" in st else
-                   " · 🔴 Live" if st in ("inprogress", "interrupted", "suspended") else "")
-            line = (f"`{_fmt_et(m.get('start_timestamp'))}` **{m['p1']}** vs **{m['p2']}** · "
-                    f"{m.get('surface','')} {m['cpi']:g} · {(m.get('tournament','') or '')[:22]}{tag}")
+            st = (m.get("status") or "").lower()
+            badge = ("❌" if "cancel" in st else
+                     "⏸️" if "postpone" in st else
+                     "🔴" if st in ("inprogress", "interrupted", "suspended") else
+                     "🟢")     # notstarted / upcoming
+            line = (f"{badge} `{_fmt_et(m.get('start_timestamp'))}` **{m['p1']}** vs **{m['p2']}** · "
+                    f"{m.get('surface','')} {m['cpi']:g} · {(m.get('tournament','') or '')[:22]}")
             add = ("\n" if buf else "") + line
             if used + len(add) > PER_TOUR_CHARS or len(e.fields) >= FIELD_BUDGET:
                 break

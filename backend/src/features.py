@@ -271,16 +271,27 @@ def _court_cpi(tournament: str, surface: str, tour: str):
 
 
 def get_slate(date_str: str = "") -> dict:
-    """All ATP/WTA singles scheduled for the day, grouped by tour with CPI."""
+    """ATP/WTA singles for the CURRENT (US Eastern) date, grouped by tour with
+    CPI and live status. Excludes already-finished matches; keeps live / upcoming
+    / cancelled / postponed."""
+    if not date_str:
+        # Detect the date at call time in the audience's timezone (US Eastern),
+        # not UTC, so "today" matches the user's day.
+        try:
+            from zoneinfo import ZoneInfo
+            date_str = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+        except Exception:  # noqa: BLE001
+            date_str = datetime.utcnow().strftime("%Y-%m-%d")
     try:
         events = get_scheduled_events(date_str) or []
     except Exception as exc:  # noqa: BLE001
         logger.warning("get_slate failed: %s", exc)
-        return {"available": False, "atp": [], "wta": []}
-    out = {"available": True, "atp": [], "wta": [], "count": 0}
+        return {"available": False, "atp": [], "wta": [], "date": date_str}
+    out = {"available": True, "atp": [], "wta": [], "count": 0, "date": date_str}
     for e in events:
         status = (e.get("status") or "").lower()
-        # Drop matches that have already been played — a slate is the day AHEAD.
+        # Drop matches that have already been played — a slate is what's LEFT to
+        # play today (live + upcoming), plus cancelled/postponed flags.
         if status in ("finished", "aftermatch", "ended"):
             continue
         cpi, tier = _court_cpi(e.get("tournament", ""), e.get("surface", ""), e.get("tour", ""))
