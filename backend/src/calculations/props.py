@@ -266,6 +266,14 @@ def project_aces(
 
     # ── L1: Base ace rate — TA surface stats preferred ────────────────────────
     sofascore_base_raw = _safe(player_stats.get("aces"))
+    # Recency-weighted base (half-life 180d): lean on how the player is serving
+    # NOW rather than equal-weighting year-old matches. Fixes e.g. a post-injury
+    # player whose recent grass form (2/6/6 aces) is masked by last year's peak.
+    _rw_aces = player_stats.get("recency_weighted_aces")
+    if isinstance(_rw_aces, (int, float)) and _rw_aces > 0:
+        logger.info("ACE_RECENCY | equal=%.2f -> recency_weighted=%.2f",
+                    sofascore_base_raw, _rw_aces)
+        sofascore_base_raw = _rw_aces
     # Small-sample regression: when the surface has only a few stat-bearing
     # matches, a single big-ace match (e.g. a clay grinder's one 14-ace grass
     # win) shouldn't define the projection. Shrink the surface ace rate toward

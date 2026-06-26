@@ -1002,11 +1002,24 @@ async def prop_calculate(req: PropRequest):
         # All-surface ace rate + surface ace sample size — lets project_aces
         # regress a thin-surface ace base toward the player's broader rate so one
         # high-ace match can't define a clay player's grass projection.
+        _now_ts = time.time()
         for _s, _pdata, _pall in ((p1_s, p1_data, p1_all), (p2_s, p2_data, p2_all)):
             _s["overall_aces"] = _pall.get("aces")
             _surf_log = _pdata.get(f"{req.surface}_matches", []) or []
             _s["ace_surface_n"] = sum(1 for _m in _surf_log
                                       if isinstance(_m.get("aces"), (int, float)))
+            # Recency-weighted ace average (half-life 180d): recent / post-injury
+            # form dominates and stale matches (e.g. last year's grass peak) decay,
+            # so the base reflects how the player is serving NOW, not a year ago.
+            _num = _den = 0.0
+            for _m in _surf_log:
+                _a, _ts = _m.get("aces"), _m.get("timestamp") or 0
+                if not isinstance(_a, (int, float)) or not _ts:
+                    continue
+                _w = 0.5 ** (max(0.0, (_now_ts - _ts) / 86400.0) / 180.0)
+                _num += _w * _a
+                _den += _w
+            _s["recency_weighted_aces"] = (_num / _den) if _den > 0 else None
 
         # ── Match format: strict rules, logged for every request ────────────────
         # ATP Grand Slam MAIN DRAW → best_of_5. ATP Grand Slam QUALIFYING →
