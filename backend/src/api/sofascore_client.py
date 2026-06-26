@@ -1998,10 +1998,14 @@ def get_player_next_match(player_id, tour: str = "ATP") -> dict:
     return result
 
 
+# Sofascore tennis CATEGORY ids — the per-tour scheduled-events endpoints
+# (category/{id}/scheduled-events/{date}) still work where the sport-level one
+# now 404s. ATP main tour = 3, WTA main tour = 6.
+_TENNIS_CATEGORY_IDS = {"ATP": 3, "WTA": 6}
+
 # Last successful scheduled-events result per date — survives the hourly cache
 # bucket so a slow/failed refresh can serve stale data instead of an empty slate.
 _SCHED_LAST_GOOD: dict = {}
-_SCHED_DEBUG: dict = {}      # last raw fetch diagnostics per date
 
 
 def get_scheduled_events(date_str: str = "", tours=("ATP", "WTA")) -> list:
@@ -2014,7 +2018,6 @@ def get_scheduled_events(date_str: str = "", tours=("ATP", "WTA")) -> list:
     """
     if not date_str:
         date_str = datetime.utcnow().strftime("%Y-%m-%d")
-    want = {t.upper() for t in tours}
     cache_key = f"ss_sched_{date_str}_{int(time.time()) // 3600}"
     if cache_key in st.session_state:
         return st.session_state[cache_key]
@@ -2022,32 +2025,29 @@ def get_scheduled_events(date_str: str = "", tours=("ATP", "WTA")) -> list:
     out: list = []
     _last_good = _SCHED_LAST_GOOD.get(date_str)
     try:
-        data = _get(f"{BASE_URL}/sport/tennis/scheduled-events/{date_str}")
-        _raw = data.get("events", []) or []
-        _cats: dict = {}
-        for e in _raw:
-            _c = (((e.get("tournament") or {}).get("category") or {}).get("name") or "?")
-            _cats[_c] = _cats.get(_c, 0) + 1
-        _SCHED_DEBUG[date_str] = {"data_keys": list(data.keys()) if isinstance(data, dict) else None,
-                                  "raw_events": len(_raw), "categories": _cats}
-        for e in _raw:
-            tour = (((e.get("tournament") or {}).get("category") or {}).get("name") or "").upper()
-            if tour not in want:           # ATP/WTA main tours only (skip ITF/Challenger)
+        # NOTE: the sport-level /sport/tennis/scheduled-events/{date} endpoint now
+        # 404s — fetch per-tour via the CATEGORY endpoints instead, which return
+        # exactly that tour's main-draw events (ATP=3, WTA=6).
+        for tname in tours:
+            cid = _TENNIS_CATEGORY_IDS.get(tname.upper())
+            if not cid:
                 continue
-            ht = (e.get("homeTeam") or {})
-            at = (e.get("awayTeam") or {})
-            hn, an = ht.get("name", ""), at.get("name", "")
-            if not hn or not an or "/" in hn or "/" in an:   # need both, singles only
-                continue
-            out.append({
-                "tour": tour,
-                "tournament": (e.get("tournament") or {}).get("name", ""),
-                "surface": _infer_surface_from_event(e),
-                "p1_name": hn, "p1_id": ht.get("id"),
-                "p2_name": an, "p2_id": at.get("id"),
-                "start_timestamp": e.get("startTimestamp", 0) or 0,
-                "status": ((e.get("status") or {}).get("type") or ""),
-            })
+            data = _get(f"{BASE_URL}/category/{cid}/scheduled-events/{date_str}")
+            for e in (data.get("events", []) or []):
+                ht = (e.get("homeTeam") or {})
+                at = (e.get("awayTeam") or {})
+                hn, an = ht.get("name", ""), at.get("name", "")
+                if not hn or not an or "/" in hn or "/" in an:   # need both, singles only
+                    continue
+                out.append({
+                    "tour": tname.upper(),
+                    "tournament": (e.get("tournament") or {}).get("name", ""),
+                    "surface": _infer_surface_from_event(e),
+                    "p1_name": hn, "p1_id": ht.get("id"),
+                    "p2_name": an, "p2_id": at.get("id"),
+                    "start_timestamp": e.get("startTimestamp", 0) or 0,
+                    "status": ((e.get("status") or {}).get("type") or ""),
+                })
         out.sort(key=lambda m: m.get("start_timestamp", 0))
     except Exception as exc:  # noqa: BLE001
         logger.warning("scheduled-events fetch failed for %s: %s", date_str, exc)

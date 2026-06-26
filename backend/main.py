@@ -242,42 +242,6 @@ async def results_resolve(req: ResolveRequest):
 # ════════════════════════════════════════════════════════════════════════════
 # Features 4-7 — slate, form, history, court report (read-only, isolated)
 # ════════════════════════════════════════════════════════════════════════════
-@app.get("/api/slate/debug")
-async def slate_debug():
-    """Diagnostic: raw scheduled-events fetch stats (is it failing or filtered?)."""
-    import datetime as _dt
-    from src.api import sofascore_client as sc
-    ds = _dt.datetime.utcnow().strftime("%Y-%m-%d")
-    try:
-        sc.st.session_state.pop(f"ss_sched_{ds}_{int(time.time()) // 3600}", None)
-    except Exception as e:  # noqa: BLE001
-        return {"stage": "cache-bust", "error": repr(e)}
-    loop = asyncio.get_event_loop()
-
-    def _diag():
-        sc._new_session(force_port=True)   # fresh IP
-        res = {}
-        B = sc.BASE_URL
-        urls = {
-            "sched_slash":   f"{B}/sport/tennis/scheduled-events/{ds}",
-            "live":          f"{B}/sport/tennis/events/live",
-            "cat3_sched":    f"{B}/category/3/scheduled-events/{ds}",
-            "cat6_sched":    f"{B}/category/6/scheduled-events/{ds}",
-            "cat3_tourn":    f"{B}/category/3/tournaments",
-        }
-        for name, u in urls.items():
-            try:
-                p = sc.probe_request(u)
-                res[name] = {"status": p.get("status"),
-                             "body": (p.get("body_snippet") or p.get("error") or "")[:100]}
-            except Exception as e:  # noqa: BLE001
-                res[name] = {"error": repr(e)}
-        return res
-
-    out = await loop.run_in_executor(None, _diag)
-    return {"today": ds, "base_url": sc.BASE_URL, "probes": out}
-
-
 @app.get("/api/slate/today")
 async def slate_today():
     """Feature 4 — today's ATP/WTA singles with tournament, surface, CPI."""
