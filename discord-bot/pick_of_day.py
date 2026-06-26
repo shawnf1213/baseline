@@ -319,6 +319,14 @@ def current_board_lines() -> dict:
         return {}
 
 
+def _lean_dir(pk: dict) -> str:
+    """OVER/UNDER direction of a pick (from the model lean, else the edge sign)."""
+    ln = (pk.get("lean") or "").upper()
+    if ln in ("OVER", "UNDER"):
+        return ln
+    return "OVER" if (pk.get("edge") or 0) >= 0 else "UNDER"
+
+
 def _passes_quality(pk: dict) -> bool:
     """Quality gate for a candidate pick, by prop type:
       • Aces / Break Points Won → confidence >= 65% (our most trusted props).
@@ -377,7 +385,21 @@ async def generate_picks(n: int = 3):
                 continue
             best_per_player.add(key)
             ordered.append(pk)
-        return ordered[:max(1, n)]
+
+        top = ordered[:max(1, n)]
+        # Direction diversity — don't surface all OVERs or all UNDERs. If the top
+        # N are all one direction and a qualifying opposite-direction pick exists
+        # further down, swap it in for the weakest of the top (best picks kept).
+        if n >= 2 and len(top) >= 2 and len(ordered) > len(top):
+            dirs = {_lean_dir(p) for p in top}
+            if len(dirs) == 1:
+                only = dirs.pop()
+                opp = next((p for p in ordered[len(top):] if _lean_dir(p) != only), None)
+                if opp:
+                    log.info("POD: injecting %s pick for direction balance (top were all %s)",
+                             _lean_dir(opp), only)
+                    top[-1] = opp
+        return top
     except Exception as exc:  # noqa: BLE001 — total isolation
         log.exception("POD generate_picks failed: %s", exc)
         return []

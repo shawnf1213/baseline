@@ -1031,32 +1031,52 @@ def _pick_line(pick: dict) -> str:
             f"┕ vs {pick['opponent']} · {loc}")
 
 
-def picks_embed(picks: list) -> discord.Embed:
-    """Build the Pick of the Day embed: #1 is the full /prop-style breakdown,
-    #2 and #3 (if any) are listed compactly as additional top plays. The
-    tournament + surface come from each player's UPCOMING match on Sofascore
-    (PrizePicks doesn't provide them)."""
-    top = picks[0]
-    court_display = top.get("tournament") or f"{top['surface']} court"
+_POD_AUTHORS = ["🏆 Pick of the Day", "🥈 #2 Top Play", "🥉 #3 Top Play"]
+
+
+def _single_pick_embed(pick: dict, author: str) -> discord.Embed:
+    """A FULL /prop-style stat breakdown for one pick (so every listed play —
+    not just #1 — shows its statistics). Tournament + surface come from the
+    player's upcoming match on Sofascore."""
+    court_display = pick.get("tournament") or f"{pick['surface']} court"
     e = prop_embed(
-        top["player"], top["opponent"], top["prop_type"],
-        top["surface"], court_display, top["line"], top["data"],
+        pick["player"], pick["opponent"], pick["prop_type"],
+        pick["surface"], court_display, pick["line"], pick["data"],
     )
-    e.set_author(name="🏆 Pick of the Day")
-    if top.get("form_alert"):
+    e.set_author(name=author)
+    if pick.get("form_alert"):
         e.add_field(name="🔥 Form Alert",
-                    value=f"**{top['player']}** is on a {top['form_alert']}.", inline=False)
-    extra = picks[1:3]
-    if extra:
-        labels = ["🥈 #2", "🥉 #3"]
-        body = "\n\n".join(f"{labels[i]}  {_pick_line(p)}" for i, p in enumerate(extra))
-        e.add_field(name="📋 Also Today — Top Plays", value=body, inline=False)
+                    value=f"**{pick['player']}** is on a {pick['form_alert']}.", inline=False)
     return e
+
+
+def picks_embeds(picks: list) -> list:
+    """One full stat embed per pick (#1 Pick of the Day, #2, #3) so statistics
+    show for EVERY listed play. Sent together as a multi-embed message."""
+    return [_single_pick_embed(p, _POD_AUTHORS[i] if i < len(_POD_AUTHORS) else f"#{i+1}")
+            for i, p in enumerate(picks)]
+
+
+async def _deliver_pod(picks: list, send) -> None:
+    """Deliver the per-pick stat embeds via ``send`` (channel.send or
+    interaction.followup.send). One multi-embed message if the combined size
+    fits Discord's 6000-char cap, otherwise one message per pick."""
+    embeds = picks_embeds(picks)
+    if sum(len(e) for e in embeds) <= 5900:
+        await send(embeds=embeds)
+    else:
+        for e in embeds:
+            await send(embed=e)
+
+
+def picks_embed(picks: list) -> discord.Embed:
+    """Single combined embed (kept for the line-monitor/compat callers)."""
+    return _single_pick_embed(picks[0], _POD_AUTHORS[0])
 
 
 def pick_embed(pick: dict) -> discord.Embed:
     """Single-pick embed (kept for compatibility)."""
-    return picks_embed([pick])
+    return _single_pick_embed(pick, _POD_AUTHORS[0])
 
 
 @client.tree.command(name="pickoftheday", description="Today's single best Baseline edge from the PrizePicks board")
@@ -1073,7 +1093,7 @@ async def pickoftheday(interaction: discord.Interaction):
             await interaction.followup.send(embed=error_embed(MSG_NO_PICK), ephemeral=True)
             return
         await _annotate_form_alerts(picks)
-        await interaction.followup.send(embed=picks_embed(picks))
+        await _deliver_pod(picks, interaction.followup.send)
     except Exception:  # noqa: BLE001 — isolate: never crash or affect other commands
         log.exception("UNHANDLED /pickoftheday error")
         await _send_error(interaction, "Unable to generate a pick right now.")
@@ -1134,7 +1154,7 @@ async def _post_pick_of_day(channel, track: bool = False) -> str:
     await _annotate_form_alerts(picks)
     if track:
         await _log_picks_pending(picks)
-    await channel.send(embed=picks_embed(picks))
+    await _deliver_pod(picks, channel.send)
     if track:
         _start_line_monitor(channel, picks)
     return f"posted {len(picks)} picks, #1 {picks[0]['player']} {picks[0]['prop_type']}"
