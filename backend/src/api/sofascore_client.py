@@ -2001,6 +2001,7 @@ def get_player_next_match(player_id, tour: str = "ATP") -> dict:
 # Last successful scheduled-events result per date — survives the hourly cache
 # bucket so a slow/failed refresh can serve stale data instead of an empty slate.
 _SCHED_LAST_GOOD: dict = {}
+_SCHED_DEBUG: dict = {}      # last raw fetch diagnostics per date
 
 
 def get_scheduled_events(date_str: str = "", tours=("ATP", "WTA")) -> list:
@@ -2022,7 +2023,14 @@ def get_scheduled_events(date_str: str = "", tours=("ATP", "WTA")) -> list:
     _last_good = _SCHED_LAST_GOOD.get(date_str)
     try:
         data = _get(f"{BASE_URL}/sport/tennis/scheduled-events/{date_str}")
-        for e in (data.get("events", []) or []):
+        _raw = data.get("events", []) or []
+        _cats: dict = {}
+        for e in _raw:
+            _c = (((e.get("tournament") or {}).get("category") or {}).get("name") or "?")
+            _cats[_c] = _cats.get(_c, 0) + 1
+        _SCHED_DEBUG[date_str] = {"data_keys": list(data.keys()) if isinstance(data, dict) else None,
+                                  "raw_events": len(_raw), "categories": _cats}
+        for e in _raw:
             tour = (((e.get("tournament") or {}).get("category") or {}).get("name") or "").upper()
             if tour not in want:           # ATP/WTA main tours only (skip ITF/Challenger)
                 continue

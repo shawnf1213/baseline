@@ -242,6 +242,23 @@ async def results_resolve(req: ResolveRequest):
 # ════════════════════════════════════════════════════════════════════════════
 # Features 4-7 — slate, form, history, court report (read-only, isolated)
 # ════════════════════════════════════════════════════════════════════════════
+@app.get("/api/slate/debug")
+async def slate_debug():
+    """Diagnostic: raw scheduled-events fetch stats (is it failing or filtered?)."""
+    from src.api import sofascore_client as sc
+    ds = datetime.utcnow().strftime("%Y-%m-%d")
+    # bust the hourly cache so we see a live fetch
+    sc.st.session_state.pop(f"ss_sched_{ds}_{int(time.time()) // 3600}", None)
+    loop = asyncio.get_event_loop()
+    try:
+        events = await asyncio.wait_for(
+            loop.run_in_executor(None, sc.get_scheduled_events, ds), timeout=70.0)
+    except Exception as e:
+        return {"date": ds, "error": str(e), "debug": sc._SCHED_DEBUG.get(ds)}
+    return {"date": ds, "filtered_atp_wta": len(events),
+            "raw_debug": sc._SCHED_DEBUG.get(ds)}
+
+
 @app.get("/api/slate/today")
 async def slate_today():
     """Feature 4 — today's ATP/WTA singles with tournament, surface, CPI."""
