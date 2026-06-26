@@ -253,20 +253,26 @@ async def slate_debug():
     except Exception as e:  # noqa: BLE001
         return {"stage": "cache-bust", "error": repr(e)}
     loop = asyncio.get_event_loop()
-    out = {}
-    base = _dt.datetime.utcnow()
-    for off in (-1, 0, 1):
-        d = (base + _dt.timedelta(days=off)).strftime("%Y-%m-%d")
-        for path in (f"{sc.BASE_URL}/sport/tennis/scheduled-events/{d}",
-                     f"{sc.BASE_URL}/sport/tennis/scheduled-events/{d}/inverse"):
+
+    def _diag():
+        sc._new_session(force_port=True)   # fresh IP
+        res = {}
+        urls = {
+            "sched_today":  f"{sc.BASE_URL}/sport/tennis/scheduled-events/{ds}",
+            "control_player": f"{sc.BASE_URL}/team/206570/events/last/0",  # Sinner — should 200
+            "alt_events":   f"{sc.BASE_URL}/sport/tennis/events/{ds}",
+        }
+        for name, u in urls.items():
             try:
-                p = await loop.run_in_executor(None, sc.probe_request, path)
-                tag = path.rsplit("/tennis/", 1)[-1]
-                out[tag] = {"status": p.get("status"),
-                            "body": (p.get("body_snippet") or p.get("error") or "")[:120]}
+                p = sc.probe_request(u)
+                res[name] = {"status": p.get("status"),
+                             "body": (p.get("body_snippet") or p.get("error") or "")[:100]}
             except Exception as e:  # noqa: BLE001
-                out[path] = {"error": repr(e)}
-    return {"today": ds, "probes": out}
+                res[name] = {"error": repr(e)}
+        return res
+
+    out = await loop.run_in_executor(None, _diag)
+    return {"today": ds, "base_url": sc.BASE_URL, "probes": out}
 
 
 @app.get("/api/slate/today")
