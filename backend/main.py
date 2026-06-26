@@ -242,30 +242,6 @@ async def results_resolve(req: ResolveRequest):
 # ════════════════════════════════════════════════════════════════════════════
 # Features 4-7 — slate, form, history, court report (read-only, isolated)
 # ════════════════════════════════════════════════════════════════════════════
-@app.get("/api/slate/debug")
-async def slate_debug():
-    import datetime as _dt
-    from src.api import sofascore_client as sc
-    ds = _dt.datetime.utcnow().strftime("%Y-%m-%d")
-    loop = asyncio.get_event_loop()
-
-    def _diag():
-        res = {}
-        for tour, cid in (("ATP", 3), ("WTA", 6)):
-            data = sc._get(f"{sc.BASE_URL}/category/{cid}/scheduled-events/{ds}")
-            evs = (data or {}).get("events", []) if isinstance(data, dict) else []
-            statuses = {}
-            for e in evs:
-                s = ((e.get("status") or {}).get("type") or "?")
-                statuses[s] = statuses.get(s, 0) + 1
-            res[tour] = {"keys": list(data.keys()) if isinstance(data, dict) else None,
-                         "events": len(evs), "statuses": statuses}
-        return res
-
-    out = await loop.run_in_executor(None, _diag)
-    return {"date": ds, "per_category": out}
-
-
 @app.get("/api/slate/today")
 async def slate_today():
     """Feature 4 — today's ATP/WTA singles with tournament, surface, CPI."""
