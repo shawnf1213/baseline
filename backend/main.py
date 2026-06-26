@@ -253,12 +253,20 @@ async def slate_debug():
     except Exception as e:  # noqa: BLE001
         return {"stage": "cache-bust", "error": repr(e)}
     loop = asyncio.get_event_loop()
+    # Probe the raw URL to get the real HTTP status (403 vs 404 vs empty-200).
+    url = f"{sc.BASE_URL}/sport/tennis/scheduled-events/{ds}"
+    try:
+        probe = await loop.run_in_executor(None, sc.probe_request, url)
+    except Exception as e:  # noqa: BLE001
+        probe = {"error": repr(e)}
     try:
         events = await asyncio.wait_for(
             loop.run_in_executor(None, sc.get_scheduled_events, ds), timeout=70.0)
     except Exception as e:  # noqa: BLE001
-        return {"stage": "fetch", "error": repr(e), "raw_debug": sc._SCHED_DEBUG.get(ds)}
+        events = []
     return {"date": ds, "filtered_atp_wta": len(events),
+            "probe_status": probe.get("status"),
+            "probe_body": (probe.get("body_snippet") or probe.get("error") or "")[:200],
             "raw_debug": sc._SCHED_DEBUG.get(ds)}
 
 
