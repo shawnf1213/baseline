@@ -257,12 +257,13 @@ async def slate_debug():
     def _diag():
         sc._new_session(force_port=True)   # fresh IP
         res = {}
+        B = sc.BASE_URL
         urls = {
-            "www_sched":   f"https://www.sofascore.com/api/v1/sport/tennis/scheduled-events/{ds}",
-            "api_sched":   f"https://api.sofascore.com/api/v1/sport/tennis/scheduled-events/{ds}",
-            "app_sched":   f"https://api.sofascore.app/api/v1/sport/tennis/scheduled-events/{ds}",
-            "www_category_sched": f"https://www.sofascore.com/api/v1/sport/tennis/categories",
-            "control_player": f"{sc.BASE_URL}/team/206570/events/last/0",
+            "sched_slash":   f"{B}/sport/tennis/scheduled-events/{ds}",
+            "live":          f"{B}/sport/tennis/events/live",
+            "cat3_sched":    f"{B}/category/3/scheduled-events/{ds}",
+            "cat6_sched":    f"{B}/category/6/scheduled-events/{ds}",
+            "cat3_tourn":    f"{B}/category/3/tournaments",
         }
         for name, u in urls.items():
             try:
