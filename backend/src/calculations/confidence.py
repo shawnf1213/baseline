@@ -111,6 +111,7 @@ def calculate_confidence(
     last_20 = player_surface_matches[:20]
     vals_20 = _extract_series(last_20, stat_key)
     std_dev = None
+    high_variance = False
     if len(vals_20) >= 3:
         std_dev = statistics.stdev(vals_20)
         low_t, high_t = VARIANCE_THRESHOLDS.get(stat_key, (2.0, 4.0))
@@ -123,6 +124,7 @@ def calculate_confidence(
         else:
             consistency_score = 0
             consistency_label = f"High variance (σ={std_dev:.1f}) — unpredictable"
+            high_variance = True
     else:
         consistency_score = 0
         consistency_label = "Too few matches for variance analysis"
@@ -270,10 +272,20 @@ def calculate_confidence(
     # samples are structurally small. Only an absolute no-data case (handled by
     # the n == 0 early return above) should sit that low; everything else gets
     # at least 25.
-    confidence = max(25, min(95, total))
+    # High-variance cap: when the stat swings wildly (σ in the "unpredictable"
+    # band), a large sample doesn't make the outcome reliable — you can't be 90%+
+    # confident in a coin-flip-y prop. Cap the ceiling so these can't show as
+    # near-locks (e.g. a post-injury server with 2/6/6/14/10 grass aces).
+    ceiling = 80 if high_variance else 95
+    if high_variance and total > ceiling:
+        breakdown["variance_cap"] = {
+            "score": round(ceiling - total), "max": 0,
+            "label": f"High-variance cap — confidence limited to {ceiling}",
+        }
+    confidence = max(25, min(ceiling, total))
     logger.info(
-        "CONF | prop=%s | base_total=%d | penalty_sum=%d | final=%d | breakdown=%s",
-        prop_type, total, penalty_sum, confidence,
+        "CONF | prop=%s | base_total=%d | penalty_sum=%d | high_var=%s | final=%d | breakdown=%s",
+        prop_type, total, penalty_sum, high_variance, confidence,
         {k: v.get("score") for k, v in breakdown.items()},
     )
     return {"confidence": confidence, "breakdown": breakdown}
