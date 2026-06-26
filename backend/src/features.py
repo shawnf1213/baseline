@@ -271,36 +271,58 @@ def _court_cpi(tournament: str, surface: str, tour: str):
 
 
 def get_slate(date_str: str = "") -> dict:
-    """ATP/WTA singles for the CURRENT (US Eastern) date, grouped by tour with
-    CPI and live status. Excludes already-finished matches; keeps live / upcoming
-    / cancelled / postponed."""
-    if not date_str:
-        # Detect the date at call time in the audience's timezone (US Eastern),
-        # not UTC, so "today" matches the user's day.
-        try:
-            from zoneinfo import ZoneInfo
-            date_str = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
-        except Exception:  # noqa: BLE001
-            date_str = datetime.utcnow().strftime("%Y-%m-%d")
+    """Live + upcoming ATP/WTA singles, grouped by tour with CPI and status.
+
+    Sofascore's per-date endpoint returns a WINDOW that bleeds into the next day,
+    so we bucket each non-finished match by its REAL date (in US Eastern) from its
+    start time, then show the soonest date that still has matches — labelled with
+    that actual date. So once today's card is done, the slate rolls to tomorrow
+    and says so, instead of showing tomorrow's matches under today's date.
+    """
+    from datetime import timedelta
     try:
-        events = get_scheduled_events(date_str) or []
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("get_slate failed: %s", exc)
-        return {"available": False, "atp": [], "wta": [], "date": date_str}
-    out = {"available": True, "atp": [], "wta": [], "count": 0, "date": date_str}
-    for e in events:
-        status = (e.get("status") or "").lower()
-        # Drop matches that have already been played — a slate is what's LEFT to
-        # play today (live + upcoming), plus cancelled/postponed flags.
-        if status in ("finished", "aftermatch", "ended"):
-            continue
+        from zoneinfo import ZoneInfo
+        et = ZoneInfo("America/New_York")
+    except Exception:  # noqa: BLE001
+        et = timezone.utc
+    today = date_str or datetime.now(et).strftime("%Y-%m-%d")
+
+    def _collect(query_date: str) -> dict:
+        groups: dict = {}
+        try:
+            for e in (get_scheduled_events(query_date) or []):
+                status = (e.get("status") or "").lower()
+                if status in ("finished", "aftermatch", "ended"):
+                    continue
+                ts = e.get("start_timestamp") or 0
+                if not ts:
+                    continue
+                ed = datetime.fromtimestamp(ts, et).strftime("%Y-%m-%d")
+                if ed < today:       # ignore anything earlier than 'today'
+                    continue
+                groups.setdefault(ed, []).append(e)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("get_slate collect failed for %s: %s", query_date, exc)
+        return groups
+
+    groups = _collect(today)
+    if not groups:   # today's window had nothing upcoming — look at tomorrow
+        groups = _collect((datetime.now(et) + timedelta(days=1)).strftime("%Y-%m-%d"))
+    if not groups:
+        return {"available": True, "atp": [], "wta": [], "count": 0,
+                "date": today, "is_today": True}
+
+    chosen = today if today in groups else min(groups.keys())
+    out = {"available": True, "atp": [], "wta": [], "count": 0,
+           "date": chosen, "is_today": chosen == today}
+    for e in sorted(groups[chosen], key=lambda x: x.get("start_timestamp", 0)):
         cpi, tier = _court_cpi(e.get("tournament", ""), e.get("surface", ""), e.get("tour", ""))
         row = {
             "p1": e.get("p1_name", ""), "p2": e.get("p2_name", ""),
             "tournament": e.get("tournament", ""), "surface": e.get("surface", ""),
             "cpi": cpi, "speed_tier": tier,
             "start_timestamp": e.get("start_timestamp", 0),
-            "tour": e.get("tour", ""), "status": status,
+            "tour": e.get("tour", ""), "status": (e.get("status") or "").lower(),
         }
         (out["atp"] if e.get("tour") == "ATP" else out["wta"]).append(row)
     out["count"] = len(out["atp"]) + len(out["wta"])

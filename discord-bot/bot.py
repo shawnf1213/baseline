@@ -1351,10 +1351,15 @@ def slate_embed(data: dict) -> discord.Embed:
         e.set_footer(text=FOOTER_GENERIC)
         return e
     if not data.get("count"):
-        e.description = "No live or upcoming matches left today."
+        e.description = "No live or upcoming matches found."
         e.set_footer(text=FOOTER_GENERIC)
         return e
-    e.description = "🟢 Upcoming · 🔴 Live · ❌ Cancelled · ⏸️ Postponed"
+    legend = "🟢 Upcoming · 🔴 Live · ❌ Cancelled · ⏸️ Postponed"
+    # When today's card is already done, we roll to the next day — say so.
+    if data.get("is_today") is False:
+        e.description = f"_Today's matches are finished — here's the next slate._\n{legend}"
+    else:
+        e.description = legend
 
     # A full day can be 130+ matches — well over Discord's 6000-char / 25-field
     # embed limit. Give each tour an equal slice of a conservative budget so both
