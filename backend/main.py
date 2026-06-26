@@ -245,16 +245,19 @@ async def results_resolve(req: ResolveRequest):
 @app.get("/api/slate/debug")
 async def slate_debug():
     """Diagnostic: raw scheduled-events fetch stats (is it failing or filtered?)."""
+    import datetime as _dt
     from src.api import sofascore_client as sc
-    ds = datetime.utcnow().strftime("%Y-%m-%d")
-    # bust the hourly cache so we see a live fetch
-    sc.st.session_state.pop(f"ss_sched_{ds}_{int(time.time()) // 3600}", None)
+    ds = _dt.datetime.utcnow().strftime("%Y-%m-%d")
+    try:
+        sc.st.session_state.pop(f"ss_sched_{ds}_{int(time.time()) // 3600}", None)
+    except Exception as e:  # noqa: BLE001
+        return {"stage": "cache-bust", "error": repr(e)}
     loop = asyncio.get_event_loop()
     try:
         events = await asyncio.wait_for(
             loop.run_in_executor(None, sc.get_scheduled_events, ds), timeout=70.0)
-    except Exception as e:
-        return {"date": ds, "error": str(e), "debug": sc._SCHED_DEBUG.get(ds)}
+    except Exception as e:  # noqa: BLE001
+        return {"stage": "fetch", "error": repr(e), "raw_debug": sc._SCHED_DEBUG.get(ds)}
     return {"date": ds, "filtered_atp_wta": len(events),
             "raw_debug": sc._SCHED_DEBUG.get(ds)}
 
