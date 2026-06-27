@@ -43,6 +43,10 @@ API_BASE = os.getenv(
 
 LOGO_URL = "https://baseline-app-three.vercel.app/baseline-logo.png"
 
+# Allow @everyone pings on the automatic broadcasts (POD, line alerts, slate).
+# discord.py suppresses @everyone by default unless explicitly permitted.
+EVERYONE_MENTION = discord.AllowedMentions(everyone=True)
+
 # Embed colors — match the web app theme
 COLOR_OVER = 0x00E676   # green  — OVER lean / positive edge
 COLOR_UNDER = 0xFF4444  # red    — UNDER lean
@@ -1089,16 +1093,19 @@ def picks_embeds(picks: list) -> list:
             for i, p in enumerate(picks)]
 
 
-async def _deliver_pod(picks: list, send) -> None:
+async def _deliver_pod(picks: list, send, mention: bool = False) -> None:
     """Deliver the per-pick stat embeds via ``send`` (channel.send or
     interaction.followup.send). One multi-embed message if the combined size
-    fits Discord's 6000-char cap, otherwise one message per pick."""
+    fits Discord's 6000-char cap, otherwise one message per pick. ``mention``
+    pings @everyone (used for the automatic daily post, not the /command)."""
     embeds = picks_embeds(picks)
+    content = "@everyone" if mention else None
     if sum(len(e) for e in embeds) <= 5900:
-        await send(embeds=embeds)
+        await send(content=content, embeds=embeds, allowed_mentions=EVERYONE_MENTION)
     else:
-        for e in embeds:
-            await send(embed=e)
+        for i, e in enumerate(embeds):
+            await send(content=(content if i == 0 else None), embed=e,
+                       allowed_mentions=EVERYONE_MENTION)
 
 
 def picks_embed(picks: list) -> discord.Embed:
@@ -1164,7 +1171,7 @@ def _start_line_monitor(channel, picks: list):
             _line_monitor_task.cancel()
 
         async def _post_alert(text):
-            await channel.send(text)
+            await channel.send(f"@everyone\n{text}", allowed_mentions=EVERYONE_MENTION)
 
         _line_monitor_task = asyncio.create_task(
             line_monitor.monitor(picks, pick_of_day.current_board_lines, _post_alert))
@@ -1186,7 +1193,9 @@ async def _post_pick_of_day(channel, track: bool = False) -> str:
     await _annotate_form_alerts(picks)
     if track:
         await _log_picks_pending(picks)
-    await _deliver_pod(picks, channel.send)
+    # The real daily post (track=True) pings @everyone; the optional startup
+    # verification post and the /pickoftheday command do not.
+    await _deliver_pod(picks, channel.send, mention=track)
     if track:
         _start_line_monitor(channel, picks)
     return f"posted {len(picks)} picks, #1 {picks[0]['player']} {picks[0]['prop_type']}"
@@ -1218,7 +1227,9 @@ async def _post_slate(channel) -> str:
     if not data or not data.get("available"):
         await asyncio.sleep(2)
         data = await backend_get("/api/slate/today", {}, 80)
-    await channel.send(embed=slate_embed(data))
+    # Automatic daily slate pings @everyone (the /slate command does not).
+    await channel.send(content="@everyone", embed=slate_embed(data),
+                       allowed_mentions=EVERYONE_MENTION)
     return f"posted slate ({(data or {}).get('count', 0)} matches)"
 
 
