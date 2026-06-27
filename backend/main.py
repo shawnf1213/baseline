@@ -262,11 +262,26 @@ async def debug_titles(player_id: str = "206570"):
             try:
                 d = sc._get(url)
                 if isinstance(d, dict):
-                    res[name] = {"keys": list(d.keys()), "sample": str(d)[:1200]}
+                    res[name] = {"keys": list(d.keys()), "sample": str(d)[:600]}
                 else:
                     res[name] = {"type": type(d).__name__}
             except Exception as e:  # noqa: BLE001
                 res[name] = {"error": repr(e)}
+        # Inspect a few events for finals-detection feasibility.
+        try:
+            ev = sc._get(f"{sc.BASE_URL}/team/{player_id}/events/last/0").get("events", [])
+            res["sample_events"] = [{
+                "tournament": (e.get("tournament") or {}).get("name"),
+                "uniqueTournament": (e.get("tournament") or {}).get("uniqueTournament", {}).get("name")
+                                    or (e.get("uniqueTournament") or {}).get("name"),
+                "roundInfo": e.get("roundInfo"),
+                "winnerCode": e.get("winnerCode"),
+                "home": (e.get("homeTeam") or {}).get("name"),
+                "away": (e.get("awayTeam") or {}).get("name"),
+                "status": (e.get("status") or {}).get("type"),
+            } for e in ev[:6]]
+        except Exception as e:  # noqa: BLE001
+            res["sample_events"] = {"error": repr(e)}
         return res
 
     return await loop.run_in_executor(None, _probe)
