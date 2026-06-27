@@ -1981,6 +1981,11 @@ def get_player_titles(player_id, tour: str = "ATP") -> dict:
             hn, an = ht.get("name", ""), at.get("name", "")
             if "/" in hn or "/" in an:                        # skip doubles
                 continue
+            # Tour-level titles only (ATP / WTA / Grand Slam = tier 3.0); drop
+            # Challenger / ITF Futures / exhibitions so the section means "titles"
+            # in the headline sense. A player with only lower-tier wins shows none.
+            if _competition_tier(e) < 2.5:
+                continue
             tname = (e.get("tournament") or {}).get("name", "")
             ut = ((e.get("tournament") or {}).get("uniqueTournament", {}) or {}).get("name") \
                 or (e.get("uniqueTournament") or {}).get("name") or tname
