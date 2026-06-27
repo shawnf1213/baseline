@@ -69,26 +69,44 @@ function SectionDivider({ label }) {
 }
 
 // ── Build Last 5 data from match log ────────────────────────────────────
+// Parse a player-first score string ("6-4 7-6") into [{p, o}] per set.
+function parseSetScores(score) {
+  if (!score) return []
+  return score.trim().split(/\s+/).map(s => {
+    const [a, b] = s.split('-')
+    const p = parseInt(a, 10), o = parseInt(b, 10)   // tiebreak "7-6(5)" → parseInt drops "(5)"
+    return (isNaN(p) || isNaN(o)) ? null : { p, o }
+  }).filter(Boolean)
+}
+
+// Was a match Best of 5? The winner needed 3 sets (Grand Slam main draw).
+function isBestOf5(score) {
+  const sets = parseSetScores(score)
+  if (!sets.length) return null
+  let pw = 0, ow = 0
+  for (const s of sets) { if (s.p > s.o) pw++; else if (s.o > s.p) ow++ }
+  return Math.max(pw, ow) >= 3
+}
+
 function buildLast5Data(matches, statKey) {
   if (!matches || !statKey) return []
   const last5 = matches.slice(0, 5).reverse()
   return last5.map(m => {
     let v = m[statKey] ?? null
-    if (v == null && statKey === 'total_match_games' && m.score) {
-      const sets = m.score.trim().split(/\s+/)
-      let total = 0, ok = true
-      for (const s of sets) {
-        const parts = s.split('-').map(Number)
-        if (parts.length !== 2 || parts.some(isNaN)) { ok = false; break }
-        total += parts[0] + parts[1]
+    if (v == null && m.score) {
+      const sets = parseSetScores(m.score)
+      if (sets.length) {
+        // Combined total games = both players' games; player's games won = the
+        // player's (first-listed) games summed across sets.
+        if (statKey === 'total_match_games') v = sets.reduce((t, s) => t + s.p + s.o, 0)
+        else if (statKey === 'total_games_won') v = sets.reduce((t, s) => t + s.p, 0)
       }
-      if (ok && total > 0) v = total
     }
     const isNA = v == null
     const dateStr = m.date || ''
     const opp = m.opponent_abbr || (m.opponent || '').split(' ').pop() || ''
     const label = dateStr && opp ? `${dateStr}\nvs ${opp}` : dateStr || opp || '?'
-    return { label, val: isNA ? 0 : Math.round(v * 10) / 10, isNA, won: m.won }
+    return { label, val: isNA ? 0 : Math.round(v * 10) / 10, isNA, won: m.won, bo5: isBestOf5(m.score) }
   })
 }
 
@@ -905,6 +923,22 @@ export default function PropProjection({ tour }) {
               <motion.div variants={REVEAL_ITEM}>
                 <SectionDivider label={`Last 5 Matches — ${propType} (${p1?.name})`} />
                 <div className="glass-card" style={{ padding: '20px 18px 14px', marginBottom: 22 }}>
+                  {/* Best-of-5 context flag: this projection is BO5 (ATP Grand
+                      Slam main draw) but some of these last-5 matches were not. */}
+                  {result?.is_bo5 && last5Data.some(d => d.bo5 === false) && (
+                    <div style={{
+                      display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px',
+                      marginBottom: 12, borderRadius: 8,
+                      border: '1px solid rgba(255,179,0,0.35)', background: 'rgba(255,179,0,0.06)',
+                    }}>
+                      <span style={{ fontSize: 14, color: 'var(--amber)' }}>⚠</span>
+                      <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--amber)',
+                        fontFamily: '"Barlow Condensed", sans-serif', letterSpacing: 0.5 }}>
+                        Projected as BEST OF 5 — {last5Data.filter(d => d.bo5 === false).length} of these
+                        last 5 were Best of 3, which usually means fewer {propType.toLowerCase()}.
+                      </span>
+                    </div>
+                  )}
                   {propLine > 0 && (
                     <div style={{ display: 'flex', gap: 18, marginBottom: 12, fontSize: 11, fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 700, letterSpacing: 1 }}>
                       <span style={{ color: 'var(--green-bright)' }}>● OVER {propLine.toFixed(1)}</span>
