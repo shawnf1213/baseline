@@ -80,6 +80,7 @@ from src.calculations.props import (
     project_double_faults,
     project_total_games,
     project_break_points,
+    project_player_games_won,
     generate_scouting_report,
     detect_environment,
     ENVIRONMENT_LABELS,
@@ -1133,7 +1134,7 @@ async def prop_calculate(req: PropRequest):
                 match_format=match_fmt,
                 player_ta=player_ta_props, opponent_ta=opponent_ta_props,
             )
-        else:  # Break Points Won
+        else:  # Break Points Won  OR  Player Total Games Won (both use the BP model)
             # All-surface player stats for Step 9 sanity check
             _p1_all_at = p1_data.get("All_all_time_stats") or {}
             p1_all_ref = {
@@ -1159,7 +1160,7 @@ async def prop_calculate(req: PropRequest):
                 "return_second_serve_pts_won": _p2_all_at.get("return_second_serve_pts_won"),
             }
 
-            result = project_break_points(
+            bp_result = project_break_points(
                 p1_s, p2_s,
                 player_all_stats=p1_all_ref,
                 opponent_all_stats=p2_all_ref,
@@ -1174,6 +1175,27 @@ async def prop_calculate(req: PropRequest):
                 match_format=match_fmt,
                 court=court_for_calc,
             )
+
+            if req.prop_type == "Player Total Games Won":
+                # Combine the player's holds (from the combined Total Games
+                # projection) with their breaks (the BP-won projection).
+                tg_result = project_total_games(
+                    p1_s, p2_s, req.surface, h2h_games_avg,
+                    tour=req.tour, court=court_for_calc,
+                    match_format=match_fmt,
+                    player_ta=player_ta_props, opponent_ta=opponent_ta_props,
+                )
+                result = project_player_games_won(
+                    p1_s, req.surface, cpr,
+                    games_combined=tg_result.get("projection"),
+                    bp_won=bp_result.get("projection"),
+                    p1_win_prob=tg_result.get("p1_win_prob"),
+                    p2_win_prob=tg_result.get("p2_win_prob"),
+                    expected_sets=tg_result.get("expected_sets"),
+                    tour=req.tour, match_format=match_fmt,
+                )
+            else:
+                result = bp_result
 
         proj_val = result.get("projection")
         if proj_val is None:
@@ -1454,6 +1476,12 @@ async def prop_calculate(req: PropRequest):
             "aces_per_set":          result.get("aces_per_set"),
             "df_per_set":            result.get("df_per_set"),
             "bp_won_per_set":        result.get("bp_won_per_set"),
+            # ── Player Total Games Won breakdown (this prop only) ──────────────
+            "games_held":            result.get("games_held"),
+            "games_broken":          result.get("games_broken"),
+            "player_hold_rate":      result.get("hold_rate"),
+            "player_break_rate":     result.get("break_rate"),
+            "games_combined_ref":    result.get("games_combined"),
             # ── ST Pace Index / Surface Speed Tier ────────────────────────────
             "court_pace_index":      round(cpr, 1),
             "court_speed_tier":      _speed_tier,

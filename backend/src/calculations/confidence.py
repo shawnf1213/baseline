@@ -9,6 +9,7 @@ VARIANCE_THRESHOLDS = {
     "double_faults":     (1.0, 2.0),
     "bp_converted_count":(1.0, 2.0),
     "_total_games":      (3.0, 6.0),
+    "total_games_won":   (3.0, 6.0),
 }
 
 PROP_STAT_KEY = {
@@ -16,6 +17,7 @@ PROP_STAT_KEY = {
     "Double Faults":    "double_faults",
     "Total Games":      "_total_games",
     "Break Points Won": "bp_converted_count",
+    "Player Total Games Won": "total_games_won",
 }
 
 SECTION_LABELS = {

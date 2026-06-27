@@ -1122,6 +1122,83 @@ def _expected_sets(tour: str, court: str, p1_wr: float = 50.0, p2_wr: float = 50
     return exp_sets
 
 
+def project_player_games_won(
+    player_stats: dict,
+    surface: str,
+    cpr: float,
+    games_combined: float,
+    bp_won: float,
+    p1_win_prob: float,
+    p2_win_prob: float,
+    expected_sets: float,
+    tour: str = "ATP",
+    match_format: str = "best_of_3",
+) -> dict:
+    """Project how many INDIVIDUAL games the SELECTED player wins in the match
+    (distinct from the combined Total Games prop).
+
+      games_won = games_held_on_serve + games_won_breaking
+
+    • games_held_on_serve = (player's service games) × (surface hold rate). A
+      player serves ~half the match's combined games, so service games ≈
+      games_combined / 2. Both inputs are already match-totals (expected-sets
+      scaled), so no extra scaling is applied.
+    • games_won_breaking = projected Break Points Won (each break = 1 game won
+      on return).
+    • A gentle win-probability calibration tilts the result (favourite higher,
+      underdog lower) with a floor — even a player losing in straights wins
+      several games on serve.
+    Surface/court speed is already embedded in games_combined and the surface
+    hold rate. Returns the projection plus the held/broken breakdown and the
+    supporting hold/break rates for display.
+    """
+    games_combined = _safe(games_combined, 0.0)
+    bp_won = max(0.0, _safe(bp_won, 0.0))
+
+    # Component 1 — games held on serve.
+    hold_rate = _hold_rate_proxy(player_stats)          # 0–1
+    hold_rate = max(0.40, min(0.95, hold_rate))
+    service_games = games_combined / 2.0                # player serves ~half
+    games_held = service_games * hold_rate
+
+    # Component 2 — games won by breaking (= break points won).
+    games_broken = bp_won
+
+    base = games_held + games_broken
+
+    # Component 4 — win-probability calibration (the base already tilts via hold
+    # rate + breaks; this is a gentle extra nudge, floored).
+    wp = _safe(p1_win_prob, 50.0) / 100.0
+    calibration = 1.0 + (wp - 0.5) * 0.14
+    projection = base * calibration
+
+    # Floor: even a heavy underdog losing in straight sets holds a few times.
+    projection = max(4.0, projection)
+
+    break_rate = (games_broken / service_games * 100.0) if service_games > 0 else 0.0
+
+    logger.info(
+        "PLAYER_GAMES_WON | combined=%.1f svc_games=%.1f hold=%.0f%% held=%.1f "
+        "broken=%.1f base=%.1f wp=%.0f%% calib=%.3f -> proj=%.1f | exp_sets=%.2f fmt=%s",
+        games_combined, service_games, hold_rate * 100, games_held, games_broken,
+        base, wp * 100, calibration, projection, _safe(expected_sets, 0.0), match_format,
+    )
+
+    return {
+        "projection":     round(projection, 1),
+        "games_held":     round(games_held, 1),
+        "games_broken":   round(games_broken, 1),
+        "hold_rate":      round(hold_rate * 100, 1),
+        "break_rate":     round(break_rate, 1),
+        "games_combined": round(games_combined, 1),
+        "expected_sets":  expected_sets,
+        "p1_win_prob":    p1_win_prob,
+        "p2_win_prob":    p2_win_prob,
+        "is_bo5":         match_format == "best_of_5",
+        "lean":           "",
+    }
+
+
 def project_total_games(
     player_stats: dict,
     opponent_stats: dict,
