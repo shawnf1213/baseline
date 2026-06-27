@@ -961,7 +961,10 @@ async def player_cmd(
     name: str,
     surface: app_commands.Choice[str],
 ):
-    await interaction.response.defer(thinking=True, ephemeral=True)
+    try:
+        await _enter_queue(interaction)
+    except _QueueBusy:
+        return
     log.info("CMD /player | user=%s | name=%s | surface=%s",
              interaction.user.id, name, surface.value)
     try:
@@ -991,6 +994,8 @@ async def player_cmd(
     except Exception:  # noqa: BLE001
         log.exception("UNHANDLED /player error")
         await _send_error(interaction, MSG_GENERIC)
+    finally:
+        _leave_queue()
 
 
 # ── /help ───────────────────────────────────────────────────────────────────────
@@ -1655,7 +1660,10 @@ def courtreport_embed(data: dict) -> discord.Embed:
                             app_commands.Choice(name="WTA", value="WTA")])
 async def courtreport(interaction: discord.Interaction, tournament: str,
                       tour: app_commands.Choice[str] = None):
-    await interaction.response.defer(thinking=True, ephemeral=True)
+    try:
+        await _enter_queue(interaction)
+    except _QueueBusy:
+        return
     try:
         tval = tour.value if tour else "ATP"
         # The bot knows each autocompleted court's surface — pass it so the
@@ -1667,6 +1675,8 @@ async def courtreport(interaction: discord.Interaction, tournament: str,
     except Exception:  # noqa: BLE001
         log.exception("/courtreport failed")
         await interaction.followup.send(embed=courtreport_embed({"tournament": tournament}), ephemeral=True)
+    finally:
+        _leave_queue()
 
 
 # ── Feature 1 — 11pm EST auto-resolution job ─────────────────────────────────
