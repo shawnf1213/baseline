@@ -242,6 +242,36 @@ async def results_resolve(req: ResolveRequest):
 # ════════════════════════════════════════════════════════════════════════════
 # Features 4-7 — slate, form, history, court report (read-only, isolated)
 # ════════════════════════════════════════════════════════════════════════════
+@app.get("/api/debug/titles")
+async def debug_titles(player_id: str = "206570"):
+    """TEMP diagnostic: inspect which Sofascore endpoint holds title data."""
+    from src.api import sofascore_client as sc
+    loop = asyncio.get_event_loop()
+
+    def _probe():
+        res = {}
+        cands = {
+            "player":         f"{sc.BASE_URL}/player/{player_id}",
+            "player_stats":   f"{sc.BASE_URL}/player/{player_id}/statistics",
+            "player_career":  f"{sc.BASE_URL}/player/{player_id}/career",
+            "team":           f"{sc.BASE_URL}/team/{player_id}",
+            "team_trophies":  f"{sc.BASE_URL}/team/{player_id}/trophies",
+            "team_perf":      f"{sc.BASE_URL}/team/{player_id}/performance",
+        }
+        for name, url in cands.items():
+            try:
+                d = sc._get(url)
+                if isinstance(d, dict):
+                    res[name] = {"keys": list(d.keys()), "sample": str(d)[:1200]}
+                else:
+                    res[name] = {"type": type(d).__name__}
+            except Exception as e:  # noqa: BLE001
+                res[name] = {"error": repr(e)}
+        return res
+
+    return await loop.run_in_executor(None, _probe)
+
+
 @app.get("/api/slate/today")
 async def slate_today():
     """Feature 4 — today's ATP/WTA singles with tournament, surface, CPI."""
