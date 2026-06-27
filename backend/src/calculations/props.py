@@ -735,6 +735,16 @@ def _hold_rate_proxy(stats: dict) -> float:
     return fin * sp1w + (1.0 - fin) * sp2w
 
 
+def _game_win_prob(p: float) -> float:
+    """Probability of winning a (service) game given per-point win probability p,
+    under the standard iid-point model. Maps e.g. 0.66 points → ~0.85 games."""
+    p = max(0.01, min(0.99, p))
+    q = 1.0 - p
+    win_by_4 = p ** 4 * (1 + 4 * q + 10 * q * q)          # to love / 15 / 30
+    deuce = 20 * p ** 3 * q ** 3 * (p * p / (p * p + q * q))  # from deuce
+    return max(0.0, min(1.0, win_by_4 + deuce))
+
+
 def _serve_tier_and_adj(hold_proxy: float, tour: str) -> tuple:
     """Classify a server's hold proxy into Elite / Good / Weak, RELATIVE TO THE
     TOUR, and return the matching C4 multiplier.
@@ -1154,34 +1164,44 @@ def project_player_games_won(
     """
     games_combined = _safe(games_combined, 0.0)
     bp_won = max(0.0, _safe(bp_won, 0.0))
-
-    # Component 1 — games held on serve.
-    hold_rate = _hold_rate_proxy(player_stats)          # 0–1
-    hold_rate = max(0.40, min(0.95, hold_rate))
     service_games = games_combined / 2.0                # player serves ~half
-    games_held = service_games * hold_rate
 
-    # Component 2 — games won by breaking (= break points won).
-    games_broken = bp_won
+    # Surface GAME-hold rate: convert service-POINTS-won (the proxy) into the
+    # probability of holding a service GAME (iid-point model). e.g. 66% of points
+    # won ≈ 85% of games held — using points-as-games badly understates holds.
+    pts_won = _hold_rate_proxy(player_stats)            # fraction of service POINTS
+    game_hold = _game_win_prob(pts_won)                 # fraction of service GAMES
 
-    base = games_held + games_broken
-
-    # Component 4 — win-probability calibration (the base already tilts via hold
-    # rate + breaks; this is a gentle extra nudge, floored).
+    # Component 4 — win-probability share. A player's share of the combined games
+    # tracks their win probability (favourite wins more games via more holds AND
+    # more breaks; underdog still holds enough to win several). This IS the
+    # win-prob calibration, anchored to the surface/expected-sets-aware combined
+    # total. share≈0.5 at a coin-flip; tilts up for the favourite.
     wp = _safe(p1_win_prob, 50.0) / 100.0
-    calibration = 1.0 + (wp - 0.5) * 0.14
-    projection = base * calibration
+    share = 0.5 + (wp - 0.5) * 0.55
+    share = max(0.32, min(0.68, share))
+    projection = games_combined * share
+    projection = max(4.5, projection)                   # floor — never near zero
 
-    # Floor: even a heavy underdog losing in straight sets holds a few times.
-    projection = max(4.0, projection)
+    # Breakdown for display (Components 1 & 2), kept CONSISTENT with the
+    # projection: games won by breaking = the BP-won projection, the rest are
+    # holds — clamped so holds can't exceed the games the player serves.
+    games_broken = min(bp_won, projection)
+    games_held = projection - games_broken
+    if games_held > service_games:
+        games_held = service_games
+        games_broken = projection - games_held
+    games_held = max(0.0, games_held)
+    games_broken = max(0.0, games_broken)
 
+    hold_rate = game_hold
     break_rate = (games_broken / service_games * 100.0) if service_games > 0 else 0.0
 
     logger.info(
-        "PLAYER_GAMES_WON | combined=%.1f svc_games=%.1f hold=%.0f%% held=%.1f "
-        "broken=%.1f base=%.1f wp=%.0f%% calib=%.3f -> proj=%.1f | exp_sets=%.2f fmt=%s",
-        games_combined, service_games, hold_rate * 100, games_held, games_broken,
-        base, wp * 100, calibration, projection, _safe(expected_sets, 0.0), match_format,
+        "PLAYER_GAMES_WON | combined=%.1f svc=%.1f pts_won=%.0f%% game_hold=%.0f%% "
+        "wp=%.0f%% share=%.3f -> proj=%.1f | held=%.1f broken=%.1f exp_sets=%.2f fmt=%s",
+        games_combined, service_games, pts_won * 100, game_hold * 100, wp * 100,
+        share, projection, games_held, games_broken, _safe(expected_sets, 0.0), match_format,
     )
 
     return {
