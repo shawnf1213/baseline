@@ -20,6 +20,14 @@ PROP_STAT_KEY = {
     "Player Total Games Won": "total_games_won",
 }
 
+# Per-prop confidence ceilings. Player Total Games Won is DERIVED from several
+# models (combined games + break points + win-prob share + hold environment), so
+# it carries compounded uncertainty — a large sample shouldn't push it to a
+# near-lock. Cap it well below the 95 default.
+PROP_CONFIDENCE_CEILING = {
+    "Player Total Games Won": 80,
+}
+
 SECTION_LABELS = {
     "sample_size": "Sample Size",
     "h2h":         "H2H Data",
@@ -279,10 +287,14 @@ def calculate_confidence(
     # confident in a coin-flip-y prop. Cap the ceiling so these can't show as
     # near-locks (e.g. a post-injury server with 2/6/6/14/10 grass aces).
     ceiling = 80 if high_variance else 95
-    if high_variance and total > ceiling:
-        breakdown["variance_cap"] = {
+    prop_ceiling = PROP_CONFIDENCE_CEILING.get(prop_type)
+    if prop_ceiling is not None:
+        ceiling = min(ceiling, prop_ceiling)
+    if total > ceiling:
+        breakdown["confidence_cap"] = {
             "score": round(ceiling - total), "max": 0,
-            "label": f"High-variance cap — confidence limited to {ceiling}",
+            "label": (f"High-variance cap — confidence limited to {ceiling}" if high_variance
+                      else f"Derived-prop cap — confidence limited to {ceiling}"),
         }
     confidence = max(25, min(ceiling, total))
     logger.info(
