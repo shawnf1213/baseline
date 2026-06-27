@@ -82,6 +82,57 @@ GENERIC_TIMEOUT = 30   # h2h / player-stats
 # mode and the per-user cooldown), so longer timeouts are safe: at most 5 cold
 # Sofascore fetches are ever in flight at once.
 MAX_CONCURRENT_BACKEND_CALLS = 5
+
+# ── Command request queue ───────────────────────────────────────────────────────
+# Process at most REQUEST_LIMIT data commands (/prop /h2h /history /form) at once;
+# extra requests queue (told "results coming shortly") and wait up to
+# REQUEST_MAX_WAIT for a slot before being asked to retry. Keeps a burst of
+# concurrent commands from all hitting the backend at the same instant.
+REQUEST_LIMIT = 10
+REQUEST_MAX_WAIT = 30          # seconds a queued request will wait for a slot
+QUEUE_LOG_AT = 3               # log queue depth once it reaches this
+_REQUEST_SEM = asyncio.Semaphore(REQUEST_LIMIT)
+_in_flight = 0                 # requests currently holding or waiting for a slot
+
+
+class _QueueBusy(Exception):
+    """Raised when a queued request waited past REQUEST_MAX_WAIT."""
+
+
+async def _enter_queue(interaction: "discord.Interaction"):
+    """Defer the interaction and acquire a queue slot. If all REQUEST_LIMIT slots
+    are busy, tell the user it's queued, then wait up to REQUEST_MAX_WAIT. Raises
+    _QueueBusy on timeout (the caller should just return). On success the caller
+    MUST call _leave_queue() in a finally."""
+    global _in_flight
+    _in_flight += 1
+    if _in_flight >= QUEUE_LOG_AT:
+        log.info("Request queue depth: %d (max concurrent %d)", _in_flight, REQUEST_LIMIT)
+    if not interaction.response.is_done():
+        await interaction.response.defer(thinking=True, ephemeral=True)
+    if _REQUEST_SEM.locked():            # all slots busy → queued
+        try:
+            await interaction.followup.send(
+                "⏳ Your request is queued — results coming shortly", ephemeral=True)
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        await asyncio.wait_for(_REQUEST_SEM.acquire(), timeout=REQUEST_MAX_WAIT)
+    except asyncio.TimeoutError:
+        _in_flight -= 1                  # never acquired a slot
+        try:
+            await interaction.followup.send(
+                "⚠️ The server is busy right now — please try again in a moment",
+                ephemeral=True)
+        except Exception:  # noqa: BLE001
+            pass
+        raise _QueueBusy()
+
+
+def _leave_queue():
+    global _in_flight
+    _REQUEST_SEM.release()
+    _in_flight -= 1
 API_SEMAPHORE = asyncio.Semaphore(MAX_CONCURRENT_BACKEND_CALLS)
 
 # ── Court lists per surface (display name → backend COURT_CPR key) ──────────────
@@ -762,7 +813,10 @@ async def prop(
     court: str = "None",
     gs_round: app_commands.Choice[str] = None,
 ):
-    await interaction.response.defer(thinking=True, ephemeral=True)
+    try:
+        await _enter_queue(interaction)
+    except _QueueBusy:
+        return
     log.info("CMD /prop | user=%s | %s vs %s | %s | %s | court=%s | line=%s",
              interaction.user.id, player, opponent, prop_type.value, surface.value, court, line)
     try:
@@ -838,6 +892,8 @@ async def prop(
     except Exception:  # noqa: BLE001 — never let a command crash the process
         log.exception("UNHANDLED /prop error")
         await _send_error(interaction, MSG_GENERIC)
+    finally:
+        _leave_queue()
 
 
 # ── /h2h ────────────────────────────────────────────────────────────────────────
@@ -855,7 +911,10 @@ async def h2h(
     player2: str,
     surface: app_commands.Choice[str] = None,
 ):
-    await interaction.response.defer(thinking=True, ephemeral=True)
+    try:
+        await _enter_queue(interaction)
+    except _QueueBusy:
+        return
     log.info("CMD /h2h | user=%s | %s vs %s | surface=%s",
              interaction.user.id, player1, player2, surface.value if surface else "All")
     try:
@@ -888,6 +947,8 @@ async def h2h(
     except Exception:  # noqa: BLE001
         log.exception("UNHANDLED /h2h error")
         await _send_error(interaction, MSG_GENERIC)
+    finally:
+        _leave_queue()
 
 
 # ── /player ───────────────────────────────────────────────────────────────────
@@ -1479,7 +1540,10 @@ def form_embed(name: str, data: dict) -> discord.Embed:
 @app_commands.describe(player="Player name")
 @app_commands.autocomplete(player=player_autocomplete)
 async def form(interaction: discord.Interaction, player: str):
-    await interaction.response.defer(thinking=True, ephemeral=True)
+    try:
+        await _enter_queue(interaction)
+    except _QueueBusy:
+        return
     try:
         pid, tour, name = await resolve_player(player)
         if not pid:
@@ -1490,6 +1554,8 @@ async def form(interaction: discord.Interaction, player: str):
     except Exception:  # noqa: BLE001
         log.exception("/form failed")
         await _send_error(interaction, "Unable to load form right now.")
+    finally:
+        _leave_queue()
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -1527,7 +1593,10 @@ def history_embed(name: str, prop: str, surface: str, line: float, data: dict) -
 @app_commands.autocomplete(player=player_autocomplete)
 async def history(interaction: discord.Interaction, player: str,
                   prop: app_commands.Choice[str], surface: app_commands.Choice[str], line: float):
-    await interaction.response.defer(thinking=True, ephemeral=True)
+    try:
+        await _enter_queue(interaction)
+    except _QueueBusy:
+        return
     try:
         if not _member_gate(interaction):
             await _send_error(interaction, f"This command is for **{MEMBER_ROLE_NAME}** members.")
@@ -1544,6 +1613,8 @@ async def history(interaction: discord.Interaction, player: str,
     except Exception:  # noqa: BLE001
         log.exception("/history failed")
         await _send_error(interaction, "Unable to load history right now.")
+    finally:
+        _leave_queue()
 
 
 # ════════════════════════════════════════════════════════════════════════════
