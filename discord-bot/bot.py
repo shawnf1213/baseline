@@ -998,6 +998,13 @@ _pod_startup_done = False
 SLATE_CHANNEL_ID = int(os.getenv("SLATE_CHANNEL_ID", "1519546971344470027") or "0")
 SLATE_HOUR = int(os.getenv("SLATE_HOUR", "0") or "0")      # 12:00 AM ET
 SLATE_MINUTE = int(os.getenv("SLATE_MINUTE", "0") or "0")
+
+# Daily win/loss record auto-post (the /results command is bot-only now).
+# 11:45 PM ET by default — just before the Pick of the Day, after the day's
+# picks have been graded by the resolver. Defaults to the POD channel.
+RESULTS_CHANNEL_ID = int(os.getenv("RESULTS_CHANNEL_ID", str(POD_CHANNEL_ID or 0)) or "0")
+RESULTS_POST_HOUR = int(os.getenv("RESULTS_POST_HOUR", "23") or "23")
+RESULTS_POST_MINUTE = int(os.getenv("RESULTS_POST_MINUTE", "45") or "45")
 MSG_NO_PICK = (
     "No Pick of the Day right now — nothing on the board cleared the "
     "confidence threshold (or the board is unavailable). Try again later."
@@ -1118,24 +1125,8 @@ def pick_embed(pick: dict) -> discord.Embed:
     return _single_pick_embed(pick, _POD_AUTHORS[0])
 
 
-@client.tree.command(name="pickoftheday", description="Today's single best Baseline edge from the PrizePicks board")
-async def pickoftheday(interaction: discord.Interaction):
-    await interaction.response.defer(thinking=True)
-    log.info("CMD /pickoftheday | user=%s", interaction.user.id)
-    try:
-        if not _member_gate(interaction):
-            await _send_error(interaction,
-                f"This command is for **{MEMBER_ROLE_NAME}** members.")
-            return
-        picks = await pick_of_day.generate_picks(3)
-        if not picks:
-            await interaction.followup.send(embed=error_embed(MSG_NO_PICK), ephemeral=True)
-            return
-        await _annotate_form_alerts(picks)
-        await _deliver_pod(picks, interaction.followup.send)
-    except Exception:  # noqa: BLE001 — isolate: never crash or affect other commands
-        log.exception("UNHANDLED /pickoftheday error")
-        await _send_error(interaction, "Unable to generate a pick right now.")
+# Pick of the Day is bot-broadcast only (the automatic daily post) — no
+# user-invokable command.
 
 
 # ── Daily auto-post + results logging + line monitor ────────────────────────────
@@ -1330,18 +1321,8 @@ results_group = app_commands.Group(name="results",
                                    description="Baseline's automated public track record")
 
 
-@results_group.command(name="show", description="Baseline's automated win/loss record")
-async def results_show(interaction: discord.Interaction):
-    # Public — the track record is a sales tool, visible to everyone.
-    await interaction.response.defer(thinking=True)
-    try:
-        rec = await asyncio.to_thread(results_tracker.get_record)
-        await interaction.followup.send(embed=results_embed(rec))
-    except Exception:  # noqa: BLE001
-        log.exception("/results show failed")
-        await _send_error(interaction, "Unable to load the record right now.")
-
-
+# The win/loss record is bot-broadcast only (daily auto-post) — no user 'show'
+# command. The admin 'update' command below stays for correcting the record.
 _RESULT_CHOICES = [
     app_commands.Choice(name="Win", value="W"),
     app_commands.Choice(name="Loss", value="L"),
@@ -1444,23 +1425,7 @@ def slate_embed(data: dict) -> discord.Embed:
     return e
 
 
-@client.tree.command(name="slate", description="Today's ATP & WTA matches with surface and court speed")
-async def slate(interaction: discord.Interaction):
-    await interaction.response.defer(thinking=True)
-    try:
-        # Cold full-day scheduled-events fetch can be slow; allow plenty of time
-        # (the interaction is deferred, so a longer wait is safe). Cached 1h after.
-        data = await backend_get("/api/slate/today", {}, 80)
-        # One retry if the very first cold fetch came back unavailable — the
-        # backend pre-warms, so a second call almost always hits a warm cache.
-        if not data or not data.get("available"):
-            await asyncio.sleep(2)
-            data = await backend_get("/api/slate/today", {}, 80)
-        await interaction.followup.send(embed=slate_embed(data))
-    except Exception:  # noqa: BLE001
-        log.exception("/slate failed")
-        await interaction.followup.send(
-            embed=slate_embed({"available": False}))
+# The slate is bot-broadcast only (the automatic daily post) — no user command.
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -1692,6 +1657,33 @@ async def _before_resolve():
     await client.wait_until_ready()
 
 
+# ── Feature 1 — daily win/loss record auto-post (replaces the /results command) ──
+@tasks.loop(time=datetime.time(hour=RESULTS_POST_HOUR, minute=RESULTS_POST_MINUTE,
+                               tzinfo=POD_TZINFO))
+async def daily_results_post():
+    chan_id = RESULTS_CHANNEL_ID or POD_CHANNEL_ID
+    if not chan_id:
+        return
+    try:
+        channel = client.get_channel(chan_id)
+        if channel is None:
+            log.warning("daily results: channel %s not found", chan_id)
+            return
+        rec = await asyncio.to_thread(results_tracker.get_record)
+        if not rec or not rec.get("total"):
+            log.info("daily results: no picks logged yet — skipping")
+            return
+        await channel.send(embed=results_embed(rec))
+        log.info("daily results: posted record %s-%s", rec.get("wins"), rec.get("losses"))
+    except Exception:  # noqa: BLE001
+        log.exception("daily results post failed")
+
+
+@daily_results_post.before_loop
+async def _before_results_post():
+    await client.wait_until_ready()
+
+
 # ── Feature 7 — Monday 9am EST court-report auto-post ────────────────────────
 COURTREPORT_CHANNEL_ID = int(os.getenv("COURTREPORT_CHANNEL_ID", str(POD_CHANNEL_ID or 0)) or "0")
 
@@ -1803,6 +1795,16 @@ async def on_ready():
             log.info("Results auto-resolution running every %dh", RESOLVE_EVERY_HOURS)
         except Exception:
             log.exception("failed to start results resolution loop")
+
+    # Feature 1 — daily win/loss record auto-post (the /results command is gone).
+    if (RESULTS_CHANNEL_ID or POD_CHANNEL_ID) and not daily_results_post.is_running():
+        try:
+            daily_results_post.start()
+            log.info("Daily results record auto-post scheduled at %02d:%02d %s -> channel %s",
+                     RESULTS_POST_HOUR, RESULTS_POST_MINUTE, POD_TZINFO,
+                     RESULTS_CHANNEL_ID or POD_CHANNEL_ID)
+        except Exception:
+            log.exception("failed to start daily results post loop")
 
     # Feature 4 — daily Slate auto-post to the 📋・slate channel.
     if SLATE_CHANNEL_ID and not daily_slate.is_running():
