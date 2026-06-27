@@ -1172,6 +1172,15 @@ def project_player_games_won(
     # won ≈ 85% of games held — using points-as-games badly understates holds.
     pts_won = _hold_rate_proxy(player_stats)            # fraction of service POINTS
     game_hold = _game_win_prob(pts_won)                 # fraction of service GAMES
+    opp_hold_rate = _game_win_prob(_hold_rate_proxy(opponent_stats or {}))
+
+    # Component 5 — hold-dominant environment. When BOTH players serve well and
+    # return poorly (high mutual game-hold rate), breaks are rare, sets stretch
+    # to 7-5 / tiebreaks, and BOTH players win more games. Boost above an
+    # average-hold baseline, capped — so a big-server-vs-big-server match (esp.
+    # on fast courts) projects more games won than a break-heavy matchup.
+    mutual_hold = (game_hold + opp_hold_rate) / 2.0
+    hold_env_boost = 1.0 + min(0.20, max(0.0, mutual_hold - 0.80) * 1.2)
 
     # Component 4 — win-probability share. A player's share of the combined games
     # tracks their win probability (favourite wins more games via more holds AND
@@ -1181,7 +1190,7 @@ def project_player_games_won(
     wp = _safe(p1_win_prob, 50.0) / 100.0
     share = 0.5 + (wp - 0.5) * 0.55
     share = max(0.32, min(0.68, share))
-    projection = games_combined * share
+    projection = games_combined * share * hold_env_boost
     projection = max(4.5, projection)                   # floor — never near zero
 
     # Breakdown for display (Components 1 & 2), kept CONSISTENT with the
@@ -1196,14 +1205,15 @@ def project_player_games_won(
     games_broken = max(0.0, games_broken)
 
     hold_rate = game_hold
-    opp_hold_rate = _game_win_prob(_hold_rate_proxy(opponent_stats or {}))
     break_rate = (games_broken / service_games * 100.0) if service_games > 0 else 0.0
 
     logger.info(
-        "PLAYER_GAMES_WON | combined=%.1f svc=%.1f pts_won=%.0f%% game_hold=%.0f%% "
-        "wp=%.0f%% share=%.3f -> proj=%.1f | held=%.1f broken=%.1f exp_sets=%.2f fmt=%s",
-        games_combined, service_games, pts_won * 100, game_hold * 100, wp * 100,
-        share, projection, games_held, games_broken, _safe(expected_sets, 0.0), match_format,
+        "PLAYER_GAMES_WON | combined=%.1f svc=%.1f game_hold=%.0f%% opp_hold=%.0f%% "
+        "mutual=%.0f%% env_boost=%.3f wp=%.0f%% share=%.3f -> proj=%.1f | held=%.1f "
+        "broken=%.1f exp_sets=%.2f fmt=%s",
+        games_combined, service_games, game_hold * 100, opp_hold_rate * 100,
+        mutual_hold * 100, hold_env_boost, wp * 100, share, projection,
+        games_held, games_broken, _safe(expected_sets, 0.0), match_format,
     )
 
     return {
