@@ -582,6 +582,17 @@ def player_embed(name, surface, data) -> discord.Embed:
     e.add_field(name="Return 1st Won", value=_pct(surf.get("return_first_serve_pts_won")), inline=True)
 
     e.add_field(name=form_label, value=_form_emojis(form, limit=10), inline=False)
+
+    # Tournament Titles — only tournaments won at least once (missing = zero).
+    # Omit the section entirely if the player has no recorded titles.
+    titles = data.get("titles") or {}
+    if titles:
+        lines = [f"{t} 🏆 x{n}" for t, n in list(titles.items())[:18]]
+        body = "\n".join(lines)
+        if len(titles) > 18:
+            body += f"\n_…+{len(titles) - 18} more_"
+        e.add_field(name="Tournament Titles", value=body[:1024], inline=False)
+
     e.set_footer(text=FOOTER_52W)
     return e
 

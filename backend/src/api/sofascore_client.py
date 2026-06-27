@@ -1957,6 +1957,51 @@ def get_player_stats_by_surface(player_id, tour: str = "ATP") -> dict:
     return surfaces
 
 
+def get_player_titles(player_id, tour: str = "ATP") -> dict:
+    """Career tournament titles, derived from FINALS WON in the player's event
+    history (Sofascore has no direct titles endpoint). Returns
+    {tournament_name: times_won} sorted by count desc — only tournaments won at
+    least once. Cached 48h (title counts change rarely). {} on failure.
+    """
+    pid = int(player_id)
+    cache_key = f"ss_titles_{pid}_{int(time.time()) // (48 * 3600)}"
+    if cache_key in st.session_state:
+        return st.session_state[cache_key]
+
+    titles: dict = {}
+    try:
+        events = _get_player_recent_events(pid)   # full history, cached 6h
+        for e in events:
+            if (e.get("status") or {}).get("type", "") not in ("finished", "ended"):
+                continue
+            ri = e.get("roundInfo") or {}
+            if (ri.get("slug") or "").lower() != "final":     # championship match only
+                continue
+            ht, at = (e.get("homeTeam") or {}), (e.get("awayTeam") or {})
+            hn, an = ht.get("name", ""), at.get("name", "")
+            if "/" in hn or "/" in an:                        # skip doubles
+                continue
+            tname = (e.get("tournament") or {}).get("name", "")
+            ut = ((e.get("tournament") or {}).get("uniqueTournament", {}) or {}).get("name") \
+                or (e.get("uniqueTournament") or {}).get("name") or tname
+            if not ut:
+                continue
+            if "qualif" in (f"{tname} {ut} {ri.get('name','')}").lower():  # not a qual final
+                continue
+            # Did THIS player win the final? winnerCode 1=home, 2=away.
+            side = "home" if ht.get("id") == pid else "away"
+            wc = e.get("winnerCode")
+            if (wc == 1 and side == "home") or (wc == 2 and side == "away"):
+                titles[ut] = titles.get(ut, 0) + 1
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("get_player_titles failed pid=%s: %s", pid, exc)
+        titles = {}
+
+    sorted_titles = dict(sorted(titles.items(), key=lambda kv: (-kv[1], kv[0])))
+    st.session_state[cache_key] = sorted_titles
+    return sorted_titles
+
+
 def get_player_next_match(player_id, tour: str = "ATP") -> dict:
     """Return the player's NEXT scheduled singles match from Sofascore:
     {tournament, surface, opponent_name, start_timestamp}. Used so a feature can

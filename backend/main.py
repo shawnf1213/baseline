@@ -242,51 +242,6 @@ async def results_resolve(req: ResolveRequest):
 # ════════════════════════════════════════════════════════════════════════════
 # Features 4-7 — slate, form, history, court report (read-only, isolated)
 # ════════════════════════════════════════════════════════════════════════════
-@app.get("/api/debug/titles")
-async def debug_titles(player_id: str = "206570"):
-    """TEMP diagnostic: inspect which Sofascore endpoint holds title data."""
-    from src.api import sofascore_client as sc
-    loop = asyncio.get_event_loop()
-
-    def _probe():
-        res = {}
-        cands = {
-            "player":         f"{sc.BASE_URL}/player/{player_id}",
-            "player_stats":   f"{sc.BASE_URL}/player/{player_id}/statistics",
-            "player_career":  f"{sc.BASE_URL}/player/{player_id}/career",
-            "team":           f"{sc.BASE_URL}/team/{player_id}",
-            "team_trophies":  f"{sc.BASE_URL}/team/{player_id}/trophies",
-            "team_perf":      f"{sc.BASE_URL}/team/{player_id}/performance",
-        }
-        for name, url in cands.items():
-            try:
-                d = sc._get(url)
-                if isinstance(d, dict):
-                    res[name] = {"keys": list(d.keys()), "sample": str(d)[:600]}
-                else:
-                    res[name] = {"type": type(d).__name__}
-            except Exception as e:  # noqa: BLE001
-                res[name] = {"error": repr(e)}
-        # Inspect a few events for finals-detection feasibility.
-        try:
-            ev = sc._get(f"{sc.BASE_URL}/team/{player_id}/events/last/0").get("events", [])
-            res["sample_events"] = [{
-                "tournament": (e.get("tournament") or {}).get("name"),
-                "uniqueTournament": (e.get("tournament") or {}).get("uniqueTournament", {}).get("name")
-                                    or (e.get("uniqueTournament") or {}).get("name"),
-                "roundInfo": e.get("roundInfo"),
-                "winnerCode": e.get("winnerCode"),
-                "home": (e.get("homeTeam") or {}).get("name"),
-                "away": (e.get("awayTeam") or {}).get("name"),
-                "status": (e.get("status") or {}).get("type"),
-            } for e in ev[:6]]
-        except Exception as e:  # noqa: BLE001
-            res["sample_events"] = {"error": repr(e)}
-        return res
-
-    return await loop.run_in_executor(None, _probe)
-
-
 @app.get("/api/slate/today")
 async def slate_today():
     """Feature 4 — today's ATP/WTA singles with tournament, surface, CPI."""
@@ -775,7 +730,18 @@ async def player_stats(req: PlayerStatsRequest):
         all_stats = data.get("All", {}) or {}
         archetype = classify_archetype(all_stats, req.tour)
 
+        # Tournament titles (finals won) — reuses the event cache just warmed
+        # above, so it's cheap. Isolated: failure just omits the section.
+        try:
+            from src.api.sofascore_client import get_player_titles
+            titles = await _loop2.run_in_executor(
+                None, get_player_titles, req.player_id, req.tour)
+        except Exception as _te:  # noqa: BLE001
+            logger.warning("titles fetch failed: %s", _te)
+            titles = {}
+
         return {
+            "titles": titles,
             "All":   data.get("All", {}),
             "Hard":  data.get("Hard", {}),
             "Clay":  data.get("Clay", {}),
