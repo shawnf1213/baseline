@@ -370,6 +370,19 @@ def _prop_stat_blocks(prop_type, data):
             ("Hold Rate", _pct(data.get("opp_hold_rate_pct"))),
             ("Serve Quality", data.get("opp_serve_tier") or "—"),
         ]
+    elif prop_type == "Player Total Games Won":
+        # Core drivers: player hold rate, opponent hold rate, player break rate,
+        # and the held-vs-broken composition of the projection.
+        p_lines = [
+            ("Hold Rate", _pct(data.get("player_hold_rate"))),
+            ("Break Rate vs Opp", _pct(data.get("player_break_rate"))),
+            ("Games Held", _num(data.get("games_held"))),
+            ("Games by Break", _num(data.get("games_broken"))),
+        ]
+        o_lines = [
+            ("Hold Rate", _pct(data.get("opp_hold_rate_g"))),
+            ("Win Rate", _pct(os_.get("win_rate"))),
+        ]
     else:  # Total Games
         p_lines = [
             ("1st Srv Won", _pct(ps.get("first_serve_pts_won"))),
@@ -432,6 +445,13 @@ def prop_embed(player, opponent, prop_type, surface, court_display, line, data) 
         f"{dot} **{lean} {line:g}**  ·  Projection **{_num(proj)}**  ·  Edge **{edge_txt}**{star}\n"
         f"Confidence  {_conf_bar(conf)}"
     )
+    # Player Total Games Won is player-specific — say whose games, and how the
+    # projection breaks down into holds vs breaks.
+    if prop_type == "Player Total Games Won":
+        gh, gb = data.get("games_held"), data.get("games_broken")
+        comp = (f"\n🎾 **{player}'s** games won  ·  {_num(gh)} held on serve + "
+                f"{_num(gb)} by breaking") if gh is not None else f"\n🎾 **{player}'s** games won"
+        g_proj += comp
     verdict = "\n\n".join(x for x in (g_context, court_line, g_proj) if x)
 
     e = discord.Embed(
@@ -616,6 +636,7 @@ PROP_CHOICES = [
     app_commands.Choice(name="Double Faults", value="Double Faults"),
     app_commands.Choice(name="Break Points Won", value="Break Points Won"),
     app_commands.Choice(name="Total Games", value="Total Games"),
+    app_commands.Choice(name="Player Total Games Won", value="Player Total Games Won"),
 ]
 SURFACE_CHOICES = [
     app_commands.Choice(name="Hard", value="Hard"),

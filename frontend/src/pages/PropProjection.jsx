@@ -15,7 +15,7 @@ import Last5Bars from '../components/Last5Bars'
 import { calcProp, fetchStats } from '../utils/api'
 import { TOURNAMENT_CONFIG, fmt, fmtPct, getSpeedTier, ST_YOY_THRESHOLD } from '../utils/constants'
 
-const PROP_TYPES = ['Aces', 'Double Faults', 'Total Games', 'Break Points Won']
+const PROP_TYPES = ['Aces', 'Double Faults', 'Total Games', 'Break Points Won', 'Player Total Games Won']
 const SURFACES   = ['Hard', 'Clay', 'Grass']
 
 const PROP_STAT_KEY = {
@@ -23,6 +23,7 @@ const PROP_STAT_KEY = {
   'Double Faults': 'double_faults',
   'Total Games': 'total_match_games',
   'Break Points Won': 'bp_converted_count',
+  'Player Total Games Won': 'total_games_won',
 }
 
 // Animation variants — staggered reveal

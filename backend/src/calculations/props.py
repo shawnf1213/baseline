@@ -1134,6 +1134,7 @@ def _expected_sets(tour: str, court: str, p1_wr: float = 50.0, p2_wr: float = 50
 
 def project_player_games_won(
     player_stats: dict,
+    opponent_stats: dict,
     surface: str,
     cpr: float,
     games_combined: float,
@@ -1195,6 +1196,7 @@ def project_player_games_won(
     games_broken = max(0.0, games_broken)
 
     hold_rate = game_hold
+    opp_hold_rate = _game_win_prob(_hold_rate_proxy(opponent_stats or {}))
     break_rate = (games_broken / service_games * 100.0) if service_games > 0 else 0.0
 
     logger.info(
@@ -1209,6 +1211,7 @@ def project_player_games_won(
         "games_held":     round(games_held, 1),
         "games_broken":   round(games_broken, 1),
         "hold_rate":      round(hold_rate * 100, 1),
+        "opp_hold_rate":  round(opp_hold_rate * 100, 1),
         "break_rate":     round(break_rate, 1),
         "games_combined": round(games_combined, 1),
         "expected_sets":  expected_sets,

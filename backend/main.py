@@ -1186,7 +1186,7 @@ async def prop_calculate(req: PropRequest):
                     player_ta=player_ta_props, opponent_ta=opponent_ta_props,
                 )
                 result = project_player_games_won(
-                    p1_s, req.surface, cpr,
+                    p1_s, p2_s, req.surface, cpr,
                     games_combined=tg_result.get("projection"),
                     bp_won=bp_result.get("projection"),
                     p1_win_prob=tg_result.get("p1_win_prob"),
@@ -1480,6 +1480,7 @@ async def prop_calculate(req: PropRequest):
             "games_held":            result.get("games_held"),
             "games_broken":          result.get("games_broken"),
             "player_hold_rate":      result.get("hold_rate"),
+            "opp_hold_rate_g":       result.get("opp_hold_rate"),
             "player_break_rate":     result.get("break_rate"),
             "games_combined_ref":    result.get("games_combined"),
             # ── ST Pace Index / Surface Speed Tier ────────────────────────────
