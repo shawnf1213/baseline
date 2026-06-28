@@ -1148,56 +1148,82 @@ def project_player_games_won(
     """Project how many INDIVIDUAL games the SELECTED player wins in the match
     (distinct from the combined Total Games prop).
 
-      games_won = games_held_on_serve + games_won_breaking
+    Built from the match's SET STRUCTURE so the two players' projections are
+    physically self-consistent — they imply the SAME number of sets and always
+    reconcile to the combined Total Games (player + opponent == combined).
 
-    • games_held_on_serve = (player's service games) × (player surface hold rate).
-      A player serves ~half the match's combined games, so service games ≈
-      games_combined / 2. Both inputs are already match-totals (expected-sets
-      scaled), so no extra scaling is applied.
-    • games_won_breaking = (opponent's service games) × (player break rate),
-      where the player's break rate = 1 − the opponent's hold rate. Each break
-      is one game the player wins on return.
-    This decomposition is internally CONSISTENT: the two players' projections
-    always reconcile to the combined Total Games (player_games + opp_games ==
-    combined), because one player's holds are the other's break opportunities.
-    Win probability is captured INHERENTLY — the favourite both holds more and
-    faces a weaker-holding opponent — so no separate win-prob multiplier is
-    applied (stacking one produced impossible splits like 23–10). Surface/court
-    speed is already embedded in games_combined and the surface hold rates.
-    Returns the projection plus the held/broken breakdown and the supporting
-    hold/break rates for display.
+    The key constraint a naive hold/break split misses: the match winner ALWAYS
+    wins at least (sets-to-win × 6) games — 18 in a best-of-5, 12 in a best-of-3
+    — because every set won needs ≥6 games. So a favourite expected to win must
+    clear that floor; the loser gets the rest. A simple per-game share put the
+    favourite BELOW the floor (e.g. 17 in a BO5) while giving the loser too many
+    (14) — numbers that imply different set counts and can't both be true.
+
+    Method:
+      • avg games/set      = combined / expected_sets
+      • set winner/loser   = ~6.x and the remainder (a 6-4 / 7-5 style set)
+      • favourite's sets   = (sets-to-win) when they win the match, a fraction of
+                             (sets-to-win − 1) when they lose it (win-prob driven)
+      • favourite_games    = (sets they win)·winner_gps + (sets they lose)·loser_gps
+      • opponent_games     = combined − favourite_games   (exact reconciliation)
+    Surface/court speed and win probability are already embedded in the combined
+    total, the expected sets and the win prob. Returns the projection plus a
+    held/broken breakdown (kept proportional to the players' hold/break profile)
+    and the supporting hold/break rates for display.
     """
     games_combined = _safe(games_combined, 0.0)
     service_games = games_combined / 2.0                # player serves ~half the games
 
     # Surface GAME-hold rates: convert service-POINTS-won (the proxy) into the
     # probability of holding a service GAME (iid-point model). e.g. 66% of points
-    # won ≈ 85% of games held — using points-as-games badly understates holds.
+    # won ≈ 85% of games held — used for the held/broken display breakdown.
     game_hold = max(0.40, min(0.97, _game_win_prob(_hold_rate_proxy(player_stats))))
     opp_hold_rate = max(0.40, min(0.97, _game_win_prob(_hold_rate_proxy(opponent_stats or {}))))
 
-    # Decompose CONSISTENTLY so the two players' games always reconcile to the
-    # combined total (player_games + opponent_games == combined). The win-prob
-    # influence is INHERENT here: the favourite holds more AND breaks more (their
-    # opponent holds less), so no separate win-prob multiplier is applied — that
-    # was what produced impossible splits (e.g. 23–10) by stacking a high share
-    # on top of an already-long projected match.
-    #   games_held   = (player's service games) × player hold rate
-    #   games_broken = (opponent's service games) × player break rate
-    #                = service_games × (1 − opponent hold rate)
-    games_held = service_games * game_hold
-    games_broken = service_games * (1.0 - opp_hold_rate)
-    projection = games_held + games_broken
-    projection = max(4.5, projection)                   # floor — even a swept loser holds a few
+    # ── Set-structure split ──────────────────────────────────────────────────
+    need = 3 if match_format == "best_of_5" else 2      # sets to win the match
+    es = max(_safe(expected_sets, need + 0.3), need + 0.15)
+    avg_gps = (games_combined / es) if es > 0 else 9.5  # games per set
+    winner_gps = min(7.0, max(6.0, 0.55 * avg_gps + 0.80))   # set winner's games
+    loser_gps = max(2.0, avg_gps - winner_gps)               # set loser's games
+
+    p_sel = _safe(p1_win_prob, 50.0) / 100.0
+    p_sel = max(0.02, min(0.98, p_sel))
+    p_fav = max(p_sel, 1.0 - p_sel)                     # the favourite's win prob
+    sel_is_fav = p_sel >= 0.5
+
+    # Sets the FAVOURITE wins over the whole match: exactly `need` when they win
+    # it (prob p_fav); a fraction of (need-1) on the occasions they lose it.
+    fav_set_wins = p_fav * need + (1.0 - p_fav) * (need - 1) * 0.55
+    fav_set_losses = max(0.0, es - fav_set_wins)
+    fav_games = fav_set_wins * winner_gps + fav_set_losses * loser_gps
+    fav_games = max(0.0, min(fav_games, games_combined))    # safety bound
+    opp_games = games_combined - fav_games
+
+    projection = fav_games if sel_is_fav else opp_games
+    projection = max(4.5, projection)                   # floor — even a swept loser wins a few
+
+    # Held / broken breakdown for display — split the projection in proportion to
+    # the player's actual hold vs break tendency, so it sums to the projection
+    # and never goes negative.
+    raw_holds = service_games * game_hold
+    raw_breaks = service_games * (1.0 - opp_hold_rate)
+    raw_total = raw_holds + raw_breaks
+    if raw_total > 0:
+        games_held = projection * (raw_holds / raw_total)
+        games_broken = projection - games_held
+    else:
+        games_held = projection
+        games_broken = 0.0
 
     hold_rate = game_hold
     break_rate = (1.0 - opp_hold_rate) * 100.0
 
     logger.info(
-        "PLAYER_GAMES_WON | combined=%.1f svc=%.1f game_hold=%.0f%% opp_hold=%.0f%% "
-        "-> proj=%.1f | held=%.1f broken=%.1f exp_sets=%.2f fmt=%s",
-        games_combined, service_games, game_hold * 100, opp_hold_rate * 100,
-        projection, games_held, games_broken, _safe(expected_sets, 0.0), match_format,
+        "PLAYER_GAMES_WON | combined=%.1f es=%.2f gps=%.1f(W%.1f/L%.1f) p_sel=%.0f%% "
+        "fav_sets=%.2f sel_is_fav=%s -> proj=%.1f | held=%.1f broken=%.1f fmt=%s",
+        games_combined, es, avg_gps, winner_gps, loser_gps, p_sel * 100,
+        fav_set_wins, sel_is_fav, projection, games_held, games_broken, match_format,
     )
 
     return {
