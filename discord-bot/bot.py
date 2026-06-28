@@ -322,6 +322,38 @@ def _form_emojis(matches, limit=5) -> str:
     return " ".join(out) if out else "—"
 
 
+# Prop → the per-match stat field used for the last-5 OVER/UNDER-the-line signal.
+_LAST5_STAT_KEY = {
+    "Aces":                   "aces",
+    "Double Faults":          "double_faults",
+    "Total Games":            "total_match_games",
+    "Break Points Won":       "bp_converted_count",   # breaks the player won
+    "Player Total Games Won": "total_games_won",
+}
+
+
+def _last5_signal(matches, prop_type, line, limit=5) -> str:
+    """Last-N dots showing whether the PROP'S STAT cleared the LINE in each recent
+    match — 🟢 over · 🔴 under · ⚪ push/no-data — NOT win/loss. A player can clear
+    an ace line in a loss (or miss it in a win), so win/loss was the wrong signal.
+    Falls back to win/loss form dots only for an unsupported prop or missing line."""
+    key = _LAST5_STAT_KEY.get(prop_type)
+    if not key or not isinstance(line, (int, float)) or line <= 0:
+        return _form_emojis(matches, limit)
+    out = []
+    for m in (matches or [])[:limit]:
+        v = m.get(key) if isinstance(m, dict) else None
+        if not isinstance(v, (int, float)):
+            out.append("⚪")
+        elif v > line:
+            out.append("🟢")
+        elif v < line:
+            out.append("🔴")
+        else:
+            out.append("⚪")   # landed exactly on the line → push
+    return " ".join(out) if out else "—"
+
+
 def _shorten(text: str, n: int = 400) -> str:
     if not text:
         return ""
@@ -547,8 +579,8 @@ def prop_embed(player, opponent, prop_type, surface, court_display, line, data) 
         e.add_field(name="Matchup", value="Handedness edge ✓", inline=False)
 
     e.add_field(
-        name=f"Last 5 ({surface}) — {_last_name(player)}",
-        value=_form_emojis(data.get("player_surface_matches")),
+        name=f"Last 5 ({surface}) vs {line:g} — {_last_name(player)}  🟢 over · 🔴 under",
+        value=_last5_signal(data.get("player_surface_matches"), prop_type, line),
         inline=False,
     )
 
