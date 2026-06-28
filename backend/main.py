@@ -974,6 +974,37 @@ async def prop_calculate(req: PropRequest):
         if p2_unified_surf and p2_unified_surf["matches"] > p2_s.get("matches_played", 0):
             p2_s["matches_played"] = p2_unified_surf["matches"]
 
+        # ── Backfill displayed surface SERVE stats from the 52-week TA view ───
+        # Sofascore's surface stats can come back empty even for a player with a
+        # real surface history (e.g. Sinner's grass: Sofascore returns 0 grass
+        # matches in its window, so Aces/DFs/serve% render as "—"), while Tennis
+        # Abstract DOES have the matches (the projection already uses them). Fill
+        # the display from the SAME 52-week TA surface view project_aces reads,
+        # so the panel shows real grass numbers instead of blanks. Percentages
+        # map straight across; ace/DF counts convert from per-serve-point % using
+        # the tour's average service points per match. Projection math is
+        # unaffected — project_aces reads TA directly and prefers it already.
+        def _backfill_serve_from_ta(s: dict, ta_props: dict, surf: str, tour: str) -> None:
+            tsurf = (ta_props or {}).get("surface_stats", {}).get(surf) or {}
+            if not tsurf or not tsurf.get("matches"):
+                return
+            sp = 80.0 if tour == "ATP" else 70.0
+            ap, dp = tsurf.get("ace_pct"), tsurf.get("df_pct")
+            if s.get("aces") is None and ap is not None:
+                s["aces"] = round((ap / 100.0) * sp, 1)
+            if s.get("double_faults") is None and dp is not None:
+                s["double_faults"] = round((dp / 100.0) * sp, 1)
+            for dst, src in (("first_serve_pct", "first_in_pct"),
+                             ("first_serve_pts_won", "first_won_pct"),
+                             ("second_serve_pts_won", "second_won_pct"),
+                             ("bp_converted", "bp_conv_pct"),
+                             ("bp_saved", "bp_saved_pct")):
+                if s.get(dst) is None and tsurf.get(src) is not None:
+                    s[dst] = tsurf.get(src)
+
+        _backfill_serve_from_ta(p1_s, player_ta_props, req.surface, req.tour)
+        _backfill_serve_from_ta(p2_s, opponent_ta_props, req.surface, req.tour)
+
         # Inject identity, rank, and recent form into stats dicts so the
         # expected-sets win-prob estimator has everything it needs.
         p1_s["player_name"] = req.player_name or req.player_id
