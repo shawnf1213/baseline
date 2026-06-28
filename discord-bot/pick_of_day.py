@@ -66,6 +66,21 @@ def _norm(s: str) -> str:
     return re.sub(r"[^a-z ]", " ", s.lower()).strip()
 
 
+# Players excluded from Pick of the Day — known injured / off-form cases the data
+# can't see (e.g. an injury "not on record"). POD_EXCLUDE env (comma-separated
+# names) appends more without a code change. Matched as a normalised substring,
+# so a surname is enough.
+_POD_EXCLUDE = {"raducanu"}
+_env_excl = os.getenv("POD_EXCLUDE", "")
+if _env_excl.strip():
+    _POD_EXCLUDE |= {_norm(x) for x in _env_excl.split(",") if x.strip()}
+
+
+def _is_excluded(name: str) -> bool:
+    n = _norm(name)
+    return bool(n) and any(ex and ex in n for ex in _POD_EXCLUDE)
+
+
 def _ratio(a: str, b: str) -> float:
     return SequenceMatcher(None, a, b).ratio()
 
@@ -142,6 +157,9 @@ def _parse_board(board: dict) -> list:
         player = included.get((pref.get("type"), pref.get("id")), {})
         pname = (player.get("attributes") or {}).get("name") or ""
         if not pname:
+            continue
+        if _is_excluded(pname):          # injured / off-form exclude list
+            log.info("POD: excluding %s (exclude list)", pname)
             continue
 
         opponent = (attr.get("description") or "").strip()  # tennis: opponent name

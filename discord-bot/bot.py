@@ -1095,10 +1095,11 @@ try:
 except Exception:  # pragma: no cover — fall back to a fixed EST offset
     POD_TZINFO = datetime.timezone(datetime.timedelta(hours=-5))
 # Trigger at 11:50 PM ET, not midnight: the serialized generation run takes
-# ~10 min, so starting early lands the post in #potd right around 12:00 AM.
-# (Adjust POD_HOUR/POD_MINUTE if run time drifts as the board/tournaments change.)
-POD_HOUR = int(os.getenv("POD_HOUR", "0") or "0")
-POD_MINUTE = int(os.getenv("POD_MINUTE", "30") or "30")
+# ~10 min, so starting early lands the post right around the target time.
+# Default 19:50 ET → posts ~8:00 PM ET. (Adjust POD_HOUR/POD_MINUTE if run time
+# drifts. NOTE: Railway POD_HOUR/POD_MINUTE env vars OVERRIDE these defaults.)
+POD_HOUR = int(os.getenv("POD_HOUR", "19") or "19")
+POD_MINUTE = int(os.getenv("POD_MINUTE", "50") or "50")
 # Optional one-shot post on startup for verifying a deploy (off by default).
 POD_POST_ON_START = (os.getenv("POD_POST_ON_START", "0") or "0") not in ("0", "false", "False")
 _pod_startup_done = False
@@ -1322,48 +1323,8 @@ async def _before_daily_pick():
     await client.wait_until_ready()
 
 
-@client.tree.command(
-    name="pickoftheday",
-    description="Preview today's Pick of the Day — only you can see it (audit the picks)",
-)
-@app_commands.checks.cooldown(1, 15.0, key=lambda i: i.user.id)
-async def pickoftheday(interaction: discord.Interaction):
-    """Viewer-only Pick of the Day. Runs the SAME generate_picks logic as the
-    midnight auto-post so you can verify the calculations, but the response is
-    ephemeral: no channel broadcast, no @everyone, no results logging, and no
-    line monitor (those belong to the official daily post only)."""
-    try:
-        await _enter_queue(interaction)      # defers thinking=True, ephemeral=True
-    except _QueueBusy:
-        return
-    log.info("CMD /pickoftheday | user=%s (ephemeral preview)", interaction.user.id)
-    try:
-        picks = await pick_of_day.generate_picks(3)
-        if not picks:
-            no_play = discord.Embed(description=MSG_NO_PICK_DAILY, color=COLOR_NEUTRAL)
-            no_play.set_author(name="🏆 Pick of the Day")
-            await interaction.followup.send(embed=no_play, ephemeral=True)
-            return
-        await _annotate_form_alerts(picks)
-
-        # Ephemeral, view-only delivery: strip the broadcast content/mentions
-        # that _deliver_pod adds for the public post and force ephemeral=True.
-        async def _eph_send(**kw):
-            kw.pop("content", None)
-            kw.pop("allowed_mentions", None)
-            return await interaction.followup.send(ephemeral=True, **kw)
-
-        await _deliver_pod(picks, _eph_send, mention=False)
-    except NETWORK_ERRORS:
-        await _send_error(interaction, MSG_UNREACHABLE)
-    except Exception:  # noqa: BLE001
-        log.exception("/pickoftheday failed")
-        await _send_error(
-            interaction,
-            "Couldn't generate the Pick of the Day right now — try again shortly.",
-        )
-    finally:
-        _leave_queue()
+# Pick of the Day is bot-broadcast only — the automatic daily post at POD_HOUR:
+# POD_MINUTE ET. No user-facing /pickoftheday command (removed by request).
 
 
 # ── Feature 4 — daily Slate auto-post (📋・slate channel) ─────────────────────────
