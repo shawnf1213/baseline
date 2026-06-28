@@ -88,6 +88,9 @@ def _ss_tier_to_blended(
         "bp_saved":                    ss_stats.get("bp_saved"),
         "return_first_serve_pts_won":  ss_stats.get("return_first_serve_pts_won"),
         "return_second_serve_pts_won": ss_stats.get("return_second_serve_pts_won"),
+        # Serve / return GAMES won % — cleanest dominance measures (sum/sum):
+        "service_games_won_pct":       ss_stats.get("service_games_won_pct"),
+        "return_games_won_pct":        ss_stats.get("return_games_won_pct"),
         "win_rate":                    ss_stats.get("win_rate"),
         "matches":                     ss_stats.get("matches_played", 0),
     }
@@ -355,6 +358,7 @@ def get_blended_stats(
         "first_serve_pts_won", "second_serve_pts_won",
         "bp_converted", "win_rate", "bp_faced_count",
         "return_bp_opportunities", "return_bp_converted",  # return-side raw counts
+        "service_games_won_pct", "return_games_won_pct",   # serve/return dominance
     ]
 
     blended: dict = {}

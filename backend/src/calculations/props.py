@@ -793,6 +793,24 @@ def _serve_tier_and_adj(hold_proxy: float, tour: str) -> tuple:
     return "Weak", 1.10
 
 
+def _server_quality_tier_sgw(sgw_pct, tour: str = "ATP") -> str:
+    """Server-quality badge from SERVICE GAMES WON % (Part 5). Distinct from the
+    C4 hold-proxy tier above. WTA games-won runs ~6pp below ATP, so cutoffs shift
+    down so the label means the same on either tour.
+        Elite >82 · Strong 75–82 · Average 65–75 · Weak <65   (ATP)
+    """
+    if sgw_pct is None:
+        return None
+    shift = 6.0 if (tour or "ATP").upper() == "WTA" else 0.0
+    if sgw_pct > 82.0 - shift:
+        return "Elite Server"
+    if sgw_pct >= 75.0 - shift:
+        return "Strong Server"
+    if sgw_pct >= 65.0 - shift:
+        return "Average Server"
+    return "Weak Server"
+
+
 def detect_environment(p1_stats: dict, p2_stats: dict,
                        surface: str = "Hard", tour: str = "ATP") -> str:
     """
@@ -1450,6 +1468,10 @@ def project_break_points(
     opp_ss_matches: int = 0,
     match_format: str = "best_of_3",
     court: str = "",
+    bp_prop_mode: bool = False,                 # enhancements gated to the BP prop
+    bp_generated_quality_adj: float = None,      # Part 2: quality-adjusted BP gen
+    bp_generated_raw: float = None,              # raw BP gen per match (display/conf)
+    bp_forward_server_factor: float = 1.0,       # Part 2: current-opp serve-quality
 ) -> dict:
     """
     8-component break points won projection:
@@ -1556,6 +1578,23 @@ def project_break_points(
         c1_opp_bp_faced = c1_floor
         c1_source = f"{c1_source}+floor({c1_floor:.1f}@{_c1_floor_mult:.2f})"
 
+    # ── Part 2/4: opportunity pool reflects BOTH sides + forward server quality
+    # (Break Points prop only — gated so Player Total Games Won is unchanged).
+    # The opponent's BP-faced says how many chances they concede; the player's
+    # quality-adjusted BP-generated says how many they create. Blending the two
+    # makes a high-volume opportunity creator project higher than a low-sample
+    # one even off the same conversion rate. The forward factor then nudges for
+    # the CURRENT opponent's serve quality (strong server → fewer chances).
+    c1_pre_blend = c1_opp_bp_faced
+    if bp_prop_mode and bp_generated_quality_adj is not None and bp_generated_quality_adj > 0:
+        c1_opp_bp_faced = (0.5 * c1_opp_bp_faced + 0.5 * bp_generated_quality_adj) \
+            * bp_forward_server_factor
+        c1_source = (f"{c1_source}+gen_qadj({bp_generated_quality_adj:.1f})"
+                     f"xfwd({bp_forward_server_factor:.2f})")
+    elif bp_prop_mode and bp_forward_server_factor != 1.0:
+        c1_opp_bp_faced *= bp_forward_server_factor
+        c1_source = f"{c1_source}+fwd({bp_forward_server_factor:.2f})"
+
     logger.info(
         "BP_C1 | opp=%s | surf_raw=%s | overall=%s | opp_surf_n=%d | "
         "source=%s | c1=%.2f | floored=%s | opp_df=%.1f | df_bonus=%.1f | tour_avg=%.2f",
@@ -1583,24 +1622,36 @@ def project_break_points(
     c2_delta_pct     = 0.0
     c2_source        = "default=1.0(no_career_data)"
 
-    if p_ret1_surf is not None and p_ret1_all is not None and p_ret1_all > 0:
+    # Part 4: in BP-prop mode, drive C2 off RETURN GAMES WON % (surface vs career)
+    # — a more direct measure of breaking than return points won. Fall back to the
+    # return-points-won comparison when games-won is unavailable or non-BP mode.
+    _rgw_surf = player_stats.get("return_games_won_pct") if bp_prop_mode else None
+    _rgw_car  = _p_all.get("return_games_won_pct") if bp_prop_mode else None
+    if bp_prop_mode and _rgw_surf is not None and _rgw_car and _rgw_car > 0:
+        surf_ret_avg, career_ret_avg, c2_basis = _rgw_surf, _rgw_car, "rgw"
+    elif p_ret1_surf is not None and p_ret1_all is not None and p_ret1_all > 0:
         surf_ret_avg   = (p_ret1_surf + p_ret2_surf) / 2 if p_ret2_surf else p_ret1_surf
         career_ret_avg = (p_ret1_all  + p_ret2_all)  / 2 if p_ret2_all  else p_ret1_all
-        if career_ret_avg > 0:
-            c2_delta_pct = (surf_ret_avg - career_ret_avg) / career_ret_avg
-            if c2_delta_pct > 0.05:
-                # Upper bound trimmed 1.15 → 1.10 → 1.05. A 5% returner boost
-                # on a specialist's best surface is realistic; larger values
-                # compound too aggressively with C8 for heavy-favorite BO5 matches.
-                excess           = c2_delta_pct - 0.05
-                c2_returner_mult = min(1.05, 1.02 + excess * 0.6)
-                c2_source        = f"above_career({c2_delta_pct:+.1%})"
-            elif c2_delta_pct < -0.05:
-                deficit          = abs(c2_delta_pct) - 0.05
-                c2_returner_mult = max(0.88, 0.95 - deficit * 1.4)
-                c2_source        = f"below_career({c2_delta_pct:+.1%})"
-            else:
-                c2_source        = f"within_5pct({c2_delta_pct:+.1%})"
+        c2_basis = "retpts"
+    else:
+        surf_ret_avg = career_ret_avg = None
+        c2_basis = "none"
+
+    if surf_ret_avg is not None and career_ret_avg and career_ret_avg > 0:
+        c2_delta_pct = (surf_ret_avg - career_ret_avg) / career_ret_avg
+        if c2_delta_pct > 0.05:
+            # Upper bound trimmed 1.15 → 1.10 → 1.05. A 5% returner boost
+            # on a specialist's best surface is realistic; larger values
+            # compound too aggressively with C8 for heavy-favorite BO5 matches.
+            excess           = c2_delta_pct - 0.05
+            c2_returner_mult = min(1.05, 1.02 + excess * 0.6)
+            c2_source        = f"above_career({c2_delta_pct:+.1%},{c2_basis})"
+        elif c2_delta_pct < -0.05:
+            deficit          = abs(c2_delta_pct) - 0.05
+            c2_returner_mult = max(0.88, 0.95 - deficit * 1.4)
+            c2_source        = f"below_career({c2_delta_pct:+.1%},{c2_basis})"
+        else:
+            c2_source        = f"within_5pct({c2_delta_pct:+.1%},{c2_basis})"
 
     logger.info(
         "BP_C2 | player=%s | surf_ret=%.1f%% | career_ret=%.1f%% | "
@@ -2253,6 +2304,24 @@ def project_break_points(
         "player_bp_won_per_match":  round((conv_rate_pct / 100.0) * c1_opp_bp_faced, 1),
         "player_bp_opps_per_match": round(c1_opp_bp_faced, 1),
         "opp_hold_rate_pct":        round(opp_hold_proxy * 100, 1),
+        # ── Part 1/2/5: BP generated, games-won %, server-quality badge ──────
+        "bp_generated_per_match":   (round(bp_generated_raw, 2) if bp_generated_raw is not None
+                                     else (round(player_stats.get("return_bp_opportunities"), 2)
+                                           if player_stats.get("return_bp_opportunities") is not None
+                                           else None)),
+        "bp_generated_quality_adj": (round(bp_generated_quality_adj, 2)
+                                     if bp_generated_quality_adj is not None else None),
+        "forward_server_factor":    round(bp_forward_server_factor, 3),
+        "player_service_games_won_pct": (round(player_stats.get("service_games_won_pct"), 1)
+                                         if player_stats.get("service_games_won_pct") is not None else None),
+        "player_return_games_won_pct":  (round(player_stats.get("return_games_won_pct"), 1)
+                                         if player_stats.get("return_games_won_pct") is not None else None),
+        "opp_service_games_won_pct":    (round(opponent_stats.get("service_games_won_pct"), 1)
+                                         if opponent_stats.get("service_games_won_pct") is not None else None),
+        "opp_return_games_won_pct":     (round(opponent_stats.get("return_games_won_pct"), 1)
+                                         if opponent_stats.get("return_games_won_pct") is not None else None),
+        "opp_server_quality_tier":  _server_quality_tier_sgw(
+                                        opponent_stats.get("service_games_won_pct"), tour),
         "environment":           env,
         "h2h_bp_avg":            round(h2h_bp_avg, 1) if h2h_used else None,
         # ── Quality flags ─────────────────────────────────────────────────────
@@ -2539,6 +2608,24 @@ def _report_bp(player_name, opponent_name, surface, court, projection,
             f"{o_last} faces {opp_faced:.1f} BPs per match on {surface.lower()} "
             f"({serve_qual})."
         )
+
+    # 2b. Opponent server-quality tier + the player's (quality-adjusted) BP
+    # creation against servers of this calibre — addresses that BP stats padded
+    # against weak servers don't predict performance vs strong ones (Part 5).
+    sq_tier = projection.get("opp_server_quality_tier")
+    opp_sgw = projection.get("opp_service_games_won_pct")
+    bp_gen  = projection.get("bp_generated_per_match")
+    bp_genq = projection.get("bp_generated_quality_adj")
+    if sq_tier and bp_gen is not None:
+        sgw_txt = (f"{o_last} wins {opp_sgw:.0f}% of service games on {surface.lower()} "
+                   f"— {sq_tier.lower()}" if opp_sgw is not None
+                   else f"{o_last} rates as a {sq_tier.lower()}")
+        if bp_genq is not None and abs(bp_genq - bp_gen) >= 0.3:
+            gen_txt = (f"{p_last} generates {bp_gen:.1f} BP/match, "
+                       f"{bp_genq:.1f} once quality-adjusted for the servers he's faced")
+        else:
+            gen_txt = f"{p_last} generates {bp_gen:.1f} BP/match against this calibre of server"
+        sentences.append(f"{sgw_txt}; {gen_txt}.")
 
     # 3. Match environment
     env_label = {

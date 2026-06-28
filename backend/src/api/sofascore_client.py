@@ -901,6 +901,32 @@ def _agg_split(all_m: list, stat_m: list) -> dict:
         if _conv_vals:
             result["bp_converted"] = round(sum(_conv_vals) / len(_conv_vals), 4)
 
+    # ── Service / Return games won % (sum/sum, like bp_converted) ────────────
+    # Cleanest serve/return dominance measures: holds and breaks as a share of
+    # service / return games actually played. Sum/sum avoids per-match rate bias.
+    _sgw_pairs = [
+        (m["service_games_won"], m["service_games"]) for m in stat_m
+        if m.get("service_games_won") is not None and m.get("service_games")
+    ]
+    if _sgw_pairs:
+        _tw = sum(w for w, _ in _sgw_pairs)
+        _tp = sum(p for _, p in _sgw_pairs)
+        result["service_games_won_pct"] = round(_tw / _tp * 100, 2) if _tp > 0 else None
+    _rgw_pairs = [
+        (m["return_games_won"], m["return_games"]) for m in stat_m
+        if m.get("return_games_won") is not None and m.get("return_games")
+    ]
+    if _rgw_pairs:
+        _tw = sum(w for w, _ in _rgw_pairs)
+        _tp = sum(p for _, p in _rgw_pairs)
+        result["return_games_won_pct"] = round(_tw / _tp * 100, 2) if _tp > 0 else None
+
+    # BP generated per match = opportunities the player creates as a returner.
+    # (return_bp_opportunities is already aggregated above; expose it explicitly
+    # under the name the projection + display use.)
+    if result.get("return_bp_opportunities") is not None:
+        result["bp_generated_per_match"] = result["return_bp_opportunities"]
+
     # Strength-of-schedule: average competition tier across ALL matches (win_rate
     # uses all_m, so schedule strength should too). Feeds the win-prob estimator.
     _tiers = [m["comp_tier"] for m in all_m if m.get("comp_tier") is not None]
@@ -1131,6 +1157,23 @@ def _parse_match_stats(stats_data: dict, event: dict, player_id: int) -> Optiona
             "BP_CONV_RATE_SKIP | event_id=%s | bp_conv_count=%s | ret_opps=%s | opp_bp_faced=%s",
             result.get("event_id"), bp_conv_count, ret_opps, opp_bp_faced,
         )
+
+    # ── Per-match service/return GAMES won (holds & breaks) ──────────────────
+    # return games won = breaks = break points converted (winning a break point
+    # wins the return game). service games won = total games won − breaks. These
+    # feed the cleanest serve/return dominance measures (service/return games
+    # won %), aggregated sum/sum in _agg_split / _agg.
+    _tgw    = result.get("total_games_won")
+    _sg     = result.get("service_games")
+    _rg     = result.get("return_games")
+    _breaks = result.get("bp_converted_count")
+    if (_tgw is not None and _sg is not None and _rg is not None
+            and _breaks is not None and _sg > 0 and _rg > 0):
+        _rgw = max(0.0, min(_breaks, _rg))      # breaks can't exceed return games
+        _sgw = _tgw - _rgw                       # holds = total games won − breaks
+        if 0.0 <= _sgw <= _sg:                   # identity sanity check
+            result["return_games_won"]  = _rgw
+            result["service_games_won"] = _sgw
 
     return result
 
@@ -1369,6 +1412,23 @@ def _agg(matches: list) -> dict:
     for key in numeric_keys:
         vals = [m[key] for m in matches if key in m and m[key] is not None]
         agg[key] = sum(vals) / len(vals) if vals else None
+
+    # Service / Return games won % (sum/sum) + BP generated per match — so the
+    # "All" (career) and per-surface basic dicts carry the dominance measures.
+    _sgw = [(m["service_games_won"], m["service_games"]) for m in matches
+            if m.get("service_games_won") is not None and m.get("service_games")]
+    if _sgw:
+        _w, _p = sum(w for w, _ in _sgw), sum(p for _, p in _sgw)
+        agg["service_games_won_pct"] = round(_w / _p * 100, 2) if _p > 0 else None
+    _rgw = [(m["return_games_won"], m["return_games"]) for m in matches
+            if m.get("return_games_won") is not None and m.get("return_games")]
+    if _rgw:
+        _w, _p = sum(w for w, _ in _rgw), sum(p for _, p in _rgw)
+        agg["return_games_won_pct"] = round(_w / _p * 100, 2) if _p > 0 else None
+    _bpg = [m["return_bp_opportunities"] for m in matches
+            if m.get("return_bp_opportunities") is not None]
+    if _bpg:
+        agg["bp_generated_per_match"] = round(sum(_bpg) / len(_bpg), 4)
     return agg
 
 
@@ -1577,6 +1637,50 @@ def search_players(query: str, tour: str = "ATP") -> list:
     return out
 
 
+# ── Per-opponent surface hold cache (BP quality-of-server weighting) ──────────
+# (player_id, surface) -> (hold_pct, fetched_ts). Hold ≈ service-games-won % on
+# the surface — a stable trait, so a long TTL keeps the BP quality adjustment
+# cheap after the first warm-up.
+_SURFACE_HOLD_CACHE: dict = {}
+_SURFACE_HOLD_TTL = 7 * 24 * 3600   # 7 days
+
+
+def peek_surface_hold(player_id, surface: str):
+    """Cached surface hold % for a player, or None if not cached/fresh. NEVER
+    triggers a network fetch — for cache-first batch lookups."""
+    try:
+        key = (int(player_id), surface)
+    except (TypeError, ValueError):
+        return None
+    hit = _SURFACE_HOLD_CACHE.get(key)
+    if hit and (time.time() - hit[1]) < _SURFACE_HOLD_TTL:
+        return hit[0]
+    return None
+
+
+def get_player_surface_hold(player_id, surface: str, tour: str = "ATP"):
+    """Opponent serve quality ≈ their service-games-won % on the surface. Cached
+    7 days; falls back surface → All. Returns float % or None. On a cache MISS
+    this fetches full history (heavy) — callers budget/parallelise the misses."""
+    cached = peek_surface_hold(player_id, surface)
+    if cached is not None:
+        return cached
+    try:
+        data = get_player_stats_by_surface(str(player_id), tour) or {}
+    except Exception as e:
+        logger.info("SURF_HOLD_FETCH_FAIL | pid=%s surf=%s err=%s", player_id, surface, e)
+        return None
+    hold = (data.get(surface) or {}).get("service_games_won_pct")
+    if hold is None:
+        hold = (data.get("All") or {}).get("service_games_won_pct")
+    if hold is not None:
+        try:
+            _SURFACE_HOLD_CACHE[(int(player_id), surface)] = (hold, time.time())
+        except (TypeError, ValueError):
+            pass
+    return hold
+
+
 def get_player_stats_by_surface(player_id, tour: str = "ATP") -> dict:
     pid = int(player_id)
     # v6: full-history pagination, SS aggregation tiers, ace-against extraction.
@@ -1711,6 +1815,7 @@ def get_player_stats_by_surface(player_id, tour: str = "ATP") -> dict:
             "date":              datetime.utcfromtimestamp(ts).strftime("%Y-%m-%d") if ts else "",
             "event_id":          event.get("id"),
             "opponent_name":     opp.get("name", "Unknown"),
+            "opponent_id":       opp.get("id"),   # for per-opponent hold-quality weighting
             "score":             score_str,
             "total_match_games": tmg,
             "comp_tier":         _competition_tier(event),   # strength-of-field

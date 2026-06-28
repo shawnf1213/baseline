@@ -413,17 +413,20 @@ def _prop_stat_blocks(prop_type, data):
     elif prop_type == "Break Points Won":
         conv = data.get("bp_blended_conv_pct") or ps.get("bp_converted")
         p_lines = [
+            ("BP Generated/Match", _num(data.get("bp_generated_per_match"))),
+            ("BP Gen (Quality-Adj)", _num(data.get("bp_generated_quality_adj"))),
             ("BP Conversion", _pct(conv)),
-            ("Return 1st Won", _pct(ps.get("return_first_serve_pts_won"))),
-            ("Return 2nd Won", _pct(ps.get("return_second_serve_pts_won"))),
+            ("Service Games Won", _pct(ps.get("service_games_won_pct"))),
+            ("Return Games Won", _pct(ps.get("return_games_won_pct"))),
         ]
         o_lines = [
             ("BP Faced/Match", _num(data.get("bp_blended_opp_faced"))),
-            ("1st Serve %", _pct(os_.get("first_serve_pct"))),
+            ("Service Games Won", _pct(os_.get("service_games_won_pct"))),
+            ("Hold Rate", _pct(data.get("opp_hold_rate_pct"))),
+            ("Server Quality",
+             data.get("opp_server_quality_tier") or data.get("opp_serve_tier") or "—"),
             ("1st Srv Won", _pct(os_.get("first_serve_pts_won"))),
             ("2nd Srv Won", _pct(os_.get("second_serve_pts_won"))),
-            ("Hold Rate", _pct(data.get("opp_hold_rate_pct"))),
-            ("Serve Quality", data.get("opp_serve_tier") or "—"),
         ]
     elif prop_type == "Player Total Games Won":
         # Core drivers: player hold rate, opponent hold rate, player break rate,
