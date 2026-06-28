@@ -984,26 +984,40 @@ async def prop_calculate(req: PropRequest):
         # map straight across; ace/DF counts convert from per-serve-point % using
         # the tour's average service points per match. Projection math is
         # unaffected — project_aces reads TA directly and prefers it already.
-        def _backfill_serve_from_ta(s: dict, ta_props: dict, surf: str, tour: str) -> None:
+        def _backfill_serve_display(s: dict, ta_props: dict, all_stats: dict,
+                                    surf: str, tour: str) -> None:
+            # (1) Preferred: surface-specific TA serve stats. Gate on the actual
+            # data being present (ace_pct), not a "matches" key — the recent-TA
+            # view stores its sample size separately, so an over-strict gate
+            # silently skipped real grass data.
             tsurf = (ta_props or {}).get("surface_stats", {}).get(surf) or {}
-            if not tsurf or not tsurf.get("matches"):
-                return
-            sp = 80.0 if tour == "ATP" else 70.0
-            ap, dp = tsurf.get("ace_pct"), tsurf.get("df_pct")
-            if s.get("aces") is None and ap is not None:
-                s["aces"] = round((ap / 100.0) * sp, 1)
-            if s.get("double_faults") is None and dp is not None:
-                s["double_faults"] = round((dp / 100.0) * sp, 1)
-            for dst, src in (("first_serve_pct", "first_in_pct"),
-                             ("first_serve_pts_won", "first_won_pct"),
-                             ("second_serve_pts_won", "second_won_pct"),
-                             ("bp_converted", "bp_conv_pct"),
-                             ("bp_saved", "bp_saved_pct")):
-                if s.get(dst) is None and tsurf.get(src) is not None:
-                    s[dst] = tsurf.get(src)
+            if tsurf:
+                sp = 80.0 if tour == "ATP" else 70.0
+                ap, dp = tsurf.get("ace_pct"), tsurf.get("df_pct")
+                if s.get("aces") is None and ap is not None:
+                    s["aces"] = round((ap / 100.0) * sp, 1)
+                if s.get("double_faults") is None and dp is not None:
+                    s["double_faults"] = round((dp / 100.0) * sp, 1)
+                for dst, src in (("first_serve_pct", "first_in_pct"),
+                                 ("first_serve_pts_won", "first_won_pct"),
+                                 ("second_serve_pts_won", "second_won_pct"),
+                                 ("bp_converted", "bp_conv_pct"),
+                                 ("bp_saved", "bp_saved_pct")):
+                    if s.get(dst) is None and tsurf.get(src) is not None:
+                        s[dst] = tsurf.get(src)
+            # (2) Last-resort: the player's all-surface Sofascore stats, so the
+            # panel NEVER shows blanks when the surface sample is empty (e.g.
+            # Sofascore returns 0 recent grass matches). All-surface is a fair
+            # stand-in and far better than "--"; the projection is unaffected.
+            a = all_stats or {}
+            for k in ("aces", "double_faults", "first_serve_pct",
+                      "first_serve_pts_won", "second_serve_pts_won",
+                      "bp_converted", "bp_saved"):
+                if s.get(k) is None and a.get(k) is not None:
+                    s[k] = a.get(k)
 
-        _backfill_serve_from_ta(p1_s, player_ta_props, req.surface, req.tour)
-        _backfill_serve_from_ta(p2_s, opponent_ta_props, req.surface, req.tour)
+        _backfill_serve_display(p1_s, player_ta_props, p1_all, req.surface, req.tour)
+        _backfill_serve_display(p2_s, opponent_ta_props, p2_all, req.surface, req.tour)
 
         # Inject identity, rank, and recent form into stats dicts so the
         # expected-sets win-prob estimator has everything it needs.
