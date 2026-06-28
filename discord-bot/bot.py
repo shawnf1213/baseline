@@ -533,6 +533,15 @@ def prop_embed(player, opponent, prop_type, surface, court_display, line, data) 
     e.add_field(name=f"🎾 {player}", value=p_block[:1024], inline=True)
     e.add_field(name=f"🎾 {opponent}", value=o_block[:1024], inline=True)
 
+    # Tour-average-estimate note when limited data forced a fallback on a
+    # fundamental stat (so the numbers above aren't mistaken for measured data).
+    if data.get("player_tour_avg_stats") or data.get("opponent_tour_avg_stats"):
+        e.add_field(
+            name="≈ Note",
+            value="Some fundamental stats are tour-average estimates (limited match data).",
+            inline=False,
+        )
+
     # Handedness edge note (win prob + expected sets now live at the top).
     if data.get("handedness_edge"):
         e.add_field(name="Matchup", value="Handedness edge ✓", inline=False)

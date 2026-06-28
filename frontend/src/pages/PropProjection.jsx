@@ -1023,8 +1023,12 @@ export default function PropProjection({ tour }) {
                     // Games-won cells, green/red vs tour average (Part 3 display)
                     const _sgwAvg = tour === 'WTA' ? 72 : 78
                     const _rgwAvg = tour === 'WTA' ? 23 : 18
-                    const _gwCell = (val, avg) => val == null ? 'N/A'
-                      : <span style={{ color: val >= avg ? 'var(--green-bright)' : 'var(--red-bright)', fontWeight: 700 }}>{val.toFixed(0)}%</span>
+                    // Stats that fell back to a tour-average estimate (limited data)
+                    const _estList = idx === 0 ? (result?.player_tour_avg_stats || []) : (result?.opponent_tour_avg_stats || [])
+                    const _gwCell = (val, avg, estKey) => val == null ? 'N/A'
+                      : <span style={{ color: val >= avg ? 'var(--green-bright)' : 'var(--red-bright)', fontWeight: 700 }}>
+                          {val.toFixed(0)}%{estKey && _estList.includes(estKey) && <span title="tour-average estimate (limited data)" style={{ fontSize: 9, color: 'var(--muted)', marginLeft: 3 }}>≈est</span>}
+                        </span>
                     let rows
                     if (isBPProp && idx === 0) {
                       const surfConv    = result?.bp_surf_conv_pct
@@ -1055,8 +1059,8 @@ export default function PropProjection({ tour }) {
                         ['BP Generated', result?.bp_generated_per_match != null ? fmt(result.bp_generated_per_match) : 'N/A'],
                         ['BP Gen (Quality-Adj)', result?.bp_generated_quality_adj != null ? fmt(result.bp_generated_quality_adj) : 'N/A'],
                         [`BP Opps (${surfLabel})`, result?.bp_surf_opp_faced != null ? fmt(result.bp_surf_opp_faced) : 'N/A'],
-                        ['Service Games Won', _gwCell(d.service_games_won_pct, _sgwAvg)],
-                        ['Return Games Won', _gwCell(d.return_games_won_pct, _rgwAvg)],
+                        ['Service Games Won', _gwCell(d.service_games_won_pct, _sgwAvg, 'service_games_won_pct')],
+                        ['Return Games Won', _gwCell(d.return_games_won_pct, _rgwAvg, 'return_games_won_pct')],
                         ['Ret Pts Won (1st)', d.return_first_serve_pts_won != null ? fmtPct(d.return_first_serve_pts_won) : 'N/A'],
                         ['Win Rate', d.win_rate != null ? fmtPct(d.win_rate) : 'N/A'],
                         ['Matches', d.matches_played || 'N/A'],
@@ -1080,8 +1084,8 @@ export default function PropProjection({ tour }) {
                         // opponent's serve-stat card it read as a contradiction of the
                         // headline projection. It still appears, correctly labelled, in
                         // the BREAK POINT BREAKDOWN panel as 'Opp Proj BP Won'.
-                        ['Service Games Won', _gwCell(d.service_games_won_pct, _sgwAvg)],
-                        ['Return Games Won', _gwCell(d.return_games_won_pct, _rgwAvg)],
+                        ['Service Games Won', _gwCell(d.service_games_won_pct, _sgwAvg, 'service_games_won_pct')],
+                        ['Return Games Won', _gwCell(d.return_games_won_pct, _rgwAvg, 'return_games_won_pct')],
                         ['Hold Rate (est)', result?.opp_hold_rate_pct != null ? `${result.opp_hold_rate_pct.toFixed(0)}%` : 'N/A'],
                         ['Server Quality', result?.opp_server_quality_tier
                           ? <span style={{ color: /Elite|Strong/.test(result.opp_server_quality_tier) ? 'var(--red-bright)' : /Weak/.test(result.opp_server_quality_tier) ? 'var(--green-bright)' : 'var(--amber)', fontWeight: 800 }}>{result.opp_server_quality_tier}</span>
@@ -1096,8 +1100,8 @@ export default function PropProjection({ tour }) {
                         ['DFs/Match', fmt(d.double_faults)],
                         ['1st Srv Won', fmtPct(d.first_serve_pts_won)],
                         ['2nd Srv Won', fmtPct(d.second_serve_pts_won)],
-                        ['Service Games Won', _gwCell(d.service_games_won_pct, _sgwAvg)],
-                        ['Return Games Won', _gwCell(d.return_games_won_pct, _rgwAvg)],
+                        ['Service Games Won', _gwCell(d.service_games_won_pct, _sgwAvg, 'service_games_won_pct')],
+                        ['Return Games Won', _gwCell(d.return_games_won_pct, _rgwAvg, 'return_games_won_pct')],
                         ['BP Converted', fmtPct(d.bp_converted)],
                         ['Win Rate', fmtPct(d.win_rate)],
                         ['Matches', d.matches_played || '—'],
