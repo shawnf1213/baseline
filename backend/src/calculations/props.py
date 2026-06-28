@@ -264,31 +264,26 @@ def project_aces(
         avg_hist_sets, per_set_scale, sp_per_set, avg_service_pts,
     )
 
-    # ── L1: Base ace rate — TA surface stats preferred ────────────────────────
+    # ── L1: Base ace rate — blend surface form with an overall anchor ─────────
+    # Three signals feed the base, and NONE of them is the whole story:
+    #   • recency-weighted last-N surface matches — how the player is serving on
+    #     this surface NOW (half-life 120d), when match-level ace logs exist;
+    #   • a surface ace rate — TA surface ace_pct (deep, smoothed) preferred,
+    #     else the Sofascore surface average;
+    #   • the player's OVERALL all-surface ace rate — a persistent anchor.
+    # The last-N window and the surface sample are each ONE PART: a thin or
+    # unrepresentative sample (e.g. five low-ace early-round matches, or no
+    # recent grass at all) must not define an elite server's projection, and a
+    # single big-ace match must not inflate a grinder's. The surface signal
+    # leads in proportion to its sample size; the overall rate always anchors.
     sofascore_base_raw = _safe(player_stats.get("aces"))
-    # Recency-weighted base (half-life 180d): lean on how the player is serving
-    # NOW rather than equal-weighting year-old matches. Fixes e.g. a post-injury
-    # player whose recent grass form (2/6/6 aces) is masked by last year's peak.
     _rw_aces = player_stats.get("recency_weighted_aces")
     if isinstance(_rw_aces, (int, float)) and _rw_aces > 0:
         logger.info("ACE_RECENCY | equal=%.2f -> recency_weighted=%.2f",
                     sofascore_base_raw, _rw_aces)
         sofascore_base_raw = _rw_aces
-    # Small-sample regression: when the surface has only a few stat-bearing
-    # matches, a single big-ace match (e.g. a clay grinder's one 14-ace grass
-    # win) shouldn't define the projection. Shrink the surface ace rate toward
-    # the player's all-surface ace rate, weighted by the surface sample size.
-    _overall_aces = _safe(player_stats.get("overall_aces"), 0.0)
-    _ace_surf_n = int(_safe(player_stats.get("ace_surface_n"), 0))
-    if _overall_aces > 0 and 0 < _ace_surf_n < 5:
-        _k = 3.0
-        _w = _ace_surf_n / (_ace_surf_n + _k)
-        _regressed = _w * sofascore_base_raw + (1.0 - _w) * _overall_aces
-        logger.info("ACE_REGRESS | surf_n=%d w=%.2f surf=%.1f overall=%.1f -> %.2f",
-                    _ace_surf_n, _w, sofascore_base_raw, _overall_aces, _regressed)
-        sofascore_base_raw = _regressed
     # Per-set scaling: divide per-match by historical avg sets, then multiply
-    # by THIS match's expected sets. Replaces the flat BO5_SS_SCALE multiplier.
+    # by THIS match's expected sets.
     sofascore_base = sofascore_base_raw * per_set_scale
 
     ta_base = None
@@ -302,12 +297,41 @@ def project_aces(
         ta_used = True
         ta_surface_matches = ta_surf.get("matches", 0) or 0
 
-    base = ta_base if ta_used else sofascore_base
-    # Fallback cascade — never fail outright. A player with no surface ace
-    # data falls back to the tour-average ace rate for this surface so a
-    # projection is still produced (flagged via aces_fallback).
+    # Primary SURFACE signal (TA preferred — deeper, smoothed — else Sofascore)
+    # and its effective sample size.
+    surface_base = ta_base if ta_used else sofascore_base
+    surf_n = ta_surface_matches if ta_used \
+        else int(_safe(player_stats.get("ace_surface_n"), 0))
+
+    # Overall all-surface anchor, put on the SAME per-set scale as the surface
+    # signal so the two are blendable.
+    _overall_aces = _safe(player_stats.get("overall_aces"), 0.0)
+    overall_base = _overall_aces * per_set_scale if _overall_aces > 0 else 0.0
+
+    # Blend — the surface signal is one part, weighted by its sample size, with
+    # the surface weight CAPPED so the overall rate always contributes (~>=35%).
+    # Thin/empty surface sample → leans on the overall anchor; deep surface
+    # history → leads, but is still shrunk toward the player's broader rate.
+    if surface_base and surface_base > 0 and overall_base > 0:
+        w_surf = min(0.65, surf_n / (surf_n + 8.0))
+        base = w_surf * surface_base + (1.0 - w_surf) * overall_base
+        logger.info(
+            "ACE_BASE_BLEND | surface=%.2f (src=%s n=%d w=%.2f) overall=%.2f -> base=%.2f",
+            surface_base, "TA" if ta_used else "SS", surf_n, w_surf, overall_base, base,
+        )
+    elif surface_base and surface_base > 0:
+        base = surface_base
+    elif overall_base > 0:
+        base = overall_base
+        logger.info("ACE_BASE | no surface signal -> overall anchor %.2f", base)
+    else:
+        base = 0.0
+
+    # Fallback cascade — never fail outright. A player with no ace data at all
+    # falls back to the tour-average ace rate for this surface so a projection
+    # is still produced (flagged via aces_fallback).
     aces_fallback = False
-    if base == 0 or base is None:
+    if not base or base <= 0:
         base = _tour_avg(tour, surface).get("aces_per_match", 3.0)
         aces_fallback = True
         logger.info("ACE_FALLBACK | tour-avg ace rate %.2f used (no surface data)", base)
@@ -2337,7 +2361,13 @@ def _report_aces(player_name, opponent_name, surface, court, projection,
     from src.constants import COURT_CPR, CPR_NEUTRAL
     p_last, o_last = _last_name(player_name), _last_name(opponent_name)
 
-    p_aces      = _fmt_num(player_surface_stats.get("aces"), ".1f")
+    # Prefer the surface ace rate; when there's no surface serve sample (e.g. no
+    # recent grass matches) fall back to the player's overall all-surface rate so
+    # the report shows the figure the model actually leaned on, not a blank dash.
+    _p_aces_surf = player_surface_stats.get("aces")
+    _used_overall = _p_aces_surf is None
+    p_aces_val  = _p_aces_surf if _p_aces_surf is not None else player_surface_stats.get("overall_aces")
+    p_aces      = _fmt_num(p_aces_val, ".1f")
     p_surf_n    = (player_recent_meta or {}).get("surface_n", 0)
     opp_against = projection.get("opp_ace_against")
     suppress    = projection.get("suppression_factor", 1.0) or 1.0
@@ -2356,10 +2386,17 @@ def _report_aces(player_name, opponent_name, surface, court, projection,
     if p_surf_n and p_surf_n >= 5:
         sample_note = f" across {p_surf_n} matches"
     window_phrase = _window_phrase(player_recent_meta)
-    sentences.append(
-        f"{player_name} averages {p_aces} aces per match on {surface.lower()} "
-        f"{window_phrase}{sample_note}."
-    )
+    if _used_overall and p_aces_val is not None:
+        sentences.append(
+            f"{player_name} averages {p_aces} aces per match across all surfaces — "
+            f"with no recent {surface.lower()} serve sample, the projection leans on "
+            f"that overall rate rather than a thin surface split."
+        )
+    else:
+        sentences.append(
+            f"{player_name} averages {p_aces} aces per match on {surface.lower()} "
+            f"{window_phrase}{sample_note}."
+        )
 
     # 2. Opponent return quality / aces conceded
     if opp_against is not None:
@@ -2416,8 +2453,9 @@ def _report_aces(player_name, opponent_name, surface, court, projection,
         ace_str = " ".join(str(int(v)) if v == int(v) else f"{v}" for v in last5)
         direction = "went over" if over >= under else "went under"
         sentences.append(
-            f"Last 5 {surface.lower()} matches {p_last} hit {ace_str} aces — "
-            f"{max(over, under)} of 5 {direction} the {prop_line:.1f} line."
+            f"Across {p_last}'s last 5 matches (any surface) he hit {ace_str} aces — "
+            f"{max(over, under)} of 5 {direction} the {prop_line:.1f} line, "
+            f"one input among the surface and overall rates."
         )
 
     # Data-limit acknowledgement (only if warranted)
@@ -2587,7 +2625,7 @@ def _report_df(player_name, opponent_name, surface, court, projection,
         df_str = " ".join(str(int(v)) if v == int(v) else f"{v}" for v in last5)
         direction = "went over" if over >= under else "went under"
         sentences.append(
-            f"Last 5 {surface.lower()} matches {p_last} threw {df_str} double faults — "
+            f"Across {p_last}'s last 5 matches (any surface) he threw {df_str} double faults — "
             f"{max(over, under)} of 5 {direction} the {prop_line:.1f} line."
         )
 
