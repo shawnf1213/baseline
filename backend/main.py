@@ -837,6 +837,60 @@ async def _bp_quality_adjusted_generated(surface_matches, surface, tour, budget=
     return qadj, raw_avg, len(holds), len(uniq)
 
 
+# ── Minimum-viable stat fallback (data-extraction reliability) ───────────────
+# Tour-average estimates for the fundamental stats a player must always show.
+# Used only as a last resort when surface + all-surface data can't produce a
+# realistic value (e.g. a player with few stat-bearing matches whose Sofascore
+# break-point detail is sparse, yielding a broken 0%).
+_TOUR_AVG_MIN_VIABLE = {
+    "ATP": {"service_games_won_pct": 80.0, "return_games_won_pct": 19.0,
+            "bp_converted": 40.0, "first_serve_pct": 61.0,
+            "return_bp_opportunities": 5.5},
+    "WTA": {"service_games_won_pct": 67.0, "return_games_won_pct": 33.0,
+            "bp_converted": 45.0, "first_serve_pct": 61.0,
+            "return_bp_opportunities": 7.5},
+}
+# Below these a value is implausible for any professional → treat as extraction
+# failure and fall back rather than display it.
+_MIN_VIABLE_FLOOR = {
+    "service_games_won_pct": 50.0, "return_games_won_pct": 3.0,
+    "bp_converted": 8.0, "first_serve_pct": 45.0,
+    "return_bp_opportunities": 0.5,
+}
+
+
+def _cascade_blend(surf_v, all_v, surf_n):
+    """Weighted surface→all-surface blend by surface sample size (Step 3):
+    10+ → 100% surface · 5-9 → 60/40 · 3-4 → 40/60 · 1-2 → 20/80 · 0 → all."""
+    if surf_v is not None and surf_n >= 10:
+        return surf_v
+    ws = 0.6 if surf_n >= 5 else 0.4 if surf_n >= 3 else 0.2 if surf_n >= 1 else 0.0
+    if surf_v is None:
+        return all_v
+    if all_v is None:
+        return surf_v
+    return ws * surf_v + (1.0 - ws) * all_v
+
+
+def _fill_min_viable(s: dict, all_s: dict, surf_n: int, tour: str) -> list:
+    """Cascade-blend the min-viable stats surface→all-surface, then floor to the
+    tour average when still null / 0 / implausible. Mutates `s`; returns the list
+    of stat keys that fell back to a tour-average estimate (for a UI indicator)."""
+    total = max(int(s.get("matches_played", 0) or 0),
+                int((all_s or {}).get("matches_played", 0) or 0))
+    if total < 5:
+        return []   # genuinely too little data — don't fabricate
+    avgs = _TOUR_AVG_MIN_VIABLE.get((tour or "ATP").upper(), _TOUR_AVG_MIN_VIABLE["ATP"])
+    fell_back = []
+    for key, floor in _MIN_VIABLE_FLOOR.items():
+        blended = _cascade_blend(s.get(key), (all_s or {}).get(key), surf_n)
+        if blended is None or blended < floor:
+            blended = avgs[key]
+            fell_back.append(key)
+        s[key] = round(blended, 2)
+    return fell_back
+
+
 # POST /api/prop/calculate
 # ---------------------------------------------------------------------------
 @app.post("/api/prop/calculate")
@@ -1094,6 +1148,18 @@ async def prop_calculate(req: PropRequest):
 
         _backfill_serve_display(p1_s, player_ta_props, p1_all, req.surface, req.tour)
         _backfill_serve_display(p2_s, opponent_ta_props, p2_all, req.surface, req.tour)
+
+        # ── Min-viable stat fallback (Steps 3 + 5): cascade surface→all-surface
+        # then tour-average floor, so a fundamental stat (e.g. return games won)
+        # never displays as a broken 0% for a player with real history. Runs
+        # before the projection so corrected inputs flow into it too.
+        _p1_surf_n = int((p1_data.get(req.surface) or {}).get("matches_played", 0) or 0)
+        _p2_surf_n = int((p2_data.get(req.surface) or {}).get("matches_played", 0) or 0)
+        p1_gw_est = _fill_min_viable(p1_s, p1_all, _p1_surf_n, req.tour)
+        p2_gw_est = _fill_min_viable(p2_s, p2_all, _p2_surf_n, req.tour)
+        if p1_gw_est or p2_gw_est:
+            logger.info("MIN_VIABLE_FALLBACK | p1=%s est=%s | p2=%s est=%s",
+                        req.player_name, p1_gw_est, req.opponent_name, p2_gw_est)
 
         # Inject identity, rank, and recent form into stats dicts so the
         # expected-sets win-prob estimator has everything it needs.
@@ -1562,6 +1628,9 @@ async def prop_calculate(req: PropRequest):
             "environment_label":    env_label,
             "player_stats":         p1_s,
             "opponent_stats":       p2_s,
+            # Min-viable stats that fell back to a tour-average estimate (UI shows ~est)
+            "player_tour_avg_stats":   p1_gw_est,
+            "opponent_tour_avg_stats": p2_gw_est,
             "player_archetype":     p1_arch,
             "opponent_archetype":   p2_arch,
             # Handedness
