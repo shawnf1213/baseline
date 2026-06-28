@@ -1,6 +1,9 @@
 import logging
 
-from src.constants import COURT_CPR, CPR_NEUTRAL, ATP_TOUR_AVERAGES
+from src.constants import (
+    COURT_CPR, CPR_NEUTRAL, ATP_TOUR_AVERAGES, WTA_TOUR_AVERAGES,
+    SERVE_QUALITY_TIERS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -773,40 +776,38 @@ def _game_win_prob(p: float) -> float:
     return max(0.0, min(1.0, win_by_4 + deuce))
 
 
-def _serve_tier_and_adj(hold_proxy: float, tour: str) -> tuple:
-    """Classify a server's hold proxy into Elite / Good / Weak, RELATIVE TO THE
-    TOUR, and return the matching C4 multiplier.
-
-    WTA serve numbers run ~7pp below ATP across the board, so a WTA player must
-    be judged against WTA peers — comparing them to an ATP yardstick mislabels
-    an average WTA server (≈0.57–0.60 proxy) as "Weak". Cutoffs are shifted down
-    ~7pp for WTA so the label means the same thing on either tour.
+def _serve_tier_and_adj(sgw_pct, tour: str) -> tuple:
+    """Classify a server by SERVICE GAMES WON %, TOUR-RELATIVE (Steps 2/3), and
+    return the matching C4 break-point multiplier. ATP serves far bigger than
+    WTA, so each tour is judged against its OWN SERVE_QUALITY_TIERS cutoffs —
+    never an ATP yardstick on a WTA player. Elite servers concede fewer break
+    chances (0.85), weak servers more (1.10).
+        ATP: Elite >82 · Strong 74-82 · Average 64-74 · Weak <64
+        WTA: Elite >72 · Strong 63-72 · Average 53-63 · Weak <53
     """
-    if (tour or "ATP").upper() == "WTA":
-        elite_cut, good_cut = 0.63, 0.56
-    else:
-        elite_cut, good_cut = 0.70, 0.63
-    if hold_proxy > elite_cut:
+    t = SERVE_QUALITY_TIERS.get((tour or "ATP").upper(), SERVE_QUALITY_TIERS["ATP"])
+    if sgw_pct is None:
+        return "Average", 1.00
+    if sgw_pct > t["elite"]:
         return "Elite", 0.85
-    if hold_proxy >= good_cut:
-        return "Good", 1.00
+    if sgw_pct >= t["strong"]:
+        return "Strong", 0.93
+    if sgw_pct >= t["average"]:
+        return "Average", 1.00
     return "Weak", 1.10
 
 
 def _server_quality_tier_sgw(sgw_pct, tour: str = "ATP") -> str:
-    """Server-quality badge from SERVICE GAMES WON % (Part 5). Distinct from the
-    C4 hold-proxy tier above. WTA games-won runs ~6pp below ATP, so cutoffs shift
-    down so the label means the same on either tour.
-        Elite >82 · Strong 75–82 · Average 65–75 · Weak <65   (ATP)
-    """
+    """Server-quality badge from SERVICE GAMES WON %, tour-relative (Step 2).
+    Same tour cutoffs as the C4 tier above; returns the '<Tier> Server' label."""
     if sgw_pct is None:
         return None
-    shift = 6.0 if (tour or "ATP").upper() == "WTA" else 0.0
-    if sgw_pct > 82.0 - shift:
+    t = SERVE_QUALITY_TIERS.get((tour or "ATP").upper(), SERVE_QUALITY_TIERS["ATP"])
+    if sgw_pct > t["elite"]:
         return "Elite Server"
-    if sgw_pct >= 75.0 - shift:
+    if sgw_pct >= t["strong"]:
         return "Strong Server"
-    if sgw_pct >= 65.0 - shift:
+    if sgw_pct >= t["average"]:
         return "Average Server"
     return "Weak Server"
 
@@ -1637,21 +1638,29 @@ def project_break_points(
         surf_ret_avg = career_ret_avg = None
         c2_basis = "none"
 
+    # Step 4: gate the boost/penalty on the TOUR average too, so a returner who
+    # is above their own career but still below tour-average (or vice-versa)
+    # isn't over/under-credited. A WTA returner judged only vs their career could
+    # look "elite" while sitting at WTA-average; requiring both prevents that.
+    _avgs = ATP_TOUR_AVERAGES if (tour or "ATP").upper() == "ATP" else WTA_TOUR_AVERAGES
+    _tour_ret_avg = _avgs.get("return_games_won") if c2_basis == "rgw" else _avgs.get("return_pts_won")
     if surf_ret_avg is not None and career_ret_avg and career_ret_avg > 0:
         c2_delta_pct = (surf_ret_avg - career_ret_avg) / career_ret_avg
-        if c2_delta_pct > 0.05:
+        _above_tour = (_tour_ret_avg is None) or (surf_ret_avg > _tour_ret_avg)
+        _below_tour = (_tour_ret_avg is None) or (surf_ret_avg < _tour_ret_avg)
+        if c2_delta_pct > 0.05 and _above_tour:
             # Upper bound trimmed 1.15 → 1.10 → 1.05. A 5% returner boost
             # on a specialist's best surface is realistic; larger values
             # compound too aggressively with C8 for heavy-favorite BO5 matches.
             excess           = c2_delta_pct - 0.05
             c2_returner_mult = min(1.05, 1.02 + excess * 0.6)
-            c2_source        = f"above_career({c2_delta_pct:+.1%},{c2_basis})"
-        elif c2_delta_pct < -0.05:
+            c2_source        = f"above_career+tour({c2_delta_pct:+.1%},{c2_basis})"
+        elif c2_delta_pct < -0.05 and _below_tour:
             deficit          = abs(c2_delta_pct) - 0.05
             c2_returner_mult = max(0.88, 0.95 - deficit * 1.4)
-            c2_source        = f"below_career({c2_delta_pct:+.1%},{c2_basis})"
+            c2_source        = f"below_career+tour({c2_delta_pct:+.1%},{c2_basis})"
         else:
-            c2_source        = f"within_5pct({c2_delta_pct:+.1%},{c2_basis})"
+            c2_source        = f"tour_gated({c2_delta_pct:+.1%},{c2_basis})"
 
     logger.info(
         "BP_C2 | player=%s | surf_ret=%.1f%% | career_ret=%.1f%% | "
@@ -1790,12 +1799,15 @@ def project_break_points(
     # ═════════════════════════════════════════════════════════════════════════
     opp_hold_proxy = _hold_rate_proxy(opponent_stats)
 
-    # Serve-quality TIER is ALWAYS reported from the opponent hold proxy so the
-    # UI shows a real value (Elite / Good / Weak). The frontend maps exactly
-    # these three strings to colors and the scouting report keys on them — the
-    # old "Neutral(player_C1,...)" debug string left the cell uncolored/blank.
-    # Cutoffs are TOUR-RELATIVE (WTA judged vs WTA, ATP vs ATP).
-    opp_serve_tier, c4_full = _serve_tier_and_adj(opp_hold_proxy, tour)
+    # Serve-quality TIER + C4 multiplier from the opponent's SERVICE GAMES WON %,
+    # judged against TOUR-SPECIFIC cutoffs (Steps 2/3) so a WTA opponent isn't
+    # measured on an ATP yardstick. Falls back to the hold proxy (×100) when SGW
+    # is unavailable. Tiers: Elite / Strong / Average / Weak.
+    _opp_sgw = opponent_stats.get("service_games_won_pct")
+    if _opp_sgw is None:
+        # hold proxy is service POINTS won — convert to a GAMES-won % scale.
+        _opp_sgw = _game_win_prob(opp_hold_proxy) * 100.0
+    opp_serve_tier, c4_full = _serve_tier_and_adj(_opp_sgw, tour)
 
     # The C4 MULTIPLIER is only applied when C1 came from the tour-average
     # fallback. When C1 is the opponent's actual bp_faced, their serve weakness

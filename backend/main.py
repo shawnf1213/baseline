@@ -1688,7 +1688,10 @@ async def prop_calculate(req: PropRequest):
             "player_return_games_won_pct":  result.get("player_return_games_won_pct"),
             "opp_service_games_won_pct":    result.get("opp_service_games_won_pct"),
             "opp_return_games_won_pct":     result.get("opp_return_games_won_pct"),
-            "opp_server_quality_tier":      result.get("opp_server_quality_tier"),
+            # Tour-relative badge (Step 7): append the tour so the tier is
+            # clearly judged vs WTA/ATP peers, e.g. "Elite Server · WTA".
+            "opp_server_quality_tier":      (f"{result.get('opp_server_quality_tier')} · {req.tour}"
+                                             if result.get("opp_server_quality_tier") else None),
             # Player return / blended conversion echoed for completeness
             "conv_rate_pct":         result.get("conv_rate_pct"),
             "player_bp_won_per_match":  result.get("player_bp_won_per_match"),

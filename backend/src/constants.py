@@ -281,6 +281,12 @@ def resolve_court_name(raw: str, tour: str = "ATP") -> str:
         return atp_keys[0]
     return matches[0]
 
+# ── Tour averages — single source of truth for tour-relative classification ──
+# Existing keys (ace_rate, first_serve_pts_won, return_first_serve_pts_won,
+# return_pts_won, bp_converted, net_pts_won, double_faults) are KEPT as-is for
+# archetype + value-bet calibration. The keys below were added so serve-quality
+# tiers, the BP serve adjustment, and games-won displays measure each tour
+# against its OWN baseline (ATP serves much bigger than WTA). Update here only.
 ATP_TOUR_AVERAGES = {
     "ace_rate":                     10.0,
     "first_serve_pts_won":          75.0,
@@ -289,6 +295,15 @@ ATP_TOUR_AVERAGES = {
     "bp_converted":                 45.0,
     "net_pts_won":                  60.0,
     "double_faults":                 3.0,
+    # ── tour-relative serve/return baselines (Step 1) ──
+    "service_games_won":            64.0,
+    "return_games_won":             36.0,
+    "first_serve_pct":              62.0,
+    "second_serve_pts_won":         54.0,
+    "bp_generated_per_match":        5.5,
+    "bp_converted_pct":             43.0,
+    "aces_per_match":                6.2,
+    "double_faults_per_match":       2.8,
 }
 
 WTA_TOUR_AVERAGES = {
@@ -299,6 +314,22 @@ WTA_TOUR_AVERAGES = {
     "bp_converted":                 42.0,
     "net_pts_won":                  55.0,
     "double_faults":                4.0,
+    # ── tour-relative serve/return baselines (Step 1) ──
+    "service_games_won":            57.0,
+    "return_games_won":             43.0,
+    "first_serve_pct":              62.0,
+    "second_serve_pts_won":         50.0,
+    "bp_generated_per_match":        7.2,
+    "bp_converted_pct":             46.0,
+    "aces_per_match":                2.1,
+    "double_faults_per_match":       3.4,
+}
+
+# Serve-quality tier cutoffs on SERVICE GAMES WON %, tour-relative (Step 2/3).
+# sgw > elite → Elite · >= strong → Strong · >= average → Average · else Weak.
+SERVE_QUALITY_TIERS = {
+    "ATP": {"elite": 82.0, "strong": 74.0, "average": 64.0},
+    "WTA": {"elite": 72.0, "strong": 63.0, "average": 53.0},
 }
 
 SURFACE_COLORS = {
