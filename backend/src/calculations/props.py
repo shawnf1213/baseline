@@ -1150,70 +1150,54 @@ def project_player_games_won(
 
       games_won = games_held_on_serve + games_won_breaking
 
-    • games_held_on_serve = (player's service games) × (surface hold rate). A
-      player serves ~half the match's combined games, so service games ≈
+    • games_held_on_serve = (player's service games) × (player surface hold rate).
+      A player serves ~half the match's combined games, so service games ≈
       games_combined / 2. Both inputs are already match-totals (expected-sets
       scaled), so no extra scaling is applied.
-    • games_won_breaking = projected Break Points Won (each break = 1 game won
-      on return).
-    • A gentle win-probability calibration tilts the result (favourite higher,
-      underdog lower) with a floor — even a player losing in straights wins
-      several games on serve.
-    Surface/court speed is already embedded in games_combined and the surface
-    hold rate. Returns the projection plus the held/broken breakdown and the
-    supporting hold/break rates for display.
+    • games_won_breaking = (opponent's service games) × (player break rate),
+      where the player's break rate = 1 − the opponent's hold rate. Each break
+      is one game the player wins on return.
+    This decomposition is internally CONSISTENT: the two players' projections
+    always reconcile to the combined Total Games (player_games + opp_games ==
+    combined), because one player's holds are the other's break opportunities.
+    Win probability is captured INHERENTLY — the favourite both holds more and
+    faces a weaker-holding opponent — so no separate win-prob multiplier is
+    applied (stacking one produced impossible splits like 23–10). Surface/court
+    speed is already embedded in games_combined and the surface hold rates.
+    Returns the projection plus the held/broken breakdown and the supporting
+    hold/break rates for display.
     """
     games_combined = _safe(games_combined, 0.0)
-    bp_won = max(0.0, _safe(bp_won, 0.0))
-    service_games = games_combined / 2.0                # player serves ~half
+    service_games = games_combined / 2.0                # player serves ~half the games
 
-    # Surface GAME-hold rate: convert service-POINTS-won (the proxy) into the
+    # Surface GAME-hold rates: convert service-POINTS-won (the proxy) into the
     # probability of holding a service GAME (iid-point model). e.g. 66% of points
     # won ≈ 85% of games held — using points-as-games badly understates holds.
-    pts_won = _hold_rate_proxy(player_stats)            # fraction of service POINTS
-    game_hold = _game_win_prob(pts_won)                 # fraction of service GAMES
-    opp_hold_rate = _game_win_prob(_hold_rate_proxy(opponent_stats or {}))
+    game_hold = max(0.40, min(0.97, _game_win_prob(_hold_rate_proxy(player_stats))))
+    opp_hold_rate = max(0.40, min(0.97, _game_win_prob(_hold_rate_proxy(opponent_stats or {}))))
 
-    # Component 5 — hold-dominant environment. When BOTH players serve well and
-    # return poorly (high mutual game-hold rate), breaks are rare, sets stretch
-    # to 7-5 / tiebreaks, and BOTH players win more games. Boost above an
-    # average-hold baseline, capped — so a big-server-vs-big-server match (esp.
-    # on fast courts) projects more games won than a break-heavy matchup.
-    mutual_hold = (game_hold + opp_hold_rate) / 2.0
-    hold_env_boost = 1.0 + min(0.20, max(0.0, mutual_hold - 0.80) * 1.2)
-
-    # Component 4 — win-probability share. A player's share of the combined games
-    # tracks their win probability (favourite wins more games via more holds AND
-    # more breaks; underdog still holds enough to win several). This IS the
-    # win-prob calibration, anchored to the surface/expected-sets-aware combined
-    # total. share≈0.5 at a coin-flip; tilts up for the favourite.
-    wp = _safe(p1_win_prob, 50.0) / 100.0
-    share = 0.5 + (wp - 0.5) * 0.55
-    share = max(0.32, min(0.68, share))
-    projection = games_combined * share * hold_env_boost
-    projection = max(4.5, projection)                   # floor — never near zero
-
-    # Breakdown for display (Components 1 & 2), kept CONSISTENT with the
-    # projection: games won by breaking = the BP-won projection, the rest are
-    # holds — clamped so holds can't exceed the games the player serves.
-    games_broken = min(bp_won, projection)
-    games_held = projection - games_broken
-    if games_held > service_games:
-        games_held = service_games
-        games_broken = projection - games_held
-    games_held = max(0.0, games_held)
-    games_broken = max(0.0, games_broken)
+    # Decompose CONSISTENTLY so the two players' games always reconcile to the
+    # combined total (player_games + opponent_games == combined). The win-prob
+    # influence is INHERENT here: the favourite holds more AND breaks more (their
+    # opponent holds less), so no separate win-prob multiplier is applied — that
+    # was what produced impossible splits (e.g. 23–10) by stacking a high share
+    # on top of an already-long projected match.
+    #   games_held   = (player's service games) × player hold rate
+    #   games_broken = (opponent's service games) × player break rate
+    #                = service_games × (1 − opponent hold rate)
+    games_held = service_games * game_hold
+    games_broken = service_games * (1.0 - opp_hold_rate)
+    projection = games_held + games_broken
+    projection = max(4.5, projection)                   # floor — even a swept loser holds a few
 
     hold_rate = game_hold
-    break_rate = (games_broken / service_games * 100.0) if service_games > 0 else 0.0
+    break_rate = (1.0 - opp_hold_rate) * 100.0
 
     logger.info(
         "PLAYER_GAMES_WON | combined=%.1f svc=%.1f game_hold=%.0f%% opp_hold=%.0f%% "
-        "mutual=%.0f%% env_boost=%.3f wp=%.0f%% share=%.3f -> proj=%.1f | held=%.1f "
-        "broken=%.1f exp_sets=%.2f fmt=%s",
+        "-> proj=%.1f | held=%.1f broken=%.1f exp_sets=%.2f fmt=%s",
         games_combined, service_games, game_hold * 100, opp_hold_rate * 100,
-        mutual_hold * 100, hold_env_boost, wp * 100, share, projection,
-        games_held, games_broken, _safe(expected_sets, 0.0), match_format,
+        projection, games_held, games_broken, _safe(expected_sets, 0.0), match_format,
     )
 
     return {
