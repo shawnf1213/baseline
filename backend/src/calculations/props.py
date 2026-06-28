@@ -239,7 +239,7 @@ def project_aces(
     #                  BO5-appropriate denominator (~3.4) so a Grand Slam
     #                  projection lands at book-realistic levels (Mensik RG
     #                  BO5 ~12-13, matching the 12.5 line, not 21).
-    avg_hist_sets = _ACE_BO5_HISTORICAL_SETS.get(tour, 3.4) if is_bo5 \
+    avg_hist_sets = _ACE_BO5_SETS.get(tour, 2.8) if is_bo5 \
         else _ACE_AVG_HISTORICAL_SETS.get(tour, 2.35)
     per_set_scale = expected_sets / max(avg_hist_sets, 0.01)
 
@@ -446,8 +446,11 @@ def project_aces(
     cpr_factor = 1.0 + (cpr - surface_baseline) * 0.018
     cpr_factor = max(0.65, min(1.35, cpr_factor))
 
-    # ── Final projection — blend × CPR × handedness (no other suppressors) ────
-    proj = blended * cpr_factor * hand_factor
+    # ── Surface ace factor — grass boosts, clay suppresses (see constant) ─────
+    surface_ace_factor = _SURFACE_ACE_FACTOR.get(surface, 1.0)
+
+    # ── Final projection — blend × CPR × handedness × surface ─────────────────
+    proj = blended * cpr_factor * hand_factor * surface_ace_factor
 
     # ── H2H blend (light, only when real H2H ace data exists) ─────────────────
     if h2h_ace_avg is not None and h2h_ace_avg > 0:
@@ -461,13 +464,13 @@ def project_aces(
         "ACE_DIAG | player=%s vs %s | surface=%s court_cpr=%.1f | "
         "base=%.2f | opp_ace_against(raw=%.2f scaled=%.2f have=%s) | "
         "opp_ret1=%.1f%% -> w_player=%.2f/w_opp=%.2f | blended=%.2f | "
-        "cpr_factor=%.3f hand_factor=%.3f | exp_sets=%.2f | FINAL=%.2f",
+        "cpr_factor=%.3f hand_factor=%.3f surf_factor=%.2f | exp_sets=%.2f | FINAL=%.2f",
         player_stats.get("player_name", "?"),
         opponent_stats.get("player_name", "?"),
         surface, cpr,
         base, opp_ace_against or 0.0, opp_ace_against_scaled, have_real_ace_against,
         opp_ret1, w_player, w_opp, blended,
-        cpr_factor, hand_factor, expected_sets, proj,
+        cpr_factor, hand_factor, surface_ace_factor, expected_sets, proj,
     )
 
     # Kept for return-dict back-compat (no longer multiplied into proj)
@@ -491,6 +494,7 @@ def project_aces(
         "hand_factor":         round(hand_factor, 3),
         "suppression_factor":  round(suppression, 3),
         "cpr_factor":          round(cpr_factor, 3),
+        "surface_ace_factor":  round(surface_ace_factor, 3),
         "cpr":                 cpr,
         "player_hand":         player_hand,
         "opp_hand":            opp_hand,
@@ -988,8 +992,24 @@ _ACE_AVG_HISTORICAL_SETS = {"WTA": 2.20, "ATP": 2.35}
 # per-match figure that already includes long matches and roughly doubles it.
 # 3.4 lands Grand Slam big-server projections at book-realistic levels
 # (e.g. Mensik RG BO5 ~12-13 vs the 12.5 line). WTA never plays BO5 but the
-# key is kept for symmetry.
+# key is kept for symmetry. (Used by the DF model.)
 _ACE_BO5_HISTORICAL_SETS = {"WTA": 2.20, "ATP": 3.40}
+
+# Aces-specific BO5 denominator. 3.4 (above) over-suppressed grass big servers:
+# a best-of-5 plays ~40% more service games than the BO3-dominated per-match
+# average, so ace VOLUME should scale UP, not stay flat. With 3.4, Sinner's
+# grass Wimbledon BO5 projected ~9-10 while the market sat ~14 (10+ @ -300,
+# 15+ @ +125). 2.8 restores the volume lift; the surface ace factor below keeps
+# clay BO5 (e.g. Mensik) controlled so both ends match the book.
+_ACE_BO5_SETS = {"WTA": 2.20, "ATP": 2.80}
+
+# Surface ace multiplier — grass yields the most aces per service game, clay the
+# fewest, hard in between (neutral baseline). Applied on top of the within-
+# surface court-pace (CPR) factor, it corrects the common case where a player's
+# surface-specific sample understates their true grass ace output (or a clay
+# match's low-ace environment is under-credited). Hard-court BO3 — the bulk of
+# the slate — is unaffected (factor 1.0, BO3 denominator unchanged).
+_SURFACE_ACE_FACTOR = {"Grass": 1.13, "Clay": 0.82, "Hard": 1.0}
 
 
 def _is_bo5_match(tour: str, court: str) -> bool:
