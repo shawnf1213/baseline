@@ -51,8 +51,11 @@ MAX_CONCURRENT  = 1       # serialize backend calcs — the heavy prop calc 502s
 MATCH_THRESHOLD = 0.80    # fuzzy name-match threshold
 MAX_PROPS       = 25      # cap evaluations so the command stays responsive
 MAX_LOOKAHEAD_HOURS = 24  # only pick matches that play within this many hours
-ACES_BP_MIN_CONF = 65     # Aces / Break Points Won: minimum confidence to use
-TG_DF_MIN_CONF   = 90     # Total Games / Double Faults: confidence must EXCEED this
+# Every Pick of the Day must be at least 90% confidence. Raised from the old
+# 65% Aces/BP bar after high-projection misses (e.g. Cilic Aces projected 15.2,
+# 80% conf, finished with 2 in a 0-3 blowout). Below 90% we post no pick.
+ACES_BP_MIN_CONF = 90     # Aces / Break Points Won: minimum confidence to use
+TG_DF_MIN_CONF   = 90     # Total Games / Double Faults: minimum confidence to use
 
 SEARCH_TIMEOUT = 10
 CALC_TIMEOUT   = 90       # backend prop calc can be slow on a cold proxy cache
@@ -349,14 +352,13 @@ def _lean_dir(pk: dict) -> str:
 
 
 def _passes_quality(pk: dict) -> bool:
-    """Quality gate for a candidate pick, by prop type:
-      • Aces / Break Points Won → confidence >= 65% (our most trusted props).
-      • Total Games / Double Faults → confidence > 90%.
-    """
+    """Quality gate: every Pick of the Day must be at least 90% confidence,
+    regardless of prop type. Below that we'd rather post no pick than a
+    coin-flip — high projections can still bust on a blowout / off-serve day."""
     conf = pk.get("confidence") or 0
     if pk.get("prop_type") in ("Aces", "Break Points Won"):
         return conf >= ACES_BP_MIN_CONF
-    return conf > TG_DF_MIN_CONF
+    return conf >= TG_DF_MIN_CONF
 
 
 # ── STEPS 4 + 7: select the best picks, fully isolated ──────────────────────
