@@ -75,6 +75,9 @@ _env_excl = os.getenv("POD_EXCLUDE", "")
 if _env_excl.strip():
     _POD_EXCLUDE |= {_norm(x) for x in _env_excl.split(",") if x.strip()}
 
+# Prop types never used for Pick of the Day (excluded by request).
+_POD_EXCLUDE_PROPS = {"Double Faults"}
+
 
 def _is_excluded(name: str) -> bool:
     n = _norm(name)
@@ -133,7 +136,7 @@ def _parse_board(board: dict) -> list:
     for proj in board.get("data", []):
         attr = proj.get("attributes", {}) or {}
         prop_type = PROP_MAP.get((attr.get("stat_type") or "").strip().lower())
-        if not prop_type:
+        if not prop_type or prop_type in _POD_EXCLUDE_PROPS:
             continue
         # Only ever use the STANDARD line. PrizePicks also lists "demon" (boosted,
         # higher line) and "goblin" (reduced, lower line) variants — never pick
