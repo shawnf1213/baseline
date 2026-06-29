@@ -354,6 +354,34 @@ def _last5_signal(matches, prop_type, line, limit=5) -> str:
     return " ".join(out) if out else "—"
 
 
+def _form_divergence(matches, prop_type, line, lean) -> str:
+    """Warn when the projection's lean contradicts recent same-surface form —
+    e.g. it leans OVER but the player cleared the line in only a minority of
+    recent matches (a bust risk the stats alone missed). Returns a note string,
+    or '' when recent form aligns / there's too little data to judge."""
+    key = _LAST5_STAT_KEY.get(prop_type)
+    lean = (lean or "").upper()
+    if not key or not isinstance(line, (int, float)) or lean not in ("OVER", "UNDER"):
+        return ""
+    over = under = 0
+    for m in (matches or [])[:5]:
+        v = m.get(key) if isinstance(m, dict) else None
+        if not isinstance(v, (int, float)):
+            continue
+        if v > line:
+            over += 1
+        elif v < line:
+            under += 1
+    n = over + under
+    if n < 3:
+        return ""
+    if lean == "OVER" and over < under:
+        return f"Projection leans **OVER {line:g}** but only **{over} of last {n}** cleared it — recent form diverges from the stats."
+    if lean == "UNDER" and under < over:
+        return f"Projection leans **UNDER {line:g}** but **{over} of last {n}** cleared it — recent form diverges from the stats."
+    return ""
+
+
 def _shorten(text: str, n: int = 400) -> str:
     if not text:
         return ""
@@ -583,6 +611,10 @@ def prop_embed(player, opponent, prop_type, surface, court_display, line, data) 
         value=_last5_signal(data.get("player_surface_matches"), prop_type, line),
         inline=False,
     )
+
+    _div = _form_divergence(data.get("player_surface_matches"), prop_type, line, lean)
+    if _div:
+        e.add_field(name="⚠ Recent Form", value=_div, inline=False)
 
     explanation = _clean_explanation(data.get("plain_english_explanation", ""))
     if explanation:

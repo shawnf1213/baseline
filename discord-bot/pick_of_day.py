@@ -361,6 +361,46 @@ def _passes_quality(pk: dict) -> bool:
     return conf >= TG_DF_MIN_CONF
 
 
+# Per-match stat field per prop, for the recent-form-vs-line check.
+_POD_STAT_KEY = {
+    "Aces":                   "aces",
+    "Break Points Won":       "bp_converted_count",
+    "Total Games":            "total_match_games",
+    "Player Total Games Won": "total_games_won",
+}
+
+
+def _recent_supports_lean(pk: dict, lookback: int = 5, min_n: int = 3) -> bool:
+    """True if the player's RECENT same-surface form supports the pick's lean —
+    the majority of the last ``lookback`` matches landed on the lean's side of
+    the line. Catches projections that contradict recent reality (e.g. Cilic
+    Aces projected OVER 10.5 while he'd cleared it in only 2 of his last 5 grass
+    matches, then finished with 2). Returns True when there's too little form
+    data to judge, so we don't over-filter thin-history players."""
+    lean = (pk.get("lean") or "").upper()
+    line = pk.get("line")
+    key = _POD_STAT_KEY.get(pk.get("prop_type"))
+    ms = (pk.get("data") or {}).get("player_surface_matches") or []
+    if lean not in ("OVER", "UNDER") or not key or not isinstance(line, (int, float)):
+        return True
+    over = under = 0
+    for m in ms[:lookback]:
+        v = m.get(key) if isinstance(m, dict) else None
+        if not isinstance(v, (int, float)):
+            continue
+        if v > line:
+            over += 1
+        elif v < line:
+            under += 1
+    if over + under < min_n:        # too few stat-bearing matches → don't filter
+        return True
+    supports = (over >= under) if lean == "OVER" else (under >= over)
+    if not supports:
+        log.info("POD: %s %s %s — recent form diverges (over=%d under=%d, lean=%s), excluding",
+                 pk.get("player"), pk.get("prop_type"), line, over, under, lean)
+    return supports
+
+
 # ── STEPS 4 + 7: select the best picks, fully isolated ──────────────────────
 async def generate_picks(n: int = 3):
     """Return up to ``n`` picks ranked best-first (list, possibly empty). Each
@@ -396,7 +436,7 @@ async def generate_picks(n: int = 3):
                                        return_exceptions=True)
         picks = [r for r in results
                  if isinstance(r, dict) and (r.get("confidence") or 0) >= MIN_CONFIDENCE
-                 and _passes_quality(r)]
+                 and _passes_quality(r) and _recent_supports_lean(r)]
         log.info("POD: evaluated=%d eligible=%d", len(uniq), len(picks))
         picks.sort(key=lambda x: x["score"], reverse=True)
         # Keep only each player's single best-scoring play so the top N are N
