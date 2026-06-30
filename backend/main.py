@@ -91,7 +91,7 @@ from src.calculations.props import (
 from src.constants import (
     COURT_CPR, CPR_NEUTRAL, GENERIC_SURFACE_CPR,
     get_speed_tier, ST_PACE_PREVIOUS_YEAR, ST_YOY_THRESHOLD,
-    resolve_court_name,
+    resolve_court_name, opponent_quality_weight, tier_proxy_rank,
 )
 from src.api.string_tension import lookup_pace_index
 
@@ -891,6 +891,115 @@ def _fill_min_viable(s: dict, all_s: dict, surf_n: int, tour: str) -> list:
     return fell_back
 
 
+# ── Opponent-quality weighting (Improvement 1) ───────────────────────────────
+_QW_COUNT_STATS = {                       # weighted MEAN of per-match value
+    "aces": "aces", "double_faults": "double_faults",
+    "return_bp_opportunities": "return_bp_opportunities",   # BP generated
+}
+_QW_RATE_STATS = {                        # weighted SUM/SUM: (numerator, denominator)
+    "bp_converted":          ("bp_converted_count", "return_bp_opportunities"),
+    "service_games_won_pct": ("service_games_won", "service_games"),
+    "return_games_won_pct":  ("return_games_won", "return_games"),
+}
+
+
+def _date_pm1(d):
+    """The date and ±1 day as YYYY-MM-DD strings (Sofascore↔Sackmann match window)."""
+    try:
+        base = datetime.datetime.strptime(str(d)[:10], "%Y-%m-%d")
+        return [(base + datetime.timedelta(days=k)).strftime("%Y-%m-%d") for k in (0, -1, 1)]
+    except Exception:  # noqa: BLE001
+        return [str(d)[:10]] if d else []
+
+
+def _opp_quality_weighted(surf_matches, sack_matches):
+    """Stamp each surface match with the opponent's rank AT THE TIME (Sackmann
+    winner/loser_rank cross-matched by last-name + date ±1d; tier proxy when no
+    Sackmann row) and compute raw + opponent-quality-weighted averages for the
+    key stats. Returns ({stat: {raw, weighted}}, sackmann_match_rate_pct)."""
+    ms = [m for m in (surf_matches or []) if isinstance(m, dict)]
+    if len(ms) < 5:                       # too few matches → weighting is noise
+        return {}, 0.0
+    sidx = {}
+    for sm in sack_matches or []:
+        opp = (sm.get("opponent") or "").strip().split()
+        last = opp[-1].lower() if opp else ""
+        if last and sm.get("date") and sm.get("opponent_rank") is not None:
+            sidx[(last, str(sm["date"])[:10])] = sm["opponent_rank"]
+    rows, ranked = [], 0
+    for m in ms:
+        opp = (m.get("opponent") or m.get("opponent_name") or "").strip().split()
+        last = opp[-1].lower() if opp else ""
+        rank = None
+        for dd in _date_pm1(m.get("date")):
+            if (last, dd) in sidx:
+                rank = sidx[(last, dd)]; ranked += 1; break
+        if rank is None:
+            rank = tier_proxy_rank(m.get("comp_tier"))
+        m["_opp_rank"] = rank            # reused by the recent-form pull (Imp 4)
+        rows.append((m, opponent_quality_weight(rank)))
+    match_rate = round(ranked / len(ms) * 100, 1)
+    out = {}
+    for key, fld in _QW_COUNT_STATS.items():
+        wn = wd = rn = rd = 0.0
+        for m, w in rows:
+            v = m.get(fld)
+            if isinstance(v, (int, float)):
+                wn += v * w; wd += w; rn += v; rd += 1
+        if wd > 0:
+            out[key] = {"raw": round(rn / rd, 2), "weighted": round(wn / wd, 2)}
+    for key, (nf, dnf) in _QW_RATE_STATS.items():
+        wn = wd = rn = rd = 0.0
+        for m, w in rows:
+            n, d = m.get(nf), m.get(dnf)
+            if isinstance(n, (int, float)) and isinstance(d, (int, float)) and d > 0:
+                wn += n * w; wd += d * w; rn += n; rd += d
+        if wd > 0 and rd > 0:
+            out[key] = {"raw": round(rn / rd * 100, 1), "weighted": round(wn / wd * 100, 1)}
+    return out, match_rate
+
+
+def _apply_quality_weighting(s, qw):
+    """Scale the blended stat by the opponent-quality ratio (weighted/raw),
+    capped ±20% so the multi-tier blend stays the base. Stores *_raw_avg and
+    *_weighted_avg for display; the projection then reads the adjusted value."""
+    for key, vals in (qw or {}).items():
+        raw, wt = vals.get("raw"), vals.get("weighted")
+        s[f"{key}_raw_avg"] = raw
+        s[f"{key}_weighted_avg"] = wt
+        if raw and wt and raw > 0 and isinstance(s.get(key), (int, float)):
+            ratio = max(0.80, min(1.20, wt / raw))
+            s[key] = round(s[key] * ratio, 2)
+
+
+_RECENT_FORM_STAT = {                     # prop → per-match stat for the form pull
+    "Aces": "aces", "Double Faults": "double_faults",
+    "Total Games": "total_match_games", "Break Points Won": "bp_converted_count",
+    "Player Total Games Won": "total_games_won",
+}
+
+
+def _recent_form_pull(proj_val, surf_matches, prop_type, weight=0.30):
+    """Pull the projection toward the player's recent same-surface average for
+    the prop's stat (Improvement 4), with each of the last ~5 weighted by the
+    opponent's rank (`_opp_rank`, stamped by _opp_quality_weighted): 3 unders vs
+    elite returners pull harder than 3 vs weak ones. Returns (tempered, avg)."""
+    key = _RECENT_FORM_STAT.get(prop_type)
+    if not key or not isinstance(proj_val, (int, float)):
+        return proj_val, None
+    wn = wd = 0.0
+    for m in (surf_matches or [])[:5]:
+        v = m.get(key) if isinstance(m, dict) else None
+        if not isinstance(v, (int, float)):
+            continue
+        w = opponent_quality_weight(m.get("_opp_rank"))
+        wn += v * w; wd += w
+    if wd <= 0:
+        return proj_val, None
+    recent_avg = wn / wd
+    return round((1 - weight) * proj_val + weight * recent_avg, 1), round(recent_avg, 1)
+
+
 # POST /api/prop/calculate
 # ---------------------------------------------------------------------------
 @app.post("/api/prop/calculate")
@@ -1161,6 +1270,26 @@ async def prop_calculate(req: PropRequest):
             logger.info("MIN_VIABLE_FALLBACK | p1=%s est=%s | p2=%s est=%s",
                         req.player_name, p1_gw_est, req.opponent_name, p2_gw_est)
 
+        # ── Opponent-quality weighting (Improvement 1): discount stats padded
+        # vs weak fields. Adjusts the blended stat by the weighted/raw ratio so
+        # the projection reads a quality-aware figure; raw kept for display.
+        _p1_surf_log = p1_data.get(f"{req.surface}_matches", []) or []
+        _p2_surf_log = p2_data.get(f"{req.surface}_matches", []) or []
+        _p1_qw, p1_qw_match_rate = _opp_quality_weighted(_p1_surf_log, p1_sack_matches)
+        _p2_qw, p2_qw_match_rate = _opp_quality_weighted(_p2_surf_log, p2_sack_matches)
+        _apply_quality_weighting(p1_s, _p1_qw)
+        _apply_quality_weighting(p2_s, _p2_qw)
+        logger.info("QUALITY_WEIGHT | p1=%s sackmann_rate=%.0f%% | p2=%s rate=%.0f%%",
+                    req.player_name, p1_qw_match_rate, req.opponent_name, p2_qw_match_rate)
+
+        def _qw_inflated(s):
+            for _k in ("return_bp_opportunities", "bp_converted"):
+                _raw, _wt = s.get(f"{_k}_raw_avg"), s.get(f"{_k}_weighted_avg")
+                if _raw and _wt and _raw > 0 and _wt < _raw * 0.85:
+                    return True
+            return False
+        p1_stats_inflated = _qw_inflated(p1_s)
+
         # Inject identity, rank, and recent form into stats dicts so the
         # expected-sets win-prob estimator has everything it needs.
         p1_s["player_name"] = req.player_name or req.player_id
@@ -1367,6 +1496,11 @@ async def prop_calculate(req: PropRequest):
                     bp_forward_factor = 0.85    # strong server → fewer chances created
                 elif _opp_sgw is not None and _opp_sgw < 65.0:
                     bp_forward_factor = 1.10    # weak server → more chances created
+                # Imp 1 forward factor: harder to create chances vs elite opponents.
+                if req.opponent_rank is not None and req.opponent_rank <= 20:
+                    bp_forward_factor *= 0.90
+                elif req.opponent_rank is not None and req.opponent_rank > 100:
+                    bp_forward_factor *= 1.10
 
             bp_result = project_break_points(
                 p1_s, p2_s,
@@ -1417,6 +1551,16 @@ async def prop_calculate(req: PropRequest):
                 "confidence": 0,
                 "note": result.get("note", "Insufficient data for this surface/prop combination."),
             }
+
+        # ── Recent-form pull (Improvement 4): anchor the projection to recent
+        # same-surface reality, opponent-rank-weighted, before lean/edge.
+        proj_val_premodel = proj_val
+        proj_val, recent_form_avg = _recent_form_pull(
+            proj_val, p1_data.get(f"{req.surface}_matches", []) or [], req.prop_type)
+        if recent_form_avg is not None and proj_val != proj_val_premodel:
+            logger.info("RECENT_FORM_PULL | %s %s | model=%.1f recent=%.1f -> %.1f",
+                        req.player_name, req.prop_type, proj_val_premodel,
+                        recent_form_avg, proj_val)
 
         # Confidence — enhanced with TA match counts
         p1_surf_matches = p1_data.get(f"{req.surface}_matches", [])
@@ -1617,6 +1761,8 @@ async def prop_calculate(req: PropRequest):
 
         return {
             "model_projection":     proj_val,
+            "model_projection_premull": round(proj_val_premodel, 1) if isinstance(proj_val_premodel, (int, float)) else None,
+            "recent_form_avg":      recent_form_avg,
             "lean":                 lean,
             "confidence":           confidence,
             "confidence_breakdown": conf_result["breakdown"],
@@ -1680,6 +1826,13 @@ async def prop_calculate(req: PropRequest):
             # leaving the Hold Rate and Serve Quality cells blank.
             "opp_hold_rate_pct":     result.get("opp_hold_rate_pct"),
             "opp_serve_tier":        result.get("opp_serve_tier"),
+            # ── Opponent-quality-weighted averages (Improvement 1) ──
+            "bp_generated_raw_avg":       p1_s.get("return_bp_opportunities_raw_avg"),
+            "bp_generated_weighted_avg":  p1_s.get("return_bp_opportunities_weighted_avg"),
+            "bp_converted_raw_avg":       p1_s.get("bp_converted_raw_avg"),
+            "bp_converted_weighted_avg":  p1_s.get("bp_converted_weighted_avg"),
+            "quality_match_rate":         p1_qw_match_rate,
+            "stats_inflated":             p1_stats_inflated,
             # ── BP generated + games-won + server-quality badge (Parts 1/2/5) ──
             "bp_generated_per_match":     result.get("bp_generated_per_match"),
             "bp_generated_quality_adj":   result.get("bp_generated_quality_adj"),

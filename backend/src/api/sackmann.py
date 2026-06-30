@@ -22,8 +22,12 @@ ATP_CHALL_URL = "https://raw.githubusercontent.com/JeffSackmann/tennis_atp/maste
 WTA_TOUR_URL  = "https://raw.githubusercontent.com/JeffSackmann/tennis_wta/master/wta_matches_{year}.csv"
 WTA_ITF_URL   = "https://raw.githubusercontent.com/JeffSackmann/tennis_wta/master/wta_matches_qual_itf_{year}.csv"
 
-SACKMANN_MIN_YEAR = 2015
-SACKMANN_MAX_YEAR = 2020
+# Rolling recent window so the CSVs carry opponent ranks for the matches we
+# actually project on (last few seasons) — not just 2015-2020. Sackmann's
+# current-year file is partial; missing/older matches fall back to the
+# tournament-tier proxy rank during cross-matching.
+SACKMANN_MAX_YEAR = datetime.now().year
+SACKMANN_MIN_YEAR = SACKMANN_MAX_YEAR - 5
 YEARS_TO_FETCH    = list(range(SACKMANN_MIN_YEAR, SACKMANN_MAX_YEAR + 1))
 
 # Module-level cache: {key: (fetched_at_ts, data)}
@@ -127,6 +131,22 @@ def _parse_sackmann_row(row: "pd.Series", player_name: str, result: str) -> Opti
         score      = str(row.get("score", ""))
         total_games= _parse_score_to_games(score)
 
+        # Opponent's rank AT THE TIME of the match (Improvement 1). The opponent
+        # is the loser when the player won, else the winner.
+        _opp_rank_raw = row.get("loser_rank" if is_winner else "winner_rank")
+        try:
+            opponent_rank = (int(float(_opp_rank_raw))
+                             if _opp_rank_raw is not None and str(_opp_rank_raw).strip() not in ("", "nan")
+                             else None)
+        except (ValueError, TypeError):
+            opponent_rank = None
+
+        # Did the player fail to finish (retirement / walkover / default)?
+        # Sackmann marks these in the score string; the retiree is the loser.
+        _su = score.upper()
+        _ended_early = any(t in _su for t in ("RET", "W/O", "WALKOVER", "DEF", "ABD"))
+        player_retired = (not is_winner) and _ended_early
+
         surface_raw = str(row.get("surface", "")).lower()
         if   "clay"   in surface_raw:                       surface = "Clay"
         elif "grass"  in surface_raw:                       surface = "Grass"
@@ -166,6 +186,8 @@ def _parse_sackmann_row(row: "pd.Series", player_name: str, result: str) -> Opti
             "ret_pts_won_2nd":      ret_2nd_pct,
             "total_games":          total_games,
             "sv_gms":               sv_gms,
+            "opponent_rank":        opponent_rank,   # rank at time of match (Imp 1)
+            "player_retired":       player_retired,  # player DNF (Imp 5)
             "source":               "sackmann",
         }
 

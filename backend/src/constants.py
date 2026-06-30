@@ -325,6 +325,30 @@ WTA_TOUR_AVERAGES = {
     "double_faults_per_match":       3.4,
 }
 
+# ── Opponent-quality weighting (Improvement 1) ───────────────────────────────
+# Weight a historical match's stat contribution by the opponent's rank AT THE
+# TIME of the match: stats earned vs elites are harder + more predictive; stats
+# padded vs weak fields are discounted.
+def opponent_quality_weight(rank) -> float:
+    if rank is None:
+        return 1.0
+    if rank <= 20:   return 1.40
+    if rank <= 50:   return 1.15
+    if rank <= 100:  return 0.95
+    if rank <= 150:  return 0.80
+    return 0.65
+
+
+def tier_proxy_rank(comp_tier) -> int:
+    """Proxy opponent rank from the per-match strength-of-field tier (comp_tier
+    3=main tour / 2=challenger / 1=ITF) when no Sackmann rank is available."""
+    if comp_tier is None:
+        return 90
+    if comp_tier >= 2.5:   return 60     # main tour (mid-field)
+    if comp_tier >= 1.5:   return 150    # challenger
+    return 250                            # ITF / futures
+
+
 # Serve-quality tier cutoffs on SERVICE GAMES WON %, tour-relative (Step 2/3).
 # sgw > elite → Elite · >= strong → Strong · >= average → Average · else Weak.
 SERVE_QUALITY_TIERS = {
