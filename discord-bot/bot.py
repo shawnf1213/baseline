@@ -1156,10 +1156,10 @@ except Exception:  # pragma: no cover — fall back to a fixed EST offset
     POD_TZINFO = datetime.timezone(datetime.timedelta(hours=-5))
 # Trigger at 11:50 PM ET, not midnight: the serialized generation run takes
 # ~10 min, so starting early lands the post right around the target time.
-# Default 20:30 ET → triggers at 8:30 PM ET. (Adjust POD_HOUR/POD_MINUTE if run
+# Default 22:40 ET → triggers at 10:40 PM ET. (Adjust POD_HOUR/POD_MINUTE if run
 # time drifts. NOTE: Railway POD_HOUR/POD_MINUTE env vars OVERRIDE these defaults.)
-POD_HOUR = int(os.getenv("POD_HOUR", "20") or "20")
-POD_MINUTE = int(os.getenv("POD_MINUTE", "30") or "30")
+POD_HOUR = int(os.getenv("POD_HOUR", "22") or "22")
+POD_MINUTE = int(os.getenv("POD_MINUTE", "40") or "40")
 # Optional one-shot post on startup for verifying a deploy (off by default).
 POD_POST_ON_START = (os.getenv("POD_POST_ON_START", "0") or "0") not in ("0", "false", "False")
 _pod_startup_done = False
@@ -1385,35 +1385,6 @@ async def _before_daily_pick():
 
 # Pick of the Day is bot-broadcast only — the automatic daily post at POD_HOUR:
 # POD_MINUTE ET. No user-facing /pickoftheday command (removed by request).
-
-
-@client.tree.command(name="postpicks",
-                     description="Admin: generate & post the Pick of the Day now (fresh data)")
-async def postpicks_cmd(interaction: discord.Interaction):
-    """Admin-only manual trigger for the Pick of the Day. Generates the top-3
-    plays with the current full model, posts to the designated picks channel,
-    logs them PENDING, and starts the line monitor — same path as the scheduled
-    daily run, but on demand (e.g. an off-schedule 10:30pm run after a cache
-    flush). The post itself is made by the bot to POD_CHANNEL_ID."""
-    await interaction.response.defer(thinking=True, ephemeral=True)
-    if not _is_admin(interaction):
-        await interaction.followup.send(embed=error_embed("Admins only."), ephemeral=True)
-        return
-    channel = client.get_channel(POD_CHANNEL_ID) if POD_CHANNEL_ID else interaction.channel
-    if channel is None:
-        await interaction.followup.send(
-            embed=error_embed("POD channel not configured / not found."), ephemeral=True)
-        return
-    try:
-        status = await _post_pick_of_day(channel, track=True)
-        log.info("POD manual (/postpicks by %s): %s", interaction.user, status)
-        await interaction.followup.send(
-            embed=discord.Embed(description=f"✅ Posted to <#{channel.id}> — {status}",
-                                color=COLOR_NEUTRAL), ephemeral=True)
-    except Exception:  # noqa: BLE001
-        log.exception("/postpicks failed")
-        await interaction.followup.send(embed=error_embed("Pick of the Day post failed."),
-                                        ephemeral=True)
 
 
 # ── Feature 4 — daily Slate auto-post (📋・slate channel) ─────────────────────────
