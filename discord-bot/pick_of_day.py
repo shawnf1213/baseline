@@ -51,16 +51,24 @@ MAX_CONCURRENT  = 1       # serialize backend calcs — the heavy prop calc 502s
 MATCH_THRESHOLD = 0.80    # fuzzy name-match threshold
 MAX_PROPS       = 25      # cap evaluations so the command stays responsive
 MAX_LOOKAHEAD_HOURS = 24  # only pick matches that play within this many hours
-# Minimum confidence to qualify. RECALIBRATED 90 -> 70: the 90 bar was tuned to
-# the OLD inflated confidence scoring. Since then the model gained the
-# opponent-quality, consistency, retirement and sample-size confidence modifiers
-# (all conservative/penalizing), so a live board now distributes confidence as
-# min~48 / median~65 / p75~73 / MAX~83 — i.e. 90 is mathematically unreachable
-# and was returning ZERO qualifying picks every day. 70 ≈ the top ~30% (the
-# genuinely strong plays) of the new, honest distribution; the model still ranks
-# by confidence×edge, so the actual top-3 are the strongest of those.
-ACES_BP_MIN_CONF = 70     # Aces / Break Points Won: minimum confidence to use
-TG_DF_MIN_CONF   = 70     # Total Games / Double Faults: minimum confidence to use
+# Per-prop-type minimum confidence to qualify.
+#   STANDARD (70): Aces / Break Points Won / Double Faults / Player Total Games
+#   Won. RECALIBRATED from the old inflated 90 — the model gained conservative
+#   confidence modifiers (opponent-quality, consistency, retirement, sample
+#   size), so a live board now distributes confidence min~48 / median~65 /
+#   p75~73 / MAX~83. 70 ≈ the top ~30% (genuinely strong plays).
+#   TOTAL GAMES (90): held to a STRICTER bar. A match total depends on BOTH
+#   players' combined performance AND match-length variance, so it's inherently
+#   less predictable than an individual-player prop. It stays an eligible prop
+#   but only surfaces when the data strongly supports it (will qualify rarely).
+STANDARD_MIN_CONF    = 70   # Aces / Break Points Won / Double Faults / Player Total Games Won
+TOTAL_GAMES_MIN_CONF = 90   # Total Games ONLY — elevated bar (see _min_conf_for)
+
+
+def _min_conf_for(prop_type: str) -> int:
+    """The minimum confidence a candidate of this prop type must clear for the
+    Pick of the Day. Total Games is held to a higher bar than the rest."""
+    return TOTAL_GAMES_MIN_CONF if prop_type == "Total Games" else STANDARD_MIN_CONF
 
 SEARCH_TIMEOUT = 10
 CALC_TIMEOUT   = 90       # backend prop calc can be slow on a cold proxy cache
@@ -357,13 +365,10 @@ def _lean_dir(pk: dict) -> str:
 
 
 def _passes_quality(pk: dict) -> bool:
-    """Quality gate: every Pick of the Day must be at least 90% confidence,
-    regardless of prop type. Below that we'd rather post no pick than a
-    coin-flip — high projections can still bust on a blowout / off-serve day."""
-    conf = pk.get("confidence") or 0
-    if pk.get("prop_type") in ("Aces", "Break Points Won"):
-        return conf >= ACES_BP_MIN_CONF
-    return conf >= TG_DF_MIN_CONF
+    """Quality gate: a candidate must clear its prop-type confidence bar —
+    STANDARD_MIN_CONF (70) for most props, TOTAL_GAMES_MIN_CONF (90) for Total
+    Games. Below that we'd rather post no pick than a coin-flip."""
+    return (pk.get("confidence") or 0) >= _min_conf_for(pk.get("prop_type"))
 
 
 # Per-match stat field per prop, for the recent-form-vs-line check.
@@ -446,24 +451,28 @@ async def generate_picks(n: int = 3):
         # opponent-weighted recent-form pull, so excluding on it again
         # double-counted it. It's still computed + logged as an info signal.
         picks = []
+        by_type_qual = {}   # STEP 4 — qualifying count per prop type
         for r in results:
             if not isinstance(r, dict):
                 log.info("POD_CAND | EVAL_FAILED | %s", str(r)[:120])
                 continue
             conf = r.get("confidence") or 0
-            bar = (ACES_BP_MIN_CONF if r.get("prop_type") in ("Aces", "Break Points Won")
-                   else TG_DF_MIN_CONF)
+            ptype = r.get("prop_type")
+            bar = _min_conf_for(ptype)
             ok = conf >= MIN_CONFIDENCE and _passes_quality(r)
             log.info("POD_CAND | %-22s %-18s line=%-5s conf=%-3.0f proj=%-6.2f edge=%+5.2f "
-                     "recent_ok=%-5s -> %s",
-                     (r.get("player") or "")[:22], (r.get("prop_type") or "")[:18],
+                     "recent_ok=%-5s bar=%d -> %s",
+                     (r.get("player") or "")[:22], (ptype or "")[:18],
                      r.get("line"), conf, r.get("projection") or 0.0, r.get("edge") or 0.0,
-                     _recent_supports_lean(r),
-                     "QUALIFIES" if ok else ("below conf bar %d" % bar))
+                     _recent_supports_lean(r), bar,
+                     "QUALIFIES" if ok else ("below %s bar %d" % (ptype, bar)))
             if ok:
                 picks.append(r)
-        log.info("POD: evaluated=%d eligible=%d (conf bar: Aces/BP=%d, TG/DF=%d)",
-                 len(uniq), len(picks), ACES_BP_MIN_CONF, TG_DF_MIN_CONF)
+                by_type_qual[ptype] = by_type_qual.get(ptype, 0) + 1
+        log.info("POD: evaluated=%d eligible=%d (bars: standard=%d, Total Games=%d) | "
+                 "qualifying per prop type: %s",
+                 len(uniq), len(picks), STANDARD_MIN_CONF, TOTAL_GAMES_MIN_CONF,
+                 dict(by_type_qual) or "none")
         picks.sort(key=lambda x: x["score"], reverse=True)
         # Keep only each player's single best-scoring play so the top N are N
         # different players (no same player twice for different props).

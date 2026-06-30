@@ -1261,6 +1261,15 @@ def _single_pick_embed(pick: dict, author: str) -> discord.Embed:
     if pick.get("form_alert"):
         e.add_field(name="🔥 Form Alert",
                     value=f"**{pick['player']}** is on a {pick['form_alert']}.", inline=False)
+    # STEP 5 — a Total Games pick cleared an elevated, prop-specific bar.
+    if pick.get("prop_type") == "Total Games":
+        e.add_field(
+            name="📊 Elevated Threshold",
+            value=(f"Total Games is held to a stricter **{pick_of_day.TOTAL_GAMES_MIN_CONF}%** "
+                   f"confidence bar (vs {pick_of_day.STANDARD_MIN_CONF}% for the other props) "
+                   f"— combined-player and match-length variance make it less predictable, so "
+                   f"it only surfaces when the data strongly supports it."),
+            inline=False)
     return e
 
 
