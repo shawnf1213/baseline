@@ -616,6 +616,21 @@ def prop_embed(player, opponent, prop_type, surface, court_display, line, data) 
     if _div:
         e.add_field(name="⚠ Recent Form", value=_div, inline=False)
 
+    # Quality-of-opposition + reliability context (Improvements 1, 3, 5).
+    if data.get("stats_inflated"):
+        e.add_field(name="⚠ Opposition Quality",
+                    value="Stats inflated by weaker opposition — quality-adjusted figure used in projection.",
+                    inline=False)
+    if data.get("consistency_tier"):
+        e.add_field(name="Consistency", value=data["consistency_tier"], inline=True)
+    if data.get("retirement_risk"):
+        _pc = data.get("pct_completed")
+        e.add_field(name="⚠ Retirement Risk",
+                    value=(f"2+ DNF in last 50 — {_pc:.0f}% completed (props may void)"
+                           if isinstance(_pc, (int, float))
+                           else "2+ retirements in last 50 matches (props may void)"),
+                    inline=False)
+
     explanation = _clean_explanation(data.get("plain_english_explanation", ""))
     if explanation:
         e.add_field(name="Read", value=explanation, inline=False)

@@ -920,21 +920,46 @@ def _opp_quality_weighted(surf_matches, sack_matches):
     ms = [m for m in (surf_matches or []) if isinstance(m, dict)]
     if len(ms) < 5:                       # too few matches → weighting is noise
         return {}, 0.0
+    # Sackmann rank index keyed by (opponent_last, year) → [(date, rank)].
+    # Sackmann's date is the tournament START, so we match within a window
+    # around the actual Sofascore match date, not on an exact day.
     sidx = {}
     for sm in sack_matches or []:
         opp = (sm.get("opponent") or "").strip().split()
         last = opp[-1].lower() if opp else ""
-        if last and sm.get("date") and sm.get("opponent_rank") is not None:
-            sidx[(last, str(sm["date"])[:10])] = sm["opponent_rank"]
-    rows, ranked = [], 0
-    for m in ms:
+        d = str(sm.get("date") or "")[:10]
+        if last and len(d) == 10 and sm.get("opponent_rank") is not None:
+            sidx.setdefault((last, d[:4]), []).append((d, sm["opponent_rank"]))
+
+    def _sack_rank(m):
         opp = (m.get("opponent") or m.get("opponent_name") or "").strip().split()
         last = opp[-1].lower() if opp else ""
-        rank = None
-        for dd in _date_pm1(m.get("date")):
-            if (last, dd) in sidx:
-                rank = sidx[(last, dd)]; ranked += 1; break
-        if rank is None:
+        d = str(m.get("date") or "")[:10]
+        if not last or len(d) != 10:
+            return None
+        cands = sidx.get((last, d[:4]))
+        if not cands:
+            return None
+        try:
+            md = datetime.datetime.strptime(d, "%Y-%m-%d")
+        except Exception:  # noqa: BLE001
+            return None
+        best, bestdiff = None, 999
+        for sd, r in cands:
+            try:
+                diff = abs((datetime.datetime.strptime(sd, "%Y-%m-%d") - md).days)
+            except Exception:  # noqa: BLE001
+                continue
+            if diff < bestdiff:
+                best, bestdiff = r, diff
+        return best if bestdiff <= 21 else None
+
+    rows, ranked = [], 0
+    for m in ms:
+        rank = _sack_rank(m)
+        if rank is not None:
+            ranked += 1
+        else:
             rank = tier_proxy_rank(m.get("comp_tier"))
         m["_opp_rank"] = rank            # reused by the recent-form pull (Imp 4)
         rows.append((m, opponent_quality_weight(rank)))
