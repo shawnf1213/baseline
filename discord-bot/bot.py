@@ -1156,11 +1156,11 @@ except Exception:  # pragma: no cover — fall back to a fixed EST offset
     POD_TZINFO = datetime.timezone(datetime.timedelta(hours=-5))
 # Trigger at 11:50 PM ET, not midnight: the serialized generation run takes
 # ~10 min, so starting early lands the post right around the target time.
-# 23:15 ET tonight → 11:15 PM ET (one-off bump to recover tonight's run after
-# the datetime hotfix; set back to 22:45 after it fires).
+# 23:50 ET tonight → 11:50 PM ET (one-off re-run after the Sackmann no-op fix;
+# set back to 22:45 after it fires).
 # NOTE: Railway POD_HOUR/POD_MINUTE env vars OVERRIDE these defaults.
 POD_HOUR = int(os.getenv("POD_HOUR", "23") or "23")
-POD_MINUTE = int(os.getenv("POD_MINUTE", "15") or "15")
+POD_MINUTE = int(os.getenv("POD_MINUTE", "50") or "50")
 # Optional one-shot post on startup for verifying a deploy (off by default).
 POD_POST_ON_START = (os.getenv("POD_POST_ON_START", "0") or "0") not in ("0", "false", "False")
 _pod_startup_done = False
