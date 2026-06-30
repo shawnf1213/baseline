@@ -1174,8 +1174,8 @@ SLATE_MINUTE = int(os.getenv("SLATE_MINUTE", "0") or "0")
 # 11:45 PM ET by default — just before the Pick of the Day, after the day's
 # picks have been graded by the resolver. Defaults to the POD channel.
 RESULTS_CHANNEL_ID = int(os.getenv("RESULTS_CHANNEL_ID", str(POD_CHANNEL_ID or 0)) or "0")
-RESULTS_POST_HOUR = int(os.getenv("RESULTS_POST_HOUR", "23") or "23")
-RESULTS_POST_MINUTE = int(os.getenv("RESULTS_POST_MINUTE", "45") or "45")
+RESULTS_POST_HOUR = int(os.getenv("RESULTS_POST_HOUR", "12") or "12")
+RESULTS_POST_MINUTE = int(os.getenv("RESULTS_POST_MINUTE", "40") or "40")
 MSG_NO_PICK = (
     "No Pick of the Day right now — nothing on the board cleared the "
     "confidence threshold (or the board is unavailable). Try again later."
@@ -1475,22 +1475,25 @@ def results_embed(rec: dict) -> discord.Embed:
     wins, losses = rec.get("wins", 0), rec.get("losses", 0)
     win_rate = rec.get("win_rate", 0.0)
     color = COLOR_OVER if win_rate >= 50 else COLOR_UNDER
-    st_type, st_len = rec.get("streak_type"), rec.get("streak_len", 0)
-    streak_txt = (f"{'🔥' if st_type == 'W' else '🧊'} {st_len} {('win' if st_type=='W' else 'loss')}"
-                  f"{'s' if st_len != 1 else ''} in a row") if st_type else "—"
+    # ON FIRE — only signal when the 5+ most-recent graded picks haven't been
+    # missed (no loss). Otherwise show no streak line at all. (Replaces the old
+    # streak calc.) Pending picks are transparent; a loss breaks the run.
+    streak = 0
+    for p in rec.get("picks", []):          # newest first
+        r = p.get("result")
+        if r == "L":
+            break
+        if r in ("W", "PUSH"):
+            streak += 1
+    on_fire = streak >= 5
     e = discord.Embed(title="📊 Baseline Track Record", color=color)
     e.description = (
         f"**Record:** {wins}-{losses}   ·   **Win rate:** {win_rate:g}%\n"
-        f"**Current streak:** {streak_txt}\n"
-        f"Total graded: {wins + losses}  ·  Pending: {rec.get('pending', 0)}"
+        + (f"🔥 **ON FIRE — {streak} in a row!**\n" if on_fire else "")
+        + f"Total graded: {wins + losses}  ·  Pending: {rec.get('pending', 0)}"
         + (f"  ·  Pushes: {rec.get('pushes', 0)}" if rec.get("pushes") else "")
         + (f"  ·  Needs review: {rec.get('needs_review', 0)}" if rec.get("needs_review") else "")
     )
-    cw, cl = rec.get("avg_confidence_wins"), rec.get("avg_confidence_losses")
-    if cw is not None or cl is not None:
-        e.add_field(name="Avg confidence",
-                    value=f"Winners: **{cw if cw is not None else '—'}%**  ·  "
-                          f"Losers: **{cl if cl is not None else '—'}%**", inline=False)
     last = [p for p in rec.get("picks", []) if p.get("result") in ("W", "L", "PUSH")][:10]
     if last:
         # PUSH shows a neutral white circle, distinct from green W / red L.
@@ -1875,7 +1878,8 @@ async def daily_results_post():
         if not rec or not rec.get("total"):
             log.info("daily results: no picks logged yet — skipping")
             return
-        await channel.send(embed=results_embed(rec))
+        await channel.send(content="@everyone", embed=results_embed(rec),
+                           allowed_mentions=EVERYONE_MENTION)
         log.info("daily results: posted record %s-%s", rec.get("wins"), rec.get("losses"))
     except Exception:  # noqa: BLE001
         log.exception("daily results post failed")
