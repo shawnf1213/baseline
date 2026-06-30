@@ -51,11 +51,16 @@ MAX_CONCURRENT  = 1       # serialize backend calcs — the heavy prop calc 502s
 MATCH_THRESHOLD = 0.80    # fuzzy name-match threshold
 MAX_PROPS       = 25      # cap evaluations so the command stays responsive
 MAX_LOOKAHEAD_HOURS = 24  # only pick matches that play within this many hours
-# Every Pick of the Day must be at least 90% confidence. Raised from the old
-# 65% Aces/BP bar after high-projection misses (e.g. Cilic Aces projected 15.2,
-# 80% conf, finished with 2 in a 0-3 blowout). Below 90% we post no pick.
-ACES_BP_MIN_CONF = 90     # Aces / Break Points Won: minimum confidence to use
-TG_DF_MIN_CONF   = 90     # Total Games / Double Faults: minimum confidence to use
+# Minimum confidence to qualify. RECALIBRATED 90 -> 70: the 90 bar was tuned to
+# the OLD inflated confidence scoring. Since then the model gained the
+# opponent-quality, consistency, retirement and sample-size confidence modifiers
+# (all conservative/penalizing), so a live board now distributes confidence as
+# min~48 / median~65 / p75~73 / MAX~83 — i.e. 90 is mathematically unreachable
+# and was returning ZERO qualifying picks every day. 70 ≈ the top ~30% (the
+# genuinely strong plays) of the new, honest distribution; the model still ranks
+# by confidence×edge, so the actual top-3 are the strongest of those.
+ACES_BP_MIN_CONF = 70     # Aces / Break Points Won: minimum confidence to use
+TG_DF_MIN_CONF   = 70     # Total Games / Double Faults: minimum confidence to use
 
 SEARCH_TIMEOUT = 10
 CALC_TIMEOUT   = 90       # backend prop calc can be slow on a cold proxy cache
@@ -434,10 +439,31 @@ async def generate_picks(n: int = 3):
         sem = asyncio.Semaphore(MAX_CONCURRENT)
         results = await asyncio.gather(*[_evaluate(pr, sem) for pr in uniq],
                                        return_exceptions=True)
-        picks = [r for r in results
-                 if isinstance(r, dict) and (r.get("confidence") or 0) >= MIN_CONFIDENCE
-                 and _passes_quality(r) and _recent_supports_lean(r)]
-        log.info("POD: evaluated=%d eligible=%d", len(uniq), len(picks))
+        # STEP 1 — log EVERY evaluated candidate + why it passed/failed, so a
+        # zero-pick day is fully debuggable from the Railway logs.
+        # NOTE: the recent-form HARD gate (_recent_supports_lean) is no longer a
+        # filter — recent form is already folded into the projection by the
+        # opponent-weighted recent-form pull, so excluding on it again
+        # double-counted it. It's still computed + logged as an info signal.
+        picks = []
+        for r in results:
+            if not isinstance(r, dict):
+                log.info("POD_CAND | EVAL_FAILED | %s", str(r)[:120])
+                continue
+            conf = r.get("confidence") or 0
+            bar = (ACES_BP_MIN_CONF if r.get("prop_type") in ("Aces", "Break Points Won")
+                   else TG_DF_MIN_CONF)
+            ok = conf >= MIN_CONFIDENCE and _passes_quality(r)
+            log.info("POD_CAND | %-22s %-18s line=%-5s conf=%-3.0f proj=%-6.2f edge=%+5.2f "
+                     "recent_ok=%-5s -> %s",
+                     (r.get("player") or "")[:22], (r.get("prop_type") or "")[:18],
+                     r.get("line"), conf, r.get("projection") or 0.0, r.get("edge") or 0.0,
+                     _recent_supports_lean(r),
+                     "QUALIFIES" if ok else ("below conf bar %d" % bar))
+            if ok:
+                picks.append(r)
+        log.info("POD: evaluated=%d eligible=%d (conf bar: Aces/BP=%d, TG/DF=%d)",
+                 len(uniq), len(picks), ACES_BP_MIN_CONF, TG_DF_MIN_CONF)
         picks.sort(key=lambda x: x["score"], reverse=True)
         # Keep only each player's single best-scoring play so the top N are N
         # different players (no same player twice for different props).
