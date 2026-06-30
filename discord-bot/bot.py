@@ -1154,12 +1154,12 @@ try:
     POD_TZINFO = ZoneInfo(os.getenv("POD_TZ", "America/New_York"))
 except Exception:  # pragma: no cover — fall back to a fixed EST offset
     POD_TZINFO = datetime.timezone(datetime.timedelta(hours=-5))
-# Trigger at 11:50 PM ET, not midnight: the serialized generation run takes
-# ~10 min, so starting early lands the post right around the target time.
-# Default 22:45 ET → triggers at 10:45 PM ET. (Adjust POD_HOUR/POD_MINUTE if run
-# time drifts. NOTE: Railway POD_HOUR/POD_MINUTE env vars OVERRIDE these defaults.)
-POD_HOUR = int(os.getenv("POD_HOUR", "22") or "22")
-POD_MINUTE = int(os.getenv("POD_MINUTE", "45") or "45")
+# Daily auto-post trigger time (ET). The serialized generation run takes ~10
+# min, so the post lands a bit after this. Default 01:50 ET → triggers at
+# 1:50 AM ET. (Adjust POD_HOUR/POD_MINUTE if run time drifts. NOTE: Railway
+# POD_HOUR/POD_MINUTE env vars OVERRIDE these defaults — clear them there if set.)
+POD_HOUR = int(os.getenv("POD_HOUR", "1") or "1")
+POD_MINUTE = int(os.getenv("POD_MINUTE", "50") or "50")
 # Optional one-shot post on startup for verifying a deploy (off by default).
 POD_POST_ON_START = (os.getenv("POD_POST_ON_START", "0") or "0") not in ("0", "false", "False")
 _pod_startup_done = False
@@ -1993,10 +1993,14 @@ async def on_ready():
                      len(client.guilds))
         except Exception:
             log.exception("guild command sync failed")
-    # Pick of the Day AUTO-POST is DISABLED by request — the POD now goes out
-    # only when an admin runs the /postpicks command. (Re-enable by restoring
-    # the daily_pick_of_day.start() call below.)
-    log.info("Pick of the Day auto-post is DISABLED — use /postpicks to post manually.")
+    # Daily Pick of the Day auto-post (re-enabled). /postpicks stays for manual runs.
+    if POD_CHANNEL_ID and not daily_pick_of_day.is_running():
+        try:
+            daily_pick_of_day.start()
+            log.info("Pick of the Day daily auto-post scheduled at %02d:%02d %s -> channel %s",
+                     POD_HOUR, POD_MINUTE, POD_TZINFO, POD_CHANNEL_ID)
+        except Exception:
+            log.exception("failed to start daily Pick of the Day loop")
 
     # Feature 1 — results auto-resolution (runs on startup + every few hours).
     if not daily_resolve_results.is_running():
