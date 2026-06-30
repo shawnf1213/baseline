@@ -1392,30 +1392,8 @@ async def _before_daily_pick():
     await client.wait_until_ready()
 
 
-# Pick of the Day auto-post is DISABLED — admins post it on demand via /postpicks.
-
-
-@client.tree.command(name="postpicks",
-                     description="Generate & post the Pick of the Day now")
-async def postpicks_cmd(interaction: discord.Interaction):
-    """Manual trigger for the Pick of the Day (no permission gate). Scrapes the
-    PrizePicks board, runs the full model on each eligible prop, posts the top-3
-    to the picks channel, logs them PENDING, and starts the line monitor."""
-    await interaction.response.defer(thinking=True)
-    channel = client.get_channel(POD_CHANNEL_ID) if POD_CHANNEL_ID else interaction.channel
-    if channel is None:
-        await interaction.followup.send(
-            embed=error_embed("POD channel not configured / not found."))
-        return
-    try:
-        status = await _post_pick_of_day(channel, track=True)
-        log.info("POD manual (/postpicks by %s): %s", interaction.user, status)
-        await interaction.followup.send(
-            embed=discord.Embed(description=f"✅ Posted to <#{channel.id}> — {status}",
-                                color=COLOR_NEUTRAL))
-    except Exception:  # noqa: BLE001
-        log.exception("/postpicks failed")
-        await interaction.followup.send(embed=error_embed("Pick of the Day post failed."))
+# Pick of the Day is broadcast only via the scheduled daily auto-post — there is
+# no manual /postpicks command (removed by request).
 
 
 # ── Feature 4 — daily Slate auto-post (📋・slate channel) ─────────────────────────
@@ -2002,7 +1980,7 @@ async def on_ready():
                      len(client.guilds))
         except Exception:
             log.exception("guild command sync failed")
-    # Daily Pick of the Day auto-post (re-enabled). /postpicks stays for manual runs.
+    # Daily Pick of the Day auto-post (scheduled broadcast — no manual command).
     if POD_CHANNEL_ID and not daily_pick_of_day.is_running():
         try:
             daily_pick_of_day.start()
