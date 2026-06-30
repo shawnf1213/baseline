@@ -99,11 +99,27 @@ _UA_POOL = [
 _PROXY_HOST  = os.getenv("PROXY_HOST",     "gate.decodo.com")
 _PROXY_USER  = os.getenv("PROXY_USERNAME", "")
 _PROXY_PASS  = os.getenv("PROXY_PASSWORD", "")
-_PROXY_PORTS = [
-    int(p.strip())
-    for p in os.getenv("PROXY_PORT_LIST", "").split(",")
-    if p.strip().isdigit()
-]
+
+
+def _parse_port_list(spec: str) -> list:
+    """Accept a comma list AND/OR 'start-end' ranges, so all 50 Decodo endpoint
+    ports can be named with a single env value, e.g. PROXY_PORT_LIST=10001-10050
+    (or '10001,10002,10010-10020'). Each port is a sticky-1min rotating IP, so
+    more ports = more IP diversity = far fewer Sofascore blocks."""
+    out: list = []
+    for tok in (spec or "").replace(" ", "").split(","):
+        if not tok:
+            continue
+        if "-" in tok:
+            a, _, b = tok.partition("-")
+            if a.isdigit() and b.isdigit():
+                out.extend(range(int(a), int(b) + 1))
+        elif tok.isdigit():
+            out.append(int(tok))
+    return out
+
+
+_PROXY_PORTS = _parse_port_list(os.getenv("PROXY_PORT_LIST", ""))
 
 # One port + one Session for the lifetime of a player search session.
 # Only rotated when: new search starts, 407 received, or 403 persists.
@@ -118,7 +134,7 @@ _proxy_session   = None         # curl_cffi Session — reused across all reques
 # the ~7 static port IPs (which Sofascore then blocks wholesale). Requires a
 # Decodo plan with session support; if the plan rejects it (407), we auto-fall
 # back to the plain username on the first failure. Opt out with PROXY_SESSIONS=0.
-_session_mode = os.getenv("PROXY_SESSIONS", "1").strip() not in ("0", "false", "False")
+_session_mode = os.getenv("PROXY_SESSIONS", "0").strip() not in ("0", "false", "False")
 
 # Request throttle — enforces minimum gap between Sofascore calls
 _last_sofascore_request: float = 0.0
