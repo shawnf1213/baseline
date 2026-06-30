@@ -349,6 +349,26 @@ def tier_proxy_rank(comp_tier) -> int:
     return 250                            # ITF / futures
 
 
+def tier_proxy_weight(comp_tier, tournament=None) -> float:
+    """Fallback opponent-quality weight when the opponent isn't in the current
+    rankings list (retired, unranked, or ID mismatch). Drives off the per-match
+    competition tier, bumping Grand Slam / Masters fields up via the tournament
+    name. Tiers: GS/Masters 1.30 · generic tour 0.95 · Challenger 0.70 · ITF 0.55."""
+    name = (tournament or "").lower()
+    ct = comp_tier if isinstance(comp_tier, (int, float)) else 3.0
+    if ct >= 2.5:  # main tour
+        if any(k in name for k in (
+            "wimbledon", "roland garros", "french open", "us open", "australian open",
+            "masters", "indian wells", "miami", "monte", "madrid", "rome", "internazionali",
+            "cincinnati", "shanghai", "canada", "toronto", "montreal", "paris",
+        )):
+            return 1.30
+        return 0.95   # generic ATP/WTA 250-500
+    if ct >= 1.5:     # challenger
+        return 0.70
+    return 0.55        # ITF / futures
+
+
 # Serve-quality tier cutoffs on SERVICE GAMES WON %, tour-relative (Step 2/3).
 # sgw > elite → Elite · >= strong → Strong · >= average → Average · else Weak.
 SERVE_QUALITY_TIERS = {

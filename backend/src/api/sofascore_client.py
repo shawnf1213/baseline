@@ -996,6 +996,37 @@ def _calc_total_match_games(event: dict) -> Optional[int]:
     return total if found_any else None
 
 
+_RANKINGS_CACHE = {"data": None, "ts": 0.0}
+_RANKINGS_TTL = 7 * 24 * 3600   # rankings update weekly
+
+
+def get_current_rankings() -> dict:
+    """Current ATP (rankings/type/5) + WTA (type/6) singles rankings as a
+    {sofascore_player_id: ranking} lookup. Cached 7 days. Returns {} on total
+    failure (callers degrade to the tournament-tier weight)."""
+    now = time.time()
+    cached = _RANKINGS_CACHE["data"]
+    if cached is not None and (now - _RANKINGS_CACHE["ts"]) < _RANKINGS_TTL:
+        return cached
+    out = {}
+    for rtype in (5, 6):   # 5 = ATP singles, 6 = WTA singles (confirmed live)
+        try:
+            d = _get(f"{BASE_URL}/rankings/type/{rtype}")
+            for row in (d.get("rankings") or []):
+                tid = (row.get("team") or {}).get("id")
+                rk = row.get("ranking")
+                if tid is not None and rk is not None:
+                    out[int(tid)] = int(rk)
+        except Exception as e:   # noqa: BLE001
+            logger.warning("RANKINGS_FETCH_FAILED | type=%d | %s", rtype, str(e)[:120])
+    if out:
+        _RANKINGS_CACHE["data"] = out
+        _RANKINGS_CACHE["ts"] = now
+        logger.info("RANKINGS_LOADED | %d ranked players (ATP+WTA)", len(out))
+        return out
+    return cached or {}
+
+
 def _parse_match_stats(stats_data: dict, event: dict, player_id: int) -> Optional[dict]:
     statistics = stats_data.get("statistics", [])
     if not statistics:
@@ -1013,6 +1044,15 @@ def _parse_match_stats(stats_data: dict, event: dict, player_id: int) -> Optiona
     away_score = event.get("awayScore", {}).get("current", 0) or 0
     won = (home_score > away_score) if side == "home" else (away_score > home_score)
 
+    # Retirement / walkover (Imp 5): Sofascore status code 91 = Walkover,
+    # 92 = Retired, 93 = Disqualified (description corroborates). The player who
+    # did NOT win is the one who retired/withdrew → their own injury signal.
+    _st = event.get("status", {}) or {}
+    _st_desc = (_st.get("description") or "").lower()
+    _is_dnf = (_st.get("code") in (91, 92, 93)
+               or any(t in _st_desc for t in ("retir", "walkover", "default")))
+    player_retired = bool(_is_dnf and not won)
+
     opp_team = event.get("awayTeam", {}) if side == "home" else event.get("homeTeam", {})
 
     # NOTE: surface intentionally omitted — caller (get_player_stats_by_surface)
@@ -1020,6 +1060,7 @@ def _parse_match_stats(stats_data: dict, event: dict, player_id: int) -> Optiona
     # not overwrite it here with the weaker keyword-only inference.
     result = {
         "won":           won,
+        "player_retired": player_retired,
         "tournament":    event.get("tournament", {}).get("name", "Unknown"),
         "timestamp":     event.get("startTimestamp", 0),
         "event_id":      event.get("id"),

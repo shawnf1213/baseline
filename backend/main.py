@@ -52,6 +52,7 @@ load_dotenv()
 from src.api.sofascore_client import (
     init_session,
     search_players,
+    get_current_rankings,
     get_player_stats_by_surface,
     get_player_surface_hold,
     peek_surface_hold,
@@ -91,7 +92,7 @@ from src.calculations.props import (
 from src.constants import (
     COURT_CPR, CPR_NEUTRAL, GENERIC_SURFACE_CPR,
     get_speed_tier, ST_PACE_PREVIOUS_YEAR, ST_YOY_THRESHOLD,
-    resolve_court_name, opponent_quality_weight, tier_proxy_rank, _norm_court,
+    resolve_court_name, opponent_quality_weight, tier_proxy_weight, _norm_court,
 )
 from src.api.string_tension import lookup_pace_index
 
@@ -912,58 +913,37 @@ def _date_pm1(d):
         return [str(d)[:10]] if d else []
 
 
-def _opp_quality_weighted(surf_matches, sack_matches):
-    """Stamp each surface match with the opponent's rank AT THE TIME (Sackmann
-    winner/loser_rank cross-matched by last-name + date ±1d; tier proxy when no
-    Sackmann row) and compute raw + opponent-quality-weighted averages for the
-    key stats. Returns ({stat: {raw, weighted}}, sackmann_match_rate_pct)."""
+def _opp_quality_weighted(surf_matches, rankings):
+    """Stamp each surface match with the opponent's CURRENT Sofascore rank
+    (looked up by opponent_id; tournament-tier weight when the opponent isn't in
+    the rankings list — retired/unranked/ID mismatch) and compute raw +
+    opponent-quality-weighted averages for the key stats.
+    Returns ({stat: {raw, weighted}}, ranking_match_rate_pct)."""
     ms = [m for m in (surf_matches or []) if isinstance(m, dict)]
     if len(ms) < 5:                       # too few matches → weighting is noise
         return {}, 0.0
-    # Sackmann rank index keyed by (opponent_last, year) → [(date, rank)].
-    # Sackmann's date is the tournament START, so we match within a window
-    # around the actual Sofascore match date, not on an exact day.
-    sidx = {}
-    for sm in sack_matches or []:
-        opp = (sm.get("opponent") or "").strip().split()
-        last = opp[-1].lower() if opp else ""
-        d = str(sm.get("date") or "")[:10]
-        if last and len(d) == 10 and sm.get("opponent_rank") is not None:
-            sidx.setdefault((last, d[:4]), []).append((d, sm["opponent_rank"]))
-
-    def _sack_rank(m):
-        opp = (m.get("opponent") or m.get("opponent_name") or "").strip().split()
-        last = opp[-1].lower() if opp else ""
-        d = str(m.get("date") or "")[:10]
-        if not last or len(d) != 10:
-            return None
-        cands = sidx.get((last, d[:4]))
-        if not cands:
-            return None
-        try:
-            md = datetime.datetime.strptime(d, "%Y-%m-%d")
-        except Exception:  # noqa: BLE001
-            return None
-        best, bestdiff = None, 999
-        for sd, r in cands:
-            try:
-                diff = abs((datetime.datetime.strptime(sd, "%Y-%m-%d") - md).days)
-            except Exception:  # noqa: BLE001
-                continue
-            if diff < bestdiff:
-                best, bestdiff = r, diff
-        return best if bestdiff <= 21 else None
-
+    rankings = rankings or {}
     rows, ranked = [], 0
     for m in ms:
-        rank = _sack_rank(m)
+        oid = m.get("opponent_id")
+        rank = None
+        if oid is not None:
+            try:
+                rank = rankings.get(int(oid))
+            except (TypeError, ValueError):
+                rank = None
         if rank is not None:
+            w = opponent_quality_weight(rank)        # rank tier (1-20→1.4 … >150→0.65)
             ranked += 1
         else:
-            rank = tier_proxy_rank(m.get("comp_tier"))
-        m["_opp_rank"] = rank            # reused by the recent-form pull (Imp 4)
-        rows.append((m, opponent_quality_weight(rank)))
+            w = tier_proxy_weight(m.get("comp_tier"), m.get("tournament"))  # fallback
+        # _opp_rank / _opp_weight reused by the recent-form pull (Imp 4)
+        m["_opp_rank"] = rank if rank is not None else 999
+        m["_opp_weight"] = w
+        rows.append((m, w))
     match_rate = round(ranked / len(ms) * 100, 1)
+    logger.info("QW_COVERAGE | %d matches | %.0f%% via current ranking, rest via tournament-tier fallback",
+                len(ms), match_rate)
     out = {}
     for key, fld in _QW_COUNT_STATS.items():
         wn = wd = rn = rd = 0.0
@@ -1026,10 +1006,11 @@ def _consistency(surf_log, prop_type):
     return -12, "High Variance"
 
 
-def _retirement_risk(sack_matches):
-    """Improvement 5 — player retirements/walkovers in the last 50 matches.
+def _retirement_risk(matches):
+    """Improvement 5 — player retirements/walkovers in the last 50 matches
+    (Sofascore status code 91/92/93, flagged per-match in the data layer).
     Returns (is_risk, confidence_penalty, pct_completed)."""
-    last50 = (sack_matches or [])[:50]
+    last50 = (matches or [])[:50]
     if len(last50) < 10:
         return False, 0, None
     rets = sum(1 for m in last50 if m.get("player_retired"))
@@ -1086,7 +1067,9 @@ def _recent_form_pull(proj_val, surf_matches, prop_type, weight=0.30):
         v = m.get(key) if isinstance(m, dict) else None
         if not isinstance(v, (int, float)):
             continue
-        w = opponent_quality_weight(m.get("_opp_rank"))
+        w = m.get("_opp_weight")
+        if not isinstance(w, (int, float)):
+            w = opponent_quality_weight(m.get("_opp_rank"))
         wn += v * w; wd += w
     if wd <= 0:
         return proj_val, None
@@ -1369,11 +1352,15 @@ async def prop_calculate(req: PropRequest):
         # the projection reads a quality-aware figure; raw kept for display.
         _p1_surf_log = p1_data.get(f"{req.surface}_matches", []) or []
         _p2_surf_log = p2_data.get(f"{req.surface}_matches", []) or []
-        _p1_qw, p1_qw_match_rate = _opp_quality_weighted(_p1_surf_log, p1_sack_matches)
-        _p2_qw, p2_qw_match_rate = _opp_quality_weighted(_p2_surf_log, p2_sack_matches)
+        try:
+            _rankings = get_current_rankings()        # {player_id: rank}, cached 7d
+        except Exception:  # noqa: BLE001
+            _rankings = {}
+        _p1_qw, p1_qw_match_rate = _opp_quality_weighted(_p1_surf_log, _rankings)
+        _p2_qw, p2_qw_match_rate = _opp_quality_weighted(_p2_surf_log, _rankings)
         _apply_quality_weighting(p1_s, _p1_qw)
         _apply_quality_weighting(p2_s, _p2_qw)
-        logger.info("QUALITY_WEIGHT | p1=%s sackmann_rate=%.0f%% | p2=%s rate=%.0f%%",
+        logger.info("QUALITY_WEIGHT | p1=%s ranking_rate=%.0f%% | p2=%s rate=%.0f%%",
                     req.player_name, p1_qw_match_rate, req.opponent_name, p2_qw_match_rate)
 
         def _qw_inflated(s):
@@ -1595,10 +1582,17 @@ async def prop_calculate(req: PropRequest):
                     bp_forward_factor = 0.85    # strong server → fewer chances created
                 elif _opp_sgw is not None and _opp_sgw < 65.0:
                     bp_forward_factor = 1.10    # weak server → more chances created
-                # Imp 1 forward factor: harder to create chances vs elite opponents.
-                if req.opponent_rank is not None and req.opponent_rank <= 20:
+                # Imp 1 forward factor: harder to create chances vs elite
+                # opponents. Prefer the request rank; fall back to current rankings.
+                _cur_opp_rank = req.opponent_rank
+                if _cur_opp_rank is None and req.opponent_id:
+                    try:
+                        _cur_opp_rank = _rankings.get(int(req.opponent_id))
+                    except (TypeError, ValueError):
+                        _cur_opp_rank = None
+                if _cur_opp_rank is not None and _cur_opp_rank <= 20:
                     bp_forward_factor *= 0.90
-                elif req.opponent_rank is not None and req.opponent_rank > 100:
+                elif _cur_opp_rank is not None and _cur_opp_rank > 100:
                     bp_forward_factor *= 1.10
 
             bp_result = project_break_points(
@@ -1697,7 +1691,7 @@ async def prop_calculate(req: PropRequest):
         cons_delta, consistency_tier = _consistency(_p1_surf_log, req.prop_type)
         if cons_delta:
             confidence = max(20, min(95, confidence + cons_delta))
-        retirement_risk, ret_pen, pct_completed = _retirement_risk(p1_sack_matches)
+        retirement_risk, ret_pen, pct_completed = _retirement_risk(p1_ss_all)
         if retirement_risk:
             confidence = max(20, confidence + ret_pen)
             _bd2 = conf_result.get("breakdown")
