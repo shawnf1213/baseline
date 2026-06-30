@@ -1156,11 +1156,10 @@ except Exception:  # pragma: no cover — fall back to a fixed EST offset
     POD_TZINFO = datetime.timezone(datetime.timedelta(hours=-5))
 # Trigger at 11:50 PM ET, not midnight: the serialized generation run takes
 # ~10 min, so starting early lands the post right around the target time.
-# 23:50 ET tonight → 11:50 PM ET (one-off re-run after the Sackmann no-op fix;
-# set back to 22:45 after it fires).
-# NOTE: Railway POD_HOUR/POD_MINUTE env vars OVERRIDE these defaults.
-POD_HOUR = int(os.getenv("POD_HOUR", "23") or "23")
-POD_MINUTE = int(os.getenv("POD_MINUTE", "50") or "50")
+# Default 22:45 ET → triggers at 10:45 PM ET. (Adjust POD_HOUR/POD_MINUTE if run
+# time drifts. NOTE: Railway POD_HOUR/POD_MINUTE env vars OVERRIDE these defaults.)
+POD_HOUR = int(os.getenv("POD_HOUR", "22") or "22")
+POD_MINUTE = int(os.getenv("POD_MINUTE", "45") or "45")
 # Optional one-shot post on startup for verifying a deploy (off by default).
 POD_POST_ON_START = (os.getenv("POD_POST_ON_START", "0") or "0") not in ("0", "false", "False")
 _pod_startup_done = False
@@ -1384,8 +1383,34 @@ async def _before_daily_pick():
     await client.wait_until_ready()
 
 
-# Pick of the Day is bot-broadcast only — the automatic daily post at POD_HOUR:
-# POD_MINUTE ET. No user-facing /pickoftheday command (removed by request).
+# Pick of the Day auto-post is DISABLED — admins post it on demand via /postpicks.
+
+
+@client.tree.command(name="postpicks",
+                     description="Admin: generate & post the Pick of the Day now")
+async def postpicks_cmd(interaction: discord.Interaction):
+    """Admin-only manual trigger for the Pick of the Day. Scrapes the PrizePicks
+    board, runs the full model on each eligible prop, posts the top-3 to the
+    picks channel, logs them PENDING, and starts the line monitor."""
+    await interaction.response.defer(thinking=True, ephemeral=True)
+    if not _is_admin(interaction):
+        await interaction.followup.send(embed=error_embed("Admins only."), ephemeral=True)
+        return
+    channel = client.get_channel(POD_CHANNEL_ID) if POD_CHANNEL_ID else interaction.channel
+    if channel is None:
+        await interaction.followup.send(
+            embed=error_embed("POD channel not configured / not found."), ephemeral=True)
+        return
+    try:
+        status = await _post_pick_of_day(channel, track=True)
+        log.info("POD manual (/postpicks by %s): %s", interaction.user, status)
+        await interaction.followup.send(
+            embed=discord.Embed(description=f"✅ Posted to <#{channel.id}> — {status}",
+                                color=COLOR_NEUTRAL), ephemeral=True)
+    except Exception:  # noqa: BLE001
+        log.exception("/postpicks failed")
+        await interaction.followup.send(embed=error_embed("Pick of the Day post failed."),
+                                        ephemeral=True)
 
 
 # ── Feature 4 — daily Slate auto-post (📋・slate channel) ─────────────────────────
@@ -1972,15 +1997,10 @@ async def on_ready():
                      len(client.guilds))
         except Exception:
             log.exception("guild command sync failed")
-    # Start the optional daily Pick of the Day auto-post (only if a channel is
-    # configured). Guarded so it never starts twice or breaks startup.
-    if POD_CHANNEL_ID and not daily_pick_of_day.is_running():
-        try:
-            daily_pick_of_day.start()
-            log.info("Pick of the Day daily auto-post scheduled at %02d:%02d %s -> channel %s",
-                     POD_HOUR, POD_MINUTE, POD_TZINFO, POD_CHANNEL_ID)
-        except Exception:
-            log.exception("failed to start daily Pick of the Day loop")
+    # Pick of the Day AUTO-POST is DISABLED by request — the POD now goes out
+    # only when an admin runs the /postpicks command. (Re-enable by restoring
+    # the daily_pick_of_day.start() call below.)
+    log.info("Pick of the Day auto-post is DISABLED — use /postpicks to post manually.")
 
     # Feature 1 — results auto-resolution (runs on startup + every few hours).
     if not daily_resolve_results.is_running():
