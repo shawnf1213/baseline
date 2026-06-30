@@ -290,36 +290,14 @@ def _load_sackmann_inner(player_name: str, tour: str = "ATP") -> List[dict]:
 
 def load_player_sackmann_data(player_name: str, tour: str = "ATP") -> List[dict]:
     """
-    Public entry point — wraps _load_sackmann_inner with a hard 15-second wall-clock
-    guard so a slow GitHub connection never hangs the prop-estimate endpoint.
-    Returns an empty list on any failure or timeout.
+    DISABLED — Jeff Sackmann's tennis_atp / tennis_wta repos are no longer public
+    (every CSV 404s as of 2026-06), so this used to fire ~12 failed HTTP requests
+    and burn up to 15s PER CALL, flooding the logs and dragging every prop-calc
+    (and the Pick-of-the-Day scan) to a crawl. The model runs entirely on
+    Sofascore now, so this is a hard no-op. Callers already treat an empty list
+    as "no supplement", so behaviour is unchanged — just instant and quiet.
     """
-    import threading
-    result: List[dict] = []
-    exc_holder: List[Exception] = []
-
-    def _run():
-        try:
-            result.extend(_load_sackmann_inner(player_name, tour))
-        except Exception as e:
-            exc_holder.append(e)
-
-    t = threading.Thread(target=_run, daemon=True)
-    t.start()
-    t.join(timeout=15)          # hard 15-second cap
-
-    if t.is_alive():
-        logger.warning(
-            "SACKMANN_TIMEOUT | player=%r tour=%s — returning empty after 15s",
-            player_name, tour,
-        )
-        return []
-
-    if exc_holder:
-        logger.error("SACKMANN_ERROR | player=%r | %s", player_name, exc_holder[0])
-        return []
-
-    return result
+    return []
 
 
 # ── Surface adjustment factors (all-surface → specific surface) ───────────────
