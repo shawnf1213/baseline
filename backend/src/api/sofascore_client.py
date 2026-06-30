@@ -113,6 +113,13 @@ _used_ports: list = []
 _bad_ports:  dict = {}          # port -> timestamp marked bad
 _proxy_session   = None         # curl_cffi Session — reused across all requests
 
+# Decodo sticky-SESSION usernames ({user}-session-{id}) give a fresh residential
+# IP per session, so the bot rotates across many IPs instead of being stuck on
+# the ~7 static port IPs (which Sofascore then blocks wholesale). Requires a
+# Decodo plan with session support; if the plan rejects it (407), we auto-fall
+# back to the plain username on the first failure. Opt out with PROXY_SESSIONS=0.
+_session_mode = os.getenv("PROXY_SESSIONS", "1").strip() not in ("0", "false", "False")
+
 # Request throttle — enforces minimum gap between Sofascore calls
 _last_sofascore_request: float = 0.0
 _throttle_lock = threading.Lock()
@@ -152,8 +159,12 @@ def _fresh_session_id() -> str:
     return ''.join(random.choices(string.ascii_lowercase + string.digits, k=8))
 
 
-def _proxy_url(port: int) -> str:
-    return f"http://{_PROXY_USER}:{_PROXY_PASS}@{_PROXY_HOST}:{port}"
+def _proxy_url(port: int, session_id: Optional[str] = None) -> str:
+    # With session mode on (and a session id available) use Decodo's sticky-
+    # session username so each session gets its own rotating residential IP.
+    user = (f"{_PROXY_USER}-session-{session_id}"
+            if (_session_mode and session_id) else _PROXY_USER)
+    return f"http://{user}:{_PROXY_PASS}@{_PROXY_HOST}:{port}"
 
 
 def _choose_port() -> Optional[int]:
@@ -189,10 +200,26 @@ def _new_session(force_port: bool = True) -> None:
     s = cf.Session(impersonate=profile)
     s.headers.update({**HEADERS, "User-Agent": ua})
     if current_proxy_port and _proxy_ok():
-        pu = _proxy_url(current_proxy_port)
+        pu = _proxy_url(current_proxy_port, _current_session_id)
         s.proxies = {"http": pu, "https": pu}
     _proxy_session = s
-    logger.info("New session: port=%s sid=%s profile=%s", current_proxy_port, _current_session_id, profile)
+    logger.info("New session: port=%s sid=%s profile=%s sessions=%s",
+                current_proxy_port, _current_session_id, profile, _session_mode)
+
+
+def _maybe_disable_sessions() -> bool:
+    """A 407 while using a Decodo session username means the plan does not
+    support sticky sessions — fall back to the plain username (which works, just
+    without IP rotation) and rebuild the session on the SAME port. Returns True
+    if it just switched, so the caller retries instead of marking the port bad."""
+    global _session_mode
+    if _session_mode:
+        _session_mode = False
+        logger.warning("PROXY_SESSIONS_UNSUPPORTED | 407 on session username — "
+                       "falling back to plain username (set PROXY_SESSIONS=0 to silence)")
+        _new_session(force_port=False)
+        return True
+    return False
 
 
 def _do_warmup() -> None:
@@ -446,6 +473,8 @@ def _get(url: str, params: dict = None, fast: bool = False) -> dict:
             if r.status_code == 200:
                 return r.json()
             if r.status_code == 407:
+                if _maybe_disable_sessions():
+                    continue
                 _mark_bad(current_proxy_port)
                 continue
             if r.status_code == 403:
@@ -464,6 +493,11 @@ def _get(url: str, params: dict = None, fast: bool = False) -> dict:
         except Exception as e:
             msg = str(e).lower()
             if any(x in msg for x in ("proxy", "tunnel", "connect", "407")):
+                # A 407 here usually means the Decodo plan rejected the sticky-
+                # session username — fall back to plain and retry the same port
+                # before treating the port as dead.
+                if "407" in msg and _maybe_disable_sessions():
+                    continue
                 # Dead proxy port (e.g. Decodo 502 CONNECT tunnel failure).
                 # Mark it bad AND rotate to a fresh port — without this the
                 # next attempt reuses the same dead port and all 3 retries
