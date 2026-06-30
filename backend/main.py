@@ -91,7 +91,7 @@ from src.calculations.props import (
 from src.constants import (
     COURT_CPR, CPR_NEUTRAL, GENERIC_SURFACE_CPR,
     get_speed_tier, ST_PACE_PREVIOUS_YEAR, ST_YOY_THRESHOLD,
-    resolve_court_name, opponent_quality_weight, tier_proxy_rank,
+    resolve_court_name, opponent_quality_weight, tier_proxy_rank, _norm_court,
 )
 from src.api.string_tension import lookup_pace_index
 
@@ -972,6 +972,75 @@ def _apply_quality_weighting(s, qw):
             s[key] = round(s[key] * ratio, 2)
 
 
+def _pstdev(vals):
+    n = len(vals)
+    if n < 2:
+        return 0.0
+    mu = sum(vals) / n
+    return (sum((x - mu) ** 2 for x in vals) / n) ** 0.5
+
+
+def _consistency(surf_log, prop_type):
+    """Improvement 3 — predictability of the prop's key stat over the last 20
+    surface matches. Returns (confidence_delta, tier). Low coefficient of
+    variation → reliable (+8); high → erratic (−12)."""
+    key = _RECENT_FORM_STAT.get(prop_type)
+    if not key:
+        return 0, None
+    vals = [m.get(key) for m in (surf_log or [])[:20] if isinstance(m.get(key), (int, float))]
+    if len(vals) < 6:
+        return 0, None
+    mean = sum(vals) / len(vals)
+    if mean <= 0:
+        return 0, None
+    cv = _pstdev(vals) / mean
+    if cv < 0.25:
+        return 8, "Consistent"
+    if cv < 0.45:
+        return 0, "Moderate Variance"
+    return -12, "High Variance"
+
+
+def _retirement_risk(sack_matches):
+    """Improvement 5 — player retirements/walkovers in the last 50 matches.
+    Returns (is_risk, confidence_penalty, pct_completed)."""
+    last50 = (sack_matches or [])[:50]
+    if len(last50) < 10:
+        return False, 0, None
+    rets = sum(1 for m in last50 if m.get("player_retired"))
+    pct = round((1 - rets / len(last50)) * 100, 1)
+    return (rets >= 2), (-10 if rets >= 2 else 0), pct
+
+
+def _in_tournament_blend(s, surf_log, current_tournament, weight=0.35):
+    """Improvement 2 — current-tournament form is the highest-weight signal
+    (exact same courts/conditions). When the player has ≥2 matches in the
+    upcoming event (same tournament + year), blend their in-tournament averages
+    into the stat at 35%. Returns True if applied."""
+    if not current_tournament:
+        return False
+    ct = _norm_court(current_tournament)
+    cyear = str(datetime.datetime.now().year)
+    it = [m for m in (surf_log or [])
+          if isinstance(m, dict) and ct and ct in _norm_court(m.get("tournament", ""))
+          and str(m.get("date", ""))[:4] == cyear]
+    if len(it) < 2:
+        return False
+    for key, fld in _QW_COUNT_STATS.items():
+        vals = [m.get(fld) for m in it if isinstance(m.get(fld), (int, float))]
+        if vals and isinstance(s.get(key), (int, float)):
+            s[key] = round((1 - weight) * s[key] + weight * (sum(vals) / len(vals)), 2)
+    for key, (nf, dnf) in _QW_RATE_STATS.items():
+        n = d = 0.0
+        for m in it:
+            a, b = m.get(nf), m.get(dnf)
+            if isinstance(a, (int, float)) and isinstance(b, (int, float)) and b > 0:
+                n += a; d += b
+        if d > 0 and isinstance(s.get(key), (int, float)):
+            s[key] = round((1 - weight) * s[key] + weight * (n / d * 100), 1)
+    return True
+
+
 _RECENT_FORM_STAT = {                     # prop → per-match stat for the form pull
     "Aces": "aces", "Double Faults": "double_faults",
     "Total Games": "total_match_games", "Break Points Won": "bp_converted_count",
@@ -1290,6 +1359,11 @@ async def prop_calculate(req: PropRequest):
             return False
         p1_stats_inflated = _qw_inflated(p1_s)
 
+        # ── In-tournament form tier (Improvement 2): same courts/conditions ──
+        if _in_tournament_blend(p1_s, _p1_surf_log, court_for_calc):
+            logger.info("IN_TOURNAMENT | %s blended current-event form", req.player_name)
+        _in_tournament_blend(p2_s, _p2_surf_log, court_for_calc)
+
         # Inject identity, rank, and recent form into stats dicts so the
         # expected-sets win-prob estimator has everything it needs.
         p1_s["player_name"] = req.player_name or req.player_id
@@ -1594,6 +1668,17 @@ async def prop_calculate(req: PropRequest):
                 if isinstance(_bd, list):
                     _bd.append("Low opportunity volume — conversion rate based on limited chances")
 
+        # ── Consistency (Imp 3) + Retirement risk (Imp 5) confidence modifiers ──
+        cons_delta, consistency_tier = _consistency(_p1_surf_log, req.prop_type)
+        if cons_delta:
+            confidence = max(20, min(95, confidence + cons_delta))
+        retirement_risk, ret_pen, pct_completed = _retirement_risk(p1_sack_matches)
+        if retirement_risk:
+            confidence = max(20, confidence + ret_pen)
+            _bd2 = conf_result.get("breakdown")
+            if isinstance(_bd2, list):
+                _bd2.append("Retirement risk — 2+ DNF in last 50 matches (props may void)")
+
         # Sackmann thin-data penalty (applied before sanity check)
         sack_penalty = p1_blended.get("_confidence_penalty", 0)
         if sack_penalty:
@@ -1763,6 +1848,9 @@ async def prop_calculate(req: PropRequest):
             "model_projection":     proj_val,
             "model_projection_premull": round(proj_val_premodel, 1) if isinstance(proj_val_premodel, (int, float)) else None,
             "recent_form_avg":      recent_form_avg,
+            "consistency_tier":     consistency_tier,
+            "retirement_risk":      retirement_risk,
+            "pct_completed":        pct_completed,
             "lean":                 lean,
             "confidence":           confidence,
             "confidence_breakdown": conf_result["breakdown"],

@@ -2077,6 +2077,18 @@ def project_break_points(
     proj_before_format = base_proj + momentum_bonus
     proj               = proj_before_format * c8_format_mult
 
+    # ── Set momentum (Improvement 6): a player who takes the pivotal middle set
+    # carries momentum into the decider. When the match projects to a deciding
+    # set (expected_sets above the threshold), add a small BP bonus for the
+    # favourite (likeliest to win the 2nd set). Gated + format-aware.
+    _set_mom_thresh = 4.0 if is_bo5 else 2.4
+    set_momentum_bonus = 0.0
+    if expected_sets > _set_mom_thresh and p_prob >= 50.0:
+        set_momentum_bonus = round(min(0.4, 0.2 + (expected_sets - _set_mom_thresh) * 0.30), 3)
+        proj += set_momentum_bonus
+        logger.info("BP_SET_MOMENTUM | exp_sets=%.2f thresh=%.1f p_prob=%.0f%% -> +%.2f BP",
+                    expected_sets, _set_mom_thresh, p_prob, set_momentum_bonus)
+
     logger.info(
         "BP_COMBINED | base=%.3f | momentum=%.3f | before_format=%.3f | "
         "c8=%.1f | proj=%.3f",
