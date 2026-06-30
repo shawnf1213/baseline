@@ -1176,6 +1176,9 @@ SLATE_MINUTE = int(os.getenv("SLATE_MINUTE", "0") or "0")
 RESULTS_CHANNEL_ID = int(os.getenv("RESULTS_CHANNEL_ID", str(POD_CHANNEL_ID or 0)) or "0")
 RESULTS_POST_HOUR = int(os.getenv("RESULTS_POST_HOUR", "23") or "23")
 RESULTS_POST_MINUTE = int(os.getenv("RESULTS_POST_MINUTE", "45") or "45")
+# One-off skip: don't post the daily recap on this ET date (it already posted
+# earlier that day). Set to "" to disable. Resumes normally the next day.
+RESULTS_SKIP_DATE = os.getenv("RESULTS_SKIP_DATE", "2026-06-30")
 MSG_NO_PICK = (
     "No Pick of the Day right now — nothing on the board cleared the "
     "confidence threshold (or the board is unavailable). Try again later."
@@ -1868,6 +1871,9 @@ async def _before_resolve():
 async def daily_results_post():
     chan_id = RESULTS_CHANNEL_ID or POD_CHANNEL_ID
     if not chan_id:
+        return
+    if RESULTS_SKIP_DATE and datetime.datetime.now(POD_TZINFO).strftime("%Y-%m-%d") == RESULTS_SKIP_DATE:
+        log.info("daily results: skipping %s — recap already posted earlier today", RESULTS_SKIP_DATE)
         return
     try:
         channel = client.get_channel(chan_id)
