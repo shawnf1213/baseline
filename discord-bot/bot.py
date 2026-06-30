@@ -1158,8 +1158,8 @@ except Exception:  # pragma: no cover — fall back to a fixed EST offset
 # min, so the post lands a bit after this. Default 01:50 ET → triggers at
 # 1:50 AM ET. (Adjust POD_HOUR/POD_MINUTE if run time drifts. NOTE: Railway
 # POD_HOUR/POD_MINUTE env vars OVERRIDE these defaults — clear them there if set.)
-POD_HOUR = int(os.getenv("POD_HOUR", "1") or "1")
-POD_MINUTE = int(os.getenv("POD_MINUTE", "50") or "50")
+POD_HOUR = int(os.getenv("POD_HOUR", "2") or "2")
+POD_MINUTE = int(os.getenv("POD_MINUTE", "15") or "15")
 # Optional one-shot post on startup for verifying a deploy (off by default).
 POD_POST_ON_START = (os.getenv("POD_POST_ON_START", "0") or "0") not in ("0", "false", "False")
 _pod_startup_done = False
