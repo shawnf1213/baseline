@@ -1594,10 +1594,10 @@ def search_players(query: str, tour: str = "ATP") -> list:
         _search_blocked = False
         logger.info("SOFASCORE: block cooldown expired, resuming")
 
-    if _search_blocked:
-        raise SofascoreBlockedError(
-            "Sofascore search blocked — proxy IPs flagged, retrying too soon"
-        )
+    # NOTE: do NOT short-circuit search on _search_blocked. That global flag is
+    # also tripped by player-stats 403s, so honoring it here kills search even
+    # when 50 fresh IPs are available to retry. Search retries through blocks
+    # itself (fast=False below), rotating ports on each 403.
 
     # New search = new sticky proxy session + fresh Decodo session ID
     _new_session(force_port=True)
@@ -1610,13 +1610,10 @@ def search_players(query: str, tour: str = "ATP") -> list:
     _search_throttle()
 
     logger.info("SEARCH_SOFASCORE | query=%r tour=%s", query, tour)
-    data = _get(f"{BASE_URL}/search/all", {"q": query}, fast=True)
-
-    # Raise if _get() set the block flag during this call
-    if _search_blocked:
-        raise SofascoreBlockedError(
-            "Sofascore returned 403 on all retry attempts — proxy IPs blocked"
-        )
+    # fast=False so search retries + rotates ports through Sofascore's
+    # intermittent 403s (same way the player-stats fetch gets through), instead
+    # of giving up on the first block. Slower, but it actually resolves players.
+    data = _get(f"{BASE_URL}/search/all", {"q": query}, fast=False)
 
     raw_results = data.get("results", [])
     logger.info("SEARCH_RAW | query=%r www_results=%d data_keys=%s",
