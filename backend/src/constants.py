@@ -245,6 +245,29 @@ def _norm_court(s: str) -> str:
     return _re.sub(r"[^a-z0-9 ]", " ", s).strip()
 
 
+# ── Indoor hard-court tournaments (NEW SIGNAL 1) ─────────────────────────────
+# Indoor hard plays measurably faster than outdoor hard — no wind, truer
+# bounce, harder-to-read serve in artificial light — which favours servers.
+# This is an ADDITIVE flag layered on top of COURT_CPR; it does NOT change any
+# CPR value. Normalised name fragments (clay/grass are always outdoor).
+INDOOR_TOURNAMENTS = (
+    # NB: _norm_court strips the "atp"/"wta" tag, so "ATP Finals" normalises to
+    # "finals" — match on "finals" (year-end finals are indoor) not "atp finals".
+    "australian open", "paris", "finals", "vienna", "basel", "rotterdam",
+    "dallas", "doha", "dubai", "antwerp", "sofia", "montpellier",
+)
+
+
+def is_indoor_court(court_name: str) -> bool:
+    """True when the (resolved) tournament name is one of the indoor hard-court
+    events. Caller must additionally gate on surface == 'Hard' before applying
+    the indoor serve adjustment / badge."""
+    n = _norm_court(court_name or "")
+    if not n:
+        return False
+    return any(frag in n for frag in INDOOR_TOURNAMENTS)
+
+
 def resolve_court_name(raw: str, tour: str = "ATP") -> str:
     """Map a free-form tournament name (e.g. Sofascore's 'Bad Homburg, Germany')
     to a canonical COURT_CPR key (e.g. 'Bad Homburg WTA') so the right ST Pace

@@ -797,11 +797,16 @@ def _serve_tier_and_adj(sgw_pct, tour: str) -> tuple:
     return "Weak", 1.10
 
 
-def _server_quality_tier_sgw(sgw_pct, tour: str = "ATP") -> str:
+def _server_quality_tier_sgw(sgw_pct, tour: str = "ATP", tiebreak_rate=None) -> str:
     """Server-quality badge from SERVICE GAMES WON %, tour-relative (Step 2).
-    Same tour cutoffs as the C4 tier above; returns the '<Tier> Server' label."""
+    Same tour cutoffs as the C4 tier above; returns the '<Tier> Server' label.
+    NEW SIGNAL 3 — tiebreak supplement: a player who holds >80% of service games
+    AND reaches a tiebreak in >30% of sets consistently holds even under
+    pressure, so they are definitively Elite regardless of ace rate."""
     if sgw_pct is None:
         return None
+    if tiebreak_rate is not None and sgw_pct > 80.0 and tiebreak_rate > 30.0:
+        return "Elite Server"
     t = SERVE_QUALITY_TIERS.get((tour or "ATP").upper(), SERVE_QUALITY_TIERS["ATP"])
     if sgw_pct > t["elite"]:
         return "Elite Server"

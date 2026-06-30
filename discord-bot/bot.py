@@ -513,6 +513,17 @@ def _prop_stat_blocks(prop_type, data):
             ("Win Rate", _pct(os_.get("win_rate"))),
         ]
 
+    # NEW SIGNAL 3 — surface tiebreak rate in the comparison columns, with a
+    # TIEBREAK SPECIALIST marker when the rate exceeds 35%.
+    def _tb_cell(rate):
+        if rate is None:
+            return "—"
+        return f"{rate:.0f}%" + ("  🎯 SPECIALIST" if rate > 35 else "")
+    if data.get("player_tiebreak_rate") is not None:
+        p_lines.append(("Tiebreak Rate", _tb_cell(data.get("player_tiebreak_rate"))))
+    if data.get("opponent_tiebreak_rate") is not None:
+        o_lines.append(("Tiebreak Rate", _tb_cell(data.get("opponent_tiebreak_rate"))))
+
     p_block = block(p_lines, _hand_label(data.get("player_handedness")), data.get("player_archetype"))
     o_block = block(o_lines, _hand_label(data.get("opponent_handedness")), data.get("opponent_archetype"))
     return p_block, o_block
@@ -535,6 +546,8 @@ def prop_embed(player, opponent, prop_type, surface, court_display, line, data) 
     star = "  ⭐ **Strong lean**" if strong else ""
 
     court_line = f"**{surface}** · {court_display}"
+    if data.get("indoor_court"):
+        court_line += "  ·  🏟️ **INDOOR**"
     if cpi is not None:
         court_line += f" · ST {cpi:g}" + (f" ({tier})" if tier else "")
     fmt_label = data.get("match_format_label") or "Best of 3"

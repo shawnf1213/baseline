@@ -996,6 +996,26 @@ def _calc_total_match_games(event: dict) -> Optional[int]:
     return total if found_any else None
 
 
+def _count_sets_and_tiebreaks(event: dict) -> tuple:
+    """(sets_played, tiebreak_sets) from the per-set game scores. A set reached
+    a tiebreak when it finished 7-6 / 6-7 (NEW SIGNAL 3 — serve dominance)."""
+    home_sc = event.get("homeScore", {}) or {}
+    away_sc = event.get("awayScore", {}) or {}
+    sets_played = tb = 0
+    for key in ("period1", "period2", "period3", "period4", "period5"):
+        h = home_sc.get(key)
+        a = away_sc.get(key)
+        if h is None or a is None:
+            break
+        try:
+            if {int(h), int(a)} == {7, 6}:
+                tb += 1
+            sets_played += 1
+        except (TypeError, ValueError):
+            break
+    return sets_played, tb
+
+
 _RANKINGS_CACHE = {"data": None, "ts": 0.0}
 _RANKINGS_TTL = 7 * 24 * 3600   # rankings update weekly
 
@@ -1058,9 +1078,12 @@ def _parse_match_stats(stats_data: dict, event: dict, player_id: int) -> Optiona
     # NOTE: surface intentionally omitted — caller (get_player_stats_by_surface)
     # sets surface via _infer_surface_from_event (groundType-aware) and we must
     # not overwrite it here with the weaker keyword-only inference.
+    _sets_played, _tb_sets = _count_sets_and_tiebreaks(event)
     result = {
         "won":           won,
         "player_retired": player_retired,
+        "sets_played":   _sets_played,
+        "tiebreak_sets": _tb_sets,
         "tournament":    event.get("tournament", {}).get("name", "Unknown"),
         "timestamp":     event.get("startTimestamp", 0),
         "event_id":      event.get("id"),

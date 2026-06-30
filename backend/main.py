@@ -86,6 +86,7 @@ from src.calculations.props import (
     project_player_games_won,
     generate_scouting_report,
     detect_environment,
+    _server_quality_tier_sgw,
     ENVIRONMENT_LABELS,
     GRAND_SLAMS,
 )
@@ -93,6 +94,7 @@ from src.constants import (
     COURT_CPR, CPR_NEUTRAL, GENERIC_SURFACE_CPR,
     get_speed_tier, ST_PACE_PREVIOUS_YEAR, ST_YOY_THRESHOLD,
     resolve_court_name, opponent_quality_weight, tier_proxy_weight, _norm_court,
+    is_indoor_court,
 )
 from src.api.string_tension import lookup_pace_index
 
@@ -498,6 +500,11 @@ def _build_explanation(req: PropRequest, result: dict, lean: str,
             f"Stats blended with {sackmann_matches}-match historical baseline "
             f"(2015-2020, {pct}% weight) to supplement recent data."
         )
+
+    # NEW SIGNALS — indoor (1), H2H psychological edge (2), tiebreak rate (3).
+    for _sig_key in ("_indoor_note", "_h2h_psych_note", "_tiebreak_note"):
+        if result.get(_sig_key):
+            parts.append(result[_sig_key])
 
     if line > 0:
         edge = proj - line
@@ -1018,6 +1025,24 @@ def _retirement_risk(matches):
     return (rets >= 2), (-10 if rets >= 2 else 0), pct
 
 
+def _tiebreak_rate(surf_log):
+    """Surface tiebreak rate (NEW SIGNAL 3) — % of sets across the player's
+    matches on this surface that reached a tiebreak. A high rate (>30%) means
+    the player consistently holds even under pressure (serve dominance).
+    Returns None when there are too few sets for a stable rate."""
+    sp = tb = 0
+    for m in (surf_log or []):
+        if not isinstance(m, dict):
+            continue
+        _s, _t = m.get("sets_played"), m.get("tiebreak_sets")
+        if isinstance(_s, (int, float)) and isinstance(_t, (int, float)):
+            sp += _s
+            tb += _t
+    if sp < 6:
+        return None
+    return round(tb / sp * 100, 1)
+
+
 def _in_tournament_blend(s, surf_log, current_tournament, weight=0.35):
     """Improvement 2 — current-tournament form is the highest-weight signal
     (exact same courts/conditions). When the player has ≥2 matches in the
@@ -1376,6 +1401,39 @@ async def prop_calculate(req: PropRequest):
             logger.info("IN_TOURNAMENT | %s blended current-event form", req.player_name)
         _in_tournament_blend(p2_s, _p2_surf_log, court_for_calc)
 
+        # ════════════════════════════════════════════════════════════════════
+        # NEW SIGNALS — indoor/outdoor (1), H2H psychological edge (2),
+        # tiebreak-rate serve dominance (3). Additive layers; computed here so
+        # every downstream consumer (forward factor, projection, displays) sees
+        # them. All three log their evaluation for verification.
+        # ════════════════════════════════════════════════════════════════════
+        # Signal 1 — indoor hard plays faster (no wind, truer bounce) → servers.
+        is_indoor_hard = (req.surface == "Hard" and
+                          is_indoor_court(court_for_calc or req.court or ""))
+        logger.info("SIGNAL1_INDOOR | court=%r surface=%s -> indoor_hard=%s",
+                    court_for_calc or req.court, req.surface, is_indoor_hard)
+
+        # Signal 3 — surface tiebreak rate (serve dominance) for both players.
+        p1_tb_rate = _tiebreak_rate(_p1_surf_log)
+        p2_tb_rate = _tiebreak_rate(_p2_surf_log)
+        logger.info("SIGNAL3_TIEBREAK | %s tb_rate=%s%% | %s tb_rate=%s%%",
+                    req.player_name, p1_tb_rate, req.opponent_name, p2_tb_rate)
+
+        # Signal 2 — H2H psychological edge on THIS surface (selected = p1).
+        _h2h_surf_n = h2h_summary.get("surface_matches", 0) or 0
+        _h2h_gap    = ((h2h_summary.get("surface_p1_wins", 0) or 0)
+                       - (h2h_summary.get("surface_p2_wins", 0) or 0))
+        h2h_psych_mult = 1.0
+        h2h_psych_dir  = None
+        if _h2h_surf_n >= 4 and abs(_h2h_gap) >= 3:
+            _boost = 0.04 if abs(_h2h_gap) <= 5 else 0.07
+            if _h2h_gap >= 3:      # p1 owns the matchup → converts better
+                h2h_psych_mult, h2h_psych_dir = 1.0 + _boost, "leads"
+            else:                  # p2 owns the matchup → p1 creates fewer chances
+                h2h_psych_mult, h2h_psych_dir = 1.0 - _boost, "trails"
+        logger.info("SIGNAL2_H2H_PSYCH | %s surface H2H gap=%+d (n=%d) -> dir=%s BP_mult=x%.2f",
+                    req.player_name, _h2h_gap, _h2h_surf_n, h2h_psych_dir, h2h_psych_mult)
+
         # Inject identity, rank, and recent form into stats dicts so the
         # expected-sets win-prob estimator has everything it needs.
         p1_s["player_name"] = req.player_name or req.player_id
@@ -1595,6 +1653,19 @@ async def prop_calculate(req: PropRequest):
                 elif _cur_opp_rank is not None and _cur_opp_rank > 100:
                     bp_forward_factor *= 1.10
 
+                # Signal 3 — opponent tiebreak rate as a BP-opportunity signal.
+                # A very low tiebreak rate (<15%) means the opponent's sets end
+                # decisively: cross-reference hold % to tell vulnerable from
+                # dominant. Low TB + low hold → broken often → more chances;
+                # low TB + high hold → crushing on serve → fewer chances.
+                if p2_tb_rate is not None and p2_tb_rate < 15.0 and _opp_sgw is not None:
+                    if _opp_sgw < 65.0:
+                        bp_forward_factor *= 1.08
+                        logger.info("SIGNAL3_BP_OPP | opp tb=%.0f%% + low hold %.0f%% -> vulnerable, +8%% opps", p2_tb_rate, _opp_sgw)
+                    elif _opp_sgw > 80.0:
+                        bp_forward_factor *= 0.92
+                        logger.info("SIGNAL3_BP_OPP | opp tb=%.0f%% + high hold %.0f%% -> dominant, -8%% opps", p2_tb_rate, _opp_sgw)
+
             bp_result = project_break_points(
                 p1_s, p2_s,
                 player_all_stats=p1_all_ref,
@@ -1654,6 +1725,47 @@ async def prop_calculate(req: PropRequest):
             logger.info("RECENT_FORM_PULL | %s %s | model=%.1f recent=%.1f -> %.1f",
                         req.player_name, req.prop_type, proj_val_premodel,
                         recent_form_avg, proj_val)
+
+        # ════ NEW SIGNALS applied as the top additive projection layer ═══════
+        if isinstance(proj_val, (int, float)):
+            # Signal 1 — indoor hard: faster, server-favouring conditions.
+            if is_indoor_hard and req.prop_type == "Aces":
+                _pre = proj_val
+                proj_val = round(proj_val * 1.065, 1)
+                result["_indoor_note"] = "Indoor hard court (faster, no wind) boosts ace projection +6.5%."
+                logger.info("SIGNAL1_INDOOR_ACE | %.1f -> %.1f (+6.5%%)", _pre, proj_val)
+            elif is_indoor_hard and req.prop_type == "Break Points Won":
+                _pre = proj_val
+                proj_val = round(proj_val * 0.96, 1)
+                result["_indoor_note"] = "Indoor hard court favours servers -- break-point conversion trimmed -4%."
+                logger.info("SIGNAL1_INDOOR_BP | %.1f -> %.1f (-4%%)", _pre, proj_val)
+            # Signal 2 — H2H psychological edge (BP prop).
+            if req.prop_type == "Break Points Won" and h2h_psych_mult != 1.0:
+                _pre = proj_val
+                proj_val = round(proj_val * h2h_psych_mult, 1)
+                _pct = round((h2h_psych_mult - 1.0) * 100)
+                result["_h2h_psych_note"] = (
+                    f"H2H psychological edge: {req.player_name} {h2h_psych_dir} the surface H2H "
+                    f"by {abs(_h2h_gap)} of {_h2h_surf_n} -> BP {'+' if _pct >= 0 else ''}{_pct}%."
+                )
+                logger.info("SIGNAL2_H2H_APPLIED | %.1f -> %.1f (x%.2f)", _pre, proj_val, h2h_psych_mult)
+
+        # Signal 3 — tiebreak note (all props) + tiebreak-supplemented opponent
+        # serve tier (BP prop). p1 = selected player, p2 = opponent.
+        if p1_tb_rate is not None or p2_tb_rate is not None:
+            result["_tiebreak_note"] = (
+                f"Tiebreak rate (serve dominance): {req.player_name} "
+                f"{('%.0f%%' % p1_tb_rate) if p1_tb_rate is not None else 'n/a'}, "
+                f"{req.opponent_name} {('%.0f%%' % p2_tb_rate) if p2_tb_rate is not None else 'n/a'} of sets."
+            )
+        if req.prop_type == "Break Points Won":
+            _opp_sgw_disp = ((p2_s or {}).get("service_games_won_pct")
+                             or (p2_data.get("All") or {}).get("service_games_won_pct"))
+            _up_tier = _server_quality_tier_sgw(_opp_sgw_disp, req.tour, p2_tb_rate)
+            if _up_tier and result.get("opp_server_quality_tier") != _up_tier:
+                logger.info("SIGNAL3_SERVE_TIER | opp tier %s -> %s (tb=%s sgw=%s)",
+                            result.get("opp_server_quality_tier"), _up_tier, p2_tb_rate, _opp_sgw_disp)
+                result["opp_server_quality_tier"] = _up_tier
 
         # Confidence — enhanced with TA match counts
         p1_surf_matches = p1_data.get(f"{req.surface}_matches", [])
@@ -1870,6 +1982,10 @@ async def prop_calculate(req: PropRequest):
             "consistency_tier":     consistency_tier,
             "retirement_risk":      retirement_risk,
             "pct_completed":        pct_completed,
+            # NEW SIGNALS — indoor flag (1) + surface tiebreak rates (3)
+            "indoor_court":         is_indoor_hard,
+            "player_tiebreak_rate":   p1_tb_rate,
+            "opponent_tiebreak_rate": p2_tb_rate,
             "lean":                 lean,
             "confidence":           confidence,
             "confidence_breakdown": conf_result["breakdown"],
