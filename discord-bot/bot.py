@@ -1387,15 +1387,12 @@ async def _before_daily_pick():
 
 
 @client.tree.command(name="postpicks",
-                     description="Admin: generate & post the Pick of the Day now")
+                     description="Generate & post the Pick of the Day now")
 async def postpicks_cmd(interaction: discord.Interaction):
-    """Admin-only manual trigger for the Pick of the Day. Scrapes the PrizePicks
-    board, runs the full model on each eligible prop, posts the top-3 to the
-    picks channel, logs them PENDING, and starts the line monitor."""
+    """Manual trigger for the Pick of the Day (no permission gate). Scrapes the
+    PrizePicks board, runs the full model on each eligible prop, posts the top-3
+    to the picks channel, logs them PENDING, and starts the line monitor."""
     await interaction.response.defer(thinking=True, ephemeral=True)
-    if not _is_admin(interaction):
-        await interaction.followup.send(embed=error_embed("Admins only."), ephemeral=True)
-        return
     channel = client.get_channel(POD_CHANNEL_ID) if POD_CHANNEL_ID else interaction.channel
     if channel is None:
         await interaction.followup.send(
