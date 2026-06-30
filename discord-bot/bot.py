@@ -1387,6 +1387,35 @@ async def _before_daily_pick():
 # POD_MINUTE ET. No user-facing /pickoftheday command (removed by request).
 
 
+@client.tree.command(name="postpicks",
+                     description="Admin: generate & post the Pick of the Day now (fresh data)")
+async def postpicks_cmd(interaction: discord.Interaction):
+    """Admin-only manual trigger for the Pick of the Day. Generates the top-3
+    plays with the current full model, posts to the designated picks channel,
+    logs them PENDING, and starts the line monitor — same path as the scheduled
+    daily run, but on demand (e.g. an off-schedule 10:30pm run after a cache
+    flush). The post itself is made by the bot to POD_CHANNEL_ID."""
+    await interaction.response.defer(thinking=True, ephemeral=True)
+    if not _is_admin(interaction):
+        await interaction.followup.send(embed=error_embed("Admins only."), ephemeral=True)
+        return
+    channel = client.get_channel(POD_CHANNEL_ID) if POD_CHANNEL_ID else interaction.channel
+    if channel is None:
+        await interaction.followup.send(
+            embed=error_embed("POD channel not configured / not found."), ephemeral=True)
+        return
+    try:
+        status = await _post_pick_of_day(channel, track=True)
+        log.info("POD manual (/postpicks by %s): %s", interaction.user, status)
+        await interaction.followup.send(
+            embed=discord.Embed(description=f"✅ Posted to <#{channel.id}> — {status}",
+                                color=COLOR_NEUTRAL), ephemeral=True)
+    except Exception:  # noqa: BLE001
+        log.exception("/postpicks failed")
+        await interaction.followup.send(embed=error_embed("Pick of the Day post failed."),
+                                        ephemeral=True)
+
+
 # ── Feature 4 — daily Slate auto-post (📋・slate channel) ─────────────────────────
 async def _post_slate(channel) -> str:
     data = await backend_get("/api/slate/today", {}, 80)
@@ -1474,6 +1503,7 @@ def results_embed(rec: dict) -> discord.Embed:
         f"**Record:** {wins}-{losses}   ·   **Win rate:** {win_rate:g}%\n"
         f"**Current streak:** {streak_txt}\n"
         f"Total graded: {wins + losses}  ·  Pending: {rec.get('pending', 0)}"
+        + (f"  ·  Pushes: {rec.get('pushes', 0)}" if rec.get("pushes") else "")
         + (f"  ·  Needs review: {rec.get('needs_review', 0)}" if rec.get("needs_review") else "")
     )
     cw, cl = rec.get("avg_confidence_wins"), rec.get("avg_confidence_losses")
@@ -1481,9 +1511,10 @@ def results_embed(rec: dict) -> discord.Embed:
         e.add_field(name="Avg confidence",
                     value=f"Winners: **{cw if cw is not None else '—'}%**  ·  "
                           f"Losers: **{cl if cl is not None else '—'}%**", inline=False)
-    last = [p for p in rec.get("picks", []) if p.get("result") in ("W", "L")][:10]
+    last = [p for p in rec.get("picks", []) if p.get("result") in ("W", "L", "PUSH")][:10]
     if last:
-        icon = {"W": "🟢", "L": "🔴"}
+        # PUSH shows a neutral white circle, distinct from green W / red L.
+        icon = {"W": "🟢", "L": "🔴", "PUSH": "⚪"}
         rows = [f"{icon.get(p['result'],'⚪')} **{p['player']}** {p.get('lean','')} "
                 f"{p.get('line','')}{'' if p.get('line') is None else ''} {p['prop_type']}"
                 for p in last]
@@ -1501,6 +1532,7 @@ results_group = app_commands.Group(name="results",
 _RESULT_CHOICES = [
     app_commands.Choice(name="Win", value="W"),
     app_commands.Choice(name="Loss", value="L"),
+    app_commands.Choice(name="Push", value="PUSH"),
     app_commands.Choice(name="Pending", value="PENDING"),
     app_commands.Choice(name="Needs Review", value="NEEDS REVIEW"),
 ]
@@ -1822,7 +1854,7 @@ async def daily_resolve_results():
         for pk in pending:
             res = await asyncio.to_thread(results_tracker.resolve_pick, pk)
             outcome = (res.get("result") or "").upper()
-            if outcome in ("W", "L"):
+            if outcome in ("W", "L", "PUSH"):
                 ok = await asyncio.to_thread(results_tracker.update_result, pk["id"], outcome)
                 graded += 1 if ok else 0
                 log.info("POD resolve: pick #%s %s %s -> %s (val=%s)",

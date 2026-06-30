@@ -45,7 +45,7 @@ try:
         model_projection = Column(Float)
         lean             = Column(String)          # OVER / UNDER
         confidence       = Column(Float)
-        result           = Column(String, default="PENDING")  # W/L/PENDING/NEEDS REVIEW
+        result           = Column(String, default="PENDING")  # W/L/PUSH/PENDING/NEEDS REVIEW
         generated_at     = Column(DateTime(timezone=True), server_default=func.now())
         resolved_at      = Column(DateTime(timezone=True), nullable=True)
         original_line    = Column(Float)
@@ -214,6 +214,9 @@ def record_summary() -> dict:
     picks = all_picks()  # most recent first
     wins = [p for p in picks if p["result"] == "W"]
     losses = [p for p in picks if p["result"] == "L"]
+    pushes = [p for p in picks if p["result"] == "PUSH"]
+    # PUSH is neither a win nor a loss — it is excluded from the win-rate
+    # denominator entirely (decided = W + L only), but still shown in the log.
     decided = wins + losses
     win_rate = round(len(wins) / len(decided) * 100, 1) if decided else 0.0
 
@@ -234,6 +237,7 @@ def record_summary() -> dict:
         "total": len(picks),
         "wins": len(wins),
         "losses": len(losses),
+        "pushes": len(pushes),
         "pending": len([p for p in picks if p["result"] == "PENDING"]),
         "needs_review": len([p for p in picks if p["result"] == "NEEDS REVIEW"]),
         "win_rate": win_rate,

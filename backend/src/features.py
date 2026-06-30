@@ -246,6 +246,11 @@ def resolve_pick(player: str, opponent: str, prop_type: str,
                 "opponent_matched": best.get("opponent_name"), "date": best.get("date")}
 
     ln = (lean or "").upper()
+    # PUSH — the stat landed EXACTLY on the line (only possible on a whole-number
+    # line; impossible on a half-line). Neither a win nor a loss.
+    if float(value) == float(line):
+        return {"result": "PUSH", "value": value, "line": line, "lean": ln,
+                "opponent_matched": best.get("opponent_name"), "date": best.get("date")}
     if ln == "OVER":
         won = value > line
     elif ln == "UNDER":
