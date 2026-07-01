@@ -1174,8 +1174,8 @@ SLATE_MINUTE = int(os.getenv("SLATE_MINUTE", "0") or "0")
 # 11:45 PM ET by default — just before the Pick of the Day, after the day's
 # picks have been graded by the resolver. Defaults to the POD channel.
 RESULTS_CHANNEL_ID = int(os.getenv("RESULTS_CHANNEL_ID", str(POD_CHANNEL_ID or 0)) or "0")
-RESULTS_POST_HOUR = int(os.getenv("RESULTS_POST_HOUR", "23") or "23")
-RESULTS_POST_MINUTE = int(os.getenv("RESULTS_POST_MINUTE", "45") or "45")
+RESULTS_POST_HOUR = int(os.getenv("RESULTS_POST_HOUR", "17") or "17")
+RESULTS_POST_MINUTE = int(os.getenv("RESULTS_POST_MINUTE", "0") or "0")
 # One-off skip: don't post the daily recap on this ET date (it already posted
 # earlier that day). Set to "" to disable. Resumes normally the next day.
 RESULTS_SKIP_DATE = os.getenv("RESULTS_SKIP_DATE", "2026-06-30")
