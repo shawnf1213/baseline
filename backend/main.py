@@ -1717,15 +1717,19 @@ async def prop_calculate(req: PropRequest):
                 "note": result.get("note", "Insufficient data for this surface/prop combination."),
             }
 
-        # ── Recent-form pull (Improvement 4): anchor the projection to recent
-        # same-surface reality, opponent-rank-weighted, before lean/edge.
+        # ── Recent-form pull REMOVED — it double-counted recent form ─────────
+        # Recent form is ALREADY inside the blended stat: get_blended_stats has an
+        # "SS last-5 on surface = 15%" tier. This post-calc step applied a SECOND
+        # recent-form adjustment (up to ~30% toward the last-5 avg), stacking on
+        # the blend and dragging projections ~8% below book lines systematically
+        # (measured: WITH pull 5-above/7-below lines; WITHOUT, 7-above/5-below —
+        # a natural spread). Recent form now moves the NUMBER in exactly one place
+        # (the blend); the divergence confidence penalty and warning flag — which
+        # adjust TRUST and INFORM the user — are unchanged. recent_form_avg is
+        # still computed here for display/warning, but is NOT applied to proj_val.
         proj_val_premodel = proj_val
-        proj_val, recent_form_avg = _recent_form_pull(
+        _pulled_unused, recent_form_avg = _recent_form_pull(
             proj_val, p1_data.get(f"{req.surface}_matches", []) or [], req.prop_type)
-        if recent_form_avg is not None and proj_val != proj_val_premodel:
-            logger.info("RECENT_FORM_PULL | %s %s | model=%.1f recent=%.1f -> %.1f",
-                        req.player_name, req.prop_type, proj_val_premodel,
-                        recent_form_avg, proj_val)
 
         # ════ NEW SIGNALS applied as the top additive projection layer ═══════
         if isinstance(proj_val, (int, float)):
