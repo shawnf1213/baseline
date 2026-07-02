@@ -165,6 +165,7 @@ class ResultLogRequest(BaseModel):
     original_line: float | None = None
     tournament: str = ""
     surface: str = ""
+    pick_group: str = "potd"             # "potd" or "3x"
 
 
 class ResultUpdateRequest(BaseModel):

@@ -51,6 +51,9 @@ try:
         original_line    = Column(Float)
         tournament       = Column(String, default="")
         surface          = Column(String, default="")
+        # "potd" (Pick of the Day) or "3x" (two-leg slip). Legacy rows are NULL
+        # and treated as "potd" everywhere they're read.
+        pick_group       = Column(String, default="potd")
 
         def to_dict(self) -> dict:
             return {
@@ -68,6 +71,7 @@ try:
                 "original_line": self.original_line,
                 "tournament": self.tournament,
                 "surface": self.surface,
+                "pick_group": (self.pick_group or "potd"),
             }
 
     _SQLALCHEMY_OK = True
@@ -90,6 +94,17 @@ def init_db() -> None:
         _engine = create_engine(DATABASE_URL, pool_pre_ping=True, pool_recycle=300)
         _Session = sessionmaker(bind=_engine, expire_on_commit=False)
         Base.metadata.create_all(_engine)   # CREATE TABLE IF NOT EXISTS — never drops
+        # Lightweight migration: create_all won't ALTER an existing table, so
+        # add columns introduced after the table was first created. IF NOT
+        # EXISTS makes this idempotent and safe on every boot.
+        try:
+            from sqlalchemy import text
+            with _engine.begin() as conn:
+                conn.execute(text(
+                    "ALTER TABLE picks ADD COLUMN IF NOT EXISTS pick_group "
+                    "VARCHAR DEFAULT 'potd'"))
+        except Exception as mexc:  # noqa: BLE001 — non-fatal; column may already exist
+            logger.warning("picks pick_group migration skipped: %s", mexc)
         _READY = True
         logger.info("Results DB ready (picks table ensured).")
     except Exception as exc:  # noqa: BLE001
@@ -133,6 +148,7 @@ def log_pick(rec: dict) -> dict:
                 original_line=rec.get("original_line", rec.get("line")),
                 tournament=rec.get("tournament", ""),
                 surface=rec.get("surface", ""),
+                pick_group=(rec.get("pick_group") or "potd"),
             )
             s.add(row)
             s.flush()
@@ -208,15 +224,13 @@ def _avg(vals: list):
     return round(sum(vals) / len(vals), 1) if vals else None
 
 
-def record_summary() -> dict:
-    """Full log plus aggregate record: wins/losses/win-rate, avg confidence on
-    winners vs losers, and current streak."""
-    picks = all_picks()  # most recent first
+def _summarize(picks: list) -> dict:
+    """Aggregate a set of pick rows (most-recent-first) into a record block."""
     wins = [p for p in picks if p["result"] == "W"]
     losses = [p for p in picks if p["result"] == "L"]
     pushes = [p for p in picks if p["result"] == "PUSH"]
-    # PUSH is neither a win nor a loss — it is excluded from the win-rate
-    # denominator entirely (decided = W + L only), but still shown in the log.
+    # PUSH is neither a win nor a loss — excluded from the win-rate denominator
+    # (decided = W + L only), but still shown in the log.
     decided = wins + losses
     win_rate = round(len(wins) / len(decided) * 100, 1) if decided else 0.0
 
@@ -246,3 +260,64 @@ def record_summary() -> dict:
         "streak_type": streak_type,
         "streak_len": streak_len,
     }
+
+
+def _slip_record(threex_picks: list) -> dict:
+    """Grade the 3x SLIP record from its individual legs. Both legs of a day's
+    slip are logged together, so we group by generated_at date (one slip per
+    day) and grade the pair:
+
+      • both legs W        -> slip W
+      • any leg L          -> slip L
+      • a leg PUSHes       -> it drops out; the slip reduces to the remaining
+                              leg(s) and is graded on those alone
+      • all legs PUSH      -> slip PUSH
+      • any leg unresolved -> slip still pending (not counted)
+    """
+    from collections import defaultdict
+    groups = defaultdict(list)
+    for p in threex_picks:
+        day = (p.get("generated_at") or "")[:10]
+        groups[day].append(p)
+
+    w = l = push = pending = 0
+    for _day, legs in groups.items():
+        results = [p["result"] for p in legs]
+        if any(r in ("PENDING", "NEEDS REVIEW") for r in results):
+            pending += 1
+            continue
+        graded = [r for r in results if r in ("W", "L")]  # PUSH legs drop out
+        if not graded:
+            push += 1                     # every leg pushed
+        elif any(r == "L" for r in graded):
+            l += 1                        # both legs must hit — one miss = loss
+        else:
+            w += 1
+    decided = w + l
+    return {
+        "slips": len(groups),
+        "wins": w,
+        "losses": l,
+        "pushes": push,
+        "pending": pending,
+        "win_rate": round(w / decided * 100, 1) if decided else 0.0,
+    }
+
+
+def record_summary() -> dict:
+    """Aggregate record, split by pick group. Top-level fields describe the
+    Pick of the Day (the headline product; legacy NULL-group rows count here);
+    ``threex_legs`` is the individual-leg record and ``threex_slips`` is the
+    paired slip record for the 3x."""
+    picks = all_picks()  # most recent first
+
+    def _grp(p):
+        return (p.get("pick_group") or "potd").lower()
+
+    potd = [p for p in picks if _grp(p) != "3x"]
+    threex = [p for p in picks if _grp(p) == "3x"]
+
+    summary = _summarize(potd)
+    summary["threex_legs"] = _summarize(threex)
+    summary["threex_slips"] = _slip_record(threex)
+    return summary

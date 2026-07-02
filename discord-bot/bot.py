@@ -1316,7 +1316,7 @@ def pick_embed(pick: dict) -> discord.Embed:
 _line_monitor_task = None
 
 
-def _pick_to_record(p: dict) -> dict:
+def _pick_to_record(p: dict, group: str = "potd") -> dict:
     return {
         "player": p.get("player", ""), "opponent": p.get("opponent", ""),
         "prop_type": p.get("prop_type", ""), "line": p.get("line"),
@@ -1324,17 +1324,19 @@ def _pick_to_record(p: dict) -> dict:
         "confidence": p.get("confidence"), "result": "PENDING",
         "original_line": p.get("original_line", p.get("line")),
         "tournament": p.get("tournament") or "", "surface": p.get("surface") or "",
+        "pick_group": group,
     }
 
 
-async def _log_picks_pending(picks: list):
-    """Feature 1 — log each pick to the durable results tracker as PENDING."""
+async def _log_picks_pending(picks: list, group: str = "potd"):
+    """Feature 1 — log each pick to the durable results tracker as PENDING,
+    tagged with its pick group ("potd" or "3x")."""
     for p in picks:
-        rec = await asyncio.to_thread(results_tracker.log_pick, _pick_to_record(p))
+        rec = await asyncio.to_thread(results_tracker.log_pick, _pick_to_record(p, group))
         if rec:
             p["pick_id"] = rec.get("id")
-    log.info("POD: logged %d picks to results tracker",
-             sum(1 for p in picks if p.get("pick_id")))
+    log.info("POD: logged %d %s picks to results tracker",
+             sum(1 for p in picks if p.get("pick_id")), group)
 
 
 def _start_line_monitor(channel, picks: list):
@@ -1354,11 +1356,53 @@ def _start_line_monitor(channel, picks: list):
         log.exception("failed to start line monitor")
 
 
+# ── Baseline 3x — two-pick slip (posts alongside the Pick of the Day) ────────
+COLOR_THREEX = 0x9B59B6   # purple — distinct from the green/red POTD embeds
+
+
+def _leg_line(leg: dict, idx: int) -> str:
+    """One 3x leg: player, opponent, prop, line, lean, projection, confidence."""
+    lean = (leg.get("lean") or "").upper() or ("OVER" if (leg.get("edge") or 0) >= 0 else "UNDER")
+    arrow = "🔼" if lean == "OVER" else "🔽"
+    proj = leg.get("projection")
+    proj_txt = f"{proj:.1f}" if isinstance(proj, (int, float)) else "—"
+    loc = leg.get("tournament") or f"{leg.get('surface','')} court"
+    return (f"**Leg {idx}** {arrow} **{leg['player']}** {lean} {leg['line']:g} {leg['prop_type']}\n"
+            f"┕ vs {leg['opponent']} · {loc} · proj {proj_txt} · {leg.get('confidence', 0):.0f}% conf")
+
+
+def threex_embed(legs: list) -> discord.Embed:
+    """The Baseline 3x — two independent legs packaged as one slip. Distinct
+    purple color so it's visually separable from the Pick of the Day at a glance."""
+    e = discord.Embed(color=COLOR_THREEX)
+    e.set_author(name="🎟️ Baseline 3x")
+    e.description = (
+        "Two picks, one slip — **both legs must hit** to cash. "
+        "Different props and different matches than today's Pick of the Day."
+    )
+    for i, leg in enumerate(legs, 1):
+        e.add_field(name="​", value=_leg_line(leg, i), inline=False)
+    confs = [leg.get("confidence", 0) or 0 for leg in legs]
+    if confs:
+        weakest = min(confs)
+        e.add_field(
+            name="🔗 Slip Strength",
+            value=f"Both legs at **{weakest:.0f}%+** confidence · "
+                  f"legs average **{sum(confs) / len(confs):.0f}%**.",
+            inline=False)
+    e.set_footer(text=FOOTER_PROJECTION)
+    return e
+
+
 async def _post_pick_of_day(channel, track: bool = False) -> str:
-    """Generate and post the top-3 Pick of the Day to ``channel``. When
-    ``track`` is set (the midnight run), also log the picks as PENDING and start
-    the line-movement monitor. Returns a short status string."""
-    picks = await pick_of_day.generate_picks(3)
+    """Generate and post the top-3 Pick of the Day to ``channel``, then the
+    Baseline 3x slip immediately after (if two independent legs qualify). When
+    ``track`` is set (the daily run), also log every pick as PENDING (POTD group
+    + 3x group) and start the line-movement monitor over ALL of them. Returns a
+    short status string."""
+    bundle = await pick_of_day.generate_potd_and_slip(3)
+    picks = bundle.get("potd")
+    slip = bundle.get("slip") or []
     if not picks:
         no_play = discord.Embed(description=MSG_NO_PICK_DAILY, color=COLOR_NEUTRAL)
         no_play.set_author(name="🏆 Pick of the Day")
@@ -1366,13 +1410,23 @@ async def _post_pick_of_day(channel, track: bool = False) -> str:
         return "no qualifying plays — posted no-play notice"
     await _annotate_form_alerts(picks)
     if track:
-        await _log_picks_pending(picks)
+        await _log_picks_pending(picks, group="potd")
     # The real daily post (track=True) pings @everyone; the optional startup
     # verification post and the /pickoftheday command do not.
     await _deliver_pod(picks, channel.send, mention=track)
+
+    # Baseline 3x — a SEPARATE embed posted right after the POTD. Only when two
+    # independent, quality-cleared legs remain after POTD exclusion.
+    if slip:
+        if track:
+            await _log_picks_pending(slip, group="3x")
+        await channel.send(embed=threex_embed(slip))
+
     if track:
-        _start_line_monitor(channel, picks)
-    return f"posted {len(picks)} picks, #1 {picks[0]['player']} {picks[0]['prop_type']}"
+        _start_line_monitor(channel, picks + slip)   # STEP 6 — monitor both posts
+    slip_note = (f" + 3x [{slip[0]['player']} {slip[0]['prop_type']}, "
+                 f"{slip[1]['player']} {slip[1]['prop_type']}]" if slip else " (no 3x — thin pool)")
+    return f"posted {len(picks)} picks, #1 {picks[0]['player']} {picks[0]['prop_type']}{slip_note}"
 
 
 @tasks.loop(time=datetime.time(hour=POD_HOUR, minute=POD_MINUTE, tzinfo=POD_TZINFO))
@@ -1504,7 +1558,21 @@ def results_embed(rec: dict) -> discord.Embed:
         rows = [f"{icon.get(p['result'],'⚪')} **{p['player']}** {p.get('lean','')} "
                 f"{p.get('line','')}{'' if p.get('line') is None else ''} {p['prop_type']}"
                 for p in last]
-        _add_lines_field(e, "Last 10", rows)
+        _add_lines_field(e, "Last 10 (Pick of the Day)", rows)
+
+    # 3x slip — tracked independently: the paired slip record (both legs must
+    # hit) plus the individual-leg record for transparency.
+    slips = rec.get("threex_slips") or {}
+    legs = rec.get("threex_legs") or {}
+    if (slips.get("slips") or 0) or (legs.get("total") or 0):
+        sw, sl = slips.get("wins", 0), slips.get("losses", 0)
+        lw, ll = legs.get("wins", 0), legs.get("losses", 0)
+        val = (f"**Slip record:** {sw}-{sl}   ·   **Win rate:** {slips.get('win_rate', 0):g}%\n"
+               f"_(both legs must hit — a slip wins only when neither leg misses)_\n"
+               f"**Individual legs:** {lw}-{ll}"
+               + (f"  ·  Pending: {legs.get('pending', 0)}" if legs.get("pending") else "")
+               + (f"  ·  Pushes: {legs.get('pushes', 0)}" if legs.get("pushes") else ""))
+        e.add_field(name="🎟️ Baseline 3x", value=val, inline=False)
     e.set_footer(text=FOOTER_GENERIC)
     return e
 

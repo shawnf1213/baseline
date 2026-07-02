@@ -412,92 +412,205 @@ def _recent_supports_lean(pk: dict, lookback: int = 5, min_n: int = 3) -> bool:
 
 
 # ── STEPS 4 + 7: select the best picks, fully isolated ──────────────────────
-async def generate_picks(n: int = 3):
-    """Return up to ``n`` picks ranked best-first (list, possibly empty). Each
-    is the same dict shape as ``generate_pick``. Never raises."""
+async def _rank_board():
+    """Evaluate the whole board ONCE and return the qualifying candidates,
+    deduped to each player's single best play, sorted best-first.
+
+    Returns None when the board has no eligible props (so callers can tell
+    "nothing on the board" apart from "nothing qualified" = []). Raises only on
+    unexpected errors — callers wrap. This is the shared evaluation pass behind
+    both the Pick of the Day and the 3x slip, so the heavy serialized backend
+    calc runs a single time per trigger."""
+    board = await asyncio.to_thread(_fetch_board)
+    props = _parse_board(board)
+    if not props:
+        log.info("POD: no eligible tennis props on the board")
+        return None
+
+    # One evaluation per (player, prop) — the projection is line-independent.
+    seen, by_type = set(), {}
+    for pr in props:
+        k = (_norm(pr["player"]), pr["prop_type"])
+        if k in seen:
+            continue
+        seen.add(k)
+        by_type.setdefault(pr["prop_type"], []).append(pr)
+
+    # Balance the capped sample across ALL prop types (round-robin) so Total
+    # Games doesn't crowd out Aces / Double Faults / Break Points Won.
+    uniq, lists = [], [v for v in by_type.values()]
+    while len(uniq) < MAX_PROPS and any(lists):
+        for lst in lists:
+            if lst:
+                uniq.append(lst.pop(0))
+                if len(uniq) >= MAX_PROPS:
+                    break
+
+    sem = asyncio.Semaphore(MAX_CONCURRENT)
+    results = await asyncio.gather(*[_evaluate(pr, sem) for pr in uniq],
+                                   return_exceptions=True)
+    # STEP 1 — log EVERY evaluated candidate + why it passed/failed, so a
+    # zero-pick day is fully debuggable from the Railway logs.
+    # NOTE: the recent-form HARD gate (_recent_supports_lean) is no longer a
+    # filter — recent form is already folded into the projection by the
+    # opponent-weighted recent-form pull, so excluding on it again
+    # double-counted it. It's still computed + logged as an info signal.
+    picks = []
+    by_type_qual = {}   # STEP 4 — qualifying count per prop type
+    for r in results:
+        if not isinstance(r, dict):
+            log.info("POD_CAND | EVAL_FAILED | %s", str(r)[:120])
+            continue
+        conf = r.get("confidence") or 0
+        ptype = r.get("prop_type")
+        bar = _min_conf_for(ptype)
+        ok = conf >= MIN_CONFIDENCE and _passes_quality(r)
+        log.info("POD_CAND | %-22s %-18s line=%-5s conf=%-3.0f proj=%-6.2f edge=%+5.2f "
+                 "recent_ok=%-5s bar=%d -> %s",
+                 (r.get("player") or "")[:22], (ptype or "")[:18],
+                 r.get("line"), conf, r.get("projection") or 0.0, r.get("edge") or 0.0,
+                 _recent_supports_lean(r), bar,
+                 "QUALIFIES" if ok else ("below %s bar %d" % (ptype, bar)))
+        if ok:
+            picks.append(r)
+            by_type_qual[ptype] = by_type_qual.get(ptype, 0) + 1
+    log.info("POD: evaluated=%d eligible=%d (bars: standard=%d, Total Games=%d) | "
+             "qualifying per prop type: %s",
+             len(uniq), len(picks), STANDARD_MIN_CONF, TOTAL_GAMES_MIN_CONF,
+             dict(by_type_qual) or "none")
+    picks.sort(key=lambda x: x["score"], reverse=True)
+    # Keep only each player's single best-scoring play so the ranking has one
+    # entry per player (no same player twice for different props).
+    best_per_player, ordered = set(), []
+    for pk in picks:
+        key = _norm(pk["player"])
+        if key in best_per_player:
+            continue
+        best_per_player.add(key)
+        ordered.append(pk)
+    return ordered
+
+
+def _select_potd(ordered: list, n: int = 3) -> list:
+    """The Pick of the Day selection — top-N of the ranking with direction
+    diversity. Pure (no I/O); operates on the output of ``_rank_board``.
+    UNCHANGED POTD logic (just factored out of the old generate_picks)."""
+    top = ordered[:max(1, n)]
+    # Direction diversity — don't surface all OVERs or all UNDERs. If the top
+    # N are all one direction and a qualifying opposite-direction pick exists
+    # further down, swap it in for the weakest of the top (best picks kept).
+    if n >= 2 and len(top) >= 2 and len(ordered) > len(top):
+        dirs = {_lean_dir(p) for p in top}
+        if len(dirs) == 1:
+            only = dirs.pop()
+            opp = next((p for p in ordered[len(top):] if _lean_dir(p) != only), None)
+            if opp:
+                log.info("POD: injecting %s pick for direction balance (top were all %s)",
+                         _lean_dir(opp), only)
+                top[-1] = opp
+    return top
+
+
+def _match_key(pk: dict) -> frozenset:
+    """Unordered {player, opponent} identity of a prop's match. Two props share
+    a match iff their keys are equal — this catches the reversed case where one
+    prop is on player A vs B and the other is on player B vs A."""
+    return frozenset({_norm(pk.get("player", "")), _norm(pk.get("opponent", ""))})
+
+
+# Confidence window (points) inside which the 3x prefers prop-type diversity
+# over a marginally higher-scoring same-prop leg (STEP 2).
+SLIP_DIVERSITY_WINDOW = 5
+
+
+def _select_slip(ordered: list, potd: list) -> list:
+    """Build the 3x — two independent legs packaged as one slip (STEP 1-3).
+
+    STEP 1: exclude anything already in the POTD, keyed by (player, prop_type),
+            so the two posts never overlap.
+    STEP 2: take the two highest-scoring remaining candidates by the same
+            combined score used for the POTD, with correlation avoidance (the
+            two legs must come from two DIFFERENT matches) and a prop-diversity
+            preference (within SLIP_DIVERSITY_WINDOW confidence points, prefer
+            two different prop types).
+    STEP 3: only return a slip if TWO candidates clear their standard quality
+            bar. Never force a weak second leg — return [] and log a thin pool.
+    """
+    if not ordered:
+        return []
+    potd_keys = {(_norm(p["player"]), p["prop_type"]) for p in (potd or [])}
+    # Correlation avoidance also covers the POTD: a 3x leg from the SAME match as
+    # a Pick of the Day (e.g. the other server's aces) is correlated with it and
+    # undercuts the "distinct value from each post" goal, so exclude those whole
+    # matches — not just the exact (player, prop_type) already picked.
+    potd_matches = {_match_key(p) for p in (potd or [])}
+    # ``ordered`` already contains only qualifying picks (conf >= MIN_CONFIDENCE
+    # and past its prop-type bar); re-check _passes_quality defensively.
+    pool = [c for c in ordered
+            if (_norm(c["player"]), c["prop_type"]) not in potd_keys
+            and _match_key(c) not in potd_matches
+            and _passes_quality(c)]
+    if len(pool) < 2:
+        log.info("3x: pool too thin after POTD exclusion (%d qualifying) — no slip today",
+                 len(pool))
+        return []
+
+    leg1 = pool[0]
+    m1 = _match_key(leg1)
+    # Correlation avoidance — leg2 must be from a different match than leg1.
+    rest = [c for c in pool[1:] if _match_key(c) != m1]
+    if not rest:
+        log.info("3x: only one independent match qualifies after exclusion — no slip today")
+        return []
+    leg2 = rest[0]
+
+    # Prop diversity preference — if leg2 repeats leg1's prop type, swap in the
+    # best different-prop candidate that scores within the confidence window.
+    if leg2["prop_type"] == leg1["prop_type"]:
+        alt = next(
+            (c for c in rest
+             if c["prop_type"] != leg1["prop_type"]
+             and (leg2.get("confidence", 0) - c.get("confidence", 0)) <= SLIP_DIVERSITY_WINDOW),
+            None)
+        if alt:
+            log.info("3x: swapping leg2 -> %s %s for prop diversity (was another %s)",
+                     alt["player"], alt["prop_type"], leg1["prop_type"])
+            leg2 = alt
+
+    log.info("3x: slip legs = [%s %s @%s | %s %s @%s]",
+             leg1["player"], leg1["prop_type"], leg1["line"],
+             leg2["player"], leg2["prop_type"], leg2["line"])
+    return [leg1, leg2]
+
+
+async def generate_potd_and_slip(n: int = 3) -> dict:
+    """Single board evaluation → the Pick of the Day picks AND the 3x slip legs.
+    Returns {"potd": [...] | None, "slip": [...]}. ``potd`` is None only when the
+    board had no eligible props; ``slip`` is [] whenever fewer than two
+    independent candidates remain after POTD exclusion. Never raises."""
     try:
-        board = await asyncio.to_thread(_fetch_board)
-        props = _parse_board(board)
-        if not props:
-            log.info("POD: no eligible tennis props on the board")
+        ordered = await _rank_board()
+        if ordered is None:
+            return {"potd": None, "slip": []}
+        if not ordered:
+            return {"potd": [], "slip": []}
+        potd = _select_potd(ordered, n)
+        slip = _select_slip(ordered, potd)
+        return {"potd": potd, "slip": slip}
+    except Exception as exc:  # noqa: BLE001 — total isolation
+        log.exception("POD generate_potd_and_slip failed: %s", exc)
+        return {"potd": [], "slip": []}
+
+
+async def generate_picks(n: int = 3):
+    """Return up to ``n`` Pick-of-the-Day picks ranked best-first (list, possibly
+    empty; None when the board has no eligible props). Never raises.
+    Backwards-compatible wrapper around the shared evaluation pass."""
+    try:
+        ordered = await _rank_board()
+        if ordered is None:
             return None
-
-        # One evaluation per (player, prop) — the projection is line-independent.
-        seen, by_type = set(), {}
-        for pr in props:
-            k = (_norm(pr["player"]), pr["prop_type"])
-            if k in seen:
-                continue
-            seen.add(k)
-            by_type.setdefault(pr["prop_type"], []).append(pr)
-
-        # Balance the capped sample across ALL prop types (round-robin) so Total
-        # Games doesn't crowd out Aces / Double Faults / Break Points Won.
-        uniq, lists = [], [v for v in by_type.values()]
-        while len(uniq) < MAX_PROPS and any(lists):
-            for lst in lists:
-                if lst:
-                    uniq.append(lst.pop(0))
-                    if len(uniq) >= MAX_PROPS:
-                        break
-
-        sem = asyncio.Semaphore(MAX_CONCURRENT)
-        results = await asyncio.gather(*[_evaluate(pr, sem) for pr in uniq],
-                                       return_exceptions=True)
-        # STEP 1 — log EVERY evaluated candidate + why it passed/failed, so a
-        # zero-pick day is fully debuggable from the Railway logs.
-        # NOTE: the recent-form HARD gate (_recent_supports_lean) is no longer a
-        # filter — recent form is already folded into the projection by the
-        # opponent-weighted recent-form pull, so excluding on it again
-        # double-counted it. It's still computed + logged as an info signal.
-        picks = []
-        by_type_qual = {}   # STEP 4 — qualifying count per prop type
-        for r in results:
-            if not isinstance(r, dict):
-                log.info("POD_CAND | EVAL_FAILED | %s", str(r)[:120])
-                continue
-            conf = r.get("confidence") or 0
-            ptype = r.get("prop_type")
-            bar = _min_conf_for(ptype)
-            ok = conf >= MIN_CONFIDENCE and _passes_quality(r)
-            log.info("POD_CAND | %-22s %-18s line=%-5s conf=%-3.0f proj=%-6.2f edge=%+5.2f "
-                     "recent_ok=%-5s bar=%d -> %s",
-                     (r.get("player") or "")[:22], (ptype or "")[:18],
-                     r.get("line"), conf, r.get("projection") or 0.0, r.get("edge") or 0.0,
-                     _recent_supports_lean(r), bar,
-                     "QUALIFIES" if ok else ("below %s bar %d" % (ptype, bar)))
-            if ok:
-                picks.append(r)
-                by_type_qual[ptype] = by_type_qual.get(ptype, 0) + 1
-        log.info("POD: evaluated=%d eligible=%d (bars: standard=%d, Total Games=%d) | "
-                 "qualifying per prop type: %s",
-                 len(uniq), len(picks), STANDARD_MIN_CONF, TOTAL_GAMES_MIN_CONF,
-                 dict(by_type_qual) or "none")
-        picks.sort(key=lambda x: x["score"], reverse=True)
-        # Keep only each player's single best-scoring play so the top N are N
-        # different players (no same player twice for different props).
-        best_per_player, ordered = set(), []
-        for pk in picks:
-            key = _norm(pk["player"])
-            if key in best_per_player:
-                continue
-            best_per_player.add(key)
-            ordered.append(pk)
-
-        top = ordered[:max(1, n)]
-        # Direction diversity — don't surface all OVERs or all UNDERs. If the top
-        # N are all one direction and a qualifying opposite-direction pick exists
-        # further down, swap it in for the weakest of the top (best picks kept).
-        if n >= 2 and len(top) >= 2 and len(ordered) > len(top):
-            dirs = {_lean_dir(p) for p in top}
-            if len(dirs) == 1:
-                only = dirs.pop()
-                opp = next((p for p in ordered[len(top):] if _lean_dir(p) != only), None)
-                if opp:
-                    log.info("POD: injecting %s pick for direction balance (top were all %s)",
-                             _lean_dir(opp), only)
-                    top[-1] = opp
-        return top
+        return _select_potd(ordered, n)
     except Exception as exc:  # noqa: BLE001 — total isolation
         log.exception("POD generate_picks failed: %s", exc)
         return []
