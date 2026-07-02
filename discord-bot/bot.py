@@ -1158,8 +1158,8 @@ except Exception:  # pragma: no cover — fall back to a fixed EST offset
 # min, so the post lands a bit after this. Default 21:00 ET → triggers at
 # 9:00 PM ET. (Adjust POD_HOUR/POD_MINUTE if run time drifts. NOTE: Railway
 # POD_HOUR/POD_MINUTE env vars OVERRIDE these defaults — clear them there if set.)
-POD_HOUR = int(os.getenv("POD_HOUR", "21") or "21")
-POD_MINUTE = int(os.getenv("POD_MINUTE", "0") or "0")
+POD_HOUR = int(os.getenv("POD_HOUR", "1") or "1")
+POD_MINUTE = int(os.getenv("POD_MINUTE", "30") or "30")
 # Optional one-shot post on startup for verifying a deploy (off by default).
 POD_POST_ON_START = (os.getenv("POD_POST_ON_START", "0") or "0") not in ("0", "false", "False")
 _pod_startup_done = False
@@ -1420,7 +1420,11 @@ async def _post_pick_of_day(channel, track: bool = False) -> str:
     if slip:
         if track:
             await _log_picks_pending(slip, group="3x")
-        await channel.send(embed=threex_embed(slip))
+        # The daily run (track=True) pings @everyone, same as the POTD post.
+        await channel.send(
+            content=("@everyone" if track else None),
+            embed=threex_embed(slip),
+            allowed_mentions=EVERYONE_MENTION)
 
     if track:
         _start_line_monitor(channel, picks + slip)   # STEP 6 — monitor both posts
