@@ -1015,15 +1015,27 @@ def _consistency(surf_log, prop_type):
 
 
 def _retirement_risk(matches):
-    """Improvement 5 — player retirements/walkovers in the last 50 matches
-    (Sofascore status code 91/92/93, flagged per-match in the data layer).
-    Returns (is_risk, confidence_penalty, pct_completed)."""
-    last50 = (matches or [])[:50]
-    if len(last50) < 10:
+    """Improvement 5 — retirement/walkover pattern (Sofascore status 91/92/93).
+    RECENCY-DECAYED: a DNF in the last 10 matches counts fully, 11-30 back at
+    half weight, >30 back not at all — 2 DNFs spread across 50 matches for a
+    veteran is normal wear, not a pattern. Flag when the weighted count >= 2.
+    Returns (is_risk, base_confidence_penalty, pct_completed). The caller scales
+    the penalty by how early the prop resolves."""
+    ms = (matches or [])[:50]
+    if len(ms) < 10:
         return False, 0, None
-    rets = sum(1 for m in last50 if m.get("player_retired"))
-    pct = round((1 - rets / len(last50)) * 100, 1)
-    return (rets >= 2), (-10 if rets >= 2 else 0), pct
+    weighted = raw = 0.0
+    for i, m in enumerate(ms):           # newest first
+        if m.get("player_retired"):
+            raw += 1
+            if i < 10:
+                weighted += 1.0
+            elif i < 30:
+                weighted += 0.5
+            # index >= 30: does not count toward the flag
+    pct = round((1 - raw / len(ms)) * 100, 1)
+    flag = weighted >= 2.0
+    return flag, (-10 if flag else 0), pct
 
 
 def _tiebreak_rate(surf_log):
@@ -1804,16 +1816,43 @@ async def prop_calculate(req: PropRequest):
                 if isinstance(_bd, list):
                     _bd.append("Low opportunity volume — conversion rate based on limited chances")
 
-        # ── Consistency (Imp 3) + Retirement risk (Imp 5) confidence modifiers ──
+        # ── Confidence modifiers — all additive; ONE 95 ceiling at the very end ──
+        # Consistency (Imp 3)
         cons_delta, consistency_tier = _consistency(_p1_surf_log, req.prop_type)
-        if cons_delta:
-            confidence = max(20, min(95, confidence + cons_delta))
+        confidence += cons_delta
+
+        # Retirement risk (Imp 5) — the flag/display always stays, but the PENALTY
+        # scales by how early the prop resolves. A DNF only voids a prop if the
+        # match ends before it resolves; a low line an elite returner clears in
+        # the first set and a half barely cares about a late retirement. So when
+        # the projection clears the line by 2x or more the prop resolves early →
+        # soften -10 to -3; high lines that need deep sets keep the full penalty.
         retirement_risk, ret_pen, pct_completed = _retirement_risk(p1_ss_all)
         if retirement_risk:
-            confidence = max(20, confidence + ret_pen)
-            _bd2 = conf_result.get("breakdown")
-            if isinstance(_bd2, list):
-                _bd2.append("Retirement risk — 2+ DNF in last 50 matches (props may void)")
+            _line = req.prop_line or 0
+            if isinstance(proj_val, (int, float)) and _line and proj_val >= 2 * _line:
+                ret_pen = -3
+            confidence += ret_pen
+            logger.info("RETIREMENT | flag=True pen=%d (proj=%s line=%s)",
+                        ret_pen, proj_val, req.prop_line)
+
+        # Dominant matchup bonus (+8) — recognise overwhelming edges so the model
+        # can express conviction instead of compressing everything into 60-80.
+        # Fires only when the projection blows out the line (>1.75x) AND the
+        # win-probability gap is lopsided (>30pp) AND the sample is solid (>=15).
+        _wp_gap = result.get("win_prob_gap")
+        if not isinstance(_wp_gap, (int, float)):
+            _w1, _w2 = result.get("p1_win_prob"), result.get("p2_win_prob")
+            _wp_gap = ((_w1 - _w2) if isinstance(_w1, (int, float)) and isinstance(_w2, (int, float))
+                       else 0)
+        if (isinstance(proj_val, (int, float)) and req.prop_line
+                and proj_val > req.prop_line * 1.75 and _wp_gap > 30 and _p1_surf_n >= 15):
+            confidence += 8
+            logger.info("DOMINANT_BONUS | +8 | proj=%.1f > 1.75x line=%.1f | wp_gap=%.0f | n=%d",
+                        proj_val, req.prop_line, _wp_gap, _p1_surf_n)
+
+        # SINGLE confidence ceiling of 95, applied once here at the very end.
+        confidence = max(20, min(95, confidence))
 
         # Sackmann thin-data penalty (applied before sanity check)
         sack_penalty = p1_blended.get("_confidence_penalty", 0)

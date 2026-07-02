@@ -282,19 +282,21 @@ def calculate_confidence(
     # samples are structurally small. Only an absolute no-data case (handled by
     # the n == 0 early return above) should sit that low; everything else gets
     # at least 25.
-    # High-variance cap: when the stat swings wildly (σ in the "unpredictable"
-    # band), a large sample doesn't make the outcome reliable — you can't be 90%+
-    # confident in a coin-flip-y prop. Cap the ceiling so these can't show as
-    # near-locks (e.g. a post-injury server with 2/6/6/14/10 grass aces).
-    ceiling = 80 if high_variance else 95
+    # SINGLE confidence ceiling of 95, applied once here. The old high-variance
+    # 80 cap was REMOVED: variance is already penalised via the consistency SCORE
+    # (0-15 above — Djokovic's break points score 0/15 for σ=2.0), so a hard cap
+    # double-counted it and suppressed dominant-but-variable props (an elite
+    # returner vs a far weaker opponent can't be a "coin flip"). Per-prop ceilings
+    # (derived props like Player Total Games Won) still apply — those cap
+    # compounded model uncertainty, not stat variance.
+    ceiling = 95
     prop_ceiling = PROP_CONFIDENCE_CEILING.get(prop_type)
     if prop_ceiling is not None:
         ceiling = min(ceiling, prop_ceiling)
     if total > ceiling:
         breakdown["confidence_cap"] = {
             "score": round(ceiling - total), "max": 0,
-            "label": (f"High-variance cap — confidence limited to {ceiling}" if high_variance
-                      else f"Derived-prop cap — confidence limited to {ceiling}"),
+            "label": f"Confidence ceiling — limited to {ceiling}",
         }
     confidence = max(25, min(ceiling, total))
     logger.info(
