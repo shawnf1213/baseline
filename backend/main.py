@@ -1301,10 +1301,19 @@ async def prop_calculate(req: PropRequest):
             ta_recent_stats=p2_recent_meta["stats"],
         )
 
-        # Inject SS ace-against-per-match into blended dicts so project_aces
-        # can use it directly from opponent_stats without TA dependency.
-        p1_ss_ace_ag = p1_data.get(f"{req.surface}_ace_against_per_match")
-        p2_ss_ace_ag = p2_data.get(f"{req.surface}_ace_against_per_match")
+        # Inject SS ace-against-per-match (a player's ACES ALLOWED) into the
+        # blended dicts so project_aces can read it directly from the stats
+        # without a TA dependency. Prefer the surface-specific figure; fall back
+        # to the All-surface figure when the surface pool is thin (otherwise the
+        # value silently drops to a tour-average default and understates a
+        # strong/weak returner). Injected for BOTH players so each side's own
+        # aces-allowed is available for display and either projection direction.
+        p1_ss_ace_ag = (p1_data.get(f"{req.surface}_ace_against_per_match")
+                        or p1_data.get("All_ace_against_per_match"))
+        p2_ss_ace_ag = (p2_data.get(f"{req.surface}_ace_against_per_match")
+                        or p2_data.get("All_ace_against_per_match"))
+        if p1_ss_ace_ag is not None:
+            p1_blended["ace_against_per_match"] = p1_ss_ace_ag
         if p2_ss_ace_ag is not None:
             p2_blended["ace_against_per_match"] = p2_ss_ace_ag
 

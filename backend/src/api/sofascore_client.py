@@ -893,6 +893,8 @@ _SPLIT_NUMERIC_KEYS = [
     "bp_converted_count", "bp_faced_count",
     # return-side raw counts (stored per match; aggregated via sum/sum in _agg_split)
     "return_bp_opportunities", "return_bp_converted",
+    # opponent aces per match = this player's ACES ALLOWED (return/defensive stat)
+    "opp_aces",
 ]
 
 
@@ -1516,6 +1518,7 @@ def _agg(matches: list) -> dict:
         "bp_converted", "bp_saved", "total_games_won", "total_match_games",
         "service_pts_won", "return_pts_won_count",
         "bp_converted_count", "bp_faced_count",
+        "opp_aces",   # opponent aces per match = this player's ACES ALLOWED
     ]
     wins = sum(1 for m in matches if m.get("won", False))
     agg = {

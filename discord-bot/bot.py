@@ -435,11 +435,15 @@ def _last_name(full: str) -> str:
     return (full or "").split()[-1] if full else full
 
 
-def _prop_stat_blocks(prop_type, data):
+def _prop_stat_blocks(prop_type, data, surface=None):
     """Return (player_block, opponent_block) — the stats most relevant to the
-    selected prop, mirroring the web app's stat cards."""
+    selected prop, mirroring the web app's stat cards. ``surface`` (when given)
+    is appended to the ace labels so it's explicit these are surface-filtered."""
     ps = data.get("player_stats") or {}
     os_ = data.get("opponent_stats") or {}
+    # Explicit surface tag for ace stats (STEP 3) — these are the matchup-surface
+    # figures the projection actually used, not an all-surface average.
+    _sfx = f" ({surface})" if surface and surface != "All" else ""
 
     def block(lines, hand, arch):
         rows = [f"{lbl}: **{val}**" for lbl, val in lines]
@@ -451,14 +455,14 @@ def _prop_stat_blocks(prop_type, data):
 
     if prop_type == "Aces":
         p_lines = [
-            ("Aces/Match", _num(ps.get("aces"))),
+            (f"Aces/Match{_sfx}", _num(ps.get("aces"))),
             ("1st Serve %", _pct(ps.get("first_serve_pct"))),
             ("1st Srv Won", _pct(ps.get("first_serve_pts_won"))),
         ]
         o_lines = [
-            ("Aces Conceded/Match", _num(data.get("opponent_ace_against"))),
+            (f"Aces Conceded/Match{_sfx}", _num(data.get("opponent_ace_against"))),
             ("Return 1st Won", _pct(os_.get("return_first_serve_pts_won"))),
-            ("Own Aces/Match", _num(os_.get("aces"))),
+            (f"Own Aces/Match{_sfx}", _num(os_.get("aces"))),
         ]
     elif prop_type == "Double Faults":
         p_lines = [
@@ -602,7 +606,7 @@ def prop_embed(player, opponent, prop_type, surface, court_display, line, data) 
                     value=f"{_fresh_msg}{_suffix}", inline=False)
 
     # Prop-relevant stat cards, side by side.
-    p_block, o_block = _prop_stat_blocks(prop_type, data)
+    p_block, o_block = _prop_stat_blocks(prop_type, data, surface)
     e.add_field(name=f"🎾 {player}", value=p_block[:1024], inline=True)
     e.add_field(name=f"🎾 {opponent}", value=o_block[:1024], inline=True)
 
