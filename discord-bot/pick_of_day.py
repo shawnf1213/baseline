@@ -45,7 +45,6 @@ PROP_MAP = {
     "total games":      "Total Games",   # match total only — NOT "Total Games Won"
 }
 
-MIN_CONFIDENCE  = 60      # don't force a weak pick below this
 MAX_CONCURRENT  = 1       # serialize backend calcs — the heavy prop calc 502s under
                           # concurrent load; one-at-a-time also warms its cache
 MATCH_THRESHOLD = 0.80    # fuzzy name-match threshold
@@ -464,7 +463,7 @@ async def _rank_board():
         conf = r.get("confidence") or 0
         ptype = r.get("prop_type")
         bar = _min_conf_for(ptype)
-        ok = conf >= MIN_CONFIDENCE and _passes_quality(r)
+        ok = _passes_quality(r)   # the per-prop bar (70 / 90) is the sole gate
         log.info("POD_CAND | %-22s %-18s line=%-5s conf=%-3.0f proj=%-6.2f edge=%+5.2f "
                  "recent_ok=%-5s bar=%d -> %s",
                  (r.get("player") or "")[:22], (ptype or "")[:18],
@@ -544,7 +543,7 @@ def _select_slip(ordered: list, potd: list) -> list:
     # undercuts the "distinct value from each post" goal, so exclude those whole
     # matches — not just the exact (player, prop_type) already picked.
     potd_matches = {_match_key(p) for p in (potd or [])}
-    # ``ordered`` already contains only qualifying picks (conf >= MIN_CONFIDENCE
+    # ``ordered`` already contains only qualifying picks (past the prop-type bar
     # and past its prop-type bar); re-check _passes_quality defensively.
     pool = [c for c in ordered
             if (_norm(c["player"]), c["prop_type"]) not in potd_keys

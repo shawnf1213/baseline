@@ -58,6 +58,22 @@ def _extract_series(matches: list, stat_key: str) -> list:
     return [m[stat_key] for m in matches if stat_key in m and m[stat_key] is not None]
 
 
+def finalize_confidence(total, prop_type: str = "") -> int:
+    """The SINGLE confidence floor/cap. Floor 25, cap 95 (minus any per-prop
+    ceiling for derived props). This is the ONLY place confidence is clamped —
+    it must be applied exactly once, as the final step after every bonus and
+    penalty. No other module should clamp confidence."""
+    ceiling = 95
+    prop_ceiling = PROP_CONFIDENCE_CEILING.get(prop_type)
+    if prop_ceiling is not None:
+        ceiling = min(ceiling, prop_ceiling)
+    try:
+        t = round(total)
+    except (TypeError, ValueError):
+        t = 25
+    return int(max(25, min(ceiling, t)))
+
+
 def calculate_confidence(
     player_surface_matches: list,
     opponent_surface_matches: list,
@@ -105,7 +121,8 @@ def calculate_confidence(
     total += sample_score
 
     if n == 0 and overall_n == 0:
-        return {"confidence": 15, "breakdown": breakdown}
+        return {"confidence": finalize_confidence(total, prop_type),
+                "raw_total": total, "breakdown": breakdown}
 
     # 2. H2H bonus
     if has_h2h_surface:
@@ -122,23 +139,31 @@ def calculate_confidence(
     vals_20 = _extract_series(last_20, stat_key)
     std_dev = None
     high_variance = False
+    consistency_tier = None
     if len(vals_20) >= 3:
         std_dev = statistics.stdev(vals_20)
         low_t, high_t = VARIANCE_THRESHOLDS.get(stat_key, (2.0, 4.0))
+        # Consolidated consistency score (was double-counted with main.py's
+        # _consistency). Single application here on the designed range:
+        # low variance +8, high variance −12.
         if std_dev < low_t:
-            consistency_score = 15
+            consistency_score = 8
+            consistency_tier = "Consistent"
             consistency_label = f"Low variance (σ={std_dev:.1f}) — consistent output"
         elif std_dev < high_t:
-            consistency_score = 8
+            consistency_score = 0
+            consistency_tier = "Moderate Variance"
             consistency_label = f"Medium variance (σ={std_dev:.1f})"
         else:
-            consistency_score = 0
+            consistency_score = -12
+            consistency_tier = "High Variance"
             consistency_label = f"High variance (σ={std_dev:.1f}) — unpredictable"
             high_variance = True
     else:
         consistency_score = 0
         consistency_label = "Too few matches for variance analysis"
-    breakdown["consistency"] = {"score": consistency_score, "max": 15, "label": consistency_label}
+    breakdown["consistency"] = {"score": consistency_score, "max": 8,
+                                "label": consistency_label, "tier": consistency_tier}
     total += consistency_score
 
     # 4. Recency alignment — last 5 vs overall surface average
@@ -149,21 +174,32 @@ def calculate_confidence(
         overall_avg = statistics.mean(all_vals)
         recent_avg = statistics.mean(recent_vals)
         ref_std = std_dev if std_dev is not None and std_dev > 0 else 1.0
-        diff = abs(recent_avg - overall_avg)
-        if diff <= ref_std:
-            recency_score = 10
+        # Count how many of the last 5 diverge from the player's own surface norm
+        # by more than one std dev. Scaled penalty (designed): 3 diverging → −8,
+        # 4+ diverging → −15. Alignment bonus reduced to +5 so the reward is
+        # symmetric in magnitude with the smaller divergence step.
+        diverge_n = sum(1 for v in recent_vals if abs(v - overall_avg) > ref_std)
+        if diverge_n >= 4:
+            recency_score = -15
             recency_label = (
-                f"Recent form aligns — last 5 avg {recent_avg:.1f} vs surface avg {overall_avg:.1f}"
+                f"Recent form strongly diverges — {diverge_n} of last {len(recent_vals)} "
+                f"off norm (last 5 avg {recent_avg:.1f} vs surface avg {overall_avg:.1f})"
+            )
+        elif diverge_n == 3:
+            recency_score = -8
+            recency_label = (
+                f"Recent form diverges — {diverge_n} of last {len(recent_vals)} "
+                f"off norm (last 5 avg {recent_avg:.1f} vs surface avg {overall_avg:.1f})"
             )
         else:
-            recency_score = -10
+            recency_score = 5
             recency_label = (
-                f"Recent form diverges — last 5 avg {recent_avg:.1f} vs surface avg {overall_avg:.1f}"
+                f"Recent form aligns — last 5 avg {recent_avg:.1f} vs surface avg {overall_avg:.1f}"
             )
     else:
         recency_score = 0
         recency_label = "Insufficient recent data for alignment check"
-    breakdown["recency"] = {"score": recency_score, "max": 10, "label": recency_label}
+    breakdown["recency"] = {"score": recency_score, "max": 5, "label": recency_label}
     total += recency_score
 
     # 5. Opponent data quality
@@ -277,31 +313,22 @@ def calculate_confidence(
                      f"(was {penalty_sum})",
         }
 
-    # ── Confidence floor 25 (was 15) ──────────────────────────────────────────
-    # The 15 floor was too punishing for WTA / grass props where surface
-    # samples are structurally small. Only an absolute no-data case (handled by
-    # the n == 0 early return above) should sit that low; everything else gets
-    # at least 25.
-    # SINGLE confidence ceiling of 95, applied once here. The old high-variance
-    # 80 cap was REMOVED: variance is already penalised via the consistency SCORE
-    # (0-15 above — Djokovic's break points score 0/15 for σ=2.0), so a hard cap
-    # double-counted it and suppressed dominant-but-variable props (an elite
-    # returner vs a far weaker opponent can't be a "coin flip"). Per-prop ceilings
-    # (derived props like Player Total Games Won) still apply — those cap
-    # compounded model uncertainty, not stat variance.
-    ceiling = 95
-    prop_ceiling = PROP_CONFIDENCE_CEILING.get(prop_type)
-    if prop_ceiling is not None:
-        ceiling = min(ceiling, prop_ceiling)
-    if total > ceiling:
+    # ── Return the RAW (unclamped) base total plus a finalized value ──────────
+    # The floor/cap is NOT applied here as the authoritative step: the API path
+    # (main.py) adds more bonuses/penalties on top of raw_total and calls
+    # finalize_confidence() ONCE at the very end. The "confidence" value below is
+    # the finalized base — used by the standalone website UI, which applies no
+    # further modifiers, so its single clamp is also its final step.
+    raw_total = total
+    confidence = finalize_confidence(raw_total, prop_type)
+    if confidence != int(round(raw_total)):
         breakdown["confidence_cap"] = {
-            "score": round(ceiling - total), "max": 0,
-            "label": f"Confidence ceiling — limited to {ceiling}",
+            "score": confidence - int(round(raw_total)), "max": 0,
+            "label": f"Floor/cap applied — base {int(round(raw_total))} → {confidence}",
         }
-    confidence = max(25, min(ceiling, total))
     logger.info(
-        "CONF | prop=%s | base_total=%d | penalty_sum=%d | high_var=%s | final=%d | breakdown=%s",
+        "CONF | prop=%s | base_total=%d | penalty_sum=%d | high_var=%s | base_final=%d | breakdown=%s",
         prop_type, total, penalty_sum, high_variance, confidence,
         {k: v.get("score") for k, v in breakdown.items()},
     )
-    return {"confidence": confidence, "breakdown": breakdown}
+    return {"confidence": confidence, "raw_total": raw_total, "breakdown": breakdown}

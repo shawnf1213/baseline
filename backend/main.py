@@ -78,7 +78,7 @@ from src.unified_data import (
 )
 from src.calculations.archetypes import classify_archetype
 from src.calculations.blended_stats import get_blended_stats
-from src.calculations.confidence import calculate_confidence
+from src.calculations.confidence import calculate_confidence, finalize_confidence
 from src.calculations.props import (
     project_aces,
     project_double_faults,
@@ -994,27 +994,6 @@ def _pstdev(vals):
     return (sum((x - mu) ** 2 for x in vals) / n) ** 0.5
 
 
-def _consistency(surf_log, prop_type):
-    """Improvement 3 — predictability of the prop's key stat over the last 20
-    surface matches. Returns (confidence_delta, tier). Low coefficient of
-    variation → reliable (+8); high → erratic (−12)."""
-    key = _RECENT_FORM_STAT.get(prop_type)
-    if not key:
-        return 0, None
-    vals = [m.get(key) for m in (surf_log or [])[:20] if isinstance(m.get(key), (int, float))]
-    if len(vals) < 6:
-        return 0, None
-    mean = sum(vals) / len(vals)
-    if mean <= 0:
-        return 0, None
-    cv = _pstdev(vals) / mean
-    if cv < 0.25:
-        return 8, "Consistent"
-    if cv < 0.45:
-        return 0, "Moderate Variance"
-    return -12, "High Variance"
-
-
 def _retirement_risk(matches):
     """Improvement 5 — retirement/walkover pattern (Sofascore status 91/92/93).
     RECENCY-DECAYED: a DNF in the last 10 matches counts fully, 11-30 back at
@@ -1813,7 +1792,16 @@ async def prop_calculate(req: PropRequest):
             p1_blended=p1_blended,
             p2_blended=p2_blended,
         )
-        confidence = conf_result["confidence"]
+        # Start from the RAW (unclamped) base total. Every modifier below is
+        # additive; the floor/cap is applied EXACTLY ONCE via finalize_confidence
+        # at the very end — there is NO intermediate re-clamping in this file.
+        confidence = conf_result["raw_total"]
+        # Consistency tier for display comes straight from the confidence
+        # breakdown — consistency is now scored ONCE, in confidence.py. There is
+        # no separate main.py consistency penalty.
+        _cons_bd = conf_result.get("breakdown")
+        consistency_tier = ((_cons_bd.get("consistency") or {}).get("tier")
+                            if isinstance(_cons_bd, dict) else None)
 
         # ── BP opportunity-volume penalty (Part 1) ───────────────────────────
         # A conversion rate built on a thin opportunity sample is unreliable:
@@ -1821,15 +1809,10 @@ async def prop_calculate(req: PropRequest):
         if req.prop_type == "Break Points Won":
             _bp_gen = result.get("bp_generated_per_match")
             if _bp_gen is not None and _bp_gen < 3.0:
-                confidence = max(25, confidence - 10)
+                confidence -= 10
                 _bd = conf_result.get("breakdown")
                 if isinstance(_bd, list):
                     _bd.append("Low opportunity volume — conversion rate based on limited chances")
-
-        # ── Confidence modifiers — all additive; ONE 95 ceiling at the very end ──
-        # Consistency (Imp 3)
-        cons_delta, consistency_tier = _consistency(_p1_surf_log, req.prop_type)
-        confidence += cons_delta
 
         # Retirement risk (Imp 5) — the flag/display always stays, but the PENALTY
         # scales by how early the prop resolves. A DNF only voids a prop if the
@@ -1861,76 +1844,79 @@ async def prop_calculate(req: PropRequest):
             logger.info("DOMINANT_BONUS | +8 | proj=%.1f > 1.75x line=%.1f | wp_gap=%.0f | n=%d",
                         proj_val, req.prop_line, _wp_gap, _p1_surf_n)
 
-        # SINGLE confidence ceiling of 95, applied once here at the very end.
-        confidence = max(20, min(95, confidence))
-
-        # Sackmann thin-data penalty (applied before sanity check)
+        # Sackmann thin-data penalty (additive; negative). No clamp here.
         sack_penalty = p1_blended.get("_confidence_penalty", 0)
         if sack_penalty:
-            confidence = max(25, confidence + sack_penalty)  # penalty is negative
+            confidence += sack_penalty
 
-        # ── Recent-data confidence penalty ───────────────────────────────────
-        # Distinguish surface specialists from genuinely inactive players:
-        #   Truly inactive  (<10 total in 52w)               → -20
-        #   Middle ground   (10-19 total, <5 surface)        → -10
-        #   Specialist      (≥20 total, <5 surface)          →  -5
-        #   Healthy         (≥5 surface)                     →   0
-        def _recent_penalty(meta):
-            if not meta:
-                return 0, None
-            # TA match log not available — no penalty. The projection still
-            # has Sofascore tiers behind it; we just can't compute recency.
-            if meta.get("warning") == "ta_unavailable":
-                return 0, None
+        # ── Consolidated inactivity penalty (SINGLE mechanism) ────────────────
+        # Replaces BOTH the old freshness −15 AND the old per-player recent-data
+        # penalty. Per player by days since last match: ≤21 none · 21–45 −5 ·
+        # >45 −12. Summed across both players, combined cap −20 for the matchup.
+        try:
+            from src import features as _feat
+            _fresh_p1 = _feat.freshness_from_matches(p1_data.get("all_matches", []) or [])
+            _fresh_p2 = _feat.freshness_from_matches(p2_data.get("all_matches", []) or [])
+        except Exception:  # noqa: BLE001
+            _fresh_p1 = {"level": "", "message": "", "days_since_last": None}
+            _fresh_p2 = {"level": "", "message": "", "days_since_last": None}
+        _freshness = _fresh_p1   # p1 drives the advisory display flag (unchanged)
+
+        def _inactivity_pen(days):
+            if not isinstance(days, (int, float)):
+                return 0
+            if days <= 21:
+                return 0
+            if days <= 45:
+                return -5
+            return -12
+
+        inactivity_pen = max(-20, _inactivity_pen(_fresh_p1.get("days_since_last"))
+                                  + _inactivity_pen(_fresh_p2.get("days_since_last")))
+        if inactivity_pen:
+            confidence += inactivity_pen
+            logger.info("INACTIVITY | p1_days=%s p2_days=%s -> combined %+d (cap -20)",
+                        _fresh_p1.get("days_since_last"), _fresh_p2.get("days_since_last"),
+                        inactivity_pen)
+
+        # Recent-data meta annotations — DISPLAY ONLY (frontend amber/red tiers).
+        # These no longer contribute to confidence; the inactivity component above
+        # is the sole staleness penalty. Kind classification is unchanged so the
+        # visible warnings render exactly as before.
+        def _recent_kind(meta):
+            if not meta or meta.get("warning") == "ta_unavailable":
+                return None
             total_n   = meta.get("all_surfaces_n", 0) or 0
             surface_n = meta.get("surface_n", 0) or 0
             if meta.get("warning") == "insufficient" or total_n < 10:
-                return -20, "insufficient"
+                return "insufficient"
             if surface_n >= 5:
-                return 0, None
+                return None
             if total_n >= 20:
-                return -5, "specialist"
-            return -10, "limited"
+                return "specialist"
+            return "limited"
 
-        p1_pen, p1_pen_kind = _recent_penalty(p1_recent_meta)
-        p2_pen, p2_pen_kind = _recent_penalty(p2_recent_meta)
-        total_recent_pen = p1_pen + p2_pen
-        # Annotate the meta dicts so the frontend knows whether to draw amber
-        # (limited / specialist) vs red (insufficient) warnings.
-        if p1_recent_meta:
-            p1_recent_meta["penalty"]      = p1_pen
-            p1_recent_meta["penalty_kind"] = p1_pen_kind
-        if p2_recent_meta:
-            p2_recent_meta["penalty"]      = p2_pen
-            p2_recent_meta["penalty_kind"] = p2_pen_kind
-        if total_recent_pen:
-            confidence = max(25, confidence + total_recent_pen)
-            logger.warning(
-                "RECENT_DATA_PENALTY | p1=%s(%+d) p2=%s(%+d) | total=%+d -> conf=%d",
-                p1_pen_kind, p1_pen, p2_pen_kind, p2_pen, total_recent_pen, confidence,
-            )
+        for _meta in (p1_recent_meta, p2_recent_meta):
+            if _meta:
+                _meta["penalty_kind"] = _recent_kind(_meta)
+                _meta["penalty"]      = 0   # display metadata only (no confidence effect)
 
-        # Sanity failure: projection fell outside realistic bounds → reduce confidence
+        # Sanity failure: projection fell outside realistic bounds.
         if result.get("sanity_failed"):
-            confidence = max(25, confidence - 25)
-            logger.warning(
-                "Sanity check failed for %s %s — confidence reduced to %d",
-                req.prop_type, proj_val, confidence,
-            )
+            confidence -= 25
+            logger.warning("Sanity check failed for %s %s — confidence reduced",
+                           req.prop_type, proj_val)
 
         lean = _resolve_lean(proj_val, req.prop_line, result.get("lean", ""))
+        # Edge-based ceiling — a SEPARATE rule (caps confidence when the
+        # projection barely clears the line), not the floor/cap. Applied before
+        # the single finalize step below.
         confidence = _edge_cap(confidence, proj_val, req.prop_line)
 
-        # ── Feature 3 — data freshness / injury-withdrawal flag ──────────────
-        # Advisory only — never blocks the projection. >21d → amber warning;
-        # >45d → red warning AND a 15-point confidence reduction.
-        try:
-            from src import features as _feat
-            _freshness = _feat.freshness_from_matches(p1_data.get("all_matches", []) or [])
-        except Exception:  # noqa: BLE001
-            _freshness = {"level": "", "message": "", "days_since_last": None, "confidence_penalty": 0}
-        if _freshness.get("confidence_penalty"):
-            confidence = max(15, confidence - _freshness["confidence_penalty"])
+        # ── SINGLE floor/cap — the final confidence step, in one place ────────
+        # floor 25 / cap 95 (minus any per-prop ceiling), applied exactly once
+        # after every bonus and penalty. No other clamp exists in this file.
+        confidence = finalize_confidence(confidence, req.prop_type)
 
         # Archetypes
         p1_arch = classify_archetype(p1_all, req.tour)
