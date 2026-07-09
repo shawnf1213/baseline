@@ -1162,8 +1162,8 @@ except Exception:  # pragma: no cover — fall back to a fixed EST offset
 # min, so the post lands a bit after this. Default 21:00 ET → triggers at
 # 9:00 PM ET. (Adjust POD_HOUR/POD_MINUTE if run time drifts. NOTE: Railway
 # POD_HOUR/POD_MINUTE env vars OVERRIDE these defaults — clear them there if set.)
-POD_HOUR = int(os.getenv("POD_HOUR", "20") or "20")
-POD_MINUTE = int(os.getenv("POD_MINUTE", "55") or "55")
+POD_HOUR = int(os.getenv("POD_HOUR", "16") or "16")
+POD_MINUTE = int(os.getenv("POD_MINUTE", "50") or "50")
 # Optional one-shot post on startup for verifying a deploy (off by default).
 POD_POST_ON_START = (os.getenv("POD_POST_ON_START", "0") or "0") not in ("0", "false", "False")
 _pod_startup_done = False
@@ -1178,7 +1178,7 @@ SLATE_MINUTE = int(os.getenv("SLATE_MINUTE", "0") or "0")
 # 11:45 PM ET by default — just before the Pick of the Day, after the day's
 # picks have been graded by the resolver. Defaults to the POD channel.
 RESULTS_CHANNEL_ID = int(os.getenv("RESULTS_CHANNEL_ID", str(POD_CHANNEL_ID or 0)) or "0")
-RESULTS_POST_HOUR = int(os.getenv("RESULTS_POST_HOUR", "17") or "17")
+RESULTS_POST_HOUR = int(os.getenv("RESULTS_POST_HOUR", "15") or "15")
 RESULTS_POST_MINUTE = int(os.getenv("RESULTS_POST_MINUTE", "0") or "0")
 # One-off skip: don't post the daily recap on this ET date (it already posted
 # earlier that day). Set to "" to disable. Resumes normally the next day.
