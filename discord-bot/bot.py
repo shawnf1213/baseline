@@ -1164,6 +1164,10 @@ except Exception:  # pragma: no cover — fall back to a fixed EST offset
 # POD_HOUR/POD_MINUTE env vars OVERRIDE these defaults — clear them there if set.)
 POD_HOUR = int(os.getenv("POD_HOUR", "16") or "16")
 POD_MINUTE = int(os.getenv("POD_MINUTE", "50") or "50")
+# Second, smaller EVENING scan (end-of-tournament thin boards): one extra play
+# + a 2-leg 3x, excluding whatever the afternoon scan already posted.
+POD2_HOUR = int(os.getenv("POD2_HOUR", "20") or "20")
+POD2_MINUTE = int(os.getenv("POD2_MINUTE", "50") or "50")
 # Optional one-shot post on startup for verifying a deploy (off by default).
 POD_POST_ON_START = (os.getenv("POD_POST_ON_START", "0") or "0") not in ("0", "false", "False")
 _pod_startup_done = False
@@ -1398,13 +1402,41 @@ def threex_embed(legs: list) -> discord.Embed:
     return e
 
 
-async def _post_pick_of_day(channel, track: bool = False) -> str:
-    """Generate and post the top-3 Pick of the Day to ``channel``, then the
+def _recent_pick_keys(hours: int = 12) -> set:
+    """(_norm(player), prop_type) for every pick logged in the last ``hours`` —
+    so the evening scan skips whatever the afternoon scan already posted. Safe:
+    returns an empty set on any error (evening scan then behaves like a normal run)."""
+    try:
+        rec = results_tracker.get_record()
+        cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=hours)
+        keys = set()
+        for p in rec.get("picks", []):
+            ga = p.get("generated_at")
+            if not ga:
+                continue
+            try:
+                dt = datetime.datetime.fromisoformat(ga.replace("Z", "+00:00"))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=datetime.timezone.utc)
+            except Exception:  # noqa: BLE001
+                continue
+            if dt >= cutoff:
+                keys.add((pick_of_day._norm(p.get("player", "")), p.get("prop_type")))
+        return keys
+    except Exception:  # noqa: BLE001
+        return set()
+
+
+async def _post_pick_of_day(channel, track: bool = False, n: int = 3,
+                            exclude_recent: bool = False) -> str:
+    """Generate and post the top-``n`` Pick(s) of the Day to ``channel``, then the
     Baseline 3x slip immediately after (if two independent legs qualify). When
     ``track`` is set (the daily run), also log every pick as PENDING (POTD group
-    + 3x group) and start the line-movement monitor over ALL of them. Returns a
-    short status string."""
-    bundle = await pick_of_day.generate_potd_and_slip(3)
+    + 3x group) and start the line-movement monitor over ALL of them. When
+    ``exclude_recent`` is set (the evening scan), drop any play already posted in
+    the last 12h so it surfaces genuinely NEW plays. Returns a short status string."""
+    exclude_keys = _recent_pick_keys() if exclude_recent else None
+    bundle = await pick_of_day.generate_potd_and_slip(n, exclude_keys=exclude_keys)
     picks = bundle.get("potd")
     slip = bundle.get("slip") or []
     if not picks:
@@ -1454,6 +1486,29 @@ async def daily_pick_of_day():
 
 @daily_pick_of_day.before_loop
 async def _before_daily_pick():
+    await client.wait_until_ready()
+
+
+@tasks.loop(time=datetime.time(hour=POD2_HOUR, minute=POD2_MINUTE, tzinfo=POD_TZINFO))
+async def daily_pick_of_day_2():
+    """Second, smaller EVENING scan for end-of-tournament thin boards: ONE extra
+    play + a 2-leg 3x, excluding anything already posted this afternoon so only
+    genuinely new plays surface."""
+    if not POD_CHANNEL_ID:
+        return
+    try:
+        channel = client.get_channel(POD_CHANNEL_ID)
+        if channel is None:
+            log.warning("POD evening: channel %s not found", POD_CHANNEL_ID)
+            return
+        status = await _post_pick_of_day(channel, track=True, n=1, exclude_recent=True)
+        log.info("POD evening: %s", status)
+    except Exception:  # noqa: BLE001
+        log.exception("POD evening auto-post failed")
+
+
+@daily_pick_of_day_2.before_loop
+async def _before_daily_pick_2():
     await client.wait_until_ready()
 
 
@@ -2074,6 +2129,14 @@ async def on_ready():
                      POD_HOUR, POD_MINUTE, POD_TZINFO, POD_CHANNEL_ID)
         except Exception:
             log.exception("failed to start daily Pick of the Day loop")
+    # Second, smaller evening scan (1 extra play + a 2-leg 3x, deduped).
+    if POD_CHANNEL_ID and not daily_pick_of_day_2.is_running():
+        try:
+            daily_pick_of_day_2.start()
+            log.info("Evening Pick of the Day scan scheduled at %02d:%02d %s -> channel %s",
+                     POD2_HOUR, POD2_MINUTE, POD_TZINFO, POD_CHANNEL_ID)
+        except Exception:
+            log.exception("failed to start evening Pick of the Day loop")
 
     # Feature 1 — results auto-resolution (runs on startup + every few hours).
     if not daily_resolve_results.is_running():

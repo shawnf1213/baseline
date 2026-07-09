@@ -582,15 +582,21 @@ def _select_slip(ordered: list, potd: list) -> list:
     return [leg1, leg2]
 
 
-async def generate_potd_and_slip(n: int = 3) -> dict:
+async def generate_potd_and_slip(n: int = 3, exclude_keys: set = None) -> dict:
     """Single board evaluation → the Pick of the Day picks AND the 3x slip legs.
     Returns {"potd": [...] | None, "slip": [...]}. ``potd`` is None only when the
     board had no eligible props; ``slip`` is [] whenever fewer than two
-    independent candidates remain after POTD exclusion. Never raises."""
+    independent candidates remain after POTD exclusion. ``exclude_keys`` is an
+    optional set of (norm_player, prop_type) tuples to drop before selection —
+    used by the evening scan so it never re-posts the afternoon's plays. Never
+    raises."""
     try:
         ordered = await _rank_board()
         if ordered is None:
             return {"potd": None, "slip": []}
+        if exclude_keys:
+            ordered = [c for c in ordered
+                       if (_norm(c["player"]), c["prop_type"]) not in exclude_keys]
         if not ordered:
             return {"potd": [], "slip": []}
         potd = _select_potd(ordered, n)
