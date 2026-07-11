@@ -1187,6 +1187,16 @@ RESULTS_POST_MINUTE = int(os.getenv("RESULTS_POST_MINUTE", "0") or "0")
 # One-off skip: don't post the daily recap on this ET date (it already posted
 # earlier that day). Set to "" to disable. Resumes normally the next day.
 RESULTS_SKIP_DATE = os.getenv("RESULTS_SKIP_DATE", "2026-06-30")
+# One-off Pick of the Day skip: on this ET date the scans DON'T generate picks —
+# the 4:50 scan posts a "no value, waiting for new tournaments" @everyone notice
+# and the evening scan stays silent. Set to "" to disable. Resumes next day.
+POD_SKIP_DATE = os.getenv("POD_SKIP_DATE", "2026-07-11")
+MSG_POD_SKIP = (
+    "🎾 **No Pick of the Day today.** There isn't enough value on the board "
+    "right now — we're between tournaments. We'd rather sit out than force a "
+    "weak play, so we're waiting for the new events to begin. Back with fresh "
+    "plays soon. 🎾"
+)
 MSG_NO_PICK = (
     "No Pick of the Day right now — nothing on the board cleared the "
     "confidence threshold (or the board is unavailable). Try again later."
@@ -1478,6 +1488,13 @@ async def daily_pick_of_day():
         if channel is None:
             log.warning("POD daily: channel %s not found", POD_CHANNEL_ID)
             return
+        # One-off skip date — post the no-value notice instead of generating.
+        if POD_SKIP_DATE and datetime.datetime.now(POD_TZINFO).strftime("%Y-%m-%d") == POD_SKIP_DATE:
+            e = discord.Embed(description=MSG_POD_SKIP, color=COLOR_NEUTRAL)
+            e.set_author(name="🏆 Pick of the Day")
+            await channel.send(content="@everyone", embed=e, allowed_mentions=EVERYONE_MENTION)
+            log.info("POD daily: skip-date %s — posted no-value @everyone notice", POD_SKIP_DATE)
+            return
         status = await _post_pick_of_day(channel, track=True)
         log.info("POD daily: %s", status)
     except Exception:  # noqa: BLE001
@@ -1500,6 +1517,10 @@ async def daily_pick_of_day_2():
         channel = client.get_channel(POD_CHANNEL_ID)
         if channel is None:
             log.warning("POD evening: channel %s not found", POD_CHANNEL_ID)
+            return
+        # On the skip date the afternoon scan already posted the no-value notice.
+        if POD_SKIP_DATE and datetime.datetime.now(POD_TZINFO).strftime("%Y-%m-%d") == POD_SKIP_DATE:
+            log.info("POD evening: skip-date %s — no post", POD_SKIP_DATE)
             return
         status = await _post_pick_of_day(channel, track=True, n=1, exclude_recent=True)
         log.info("POD evening: %s", status)
