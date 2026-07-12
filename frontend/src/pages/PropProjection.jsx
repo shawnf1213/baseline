@@ -468,6 +468,22 @@ export default function PropProjection({ tour }) {
                     fontFamily: '"Barlow Condensed", sans-serif',
                     fontWeight: 700, fontSize: 12, color: 'var(--muted)',
                   }}>ST Pace Index {entry.cpr.toFixed(1)}</span>
+                  {result?.indoor_court && (
+                    <span style={{
+                      fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 900, fontSize: 12,
+                      color: 'var(--hard-blue)', letterSpacing: 1,
+                      padding: '2px 9px', borderRadius: 6,
+                      background: 'rgba(21,101,192,0.18)', border: '1px solid rgba(21,101,192,0.5)',
+                    }}>🏟 INDOOR</span>
+                  )}
+                  {result?.altitude_court && (
+                    <span style={{
+                      fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 900, fontSize: 12,
+                      color: '#b26a00', letterSpacing: 1,
+                      padding: '2px 9px', borderRadius: 6,
+                      background: 'rgba(178,106,0,0.15)', border: '1px solid rgba(178,106,0,0.5)',
+                    }}>⛰ ALTITUDE +{result.altitude_pct || 0}% ACES</span>
+                  )}
                   {hasYoY && (
                     <span style={{
                       fontFamily: '"Barlow Condensed", sans-serif',
@@ -734,6 +750,33 @@ export default function PropProjection({ tour }) {
                 </div>
               )}
 
+              {/* Opposition-quality inflation (Imp 1) */}
+              {hasProjection && result.stats_inflated && (
+                <div className="glass-card" style={{
+                  padding: '12px 16px', background: 'rgba(255, 179, 0, 0.06)', borderColor: 'rgba(255, 179, 0, 0.3)',
+                  marginBottom: 14, fontSize: 12, display: 'flex', alignItems: 'center', gap: 10,
+                }}>
+                  <span style={{ color: 'var(--amber)', fontWeight: 800, fontFamily: '"Barlow Condensed", sans-serif', letterSpacing: 1 }}>⚠ OPPOSITION QUALITY</span>
+                  <span style={{ color: 'rgba(255, 179, 0, 0.75)' }}>
+                    Stats inflated by weaker opposition — quality-adjusted figure used in the projection.
+                  </span>
+                </div>
+              )}
+
+              {/* Retirement risk (Imp 5) */}
+              {hasProjection && result.retirement_risk && (
+                <div className="glass-card" style={{
+                  padding: '12px 16px', background: 'rgba(255, 179, 0, 0.06)', borderColor: 'rgba(255, 179, 0, 0.3)',
+                  marginBottom: 14, fontSize: 12, display: 'flex', alignItems: 'center', gap: 10,
+                }}>
+                  <span style={{ color: 'var(--amber)', fontWeight: 800, fontFamily: '"Barlow Condensed", sans-serif', letterSpacing: 1 }}>⚠ RETIREMENT RISK</span>
+                  <span style={{ color: 'rgba(255, 179, 0, 0.75)' }}>
+                    2+ retirements/walkovers in the last 50 matches
+                    {result.pct_completed != null ? ` — ${result.pct_completed.toFixed(0)}% of matches completed` : ''} — props may void. Confidence reduced.
+                  </span>
+                </div>
+              )}
+
               {/* Three projection cards */}
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 14, marginBottom: 22 }}>
 
@@ -767,6 +810,14 @@ export default function PropProjection({ tour }) {
                         fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 700, fontSize: 11,
                         letterSpacing: 2, color: 'var(--muted)', textTransform: 'uppercase', marginTop: 10,
                       }}>{p1?.name}</div>
+                      {result.consistency_tier && (
+                        <div style={{
+                          fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 800, fontSize: 10,
+                          letterSpacing: 1.5, textTransform: 'uppercase', marginTop: 6,
+                          color: result.consistency_tier === 'Consistent' ? 'var(--green-bright)'
+                            : result.consistency_tier === 'High Variance' ? 'var(--amber)' : 'var(--muted)',
+                        }}>{result.consistency_tier}</div>
+                      )}
                     </>
                   ) : (
                     <div style={{ fontSize: 16, color: 'var(--muted)', marginTop: 8 }}>N/A</div>
@@ -1058,6 +1109,23 @@ export default function PropProjection({ tour }) {
                         // non-prefixed keys left these cells blank.
                         ['BP Generated', result?.bp_generated_per_match != null ? fmt(result.bp_generated_per_match) : 'N/A'],
                         ['BP Gen (Quality-Adj)', result?.bp_generated_quality_adj != null ? fmt(result.bp_generated_quality_adj) : 'N/A'],
+                        // Opposition-rank-weighted averages (Imp 1): raw vs
+                        // quality-adjusted. Amber when weak opposition inflated
+                        // the raw figure (weighted >15% below raw).
+                        ...(result?.bp_generated_raw_avg != null ? [
+                          ['BP Gen — Raw Avg', fmt(result.bp_generated_raw_avg)],
+                          ['BP Gen — Quality Adj',
+                            <span style={{ color: result?.stats_inflated ? 'var(--amber)' : 'var(--white)', fontWeight: result?.stats_inflated ? 800 : 400 }}>
+                              {fmt(result.bp_generated_weighted_avg)}
+                            </span>],
+                        ] : []),
+                        ...(result?.bp_converted_raw_avg != null ? [
+                          ['BP Conv — Raw Avg', `${result.bp_converted_raw_avg.toFixed(0)}%`],
+                          ['BP Conv — Quality Adj',
+                            <span style={{ color: result?.stats_inflated ? 'var(--amber)' : 'var(--white)', fontWeight: result?.stats_inflated ? 800 : 400 }}>
+                              {result.bp_converted_weighted_avg.toFixed(0)}%
+                            </span>],
+                        ] : []),
                         [`BP Opps (${surfLabel})`, result?.bp_surf_opp_faced != null ? fmt(result.bp_surf_opp_faced) : 'N/A'],
                         ['Service Games Won', _gwCell(d.service_games_won_pct, _sgwAvg, 'service_games_won_pct')],
                         ['Return Games Won', _gwCell(d.return_games_won_pct, _rgwAvg, 'return_games_won_pct')],
@@ -1109,6 +1177,14 @@ export default function PropProjection({ tour }) {
                       if (idx === 1 && aceAgainst != null) {
                         rows.splice(1, 0, ['Aces Conceded/Match', fmt(aceAgainst)])
                       }
+                    }
+                    // NEW SIGNAL 3 — surface tiebreak rate + TIEBREAK SPECIALIST (>35%)
+                    const _tbRate = idx === 0 ? result?.player_tiebreak_rate : result?.opponent_tiebreak_rate
+                    if (_tbRate != null) {
+                      rows.push(['Tiebreak Rate',
+                        <span style={{ color: _tbRate > 35 ? 'var(--green-bright)' : 'var(--white)', fontWeight: _tbRate > 35 ? 800 : 400 }}>
+                          {_tbRate.toFixed(0)}%{_tbRate > 35 ? '  🎯 SPECIALIST' : ''}
+                        </span>])
                     }
                     return (
                       <div key={idx} className="glass-card" style={{ padding: '20px 22px' }}>

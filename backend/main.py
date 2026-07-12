@@ -95,7 +95,7 @@ from src.constants import (
     COURT_CPR, CPR_NEUTRAL, GENERIC_SURFACE_CPR,
     get_speed_tier, ST_PACE_PREVIOUS_YEAR, ST_YOY_THRESHOLD,
     resolve_court_name, opponent_quality_weight, tier_proxy_weight, _norm_court,
-    is_indoor_court,
+    is_indoor_court, altitude_ace_factor,
 )
 from src.api.string_tension import lookup_pace_index
 
@@ -1414,6 +1414,12 @@ async def prop_calculate(req: PropRequest):
                           is_indoor_court(court_for_calc or req.court or ""))
         logger.info("SIGNAL1_INDOOR | court=%r surface=%s -> indoor_hard=%s",
                     court_for_calc or req.court, req.surface, is_indoor_hard)
+        # Altitude — thin air, faster serves → higher ace projection (aces only).
+        # Additive ace modifier; does NOT change the CPI. Applies on any surface.
+        alt_factor, alt_pct = altitude_ace_factor(court_for_calc or req.court or "")
+        is_altitude = alt_pct > 0
+        logger.info("ALTITUDE | court=%r -> altitude=%s (+%d%% aces)",
+                    court_for_calc or req.court, is_altitude, alt_pct)
 
         # Signal 3 — surface tiebreak rate (serve dominance) for both players.
         p1_tb_rate = _tiebreak_rate(_p1_surf_log)
@@ -1745,6 +1751,13 @@ async def prop_calculate(req: PropRequest):
                 proj_val = round(proj_val * 0.96, 1)
                 result["_indoor_note"] = "Indoor hard court favours servers -- break-point conversion trimmed -4%."
                 logger.info("SIGNAL1_INDOOR_BP | %.1f -> %.1f (-4%%)", _pre, proj_val)
+            # Altitude — thin air boosts aces only (does not change the CPI).
+            if is_altitude and req.prop_type == "Aces":
+                _pre = proj_val
+                proj_val = round(proj_val * alt_factor, 1)
+                result["_altitude_note"] = (
+                    f"High-altitude venue (thin air, faster serves) boosts ace projection +{alt_pct}%.")
+                logger.info("ALTITUDE_ACE | %.1f -> %.1f (+%d%%)", _pre, proj_val, alt_pct)
             # Signal 2 — H2H psychological edge (BP prop).
             if req.prop_type == "Break Points Won" and h2h_psych_mult != 1.0:
                 _pre = proj_val
@@ -2024,6 +2037,8 @@ async def prop_calculate(req: PropRequest):
             "pct_completed":        pct_completed,
             # NEW SIGNALS — indoor flag (1) + surface tiebreak rates (3)
             "indoor_court":         is_indoor_hard,
+            "altitude_court":        is_altitude,
+            "altitude_pct":          alt_pct,
             "player_tiebreak_rate":   p1_tb_rate,
             "opponent_tiebreak_rate": p2_tb_rate,
             "lean":                 lean,

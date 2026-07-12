@@ -31,7 +31,7 @@ export const TOURNAMENT_CONFIG = {
       { name: "Indian Wells Masters",              cpr: 35.4 },  // ST confirmed 2023
       { name: "Miami Open",                        cpr: 40.6 },  // ST confirmed 2023
       { name: "Cincinnati Masters",                cpr: 38 },    // ST estimate
-      { name: "Canadian Open (Montreal/Toronto)",  cpr: 38 },    // ST estimate
+      { name: "Canadian Open",                     cpr: 38 },    // ST estimate — Montreal/Toronto alternate, either city
       { name: "Vienna Open",                       cpr: 37 },    // ST estimate
       { name: "Swiss Indoors Basel",               cpr: 38 },    // ST estimate
       { name: "Rotterdam Open",                    cpr: 37 },    // ST estimate
@@ -44,8 +44,9 @@ export const TOURNAMENT_CONFIG = {
       { name: "Adelaide International",            cpr: 38 },    // ST estimate
       { name: "Auckland Open",                     cpr: 37 },    // ST estimate
       { name: "Acapulco Open",                     cpr: 38 },    // ST estimate
-      { name: "Washington Citi Open",              cpr: 37 },    // ST estimate
-      { name: "Winston-Salem Open",                cpr: 36 },    // ST estimate
+      { name: "Washington DC Open",                cpr: 39 },    // ST estimate — fast outdoor hard
+      { name: "Los Cabos Open",                    cpr: 37 },    // ST estimate
+      { name: "Winston-Salem Open",                cpr: 38 },    // ST estimate
       { name: "Tokyo Japan Open",                  cpr: 38 },    // ST estimate
       { name: "Shanghai Masters",                  cpr: 36 },    // ST estimate
       { name: "Stockholm Open",                    cpr: 39 },    // ST estimate
@@ -57,7 +58,7 @@ export const TOURNAMENT_CONFIG = {
       // Bettors using historical mental models of RG as "Very Slow" need this context.
       { name: "Roland Garros",                           cpr: 37.7, prev_cpr: 24.2, prev_year: 2025 }, // ST confirmed 2026
       { name: "Monte Carlo Masters",                     cpr: 30.4 },  // ST confirmed 2026
-      { name: "Madrid Open",                             cpr: 31.9 },  // ST confirmed 2026
+      { name: "Madrid Open",                             cpr: 31.9, altitude: 5 },  // ST confirmed 2026 — ALTITUDE ~667m
       { name: "Barcelona Open",                          cpr: 27.2 },  // ST confirmed 2026
       { name: "Italian Open Rome",                       cpr: 29.6 },  // ST confirmed 2026
       { name: "Hamburg Open",                            cpr: 28.4 },  // ST confirmed 2026
@@ -70,10 +71,10 @@ export const TOURNAMENT_CONFIG = {
       { name: "Houston Clay",                            cpr: 27 },    // ST estimate
       { name: "Estoril Open",                            cpr: 27 },    // ST estimate
       { name: "Marrakech Open",                          cpr: 24 },    // ST estimate
-      { name: "Bastad Open",                             cpr: 24 },    // ST estimate
-      { name: "Umag Open",                               cpr: 23 },    // ST estimate
-      { name: "Gstaad Open",                             cpr: 24 },    // ST estimate
-      { name: "Kitzbuhel Open",                          cpr: 24 },    // ST estimate
+      { name: "Bastad Open",                             cpr: 27 },    // ST estimate — slow Scandinavian clay
+      { name: "Umag Open",                               cpr: 27 },    // ST estimate — slow coastal clay
+      { name: "Gstaad Open",                             cpr: 31, altitude: 5 },   // ST est — ALTITUDE ~1050m
+      { name: "Kitzbuhel Open",                          cpr: 29, altitude: 3 },   // ST est — ALTITUDE ~800m
       { name: "Challenger Clay Europe (Generic)",        cpr: 26 },    // ST estimate
       { name: "Challenger Clay South America (Generic)", cpr: 26 },
       { name: "Bordeaux Challenger",                     cpr: 24 },
@@ -117,11 +118,13 @@ export const TOURNAMENT_CONFIG = {
       { name: "Auckland WTA",             cpr: 36 },
       { name: "Acapulco WTA",             cpr: 37 },
       { name: "San Jose WTA",             cpr: 36 },
-      { name: "Washington WTA",           cpr: 36 },
+      { name: "Washington WTA",           cpr: 39 },  // WTA 500, fast outdoor hard
       { name: "Tokyo Pan Pacific",        cpr: 37 },
       { name: "Osaka WTA",                cpr: 36 },
       { name: "Linz WTA",                 cpr: 38 },
-      { name: "Guadalajara WTA",          cpr: 36 },
+      { name: "Guadalajara WTA",          cpr: 37 },
+      { name: "Monterrey WTA",            cpr: 37 },  // ST estimate — generic until confirmed
+      { name: "Cleveland WTA",            cpr: 37 },  // ST estimate — generic until confirmed
       { name: "WTA 125 Hard (Generic)",   cpr: 36 },
       { name: "Austin WTA 125",           cpr: 36 },
       { name: "Jiangxi Open WTA 125",     cpr: 36 },
@@ -132,8 +135,8 @@ export const TOURNAMENT_CONFIG = {
       { name: "Madrid Open WTA",                cpr: 31.0 },
       { name: "Italian Open WTA Rome",          cpr: 28.5 },
       { name: "Stuttgart WTA",                  cpr: 27 },
-      { name: "Hamburg WTA",                    cpr: 27.5 },
-      { name: "Prague Open WTA",                cpr: 24 },
+      { name: "Hamburg WTA",                    cpr: 28.4 },  // ST confirmed 2026 — same court as ATP
+      { name: "Prague Open WTA",                cpr: 27 },
       { name: "Rabat WTA",                      cpr: 23 },
       { name: "Strasbourg WTA",                 cpr: 24 },
       { name: "Warsaw WTA",                     cpr: 24 },

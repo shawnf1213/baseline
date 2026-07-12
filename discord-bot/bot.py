@@ -141,11 +141,13 @@ API_SEMAPHORE = asyncio.Semaphore(MAX_CONCURRENT_BACKEND_CALLS)
 COURTS_BY_SURFACE = {
     "Clay": [
         "Roland Garros", "Monte Carlo", "Madrid", "Barcelona", "Rome",
-        "Hamburg", "Geneva", "Munich", "Lyon",
+        "Hamburg", "Geneva", "Munich", "Lyon", "Gstaad", "Bastad", "Umag",
+        "Kitzbuhel", "Estoril",
     ],
     "Hard": [
         "Australian Open", "US Open", "Indian Wells", "Miami", "Cincinnati",
-        "Canada Montreal", "Paris Bercy", "Vienna", "Basel", "Rotterdam",
+        "Canadian Open", "Washington DC Open", "Los Cabos", "Winston-Salem",
+        "Paris Bercy", "Vienna", "Basel", "Rotterdam",
         "Doha", "Dubai", "Shanghai", "ATP Finals",
     ],
     "Grass": [
@@ -552,6 +554,8 @@ def prop_embed(player, opponent, prop_type, surface, court_display, line, data) 
     court_line = f"**{surface}** · {court_display}"
     if data.get("indoor_court"):
         court_line += "  ·  🏟️ **INDOOR**"
+    if data.get("altitude_court"):
+        court_line += f"  ·  ⛰️ **ALTITUDE +{data.get('altitude_pct', 0):.0f}% aces**"
     if cpi is not None:
         court_line += f" · ST {cpi:g}" + (f" ({tier})" if tier else "")
     fmt_label = data.get("match_format_label") or "Best of 3"

@@ -61,6 +61,8 @@ COURT_CPR = {
     "Cincinnati Masters":                38,    # [ST estimate]
     "Canada Montreal":                   38,    # [ST estimate] legacy name
     "Canadian Open (Montreal/Toronto)":  38,    # [ST estimate]
+    "Canadian Open":                     38,    # [ST estimate] Masters — Montreal/Toronto alternate, either city
+    "Canadian Open Toronto":             38,    # [ST estimate] alt name
     "Vienna":                            37,    # [ST estimate]
     "Vienna Open":                       37,    # [ST estimate]
     "Basel":                             38,    # [ST estimate] legacy name
@@ -80,8 +82,10 @@ COURT_CPR = {
     "Adelaide International":            38,    # [ST estimate]
     "Auckland Open":                     37,    # [ST estimate]
     "Acapulco Open":                     38,    # [ST estimate]
-    "Washington Citi Open":              37,    # [ST estimate]
-    "Winston-Salem Open":                36,    # [ST estimate]
+    "Washington Citi Open":              39,    # [ST estimate — fast outdoor hard]
+    "Washington DC Open":                39,    # [ST estimate] alt name
+    "Los Cabos Open":                    37,    # [ST estimate]
+    "Winston-Salem Open":                38,    # [ST estimate]
     "Tokyo Japan Open":                  38,    # [ST estimate]
     "Shanghai Masters":                  36,    # [ST estimate]
     "Stockholm Open":                    39,    # [ST estimate]
@@ -112,10 +116,10 @@ COURT_CPR = {
     "Houston Clay":                      27,    # [ST estimate]
     "Estoril Open":                      27,    # [ST estimate]
     "Marrakech Open":                    24,    # [ST estimate]
-    "Bastad Open":                       24,    # [ST estimate]
-    "Umag Open":                         23,    # [ST estimate]
-    "Gstaad Open":                       24,    # [ST estimate]
-    "Kitzbuhel Open":                    24,    # [ST estimate]
+    "Bastad Open":                       27,    # [ST estimate — slow Scandinavian clay]
+    "Umag Open":                         27,    # [ST estimate — slow coastal clay]
+    "Gstaad Open":                       31,    # [ST estimate — ALTITUDE ~1050m, highest stop on tour]
+    "Kitzbuhel Open":                    29,    # [ST estimate — ALTITUDE ~800m]
     "Challenger Clay Europe (Generic)":  26,    # [ST estimate — user specified 26]
     "Challenger Clay South America (Generic)": 26,
     "Bordeaux Challenger":               24,    # [ST estimate]
@@ -170,11 +174,14 @@ COURT_CPR = {
     "Auckland WTA":                      36,
     "Acapulco WTA":                      37,
     "San Jose WTA":                      36,
-    "Washington WTA":                    36,
+    "Washington WTA":                    39,    # [ST estimate — WTA 500, fast outdoor hard]
+    "Washington DC Open WTA":            39,    # [ST estimate] alt name
     "Tokyo Pan Pacific":                 37,
     "Osaka WTA":                         36,
     "Linz WTA":                          38,
-    "Guadalajara WTA":                   36,
+    "Guadalajara WTA":                   37,    # [ST estimate]
+    "Monterrey WTA":                     37,    # [ST estimate — generic until confirmed]
+    "Cleveland WTA":                     37,    # [ST estimate — generic until confirmed]
     "WTA 125 Hard (Generic)":            36,    # [ST estimate — user specified 36]
     "Austin WTA 125":                    36,
     "Jiangxi Open WTA 125":              36,
@@ -184,8 +191,8 @@ COURT_CPR = {
     "Madrid Open WTA":                   31.0,
     "Italian Open WTA Rome":             28.5,
     "Stuttgart WTA":                     27,
-    "Hamburg WTA":                       27.5,
-    "Prague Open WTA":                   24,
+    "Hamburg WTA":                       28.4,  # [ST confirmed, 2026 — same court as ATP Hamburg]
+    "Prague Open WTA":                   27,    # [ST estimate]
     "Rabat WTA":                         23,
     "Strasbourg WTA":                    24,
     "Warsaw WTA":                        24,
@@ -219,11 +226,13 @@ COURT_CPR = {
 
 COURTS_BY_SURFACE = {
     "Hard":  ["Australian Open", "US Open", "Indian Wells Masters", "Miami Open",
-              "Cincinnati Masters", "Canadian Open (Montreal/Toronto)", "Vienna Open",
+              "Cincinnati Masters", "Canadian Open", "Washington DC Open",
+              "Los Cabos Open", "Winston-Salem Open", "Vienna Open",
               "Swiss Indoors Basel", "Rotterdam Open", "Qatar Open Doha",
               "Dubai Duty Free Championships", "ATP Finals Turin"],
     "Clay":  ["Roland Garros", "Monte Carlo Masters", "Madrid Open", "Barcelona Open",
-              "Italian Open Rome", "Hamburg Open", "Lyon Open"],
+              "Italian Open Rome", "Hamburg Open", "Lyon Open", "Gstaad Open",
+              "Bastad Open", "Umag Open", "Kitzbuhel Open", "Estoril Open"],
     "Grass": ["Wimbledon", "Stuttgart", "Halle", "Queens Club Championships",
               "s-Hertogenbosch", "Mallorca", "Eastbourne International",
               "Birmingham", "Nottingham"],
@@ -266,6 +275,32 @@ def is_indoor_court(court_name: str) -> bool:
     if not n:
         return False
     return any(frag in n for frag in INDOOR_TOURNAMENTS)
+
+
+# ── High-altitude venues (ACE-only modifier) ─────────────────────────────────
+# Thin air makes serves travel faster, so aces run higher at altitude. This is
+# an ADDITIVE ace-projection modifier layered on top of COURT_CPR — it does NOT
+# change the CPI itself (mirrors the indoor Signal-1 pattern). Value = fractional
+# ace boost. Normalised (accent-folded, tour-tag-stripped) name fragments.
+ALTITUDE_TOURNAMENTS = {
+    "madrid":    0.05,   # ~667m — high, ace-friendly clay
+    "gstaad":    0.05,   # ~1050m — highest stop on tour
+    "kitzbuhel": 0.025,  # ~800m — smaller altitude bump
+}
+
+
+def altitude_ace_factor(court_name: str) -> tuple:
+    """Return (multiplier, pct) for a high-altitude venue's ACE projection —
+    e.g. (1.05, 5) — or (1.0, 0) when the venue is not at altitude. Aces only.
+    Does NOT change the CPI; caller applies the multiplier to the ace projection
+    and shows an ALTITUDE badge when pct > 0."""
+    n = _norm_court(court_name or "")
+    if not n:
+        return 1.0, 0
+    for frag, pct in ALTITUDE_TOURNAMENTS.items():
+        if frag in n:
+            return 1.0 + pct, round(pct * 100)
+    return 1.0, 0
 
 
 def resolve_court_name(raw: str, tour: str = "ATP") -> str:
