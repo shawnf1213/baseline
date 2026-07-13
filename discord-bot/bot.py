@@ -1637,9 +1637,14 @@ def daily_recap_embed(rec: dict, target_date: str = None) -> discord.Embed:
     except Exception:  # noqa: BLE001
         header = "Recap"
 
+    # Date-scoped by RESOLUTION date — the recap shows the picks whose results
+    # came in on this date (only graded picks have a resolved_at), regardless of
+    # when they were generated.
     picks = rec.get("picks", []) if rec else []
-    today = [p for p in picks if _et_date_of(p.get("generated_at")) == target_date]
-    graded = [p for p in today if p.get("result") in ("W", "L", "PUSH")]
+    graded = [p for p in picks
+              if p.get("result") in ("W", "L", "PUSH")
+              and _et_date_of(p.get("resolved_at")) == target_date]
+    today = graded
 
     t_w = sum(1 for p in graded if p["result"] == "W")
     t_l = sum(1 for p in graded if p["result"] == "L")
@@ -1658,10 +1663,8 @@ def daily_recap_embed(rec: dict, target_date: str = None) -> discord.Embed:
         rows = [f"{icon.get(p['result'], '⚪')} **{p['player']}** {p.get('lean', '')} "
                 f"{p.get('line', '')} {p['prop_type']}" for p in graded]
         _add_lines_field(e, "Today's Picks", rows)
-    elif today:
-        e.description = "_Today's picks haven't finished resolving yet._"
     else:
-        e.description = "_No graded picks for today._"
+        e.description = "_No picks resolved today._"
 
     e.add_field(
         name="​",
