@@ -1186,7 +1186,7 @@ SLATE_MINUTE = int(os.getenv("SLATE_MINUTE", "0") or "0")
 # 11:45 PM ET by default — just before the Pick of the Day, after the day's
 # picks have been graded by the resolver. Defaults to the POD channel.
 RESULTS_CHANNEL_ID = int(os.getenv("RESULTS_CHANNEL_ID", str(POD_CHANNEL_ID or 0)) or "0")
-RESULTS_POST_HOUR = int(os.getenv("RESULTS_POST_HOUR", "15") or "15")
+RESULTS_POST_HOUR = int(os.getenv("RESULTS_POST_HOUR", "18") or "18")
 RESULTS_POST_MINUTE = int(os.getenv("RESULTS_POST_MINUTE", "0") or "0")
 # One-off skip: don't post the daily recap on this ET date (it already posted
 # earlier that day). Set to "" to disable. Resumes normally the next day.
@@ -1611,6 +1611,67 @@ def _is_admin(interaction: discord.Interaction) -> bool:
 # ════════════════════════════════════════════════════════════════════════════
 # Feature 1 — /results (public) and /results update (admin)
 # ════════════════════════════════════════════════════════════════════════════
+def _et_date_of(generated_at: str):
+    """The ET calendar date ('YYYY-MM-DD') a pick was generated on."""
+    if not generated_at:
+        return None
+    try:
+        dt = datetime.datetime.fromisoformat(generated_at.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=datetime.timezone.utc)
+        return dt.astimezone(POD_TZINFO).strftime("%Y-%m-%d")
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def daily_recap_embed(rec: dict, target_date: str = None) -> discord.Embed:
+    """Date-based daily recap (the auto-posted format). Header 'M/D Recap', that
+    date's Pick-of-the-Day picks with W/L/PUSH indicators, a Today record + hit
+    rate line, and the cumulative Overall line. ``target_date`` is an ET
+    'YYYY-MM-DD'; defaults to today in ET. Emoji/colour/PUSH handling unchanged."""
+    if target_date is None:
+        target_date = datetime.datetime.now(POD_TZINFO).strftime("%Y-%m-%d")
+    try:
+        _d = datetime.datetime.strptime(target_date, "%Y-%m-%d")
+        header = f"{_d.month}/{_d.day} Recap"
+    except Exception:  # noqa: BLE001
+        header = "Recap"
+
+    picks = rec.get("picks", []) if rec else []
+    today = [p for p in picks if _et_date_of(p.get("generated_at")) == target_date]
+    graded = [p for p in today if p.get("result") in ("W", "L", "PUSH")]
+
+    t_w = sum(1 for p in graded if p["result"] == "W")
+    t_l = sum(1 for p in graded if p["result"] == "L")
+    t_dec = t_w + t_l
+    t_rate = round(t_w / t_dec * 100) if t_dec else 0
+
+    o_w, o_l = rec.get("wins", 0), rec.get("losses", 0)
+    o_rate = round(rec.get("win_rate", 0.0))
+
+    color = COLOR_UNDER if (t_dec and t_rate < 50) else COLOR_OVER
+    e = discord.Embed(title=f"📊 {header}", color=color)
+
+    # PUSH shows a neutral white circle, distinct from green W / red L.
+    icon = {"W": "🟢", "L": "🔴", "PUSH": "⚪"}
+    if graded:
+        rows = [f"{icon.get(p['result'], '⚪')} **{p['player']}** {p.get('lean', '')} "
+                f"{p.get('line', '')} {p['prop_type']}" for p in graded]
+        _add_lines_field(e, "Today's Picks", rows)
+    elif today:
+        e.description = "_Today's picks haven't finished resolving yet._"
+    else:
+        e.description = "_No graded picks for today._"
+
+    e.add_field(
+        name="​",
+        value=(f"**Today:** {t_w}-{t_l} ({t_rate}%)\n"
+               f"**Overall:** {o_w}-{o_l} ({o_rate:g}%)"),
+        inline=False)
+    e.set_footer(text=FOOTER_GENERIC)
+    return e
+
+
 def results_embed(rec: dict) -> discord.Embed:
     if not rec or not rec.get("total"):
         e = discord.Embed(title="📊 Baseline Track Record", color=COLOR_NEUTRAL,
@@ -1982,36 +2043,42 @@ def _pick_age_hours(pk: dict) -> float:
 
 
 @tasks.loop(hours=RESOLVE_EVERY_HOURS)
+async def _resolve_all_pending() -> int:
+    """Grade every pending pick against completed-match stats. Returns the number
+    newly graded. A pick whose match hasn't finished stays PENDING; only after
+    RESOLVE_GIVEUP_HOURS is it flagged NEEDS REVIEW. Shared by the periodic
+    resolver loop and the pre-recap resolve so a recap never posts stale results."""
+    pending = await asyncio.to_thread(results_tracker.get_pending)
+    if not pending:
+        log.info("POD resolve: nothing pending")
+        return 0
+    graded = 0
+    for pk in pending:
+        res = await asyncio.to_thread(results_tracker.resolve_pick, pk)
+        outcome = (res.get("result") or "").upper()
+        if outcome in ("W", "L", "PUSH"):
+            ok = await asyncio.to_thread(results_tracker.update_result, pk["id"], outcome)
+            graded += 1 if ok else 0
+            log.info("POD resolve: pick #%s %s %s -> %s (val=%s)",
+                     pk.get("id"), pk.get("player"), pk.get("prop_type"),
+                     outcome, res.get("value"))
+        elif _pick_age_hours(pk) > RESOLVE_GIVEUP_HOURS:
+            # Match still unresolved after a day and a half — flag for review.
+            await asyncio.to_thread(results_tracker.update_result, pk["id"], "NEEDS REVIEW")
+            log.info("POD resolve: pick #%s %s -> NEEDS REVIEW (stale, %s)",
+                     pk.get("id"), pk.get("player"), res.get("reason"))
+        else:
+            # Match not finished yet — leave PENDING, retry next cycle.
+            log.info("POD resolve: pick #%s %s still pending (%s)",
+                     pk.get("id"), pk.get("player"), res.get("reason"))
+    log.info("POD resolve: graded %d of %d pending", graded, len(pending))
+    return graded
+
+
 async def daily_resolve_results():
-    """Grade pending picks from completed-match stats. Runs every couple hours
-    (and on startup) so results update through the day, not just once at night.
-    A pick whose match hasn't finished stays PENDING and is retried next cycle;
-    only after RESOLVE_GIVEUP_HOURS is an unresolved pick flagged NEEDS REVIEW."""
+    """Periodic grader (runs every couple hours + on startup)."""
     try:
-        pending = await asyncio.to_thread(results_tracker.get_pending)
-        if not pending:
-            log.info("POD resolve: nothing pending")
-            return
-        graded = 0
-        for pk in pending:
-            res = await asyncio.to_thread(results_tracker.resolve_pick, pk)
-            outcome = (res.get("result") or "").upper()
-            if outcome in ("W", "L", "PUSH"):
-                ok = await asyncio.to_thread(results_tracker.update_result, pk["id"], outcome)
-                graded += 1 if ok else 0
-                log.info("POD resolve: pick #%s %s %s -> %s (val=%s)",
-                         pk.get("id"), pk.get("player"), pk.get("prop_type"),
-                         outcome, res.get("value"))
-            elif _pick_age_hours(pk) > RESOLVE_GIVEUP_HOURS:
-                # Match still unresolved after a day and a half — flag for review.
-                await asyncio.to_thread(results_tracker.update_result, pk["id"], "NEEDS REVIEW")
-                log.info("POD resolve: pick #%s %s -> NEEDS REVIEW (stale, %s)",
-                         pk.get("id"), pk.get("player"), res.get("reason"))
-            else:
-                # Match not finished yet — leave PENDING, retry next cycle.
-                log.info("POD resolve: pick #%s %s still pending (%s)",
-                         pk.get("id"), pk.get("player"), res.get("reason"))
-        log.info("POD resolve: graded %d of %d pending", graded, len(pending))
+        await _resolve_all_pending()
     except Exception:  # noqa: BLE001
         log.exception("daily_resolve_results failed")
 
@@ -2036,13 +2103,20 @@ async def daily_results_post():
         if channel is None:
             log.warning("daily results: channel %s not found", chan_id)
             return
+        # Resolve today's pending picks against completed matches BEFORE posting,
+        # so the recap reflects final results, not stale PENDING rows.
+        try:
+            await _resolve_all_pending()
+        except Exception:  # noqa: BLE001
+            log.exception("pre-recap resolve failed (posting with current data)")
         rec = await asyncio.to_thread(results_tracker.get_record)
         if not rec or not rec.get("total"):
             log.info("daily results: no picks logged yet — skipping")
             return
-        await channel.send(content="@everyone", embed=results_embed(rec),
+        await channel.send(content="@everyone", embed=daily_recap_embed(rec),
                            allowed_mentions=EVERYONE_MENTION)
-        log.info("daily results: posted record %s-%s", rec.get("wins"), rec.get("losses"))
+        log.info("daily results: posted daily recap (overall %s-%s)",
+                 rec.get("wins"), rec.get("losses"))
     except Exception:  # noqa: BLE001
         log.exception("daily results post failed")
 
