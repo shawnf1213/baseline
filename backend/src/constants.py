@@ -86,6 +86,8 @@ COURT_CPR = {
     "Washington DC Open":                39,    # [ST estimate] alt name
     "Los Cabos Open":                    37,    # [ST estimate]
     "Winston-Salem Open":                38,    # [ST estimate]
+    "Athens Open":                       38,    # [ST estimate — Hellenic Championship, indoor hard]
+    "Hellenic Championship Athens":      38,    # [ST estimate] alt name
     "Tokyo Japan Open":                  38,    # [ST estimate]
     "Shanghai Masters":                  36,    # [ST estimate]
     "Stockholm Open":                    39,    # [ST estimate]
@@ -182,6 +184,7 @@ COURT_CPR = {
     "Guadalajara WTA":                   37,    # [ST estimate]
     "Monterrey WTA":                     37,    # [ST estimate — generic until confirmed]
     "Cleveland WTA":                     37,    # [ST estimate — generic until confirmed]
+    "Athens Open WTA":                   37,    # [ST estimate — generic until confirmed]
     "WTA 125 Hard (Generic)":            36,    # [ST estimate — user specified 36]
     "Austin WTA 125":                    36,
     "Jiangxi Open WTA 125":              36,
@@ -227,7 +230,7 @@ COURT_CPR = {
 COURTS_BY_SURFACE = {
     "Hard":  ["Australian Open", "US Open", "Indian Wells Masters", "Miami Open",
               "Cincinnati Masters", "Canadian Open", "Washington DC Open",
-              "Los Cabos Open", "Winston-Salem Open", "Vienna Open",
+              "Los Cabos Open", "Winston-Salem Open", "Athens Open", "Vienna Open",
               "Swiss Indoors Basel", "Rotterdam Open", "Qatar Open Doha",
               "Dubai Duty Free Championships", "ATP Finals Turin"],
     "Clay":  ["Roland Garros", "Monte Carlo Masters", "Madrid Open", "Barcelona Open",

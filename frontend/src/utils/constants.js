@@ -47,6 +47,7 @@ export const TOURNAMENT_CONFIG = {
       { name: "Washington DC Open",                cpr: 39 },    // ST estimate — fast outdoor hard
       { name: "Los Cabos Open",                    cpr: 37 },    // ST estimate
       { name: "Winston-Salem Open",                cpr: 38 },    // ST estimate
+      { name: "Athens Open",                       cpr: 38 },    // ST estimate — Hellenic Championship, indoor hard
       { name: "Tokyo Japan Open",                  cpr: 38 },    // ST estimate
       { name: "Shanghai Masters",                  cpr: 36 },    // ST estimate
       { name: "Stockholm Open",                    cpr: 39 },    // ST estimate
@@ -125,6 +126,7 @@ export const TOURNAMENT_CONFIG = {
       { name: "Guadalajara WTA",          cpr: 37 },
       { name: "Monterrey WTA",            cpr: 37 },  // ST estimate — generic until confirmed
       { name: "Cleveland WTA",            cpr: 37 },  // ST estimate — generic until confirmed
+      { name: "Athens Open WTA",          cpr: 37 },  // ST estimate — generic until confirmed
       { name: "WTA 125 Hard (Generic)",   cpr: 36 },
       { name: "Austin WTA 125",           cpr: 36 },
       { name: "Jiangxi Open WTA 125",     cpr: 36 },

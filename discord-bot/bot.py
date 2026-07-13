@@ -147,7 +147,7 @@ COURTS_BY_SURFACE = {
     "Hard": [
         "Australian Open", "US Open", "Indian Wells", "Miami", "Cincinnati",
         "Canadian Open", "Washington DC Open", "Los Cabos", "Winston-Salem",
-        "Paris Bercy", "Vienna", "Basel", "Rotterdam",
+        "Athens Open", "Paris Bercy", "Vienna", "Basel", "Rotterdam",
         "Doha", "Dubai", "Shanghai", "ATP Finals",
     ],
     "Grass": [
