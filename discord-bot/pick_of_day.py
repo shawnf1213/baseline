@@ -32,17 +32,18 @@ BROWSER_UA = (
     "(KHTML, like Gecko) Chrome/124.0.6367.207 Safari/537.36"
 )
 
-# PrizePicks stat_type (lowercased) -> Baseline prop_type. Only these four.
-# NOTE: PrizePicks has BOTH "Total Games" (the match total, what Baseline's
-# "Total Games" projects) and "Total Games Won" (a single player's games won) —
-# these are different stats. Baseline has no per-player games-won model, so
-# "Total Games Won" is deliberately NOT mapped and is skipped.
+# PrizePicks stat_type (lowercased) -> Baseline prop_type.
+# NOTE: PrizePicks has BOTH "Total Games" (the match total) and "Total Games Won"
+# (a single player's games won) — different stats, both modelled by Baseline
+# ("Total Games" and "Player Total Games Won"). Both are held to the stricter 90%
+# confidence bar (see HIGH_BAR_PROPS).
 PROP_MAP = {
     "aces":             "Aces",
     "double faults":    "Double Faults",
     "double fault":     "Double Faults",
     "break points won": "Break Points Won",
-    "total games":      "Total Games",   # match total only — NOT "Total Games Won"
+    "total games":      "Total Games",              # match total
+    "total games won":  "Player Total Games Won",   # a single player's games won
 }
 
 MAX_CONCURRENT  = 1       # serialize backend calcs — the heavy prop calc 502s under
@@ -50,24 +51,25 @@ MAX_CONCURRENT  = 1       # serialize backend calcs — the heavy prop calc 502s
 MATCH_THRESHOLD = 0.80    # fuzzy name-match threshold
 MAX_PROPS       = 25      # cap evaluations so the command stays responsive
 MAX_LOOKAHEAD_HOURS = 24  # only pick matches that play within this many hours
-# Per-prop-type minimum confidence to qualify.
-#   STANDARD (70): Aces / Break Points Won / Double Faults / Player Total Games
-#   Won. RECALIBRATED from the old inflated 90 — the model gained conservative
-#   confidence modifiers (opponent-quality, consistency, retirement, sample
-#   size), so a live board now distributes confidence min~48 / median~65 /
-#   p75~73 / MAX~83. 70 ≈ the top ~30% (genuinely strong plays).
-#   TOTAL GAMES (90): held to a STRICTER bar. A match total depends on BOTH
-#   players' combined performance AND match-length variance, so it's inherently
-#   less predictable than an individual-player prop. It stays an eligible prop
-#   but only surfaces when the data strongly supports it (will qualify rarely).
-STANDARD_MIN_CONF    = 70   # Aces / Break Points Won / Double Faults / Player Total Games Won
-TOTAL_GAMES_MIN_CONF = 90   # Total Games ONLY — elevated bar (see _min_conf_for)
+# Per-prop-type minimum confidence to qualify for the ranked list.
+#   STANDARD (75): Aces / Break Points Won / Double Faults. The ranked list shows
+#   every qualifying play, so the bar is set to keep the list to genuinely strong
+#   plays (>=75% confidence).
+#   HIGH BAR (90): Total Games (match total) AND Player Total Games Won. Both are
+#   derived, higher-variance stats — the match total depends on BOTH players'
+#   combined performance plus match-length variance, and per-player games won is
+#   compounded from holds + breaks + win-prob share — so they only surface when
+#   the data strongly supports them.
+STANDARD_MIN_CONF    = 75   # Aces / Break Points Won / Double Faults
+TOTAL_GAMES_MIN_CONF = 90   # Total Games + Player Total Games Won (see _min_conf_for)
+HIGH_BAR_PROPS = {"Total Games", "Player Total Games Won"}
 
 
 def _min_conf_for(prop_type: str) -> int:
-    """The minimum confidence a candidate of this prop type must clear for the
-    Pick of the Day. Total Games is held to a higher bar than the rest."""
-    return TOTAL_GAMES_MIN_CONF if prop_type == "Total Games" else STANDARD_MIN_CONF
+    """The minimum confidence a candidate of this prop type must clear to qualify.
+    Total Games (played) and Player Total Games Won are held to the stricter 90%
+    bar; everything else needs at least 75%."""
+    return TOTAL_GAMES_MIN_CONF if prop_type in HIGH_BAR_PROPS else STANDARD_MIN_CONF
 
 SEARCH_TIMEOUT = 10
 CALC_TIMEOUT   = 90       # backend prop calc can be slow on a cold proxy cache
