@@ -709,6 +709,46 @@ async def generate_potd_and_slip(n: int = 3, exclude_keys: set = None) -> dict:
         return {"potd": [], "slip": []}
 
 
+# A Total Games (match total) play may only be the ⭐ Pick of the Day when one
+# player is at least a 90% favorite — the set count is then near-locked and the
+# total is a very clear win condition. Below that it can appear in the list but
+# must not lead.
+STAR_TOTAL_GAMES_MIN_WP = 90.0
+
+
+def _star_eligible(pk: dict) -> bool:
+    """True if this play may occupy the ⭐ Pick-of-the-Day slot. Any prop other
+    than Total Games is always eligible; a Total Games play is eligible only when
+    the stronger player's win probability is >= 90%."""
+    if pk.get("prop_type") != "Total Games":
+        return True
+    d = pk.get("data") or {}
+    wps = [w for w in (d.get("p1_win_prob"), d.get("p2_win_prob"))
+           if isinstance(w, (int, float))]
+    return bool(wps) and max(wps) >= STAR_TOTAL_GAMES_MIN_WP
+
+
+def _promote_star(ordered: list) -> list:
+    """Ensure ordered[0] (the ⭐) isn't a Total Games play without a 90%+ favorite.
+    If it is, promote the highest-scoring ⭐-eligible play to the front; the rest
+    keep their score order. No-op when the top play is already eligible or when
+    nothing else qualifies for the star."""
+    if not ordered or _star_eligible(ordered[0]):
+        return ordered
+    idx = next((i for i, p in enumerate(ordered) if _star_eligible(p)), None)
+    if idx is None or idx == 0:
+        # Nothing else is star-eligible (e.g. board is only sub-90% Total Games) —
+        # leave as-is rather than post no ⭐.
+        log.info("POD: top play is a sub-90%% Total Games and no other star-eligible "
+                 "play exists — keeping it as ⭐")
+        return ordered
+    star = ordered.pop(idx)
+    log.info("POD: %s Total Games has no 90%%+ favorite — demoted from ⭐; "
+             "promoting %s %s to Pick of the Day",
+             ordered[0].get("player") if ordered else "?", star.get("player"), star.get("prop_type"))
+    return [star] + ordered
+
+
 async def generate_ranked_and_slip() -> dict:
     """Single board evaluation → the FULL ranked list of qualifying plays plus the
     3x slip. Returns {"ranked": [...] | None, "slip": [...]}:
@@ -726,6 +766,8 @@ async def generate_ranked_and_slip() -> dict:
             return {"ranked": None, "slip": []}
         if not ordered:
             return {"ranked": [], "slip": []}
+        # ⭐ gate: a Total Games play can't lead unless one player is a 90%+ favorite.
+        ordered = _promote_star(ordered)
         # 3x excludes only the ⭐ POTD (ordered[0]) and its match, not the whole
         # ranked list — the list features everything; the slip must not re-use #1.
         slip = _select_slip(ordered, ordered[:1])
