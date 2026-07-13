@@ -16,7 +16,12 @@ import asyncio
 import logging
 import unicodedata
 from difflib import SequenceMatcher
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+try:
+    from zoneinfo import ZoneInfo
+    _ET = ZoneInfo("America/New_York")
+except Exception:  # pragma: no cover
+    _ET = timezone(timedelta(hours=-4))
 
 import requests
 
@@ -749,6 +754,32 @@ def _promote_star(ordered: list) -> list:
     return [star] + ordered
 
 
+# One-off: on this ET date, keep these players OUT of the ⭐ Pick-of-the-Day slot
+# (they stay in the ranked list). Auto-reverts the next day.
+STAR_EXCLUDE_DATE    = "2026-07-13"
+STAR_EXCLUDE_PLAYERS = {"ann li"}     # normalised (see _norm)
+
+
+def _apply_star_exclusions(ordered: list) -> list:
+    """One-off, date-gated: if today (ET) is STAR_EXCLUDE_DATE and the ⭐ is an
+    excluded player, promote the next star-eligible non-excluded play to #1. The
+    excluded player stays in the list, just not as Pick of the Day."""
+    if not ordered or datetime.now(_ET).strftime("%Y-%m-%d") != STAR_EXCLUDE_DATE:
+        return ordered
+    if _norm(ordered[0].get("player", "")) not in STAR_EXCLUDE_PLAYERS:
+        return ordered
+    idx = next((i for i, p in enumerate(ordered)
+                if _star_eligible(p) and _norm(p.get("player", "")) not in STAR_EXCLUDE_PLAYERS), None)
+    if idx is None or idx == 0:
+        return ordered
+    excluded_name = ordered[0].get("player")
+    star = ordered.pop(idx)
+    log.info("POD: one-off %s exclusion — %s held out of ⭐ today (stays in list); "
+             "promoting %s %s to Pick of the Day",
+             STAR_EXCLUDE_DATE, excluded_name, star.get("player"), star.get("prop_type"))
+    return [star] + ordered
+
+
 async def generate_ranked_and_slip() -> dict:
     """Single board evaluation → the FULL ranked list of qualifying plays plus the
     3x slip. Returns {"ranked": [...] | None, "slip": [...]}:
@@ -768,6 +799,8 @@ async def generate_ranked_and_slip() -> dict:
             return {"ranked": [], "slip": []}
         # ⭐ gate: a Total Games play can't lead unless one player is a 90%+ favorite.
         ordered = _promote_star(ordered)
+        # One-off (today only): hold specific players out of the ⭐ slot.
+        ordered = _apply_star_exclusions(ordered)
         # 3x excludes only the ⭐ POTD (ordered[0]) and its match, not the whole
         # ranked list — the list features everything; the slip must not re-use #1.
         slip = _select_slip(ordered, ordered[:1])
