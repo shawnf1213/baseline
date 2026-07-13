@@ -2361,6 +2361,55 @@ def _get_player_events_paged(player_id: int, max_pages: int = 10) -> list:
     return all_events
 
 
+def find_void_match(player_id, opponent_name: str, days: int = 4) -> dict:
+    """Detect a recent match vs ``opponent_name`` that was CANCELLED / POSTPONED /
+    WALKED OVER — i.e. never produced a completed result — within ``days`` of now.
+    Used to void (DNP) a pick whose match didn't happen instead of leaving it to
+    hang as NEEDS REVIEW. Returns {'date', 'status'} or {}. Never raises.
+
+    Sofascore status: code 60 = Canceled, 70 = Postponed, 91 = Walkover; the
+    status.type / description corroborate. We check both the last (past) and next
+    (upcoming) event feeds since a cancellation can sit in either."""
+    try:
+        opp = re.sub(r"[^a-z ]", " ", (opponent_name or "").lower()).strip()
+        opp_last = opp.split()[-1] if opp else ""
+        if not opp_last:
+            return {}
+        now = time.time()
+        events: list = []
+        for feed, pages in (("last", (0, 1)), ("next", (0,))):
+            for page in pages:
+                try:
+                    d = _get(f"{BASE_URL}/team/{player_id}/events/{feed}/{page}")
+                    events += (d or {}).get("events", [])
+                except Exception:  # noqa: BLE001
+                    break
+        for e in events:
+            ts = e.get("startTimestamp", 0) or 0
+            if ts and abs(now - ts) > days * 86400:
+                continue
+            stt = e.get("status") or {}
+            code = stt.get("code")
+            stype = (stt.get("type") or "").lower()
+            desc = (stt.get("description") or "").lower()
+            is_void = (code in (60, 70, 91)
+                       or stype in ("canceled", "cancelled", "postponed")
+                       or any(k in desc for k in ("cancel", "postpon", "walkover", "w/o", "walk over")))
+            if not is_void:
+                continue
+            names = (((e.get("homeTeam") or {}).get("name") or "") + " "
+                     + ((e.get("awayTeam") or {}).get("name") or "")).lower()
+            if opp_last in names:
+                logger.info("VOID_DETECT | pid=%s vs %r | status=%r code=%s",
+                            player_id, opponent_name, stype or desc, code)
+                return {"date": datetime.utcfromtimestamp(ts).strftime("%Y-%m-%d") if ts else "",
+                        "status": stype or desc or "cancelled"}
+        return {}
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("find_void_match failed: %s", exc)
+        return {}
+
+
 def get_h2h_summary(tour: str, p1: str, p2: str,
                     surface: Optional[str] = None) -> dict:
     empty = {

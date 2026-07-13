@@ -2054,7 +2054,6 @@ def _pick_age_hours(pk: dict) -> float:
         return 0.0
 
 
-@tasks.loop(hours=RESOLVE_EVERY_HOURS)
 async def _resolve_all_pending() -> int:
     """Grade every pending pick against completed-match stats. Returns the number
     newly graded. A pick whose match hasn't finished stays PENDING; only after
@@ -2068,7 +2067,7 @@ async def _resolve_all_pending() -> int:
     for pk in pending:
         res = await asyncio.to_thread(results_tracker.resolve_pick, pk)
         outcome = (res.get("result") or "").upper()
-        if outcome in ("W", "L", "PUSH"):
+        if outcome in ("W", "L", "PUSH", "VOID"):   # VOID = cancelled / DNP
             ok = await asyncio.to_thread(results_tracker.update_result, pk["id"], outcome)
             graded += 1 if ok else 0
             log.info("POD resolve: pick #%s %s %s -> %s (val=%s)",
@@ -2087,6 +2086,7 @@ async def _resolve_all_pending() -> int:
     return graded
 
 
+@tasks.loop(hours=RESOLVE_EVERY_HOURS)
 async def daily_resolve_results():
     """Periodic grader (runs every couple hours + on startup)."""
     try:

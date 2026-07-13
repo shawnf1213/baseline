@@ -16,6 +16,7 @@ from datetime import datetime, timezone, timedelta
 
 from src.api.sofascore_client import (
     search_players, get_player_stats_by_surface, get_scheduled_events,
+    find_void_match,
 )
 from src.constants import (
     COURT_CPR, GENERIC_SURFACE_CPR, CPR_NEUTRAL, get_speed_tier,
@@ -238,6 +239,12 @@ def resolve_pick(player: str, opponent: str, prop_type: str,
             best = m
             break
     if best is None:
+        # No completed match — check whether it was CANCELLED / POSTPONED /
+        # WALKED OVER so the pick can be auto-voided (DNP) instead of hanging.
+        void = find_void_match(p["id"], opponent)
+        if void:
+            return {"result": "VOID", "reason": f"match {void.get('status', 'cancelled')}",
+                    "opponent_matched": opponent, "date": void.get("date")}
         return {"result": "NEEDS REVIEW", "reason": "completed match not found"}
 
     value = _val(best, field)
