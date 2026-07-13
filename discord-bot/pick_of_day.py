@@ -346,7 +346,13 @@ async def _evaluate(prop: dict, sem: asyncio.Semaphore):
             "confidence": conf, "lean": data.get("lean"),
             "p1_win_prob": data.get("p1_win_prob"), "p2_win_prob": data.get("p2_win_prob"),
             "explanation": data.get("plain_english_explanation"),
-            "score": conf * abs(edge),
+            # Ranking score — CONFIDENCE-DOMINANT. Confidence is the primary term;
+            # edge magnitude only nudges within/near a confidence tier. This is an
+            # additive blend (was multiplicative conf*edge, which let a big
+            # projected edge outrank a more-confident play). Now a few points of
+            # extra confidence beats a larger projected edge — e.g. Ann Li's
+            # conf-95 BP play outranks her conf-91 Total Games play.
+            "score": conf + abs(edge),
             "data": data,
         }
 
