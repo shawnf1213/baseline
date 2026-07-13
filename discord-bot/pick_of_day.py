@@ -607,6 +607,32 @@ async def generate_potd_and_slip(n: int = 3, exclude_keys: set = None) -> dict:
         return {"potd": [], "slip": []}
 
 
+async def generate_ranked_and_slip() -> dict:
+    """Single board evaluation → the FULL ranked list of qualifying plays plus the
+    3x slip. Returns {"ranked": [...] | None, "slip": [...]}:
+      * ``ranked``  — every qualifying play, best-first by the combined score
+                      (confidence × edge magnitude), one entry per player.
+                      ``ranked[0]`` is the ⭐ Pick of the Day. None only when the
+                      board had no eligible props; [] when nothing qualified.
+      * ``slip``    — the 3x legs, drawn from the ranked plays but excluding ONLY
+                      the ⭐ Pick of the Day (and its match) — correlation
+                      avoidance + the two-legs-or-nothing quality bar as before.
+    Never raises."""
+    try:
+        ordered = await _rank_board()
+        if ordered is None:
+            return {"ranked": None, "slip": []}
+        if not ordered:
+            return {"ranked": [], "slip": []}
+        # 3x excludes only the ⭐ POTD (ordered[0]) and its match, not the whole
+        # ranked list — the list features everything; the slip must not re-use #1.
+        slip = _select_slip(ordered, ordered[:1])
+        return {"ranked": ordered, "slip": slip}
+    except Exception as exc:  # noqa: BLE001 — total isolation
+        log.exception("POD generate_ranked_and_slip failed: %s", exc)
+        return {"ranked": [], "slip": []}
+
+
 async def generate_picks(n: int = 3):
     """Return up to ``n`` Pick-of-the-Day picks ranked best-first (list, possibly
     empty; None when the board has no eligible props). Never raises.

@@ -1168,10 +1168,17 @@ except Exception:  # pragma: no cover — fall back to a fixed EST offset
 # POD_HOUR/POD_MINUTE env vars OVERRIDE these defaults — clear them there if set.)
 POD_HOUR = int(os.getenv("POD_HOUR", "16") or "16")
 POD_MINUTE = int(os.getenv("POD_MINUTE", "50") or "50")
-# Second, smaller EVENING scan (end-of-tournament thin boards): one extra play
-# + a 2-leg 3x, excluding whatever the afternoon scan already posted.
-POD2_HOUR = int(os.getenv("POD2_HOUR", "20") or "20")
-POD2_MINUTE = int(os.getenv("POD2_MINUTE", "50") or "50")
+# Daily picks are PRE-GENERATED at 5:50 PM ET so the projections (~10 min) are
+# ready to fire right after the 6 PM recap. The recap job then posts: recap →
+# ranked list → 3x. (Env override PICKS_GEN_HOUR/MINUTE.)
+PICKS_GEN_HOUR = int(os.getenv("PICKS_GEN_HOUR", "17") or "17")
+PICKS_GEN_MINUTE = int(os.getenv("PICKS_GEN_MINUTE", "50") or "50")
+# Pre-generated bundle {ts, ranked, slip} produced by daily_picks_generate and
+# consumed by daily_results_post right after the recap.
+_daily_bundle = {"ts": 0.0, "ranked": None, "slip": []}
+# Optional one-shot post on startup for verifying a deploy (off by default).
+POD_POST_ON_START = (os.getenv("POD_POST_ON_START", "0") or "0") not in ("0", "false", "False")
+_pod_startup_done = False
 # Optional one-shot post on startup for verifying a deploy (off by default).
 POD_POST_ON_START = (os.getenv("POD_POST_ON_START", "0") or "0") not in ("0", "false", "False")
 _pod_startup_done = False
@@ -1416,6 +1423,77 @@ def threex_embed(legs: list) -> discord.Embed:
     return e
 
 
+# ── Ranked plays list (the daily post) ───────────────────────────────────────
+def _ranked_stats(prop_type: str, data: dict) -> str:
+    """Key player stats for the prop — same fields as the /prop stat card."""
+    ps = data.get("player_stats") or {}
+    if prop_type == "Aces":
+        return (f"Ace rate **{_num(ps.get('aces'))}**/m · "
+                f"Opp conceded **{_num(data.get('opponent_ace_against'))}**/m")
+    if prop_type == "Break Points Won":
+        conv = data.get("bp_blended_conv_pct") or ps.get("bp_converted")
+        return (f"BP conv **{_pct(conv)}** · "
+                f"Opp BP faced **{_num(data.get('bp_blended_opp_faced'))}**/m")
+    if prop_type == "Player Total Games Won":
+        return (f"Hold **{_pct(ps.get('service_games_won_pct'))}** · "
+                f"Ret games won **{_pct(ps.get('return_games_won_pct'))}**")
+    if prop_type == "Total Games":
+        ch = data.get("combined_hold")
+        return f"Combined hold **{_pct(ch)}**" if ch is not None else ""
+    return ""
+
+
+def _ranked_field(pick: dict, rank: int):
+    """(name, value) for one ranked play. rank 1 = ⭐ Pick of the Day (fuller);
+    the rest are a consistent compact format."""
+    data = pick.get("data") or {}
+    lean = (pick.get("lean") or "").upper() or ("OVER" if (pick.get("edge") or 0) >= 0 else "UNDER")
+    dot = "🟢" if lean == "OVER" else "🔴" if lean == "UNDER" else "⚪"
+    proj, edge = pick.get("projection"), pick.get("edge")
+    conf = pick.get("confidence") or 0
+    p1wp = data.get("p1_win_prob")
+    esets = data.get("expected_sets")
+    edge_txt = (f"{'+' if (edge or 0) >= 0 else ''}{edge:.1f}") if isinstance(edge, (int, float)) else "—"
+    wp_txt = f"{p1wp:.0f}%" if isinstance(p1wp, (int, float)) else "—"
+    es_txt = f"{esets:.1f}" if isinstance(esets, (int, float)) else "—"
+    fa = pick.get("form_alert")
+    fa_txt = f"  ·  {fa}" if fa else ""
+    stats = _ranked_stats(pick["prop_type"], data)
+
+    if rank == 1:
+        name = f"⭐ Pick of the Day — {pick['player']} vs {pick['opponent']}"
+        loc = pick.get("tournament") or f"{pick.get('surface', '')} court"
+        value = (f"{dot} **{lean} {pick['line']:g} {pick['prop_type']}**  ·  proj **{_num(proj)}**  ·  "
+                 f"edge **{edge_txt}**  ·  **{conf:.0f}%** conf{fa_txt}\n"
+                 f"Win prob **{wp_txt}**  ·  Exp sets **{es_txt}**  ·  {loc}\n"
+                 f"{stats}")
+    else:
+        name = f"{rank}. {pick['player']} vs {pick['opponent']}"
+        value = (f"{dot} **{lean} {pick['line']:g} {pick['prop_type']}** · proj {_num(proj)} · "
+                 f"edge {edge_txt} · {conf:.0f}% conf · Win {wp_txt} · Sets {es_txt}\n{stats}")
+    return name[:256], value[:1024]
+
+
+def ranked_embeds(ranked: list) -> list:
+    """The ranked-plays embed(s): ⭐ #1 first, then 2..N compact. Splits into
+    multiple embeds if Discord's field/char limits would be exceeded."""
+    today = datetime.datetime.now(POD_TZINFO)
+    title = f"🎾 Baseline Ranked Plays — {today.month}/{today.day}"
+    embeds, e = [], discord.Embed(title=title, color=COLOR_OVER)
+    e.description = (f"**{len(ranked)}** qualifying play{'s' if len(ranked) != 1 else ''}, "
+                    f"ranked by value (confidence × edge). ⭐ = Pick of the Day.")
+    for i, pick in enumerate(ranked, 1):
+        name, value = _ranked_field(pick, i)
+        if len(e.fields) >= 24 or (len(e) + len(name) + len(value)) > 5500:
+            embeds.append(e)
+            e = discord.Embed(color=COLOR_OVER)
+        e.add_field(name=name, value=value, inline=False)
+    if e.fields or not embeds:
+        embeds.append(e)
+    embeds[-1].set_footer(text=FOOTER_PROJECTION)
+    return embeds
+
+
 def _recent_pick_keys(hours: int = 12) -> set:
     """(_norm(player), prop_type) for every pick logged in the last ``hours`` —
     so the evening scan skips whatever the afternoon scan already posted. Safe:
@@ -1441,99 +1519,84 @@ def _recent_pick_keys(hours: int = 12) -> set:
         return set()
 
 
-async def _post_pick_of_day(channel, track: bool = False, n: int = 3,
-                            exclude_recent: bool = False) -> str:
-    """Generate and post the top-``n`` Pick(s) of the Day to ``channel``, then the
-    Baseline 3x slip immediately after (if two independent legs qualify). When
-    ``track`` is set (the daily run), also log every pick as PENDING (POTD group
-    + 3x group) and start the line-movement monitor over ALL of them. When
-    ``exclude_recent`` is set (the evening scan), drop any play already posted in
-    the last 12h so it surfaces genuinely NEW plays. Returns a short status string."""
-    exclude_keys = _recent_pick_keys() if exclude_recent else None
-    bundle = await pick_of_day.generate_potd_and_slip(n, exclude_keys=exclude_keys)
-    picks = bundle.get("potd")
-    slip = bundle.get("slip") or []
-    if not picks:
+async def _post_daily_picks(channel, track: bool = True) -> str:
+    """Post the daily RANKED LIST (⭐ #1 = Pick of the Day, then 2..N of every
+    qualifying play), then the Baseline 3x slip immediately after. Uses the 5:50
+    pre-generated bundle when fresh (<40 min old); otherwise regenerates inline.
+    When ``track`` is set, logs every play (POTD group) + slip legs (3x group)
+    and starts the line-movement monitor over ALL of them. Never raises."""
+    fresh = (_daily_bundle.get("ranked") is not None
+             and (time.time() - (_daily_bundle.get("ts") or 0)) < 40 * 60)
+    if fresh:
+        ranked = _daily_bundle.get("ranked") or []
+        slip = _daily_bundle.get("slip") or []
+        log.info("daily picks: using pre-generated bundle (%d ranked)", len(ranked))
+    else:
+        bundle = await pick_of_day.generate_ranked_and_slip()
+        ranked = bundle.get("ranked") or []
+        slip = bundle.get("slip") or []
+        log.info("daily picks: regenerated inline (%d ranked)", len(ranked))
+
+    if not ranked:
         no_play = discord.Embed(description=MSG_NO_PICK_DAILY, color=COLOR_NEUTRAL)
-        no_play.set_author(name="🏆 Pick of the Day")
+        no_play.set_author(name="🎾 Baseline Ranked Plays")
         await channel.send(embed=no_play)
         return "no qualifying plays — posted no-play notice"
-    await _annotate_form_alerts(picks)
-    if track:
-        await _log_picks_pending(picks, group="potd")
-    # The real daily post (track=True) pings @everyone; the optional startup
-    # verification post and the /pickoftheday command do not.
-    await _deliver_pod(picks, channel.send, mention=track)
 
-    # Baseline 3x — a SEPARATE embed posted right after the POTD. Only when two
-    # independent, quality-cleared legs remain after POTD exclusion.
+    await _annotate_form_alerts(ranked)
+    if track:
+        await _log_picks_pending(ranked, group="potd")
+
+    # Ranked list — one @everyone message (or several if it overflows a message's
+    # 10-embed cap). Only the first message pings.
+    embeds = ranked_embeds(ranked)
+    for i in range(0, len(embeds), 10):
+        chunk = embeds[i:i + 10]
+        await channel.send(
+            content=("@everyone" if (i == 0 and track) else None),
+            embeds=chunk, allowed_mentions=EVERYONE_MENTION)
+
+    # Baseline 3x — a SEPARATE post right after the ranked list.
     if slip:
         if track:
             await _log_picks_pending(slip, group="3x")
-        # The daily run (track=True) pings @everyone, same as the POTD post.
         await channel.send(
             content=("@everyone" if track else None),
-            embed=threex_embed(slip),
-            allowed_mentions=EVERYONE_MENTION)
+            embed=threex_embed(slip), allowed_mentions=EVERYONE_MENTION)
 
     if track:
-        _start_line_monitor(channel, picks + slip)   # STEP 6 — monitor both posts
-    slip_note = (f" + 3x [{slip[0]['player']} {slip[0]['prop_type']}, "
-                 f"{slip[1]['player']} {slip[1]['prop_type']}]" if slip else " (no 3x — thin pool)")
-    return f"posted {len(picks)} picks, #1 {picks[0]['player']} {picks[0]['prop_type']}{slip_note}"
+        _start_line_monitor(channel, ranked + slip)   # monitor every play + both legs
+    slip_note = (f" + 3x [{slip[0]['player']}, {slip[1]['player']}]"
+                 if slip else " (no 3x — thin pool)")
+    return f"posted {len(ranked)} ranked, ⭐ {ranked[0]['player']} {ranked[0]['prop_type']}{slip_note}"
 
 
-@tasks.loop(time=datetime.time(hour=POD_HOUR, minute=POD_MINUTE, tzinfo=POD_TZINFO))
-async def daily_pick_of_day():
+@tasks.loop(time=datetime.time(hour=PICKS_GEN_HOUR, minute=PICKS_GEN_MINUTE, tzinfo=POD_TZINFO))
+async def daily_picks_generate():
+    """Pre-generate the ranked list + 3x at 5:50 PM ET so they're ready to fire
+    right after the 6 PM recap (the projection run takes ~10 min). Stores the
+    result in _daily_bundle; the recap job posts it."""
     if not POD_CHANNEL_ID:
         return
-    try:
-        channel = client.get_channel(POD_CHANNEL_ID)
-        if channel is None:
-            log.warning("POD daily: channel %s not found", POD_CHANNEL_ID)
-            return
-        # One-off skip date — post the no-value notice instead of generating.
-        if POD_SKIP_DATE and datetime.datetime.now(POD_TZINFO).strftime("%Y-%m-%d") == POD_SKIP_DATE:
-            e = discord.Embed(description=MSG_POD_SKIP, color=COLOR_NEUTRAL)
-            e.set_author(name="🏆 Pick of the Day")
-            await channel.send(content="@everyone", embed=e, allowed_mentions=EVERYONE_MENTION)
-            log.info("POD daily: skip-date %s — posted no-value @everyone notice", POD_SKIP_DATE)
-            return
-        status = await _post_pick_of_day(channel, track=True)
-        log.info("POD daily: %s", status)
-    except Exception:  # noqa: BLE001
-        log.exception("POD daily auto-post failed")
-
-
-@daily_pick_of_day.before_loop
-async def _before_daily_pick():
-    await client.wait_until_ready()
-
-
-@tasks.loop(time=datetime.time(hour=POD2_HOUR, minute=POD2_MINUTE, tzinfo=POD_TZINFO))
-async def daily_pick_of_day_2():
-    """Second, smaller EVENING scan for end-of-tournament thin boards: ONE extra
-    play + a 2-leg 3x, excluding anything already posted this afternoon so only
-    genuinely new plays surface."""
-    if not POD_CHANNEL_ID:
+    # Honour the one-off skip date — don't pre-generate on a skip day.
+    if POD_SKIP_DATE and datetime.datetime.now(POD_TZINFO).strftime("%Y-%m-%d") == POD_SKIP_DATE:
+        _daily_bundle.update({"ts": time.time(), "ranked": [], "slip": []})
+        log.info("daily picks generate: skip-date %s — empty bundle", POD_SKIP_DATE)
         return
     try:
-        channel = client.get_channel(POD_CHANNEL_ID)
-        if channel is None:
-            log.warning("POD evening: channel %s not found", POD_CHANNEL_ID)
-            return
-        # On the skip date the afternoon scan already posted the no-value notice.
-        if POD_SKIP_DATE and datetime.datetime.now(POD_TZINFO).strftime("%Y-%m-%d") == POD_SKIP_DATE:
-            log.info("POD evening: skip-date %s — no post", POD_SKIP_DATE)
-            return
-        status = await _post_pick_of_day(channel, track=True, n=1, exclude_recent=True)
-        log.info("POD evening: %s", status)
+        bundle = await pick_of_day.generate_ranked_and_slip()
+        _daily_bundle.update({"ts": time.time(),
+                              "ranked": bundle.get("ranked") or [],
+                              "slip": bundle.get("slip") or []})
+        r = _daily_bundle["ranked"]
+        log.info("daily picks pre-generated: %d ranked, %s slip",
+                 len(r), len(_daily_bundle["slip"]))
     except Exception:  # noqa: BLE001
-        log.exception("POD evening auto-post failed")
+        log.exception("daily picks generation failed")
 
 
-@daily_pick_of_day_2.before_loop
-async def _before_daily_pick_2():
+@daily_picks_generate.before_loop
+async def _before_picks_generate():
     await client.wait_until_ready()
 
 
@@ -2115,20 +2178,33 @@ async def daily_results_post():
         if channel is None:
             log.warning("daily results: channel %s not found", chan_id)
             return
-        # Resolve today's pending picks against completed matches BEFORE posting,
-        # so the recap reflects final results, not stale PENDING rows.
+        today = datetime.datetime.now(POD_TZINFO).strftime("%Y-%m-%d")
+
+        # 1) RECAP — resolve today's pending picks first (so the recap reflects
+        #    final results), then post the previous day's date-based recap.
         try:
             await _resolve_all_pending()
         except Exception:  # noqa: BLE001
             log.exception("pre-recap resolve failed (posting with current data)")
         rec = await asyncio.to_thread(results_tracker.get_record)
-        if not rec or not rec.get("total"):
-            log.info("daily results: no picks logged yet — skipping")
-            return
-        await channel.send(content="@everyone", embed=daily_recap_embed(rec),
-                           allowed_mentions=EVERYONE_MENTION)
-        log.info("daily results: posted daily recap (overall %s-%s)",
-                 rec.get("wins"), rec.get("losses"))
+        if rec and rec.get("total"):
+            await channel.send(content="@everyone", embed=daily_recap_embed(rec),
+                               allowed_mentions=EVERYONE_MENTION)
+            log.info("daily results: posted recap (overall %s-%s)",
+                     rec.get("wins"), rec.get("losses"))
+        else:
+            log.info("daily results: no graded record yet — skipping recap")
+
+        # 2) RANKED LIST + 3x — immediately after the recap. On the skip date,
+        #    post the no-value notice instead of generating.
+        if POD_SKIP_DATE and today == POD_SKIP_DATE:
+            e = discord.Embed(description=MSG_POD_SKIP, color=COLOR_NEUTRAL)
+            e.set_author(name="🎾 Baseline Ranked Plays")
+            await channel.send(content="@everyone", embed=e, allowed_mentions=EVERYONE_MENTION)
+            log.info("daily picks: skip-date %s — posted no-value notice", POD_SKIP_DATE)
+        else:
+            status = await _post_daily_picks(channel, track=True)
+            log.info("daily picks: %s", status)
     except Exception:  # noqa: BLE001
         log.exception("daily results post failed")
 
@@ -2232,22 +2308,15 @@ async def on_ready():
                      len(client.guilds))
         except Exception:
             log.exception("guild command sync failed")
-    # Daily Pick of the Day auto-post (scheduled broadcast — no manual command).
-    if POD_CHANNEL_ID and not daily_pick_of_day.is_running():
+    # Daily picks are pre-generated at 5:50 PM ET; the recap job posts the ranked
+    # list + 3x right after the 6 PM recap.
+    if POD_CHANNEL_ID and not daily_picks_generate.is_running():
         try:
-            daily_pick_of_day.start()
-            log.info("Pick of the Day daily auto-post scheduled at %02d:%02d %s -> channel %s",
-                     POD_HOUR, POD_MINUTE, POD_TZINFO, POD_CHANNEL_ID)
+            daily_picks_generate.start()
+            log.info("Daily picks pre-generation scheduled at %02d:%02d %s -> channel %s",
+                     PICKS_GEN_HOUR, PICKS_GEN_MINUTE, POD_TZINFO, POD_CHANNEL_ID)
         except Exception:
-            log.exception("failed to start daily Pick of the Day loop")
-    # Second, smaller evening scan (1 extra play + a 2-leg 3x, deduped).
-    if POD_CHANNEL_ID and not daily_pick_of_day_2.is_running():
-        try:
-            daily_pick_of_day_2.start()
-            log.info("Evening Pick of the Day scan scheduled at %02d:%02d %s -> channel %s",
-                     POD2_HOUR, POD2_MINUTE, POD_TZINFO, POD_CHANNEL_ID)
-        except Exception:
-            log.exception("failed to start evening Pick of the Day loop")
+            log.exception("failed to start daily picks generation loop")
 
     # Feature 1 — results auto-resolution (runs on startup + every few hours).
     if not daily_resolve_results.is_running():
@@ -2295,7 +2364,7 @@ async def on_ready():
             log.warning("POD startup test: channel %s not found / not visible to bot", POD_CHANNEL_ID)
         else:
             try:
-                status = await _post_pick_of_day(ch)
+                status = await _post_daily_picks(ch, track=False)
                 log.info("POD startup test post -> %s", status)
             except discord.Forbidden:
                 log.error("POD startup test: missing Send Messages / Embed Links in channel %s",
