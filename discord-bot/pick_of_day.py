@@ -370,10 +370,82 @@ def _lean_dir(pk: dict) -> str:
     return "OVER" if (pk.get("edge") or 0) >= 0 else "UNDER"
 
 
+# ── Player Total Games Won — bespoke qualification ───────────────────────────
+# The prop's biggest variance source is SET COUNT. Rules (PTGW only):
+#   • BLOWOUT-UNDER (75): win-prob gap > 35pp AND lean UNDER. A projected blowout
+#     near-locks the set count (2 sets), removing that variance and making an
+#     UNDER meaningfully safer — so it may qualify at 75 instead of 80.
+#   • BLOWOUT-OVER (strict): win-prob gap > 35pp AND lean OVER gets NO relief and
+#     EXTRA scrutiny — dominant wins compress games toward ~12 vs a typical 12.5
+#     line, so it needs the standard 80 AND the projection must clear the line by
+#     >= 1.5 games.
+#   • STANDARD (80): everything else.
+#   • KNIFE-EDGE (any win prob): if |projection - line| <= 0.7 the line sits in the
+#     highest-variance band (straight-sets scorelines cluster at 12-14 games, so
+#     12.5/13 lines are coin-flips) — subtract 10 confidence and flag it.
+PLAYER_TGW_BLOWOUT_WPGAP     = 35.0   # win-prob gap (pp) above which blowout logic applies
+PLAYER_TGW_BLOWOUT_UNDER_BAR = 75     # relaxed bar for a blowout UNDER
+PLAYER_TGW_OVER_MIN_EDGE     = 1.5    # blowout OVER must clear the line by >= this
+PLAYER_TGW_KNIFE_EDGE        = 0.7    # |proj - line| <= this → coin-flip zone
+PLAYER_TGW_KNIFE_PENALTY     = 10     # confidence subtracted in the coin-flip zone
+
+
+def _win_prob_gap(pk: dict):
+    """Absolute win-probability gap (percentage points) between the two players,
+    or None when unavailable."""
+    d = pk.get("data") or {}
+    g = d.get("win_prob_gap")
+    if isinstance(g, (int, float)):
+        return abs(g)
+    w1, w2 = d.get("p1_win_prob"), d.get("p2_win_prob")
+    if isinstance(w1, (int, float)) and isinstance(w2, (int, float)):
+        return abs(w1 - w2)
+    return None
+
+
+def _apply_ptgw_knife_edge(pk: dict) -> None:
+    """Knife-edge coin-flip check for Player Total Games Won — subtract 10
+    confidence and set pk['coin_flip'] when the projection sits within 0.7 games
+    of the line. Mutates pk once (idempotent via the _ptgw_adjusted guard)."""
+    if pk.get("prop_type") != "Player Total Games Won" or pk.get("_ptgw_adjusted"):
+        return
+    pk["_ptgw_adjusted"] = True
+    proj, line = pk.get("projection"), pk.get("line")
+    if (isinstance(proj, (int, float)) and isinstance(line, (int, float))
+            and abs(proj - line) <= PLAYER_TGW_KNIFE_EDGE):
+        pk["coin_flip"] = True
+        pk["confidence"] = (pk.get("confidence") or 0) - PLAYER_TGW_KNIFE_PENALTY
+        log.info("POD_KNIFE_EDGE | %-22s Player Total Games Won proj=%.1f line=%.1f "
+                 "(|Δ|<=%.1f) -> -%d conf (coin-flip zone)",
+                 (pk.get("player") or "")[:22], proj, line,
+                 PLAYER_TGW_KNIFE_EDGE, PLAYER_TGW_KNIFE_PENALTY)
+
+
+def _ptgw_qualify(pk: dict):
+    """(qualifies, bar, path) for a Player Total Games Won candidate, using its
+    current (post-knife-edge) confidence. path ∈ {'standard-80',
+    'blowout-under-75', 'blowout-over-strict'}."""
+    conf = pk.get("confidence") or 0
+    proj, line = pk.get("projection"), pk.get("line")
+    lean = _lean_dir(pk)
+    gap = _win_prob_gap(pk)
+    base = _min_conf_for("Player Total Games Won")   # 80
+    blowout = gap is not None and gap > PLAYER_TGW_BLOWOUT_WPGAP
+    if blowout and lean == "UNDER":
+        return conf >= PLAYER_TGW_BLOWOUT_UNDER_BAR, PLAYER_TGW_BLOWOUT_UNDER_BAR, "blowout-under-75"
+    if blowout and lean == "OVER":
+        edge_ok = (isinstance(proj, (int, float)) and isinstance(line, (int, float))
+                   and (proj - line) >= PLAYER_TGW_OVER_MIN_EDGE)
+        return (conf >= base and edge_ok), base, "blowout-over-strict"
+    return conf >= base, base, "standard-80"
+
+
 def _passes_quality(pk: dict) -> bool:
-    """Quality gate: a candidate must clear its prop-type confidence bar —
-    STANDARD_MIN_CONF (70) for most props, TOTAL_GAMES_MIN_CONF (90) for Total
-    Games. Below that we'd rather post no pick than a coin-flip."""
+    """Quality gate. Player Total Games Won uses the bespoke path logic above (75
+    blowout-under / strict blowout-over / 80 standard); every other prop clears a
+    flat bar (75 standard, 90 Total Games)."""
+    if pk.get("prop_type") == "Player Total Games Won":
+        return _ptgw_qualify(pk)[0]
     return (pk.get("confidence") or 0) >= _min_conf_for(pk.get("prop_type"))
 
 
@@ -467,15 +539,28 @@ async def _rank_board():
         if not isinstance(r, dict):
             log.info("POD_CAND | EVAL_FAILED | %s", str(r)[:120])
             continue
-        conf = r.get("confidence") or 0
         ptype = r.get("prop_type")
-        bar = _min_conf_for(ptype)
-        ok = _passes_quality(r)   # the per-prop bar (70 / 90) is the sole gate
+        # Player Total Games Won: apply the knife-edge penalty (mutates conf +
+        # coin_flip) FIRST, then resolve its bespoke qualification path.
+        path = ""
+        if ptype == "Player Total Games Won":
+            _apply_ptgw_knife_edge(r)
+            ok, bar, path = _ptgw_qualify(r)
+            log.info("POD_PTGW | %-22s conf=%-3.0f proj=%-6.2f line=%-5s lean=%-5s gap=%-3.0f "
+                     "coin_flip=%-5s -> path=%s bar=%d -> %s",
+                     (r.get("player") or "")[:22], r.get("confidence") or 0,
+                     r.get("projection") or 0.0, r.get("line"), _lean_dir(r),
+                     _win_prob_gap(r) or 0.0, bool(r.get("coin_flip")), path, bar,
+                     "QUALIFIES" if ok else "below")
+        else:
+            bar = _min_conf_for(ptype)
+            ok = (r.get("confidence") or 0) >= bar
+        conf = r.get("confidence") or 0
         log.info("POD_CAND | %-22s %-18s line=%-5s conf=%-3.0f proj=%-6.2f edge=%+5.2f "
-                 "recent_ok=%-5s bar=%d -> %s",
+                 "recent_ok=%-5s bar=%d%s -> %s",
                  (r.get("player") or "")[:22], (ptype or "")[:18],
                  r.get("line"), conf, r.get("projection") or 0.0, r.get("edge") or 0.0,
-                 _recent_supports_lean(r), bar,
+                 _recent_supports_lean(r), bar, (" [%s]" % path) if path else "",
                  "QUALIFIES" if ok else ("below %s bar %d" % (ptype, bar)))
         if ok:
             picks.append(r)

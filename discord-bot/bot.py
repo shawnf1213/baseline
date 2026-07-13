@@ -1459,6 +1459,9 @@ def _ranked_field(pick: dict, rank: int):
     fa = pick.get("form_alert")
     fa_txt = f"  ·  {fa}" if fa else ""
     stats = _ranked_stats(pick["prop_type"], data)
+    # Player Total Games Won knife-edge: line sits in the highest-variance band.
+    if pick.get("coin_flip"):
+        stats = (stats + "\n" if stats else "") + "⚠️ **Coin-flip zone** — line in the highest-variance band"
 
     if rank == 1:
         name = f"⭐ Pick of the Day — {pick['player']} vs {pick['opponent']}"
