@@ -35,8 +35,8 @@ BROWSER_UA = (
 # PrizePicks stat_type (lowercased) -> Baseline prop_type.
 # NOTE: PrizePicks has BOTH "Total Games" (the match total) and "Total Games Won"
 # (a single player's games won) — different stats, both modelled by Baseline
-# ("Total Games" and "Player Total Games Won"). Both are held to the stricter 90%
-# confidence bar (see HIGH_BAR_PROPS).
+# ("Total Games" and "Player Total Games Won"), held to stricter bars — 90% and
+# 80% respectively (see PROP_MIN_CONF).
 PROP_MAP = {
     "aces":             "Aces",
     "double faults":    "Double Faults",
@@ -61,15 +61,20 @@ MAX_LOOKAHEAD_HOURS = 24  # only pick matches that play within this many hours
 #   compounded from holds + breaks + win-prob share — so they only surface when
 #   the data strongly supports them.
 STANDARD_MIN_CONF    = 75   # Aces / Break Points Won / Double Faults
-TOTAL_GAMES_MIN_CONF = 90   # Total Games + Player Total Games Won (see _min_conf_for)
-HIGH_BAR_PROPS = {"Total Games", "Player Total Games Won"}
+TOTAL_GAMES_MIN_CONF = 90   # Total Games (match total) — highest bar
+PLAYER_TGW_MIN_CONF  = 80   # Player Total Games Won — mid bar
+# Per-prop overrides; anything not listed uses STANDARD_MIN_CONF.
+PROP_MIN_CONF = {
+    "Total Games":             TOTAL_GAMES_MIN_CONF,   # 90
+    "Player Total Games Won":  PLAYER_TGW_MIN_CONF,    # 80
+}
 
 
 def _min_conf_for(prop_type: str) -> int:
     """The minimum confidence a candidate of this prop type must clear to qualify.
-    Total Games (played) and Player Total Games Won are held to the stricter 90%
-    bar; everything else needs at least 75%."""
-    return TOTAL_GAMES_MIN_CONF if prop_type in HIGH_BAR_PROPS else STANDARD_MIN_CONF
+    Total Games (match total) → 90, Player Total Games Won → 80, everything else
+    (Aces / Break Points) → 75."""
+    return PROP_MIN_CONF.get(prop_type, STANDARD_MIN_CONF)
 
 SEARCH_TIMEOUT = 10
 CALC_TIMEOUT   = 90       # backend prop calc can be slow on a cold proxy cache
