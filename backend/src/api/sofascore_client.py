@@ -2362,14 +2362,16 @@ def _get_player_events_paged(player_id: int, max_pages: int = 10) -> list:
 
 
 def find_void_match(player_id, opponent_name: str, days: int = 4) -> dict:
-    """Detect a recent match vs ``opponent_name`` that was CANCELLED / POSTPONED /
-    WALKED OVER — i.e. never produced a completed result — within ``days`` of now.
+    """Detect a recent match vs ``opponent_name`` that was CANCELLED or WALKED
+    OVER — i.e. definitively never going to be played — within ``days`` of now.
     Used to void (DNP) a pick whose match didn't happen instead of leaving it to
     hang as NEEDS REVIEW. Returns {'date', 'status'} or {}. Never raises.
 
-    Sofascore status: code 60 = Canceled, 70 = Postponed, 91 = Walkover; the
-    status.type / description corroborate. We check both the last (past) and next
-    (upcoming) event feeds since a cancellation can sit in either."""
+    Sofascore status: code 60 = Canceled, 91 = Walkover; the status.type /
+    description corroborate. POSTPONED (code 70) is deliberately NOT voided — a
+    postponed match is only rescheduled, so the pick stays pending until it
+    actually plays. We check both the last (past) and next (upcoming) event
+    feeds since a cancellation can sit in either."""
     try:
         opp = re.sub(r"[^a-z ]", " ", (opponent_name or "").lower()).strip()
         opp_last = opp.split()[-1] if opp else ""
@@ -2392,9 +2394,10 @@ def find_void_match(player_id, opponent_name: str, days: int = 4) -> dict:
             code = stt.get("code")
             stype = (stt.get("type") or "").lower()
             desc = (stt.get("description") or "").lower()
-            is_void = (code in (60, 70, 91)
-                       or stype in ("canceled", "cancelled", "postponed")
-                       or any(k in desc for k in ("cancel", "postpon", "walkover", "w/o", "walk over")))
+            # Canceled / walkover only — NOT postponed (which is just rescheduled).
+            is_void = (code in (60, 91)
+                       or stype in ("canceled", "cancelled")
+                       or any(k in desc for k in ("cancel", "walkover", "w/o", "walk over")))
             if not is_void:
                 continue
             names = (((e.get("homeTeam") or {}).get("name") or "") + " "
