@@ -46,10 +46,14 @@ PROP_MAP = {
     "total games won":  "Player Total Games Won",   # a single player's games won
 }
 
-MAX_CONCURRENT  = 1       # serialize backend calcs — the heavy prop calc 502s under
-                          # concurrent load; one-at-a-time also warms its cache
+MAX_CONCURRENT  = 4       # parallelise backend calcs so the full board (100+ props)
+                          # evaluates inside the pre-gen window. CALC_RETRIES with
+                          # backoff absorbs the occasional 502 under light concurrency.
 MATCH_THRESHOLD = 0.80    # fuzzy name-match threshold
-MAX_PROPS       = 25      # cap evaluations so the command stays responsive
+MAX_PROPS       = 130     # evaluate (nearly) the whole board — the ranked list
+                          # must show EVERY qualifying play, and the daily run is a
+                          # pre-generated 10-min job, so a low cap would silently
+                          # drop strong plays on a big board (e.g. 100+ props).
 MAX_LOOKAHEAD_HOURS = 24  # only pick matches that play within this many hours
 # Per-prop-type minimum confidence to qualify for the ranked list.
 #   STANDARD (75): Aces / Break Points Won / Double Faults. The ranked list shows
