@@ -98,7 +98,7 @@ if _env_excl.strip():
     _POD_EXCLUDE |= {_norm(x) for x in _env_excl.split(",") if x.strip()}
 
 # Prop types never used for Pick of the Day (excluded by request).
-_POD_EXCLUDE_PROPS = {"Double Faults"}
+_POD_EXCLUDE_PROPS = {"Double Faults", "Player Total Games Won"}
 
 
 def _is_excluded(name: str) -> bool:
