@@ -1642,10 +1642,12 @@ def daily_recap_embed(rec: dict, target_date: str = None) -> discord.Embed:
     # when they were generated.
     picks = rec.get("picks", []) if rec else []
     graded = [p for p in picks
-              if p.get("result") in ("W", "L", "PUSH")
+              if p.get("result") in ("W", "L", "PUSH", "VOID")
               and _et_date_of(p.get("resolved_at")) == target_date]
     today = graded
 
+    # W/L drive the record + hit rate; PUSH and VOID (cancelled/DNP) are excluded
+    # from the denominator entirely.
     t_w = sum(1 for p in graded if p["result"] == "W")
     t_l = sum(1 for p in graded if p["result"] == "L")
     t_dec = t_w + t_l
@@ -1657,11 +1659,16 @@ def daily_recap_embed(rec: dict, target_date: str = None) -> discord.Embed:
     color = COLOR_UNDER if (t_dec and t_rate < 50) else COLOR_OVER
     e = discord.Embed(title=f"📊 {header}", color=color)
 
-    # PUSH shows a neutral white circle, distinct from green W / red L.
-    icon = {"W": "🟢", "L": "🔴", "PUSH": "⚪"}
+    # 🟢 W · 🔴 L · ⚪ PUSH · 🚫 VOID (match cancelled — no action / DNP).
+    icon = {"W": "🟢", "L": "🔴", "PUSH": "⚪", "VOID": "🚫"}
     if graded:
-        rows = [f"{icon.get(p['result'], '⚪')} **{p['player']}** {p.get('lean', '')} "
-                f"{p.get('line', '')} {p['prop_type']}" for p in graded]
+        rows = []
+        for p in graded:
+            row = (f"{icon.get(p['result'], '⚪')} **{p['player']}** {p.get('lean', '')} "
+                   f"{p.get('line', '')} {p['prop_type']}")
+            if p["result"] == "VOID":
+                row += " — **DNP** (cancelled)"
+            rows.append(row)
         _add_lines_field(e, "Today's Picks", rows)
     else:
         e.description = "_No picks resolved today._"
@@ -1703,12 +1710,13 @@ def results_embed(rec: dict) -> discord.Embed:
         + (f"  ·  Pushes: {rec.get('pushes', 0)}" if rec.get("pushes") else "")
         + (f"  ·  Needs review: {rec.get('needs_review', 0)}" if rec.get("needs_review") else "")
     )
-    last = [p for p in rec.get("picks", []) if p.get("result") in ("W", "L", "PUSH")][:10]
+    last = [p for p in rec.get("picks", []) if p.get("result") in ("W", "L", "PUSH", "VOID")][:10]
     if last:
-        # PUSH shows a neutral white circle, distinct from green W / red L.
-        icon = {"W": "🟢", "L": "🔴", "PUSH": "⚪"}
+        # 🟢 W · 🔴 L · ⚪ PUSH · 🚫 VOID (cancelled / DNP).
+        icon = {"W": "🟢", "L": "🔴", "PUSH": "⚪", "VOID": "🚫"}
         rows = [f"{icon.get(p['result'],'⚪')} **{p['player']}** {p.get('lean','')} "
                 f"{p.get('line','')}{'' if p.get('line') is None else ''} {p['prop_type']}"
+                + (" — DNP" if p['result'] == "VOID" else "")
                 for p in last]
         _add_lines_field(e, "Last 10 (Pick of the Day)", rows)
 
@@ -1739,6 +1747,7 @@ _RESULT_CHOICES = [
     app_commands.Choice(name="Win", value="W"),
     app_commands.Choice(name="Loss", value="L"),
     app_commands.Choice(name="Push", value="PUSH"),
+    app_commands.Choice(name="Void / DNP (cancelled)", value="VOID"),
     app_commands.Choice(name="Pending", value="PENDING"),
     app_commands.Choice(name="Needs Review", value="NEEDS REVIEW"),
 ]

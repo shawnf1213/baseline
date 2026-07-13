@@ -229,8 +229,9 @@ def _summarize(picks: list) -> dict:
     wins = [p for p in picks if p["result"] == "W"]
     losses = [p for p in picks if p["result"] == "L"]
     pushes = [p for p in picks if p["result"] == "PUSH"]
-    # PUSH is neither a win nor a loss — excluded from the win-rate denominator
-    # (decided = W + L only), but still shown in the log.
+    voids = [p for p in picks if p["result"] == "VOID"]
+    # PUSH and VOID (cancelled / DNP) are neither a win nor a loss — excluded from
+    # the win-rate denominator (decided = W + L only), but still shown in the log.
     decided = wins + losses
     win_rate = round(len(wins) / len(decided) * 100, 1) if decided else 0.0
 
@@ -252,6 +253,7 @@ def _summarize(picks: list) -> dict:
         "wins": len(wins),
         "losses": len(losses),
         "pushes": len(pushes),
+        "voids": len(voids),
         "pending": len([p for p in picks if p["result"] == "PENDING"]),
         "needs_review": len([p for p in picks if p["result"] == "NEEDS REVIEW"]),
         "win_rate": win_rate,
@@ -286,7 +288,7 @@ def _slip_record(threex_picks: list) -> dict:
         if any(r in ("PENDING", "NEEDS REVIEW") for r in results):
             pending += 1
             continue
-        graded = [r for r in results if r in ("W", "L")]  # PUSH legs drop out
+        graded = [r for r in results if r in ("W", "L")]  # PUSH / VOID legs drop out
         if not graded:
             push += 1                     # every leg pushed
         elif any(r == "L" for r in graded):
