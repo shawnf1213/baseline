@@ -1173,7 +1173,7 @@ POD_MINUTE = int(os.getenv("POD_MINUTE", "50") or "50")
 # ready to fire right after the 6 PM recap. The recap job then posts: recap →
 # ranked list → 3x. (Env override PICKS_GEN_HOUR/MINUTE.)
 PICKS_GEN_HOUR = int(os.getenv("PICKS_GEN_HOUR", "19") or "19")
-PICKS_GEN_MINUTE = int(os.getenv("PICKS_GEN_MINUTE", "45") or "45")
+PICKS_GEN_MINUTE = int(os.getenv("PICKS_GEN_MINUTE", "50") or "50")
 # Pre-generated bundle {ts, ranked, slip} produced by daily_picks_generate and
 # consumed by daily_results_post right after the recap.
 _daily_bundle = {"ts": 0.0, "ranked": None, "slip": []}
