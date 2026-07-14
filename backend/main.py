@@ -1805,6 +1805,8 @@ async def prop_calculate(req: PropRequest):
             opp_ta_career_matches=p2_blended.get("_ta_career_matches", 0),
             p1_blended=p1_blended,
             p2_blended=p2_blended,
+            projection=proj_val,
+            prop_line=req.prop_line,
         )
         # Start from the RAW (unclamped) base total. Every modifier below is
         # additive; the floor/cap is applied EXACTLY ONCE via finalize_confidence

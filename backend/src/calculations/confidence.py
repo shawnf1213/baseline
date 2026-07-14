@@ -86,6 +86,8 @@ def calculate_confidence(
     opp_ta_career_matches: int = 0,
     p1_blended: dict = None,
     p2_blended: dict = None,
+    projection: float = None,
+    prop_line: float = None,
 ) -> dict:
     stat_key = PROP_STAT_KEY.get(prop_type, "aces")
     breakdown = {}
@@ -364,8 +366,35 @@ def calculate_confidence(
     )
     if not both_deep and data_ceiling > 84:
         data_ceiling, _cap_reason, _cap_tag = 84, "85+ needs 15+ surface matches both sides on non-fallback data", "sample-capped"
-    if prop_type in ("Aces", "Double Faults") and high_variance and data_ceiling > 80:
-        data_ceiling, _cap_reason, _cap_tag = 80, f"high-variance {prop_type.lower()} (σ) — coin-flip stat", "variance-capped"
+
+    # ── EDGE-TO-VARIANCE RATIO ceiling (replaces the flat ace-variance cap) ────
+    # Extreme confidence is EARNED by how far the line sits from the projection
+    # relative to the stat's own variability: EVR = |projection − line| / σ.
+    #   EVR ≥ 2.5 → the line is multiple σ from the projection (e.g. proj 2.7 aces
+    #              vs an 8.5 line) → 88-95 territory; OVERRIDES any variance cap.
+    #   1.5–2.5  → up to the mid-80s (85).
+    #   1.0–1.5  → low-80s (82).
+    #   < 1.0    → line within one σ of the projection → coin flip → 78, no matter
+    #              how deep the data.
+    # Segmenting by EVR (not by prop type) is deliberate: the audit's losing aces
+    # were LOW-ratio plays; a high-ratio play like Badosa must not be dragged down
+    # with them.
+    _sigma = std_dev if (std_dev is not None and std_dev > 0) else None
+    if _sigma is not None and isinstance(projection, (int, float)) and isinstance(prop_line, (int, float)):
+        evr = abs(projection - prop_line) / _sigma
+        if evr < 1.0:
+            evr_ceiling, evr_tag = 78, "coin-flip zone"
+        elif evr < 1.5:
+            evr_ceiling, evr_tag = 82, None
+        elif evr < 2.5:
+            evr_ceiling, evr_tag = 85, None
+        else:
+            evr_ceiling, evr_tag = 95, None   # edge dwarfs variance → no cap
+        if evr_ceiling < data_ceiling:
+            data_ceiling = evr_ceiling
+            _cap_reason = f"edge-to-variance {evr:.1f}σ" + (f" — {evr_tag}" if evr_tag else "")
+            _cap_tag = "variance-capped"
+
     if data_ceiling < 95:
         breakdown["data_cap"] = {
             "score": 0, "max": 0, "tag": _cap_tag,
