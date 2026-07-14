@@ -58,12 +58,12 @@ def _extract_series(matches: list, stat_key: str) -> list:
     return [m[stat_key] for m in matches if stat_key in m and m[stat_key] is not None]
 
 
-def finalize_confidence(total, prop_type: str = "") -> int:
+def finalize_confidence(total, prop_type: str = "", data_ceiling: int = 95) -> int:
     """The SINGLE confidence floor/cap. Floor 25, cap 95 (minus any per-prop
-    ceiling for derived props). This is the ONLY place confidence is clamped —
-    it must be applied exactly once, as the final step after every bonus and
-    penalty. No other module should clamp confidence."""
-    ceiling = 95
+    ceiling for derived props, minus the ``data_ceiling`` imposed by data quality
+    / variance — Fixes B/C and the ace-variance cap). This is the ONLY place
+    confidence is clamped; applied once as the final step after every modifier."""
+    ceiling = min(95, data_ceiling if isinstance(data_ceiling, (int, float)) else 95)
     prop_ceiling = PROP_CONFIDENCE_CEILING.get(prop_type)
     if prop_ceiling is not None:
         ceiling = min(ceiling, prop_ceiling)
@@ -121,8 +121,8 @@ def calculate_confidence(
     total += sample_score
 
     if n == 0 and overall_n == 0:
-        return {"confidence": finalize_confidence(total, prop_type),
-                "raw_total": total, "breakdown": breakdown}
+        return {"confidence": finalize_confidence(total, prop_type, 65),
+                "raw_total": total, "data_ceiling": 65, "breakdown": breakdown}
 
     # 2. H2H bonus
     if has_h2h_surface:
@@ -294,15 +294,33 @@ def calculate_confidence(
     breakdown["source_agreement"] = {"score": agree_score, "max": 8, "label": agree_label}
     total += agree_score
 
-    # ── Cap total negative penalties at −40 ───────────────────────────────────
-    # A thin-grass player could stack ss_career −20, opponent −10, recency −10,
-    # ss_recent −8 = −48 in penalties alone, crushing an otherwise-fine player
-    # to the floor. Sum the negative-scoring components and, if they exceed −40,
-    # add back the overflow so no single matchup loses more than 40 points to
-    # penalties combined. Positive scores (sample size, H2H, consistency) are
-    # untouched.
+    _ADJUST_KEYS = {"bonus_cap", "penalty_cap", "confidence_cap", "data_cap"}
+
+    # ── Fix A — bonus STACKING cap +15 ────────────────────────────────────────
+    # Multiple small DISCRETIONARY bonuses (consistency, recency-alignment, venue,
+    # ss last-5, source agreement) could stack to rescue a play into the high 80s.
+    # Cap their COMBINED positive contribution at +15 — the same discipline the
+    # −40 penalty cap already applies to the negative side.
+    # Deliberately EXCLUDED (these are FOUNDATIONAL data signals, not stackable
+    # reward bonuses, and capping them would gut legitimately strong, deep-sample
+    # plays like Djokovic — which must still earn high-80s):
+    #   • sample_size  — the data foundation (0-60), kept per the Fix-D decision;
+    #                    degraded data is handled by the data-quality ceiling.
+    #   • h2h, opponent, ta_career — measured data-depth signals, not bonuses.
+    _BONUS_KEYS = ("consistency", "recency", "venue", "ss_recent", "source_agreement")
+    bonus_sum = sum(max(0, breakdown[k]["score"]) for k in _BONUS_KEYS if k in breakdown)
+    if bonus_sum > 15:
+        overflow = bonus_sum - 15
+        total -= overflow
+        breakdown["bonus_cap"] = {
+            "score": -round(overflow), "max": 0,
+            "label": f"Bonus cap — combined bonuses limited to +15 (was +{round(bonus_sum)})",
+        }
+
+    # ── Cap total negative penalties at −40 (unchanged) ───────────────────────
     penalty_sum = sum(
-        b["score"] for b in breakdown.values() if b.get("score", 0) < 0
+        b["score"] for k, b in breakdown.items()
+        if k not in _ADJUST_KEYS and b.get("score", 0) < 0
     )
     if penalty_sum < -40:
         overflow = -40 - penalty_sum   # positive number to add back
@@ -313,6 +331,45 @@ def calculate_confidence(
                      f"(was {penalty_sum})",
         }
 
+    # ── Fixes B & C + ace-variance — DATA-QUALITY confidence ceiling ──────────
+    # High confidence must be impossible on degraded data or a high-variance serve
+    # prop, regardless of how favourable the numbers look.
+    #   Fix B: either player on surface-fallback data → cap 75; either on very
+    #          thin / tour-average data → cap 65.
+    #   Fix C: 85+ requires BOTH players 15+ surface matches AND non-fallback,
+    #          non-thin data — otherwise cap 84.
+    #   Ace variance: a high-variance Aces / Double Faults prop caps at 80 — a big
+    #          projected edge on a coin-flip stat is not "high confidence".
+    p2_n = len(opponent_surface_matches)
+    data_ceiling = 95
+    _cap_reason = ""
+    for _bl in (p1_blended, p2_blended):
+        if not _bl:
+            continue
+        _dq = _bl.get("_data_quality")
+        if _dq == "thin":
+            if data_ceiling > 65:
+                data_ceiling, _cap_reason = 65, "tour-average / very thin data"
+        elif _bl.get("_surface_fallback"):
+            if data_ceiling > 75:
+                data_ceiling, _cap_reason = 75, "surface-fallback data"
+    both_deep = (
+        n >= 15 and p2_n >= 15
+        and not (p1_blended or {}).get("_surface_fallback")
+        and not (p2_blended or {}).get("_surface_fallback")
+        and (p1_blended or {}).get("_data_quality") != "thin"
+        and (p2_blended or {}).get("_data_quality") != "thin"
+    )
+    if not both_deep and data_ceiling > 84:
+        data_ceiling, _cap_reason = 84, "85+ needs 15+ surface matches both sides on non-fallback data"
+    if prop_type in ("Aces", "Double Faults") and high_variance and data_ceiling > 80:
+        data_ceiling, _cap_reason = 80, f"high-variance {prop_type.lower()} (σ) — coin-flip stat"
+    if data_ceiling < 95:
+        breakdown["data_cap"] = {
+            "score": 0, "max": 0,
+            "label": f"Data-quality ceiling {data_ceiling} — {_cap_reason}",
+        }
+
     # ── Return the RAW (unclamped) base total plus a finalized value ──────────
     # The floor/cap is NOT applied here as the authoritative step: the API path
     # (main.py) adds more bonuses/penalties on top of raw_total and calls
@@ -320,15 +377,17 @@ def calculate_confidence(
     # the finalized base — used by the standalone website UI, which applies no
     # further modifiers, so its single clamp is also its final step.
     raw_total = total
-    confidence = finalize_confidence(raw_total, prop_type)
+    confidence = finalize_confidence(raw_total, prop_type, data_ceiling)
     if confidence != int(round(raw_total)):
         breakdown["confidence_cap"] = {
             "score": confidence - int(round(raw_total)), "max": 0,
             "label": f"Floor/cap applied — base {int(round(raw_total))} → {confidence}",
         }
     logger.info(
-        "CONF | prop=%s | base_total=%d | penalty_sum=%d | high_var=%s | base_final=%d | breakdown=%s",
-        prop_type, total, penalty_sum, high_variance, confidence,
-        {k: v.get("score") for k, v in breakdown.items()},
+        "CONF | prop=%s | base_total=%d | penalty_sum=%d | bonus_cap=%s | data_ceiling=%d | "
+        "high_var=%s | base_final=%d | breakdown=%s",
+        prop_type, total, penalty_sum, "bonus_cap" in breakdown, data_ceiling,
+        high_variance, confidence, {k: v.get("score") for k, v in breakdown.items()},
     )
-    return {"confidence": confidence, "raw_total": raw_total, "breakdown": breakdown}
+    return {"confidence": confidence, "raw_total": raw_total,
+            "data_ceiling": data_ceiling, "breakdown": breakdown}

@@ -1809,6 +1809,9 @@ async def prop_calculate(req: PropRequest):
         # additive; the floor/cap is applied EXACTLY ONCE via finalize_confidence
         # at the very end — there is NO intermediate re-clamping in this file.
         confidence = conf_result["raw_total"]
+        # Data-quality / variance ceiling (Fixes B/C + ace variance) — passed to
+        # the single finalize step so it caps AFTER all modifiers.
+        _data_ceiling = conf_result.get("data_ceiling", 95)
         # Consistency tier for display comes straight from the confidence
         # breakdown — consistency is now scored ONCE, in confidence.py. There is
         # no separate main.py consistency penalty.
@@ -1927,9 +1930,9 @@ async def prop_calculate(req: PropRequest):
         confidence = _edge_cap(confidence, proj_val, req.prop_line)
 
         # ── SINGLE floor/cap — the final confidence step, in one place ────────
-        # floor 25 / cap 95 (minus any per-prop ceiling), applied exactly once
-        # after every bonus and penalty. No other clamp exists in this file.
-        confidence = finalize_confidence(confidence, req.prop_type)
+        # floor 25 / cap 95 (minus any per-prop ceiling, minus the data-quality /
+        # variance ceiling), applied exactly once after every bonus and penalty.
+        confidence = finalize_confidence(confidence, req.prop_type, _data_ceiling)
 
         # Archetypes
         p1_arch = classify_archetype(p1_all, req.tour)

@@ -2218,6 +2218,50 @@ async def _before_results_post():
     await client.wait_until_ready()
 
 
+# ── PART 5 — weekly confidence-calibration log (Railway logs only) ───────────
+@tasks.loop(time=datetime.time(hour=9, minute=30, tzinfo=POD_TZINFO))
+async def weekly_calibration_log():
+    """Every Monday 9:30 AM ET, log the rolling calibration table — confidence
+    bands vs actual hit rate over the last 30 days — so drift between stated
+    confidence and real performance is visible in Railway logs without a manual
+    query. Logs only; posts nothing to Discord."""
+    if datetime.datetime.now(POD_TZINFO).weekday() != 0:   # Mondays only
+        return
+    try:
+        rec = await asyncio.to_thread(results_tracker.get_record)
+        picks = (rec or {}).get("picks", [])
+        cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=30)
+
+        def _recent(p):
+            ra = p.get("resolved_at")
+            if not ra:
+                return False
+            try:
+                dt = datetime.datetime.fromisoformat(ra.replace("Z", "+00:00"))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=datetime.timezone.utc)
+                return dt >= cutoff
+            except Exception:  # noqa: BLE001
+                return False
+
+        dec = [p for p in picks if p.get("result") in ("W", "L")
+               and isinstance(p.get("confidence"), (int, float)) and _recent(p)]
+        log.info("CALIBRATION | rolling 30d | %d decided picks", len(dec))
+        for lo, hi in ((70, 75), (75, 80), (80, 85), (85, 90), (90, 101)):
+            b = [p for p in dec if lo <= p["confidence"] < hi]
+            w = sum(1 for p in b if p["result"] == "W")
+            hr = (w / len(b) * 100) if b else 0.0
+            log.info("CALIBRATION |   %2d-%-3d | n=%2d | %d-%d | hit=%.0f%%",
+                     lo, (hi if hi < 101 else 100), len(b), w, len(b) - w, hr)
+    except Exception:  # noqa: BLE001
+        log.exception("weekly calibration log failed")
+
+
+@weekly_calibration_log.before_loop
+async def _before_calibration_log():
+    await client.wait_until_ready()
+
+
 # ── Feature 7 — Monday 9am EST court-report auto-post ────────────────────────
 COURTREPORT_CHANNEL_ID = int(os.getenv("COURTREPORT_CHANNEL_ID", str(POD_CHANNEL_ID or 0)) or "0")
 
@@ -2357,6 +2401,14 @@ async def on_ready():
                      POD_TZINFO, COURTREPORT_CHANNEL_ID or POD_CHANNEL_ID)
         except Exception:
             log.exception("failed to start weekly court report loop")
+
+    # PART 5 — weekly confidence-calibration log (Railway logs only).
+    if not weekly_calibration_log.is_running():
+        try:
+            weekly_calibration_log.start()
+            log.info("Weekly calibration log scheduled Mon 09:30 %s", POD_TZINFO)
+        except Exception:
+            log.exception("failed to start weekly calibration log loop")
 
     # TEMPORARY: one-shot post on startup to verify the autonomous path end-to-end
     # without waiting for midnight. Remove once confirmed (set POD_POST_ON_START off).
