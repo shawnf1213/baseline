@@ -814,6 +814,75 @@ async def generate_ranked_and_slip() -> dict:
         return {"ranked": [], "slip": []}
 
 
+async def evaluate_fixed_props(specs: list) -> list:
+    """Re-score a FIXED, already-known set of plays with the CURRENT model —
+    bypassing the board fetch and the match-window gate. Used to re-post an
+    earlier slate with refreshed confidence. Each spec needs: player, opponent,
+    prop_type, line, surface, tournament. Returns pick dicts (same shape as
+    ``_evaluate``) for those that evaluate, in the SAME order. Never raises."""
+    sem = asyncio.Semaphore(MAX_CONCURRENT)
+
+    async def _ev(spec):
+        async with sem:
+            try:
+                p = await _resolve(spec.get("player", ""))
+                if not p:
+                    log.info("REPOST skip (no player match): %r", spec.get("player"))
+                    return None
+                p_id, tour, p_name = p
+                o = await _resolve(spec.get("opponent", ""), tours=(tour,))
+                if not o:
+                    log.info("REPOST skip (no opponent match): %r", spec.get("opponent"))
+                    return None
+                o_id, _, o_name = o
+                surface = spec.get("surface") or _season_surface()
+                court = spec.get("tournament") or ""
+                payload = {
+                    "player_id": p_id, "opponent_id": o_id,
+                    "player_name": p_name, "opponent_name": o_name,
+                    "tour": tour, "surface": surface, "court": court,
+                    "qualifying": bool(court) and "qualif" in court.lower(),
+                    "prop_type": spec.get("prop_type"), "prop_line": spec.get("line"),
+                }
+                data = None
+                for attempt in range(CALC_RETRIES):
+                    try:
+                        data = await asyncio.to_thread(_post, "/api/prop/calculate", payload, CALC_TIMEOUT)
+                        break
+                    except (requests.exceptions.Timeout,
+                            requests.exceptions.ConnectionError,
+                            requests.exceptions.HTTPError) as exc:
+                        status = getattr(getattr(exc, "response", None), "status_code", None)
+                        if status is not None and status < 500:
+                            raise
+                        if attempt == CALC_RETRIES - 1:
+                            raise
+                        await asyncio.sleep(2.0 * (attempt + 1))
+                proj = data.get("model_projection")
+                if proj is None:
+                    return None
+                conf = data.get("confidence") or 0
+                line = spec.get("line")
+                edge = proj - line
+                return {
+                    "player": p_name, "opponent": o_name, "player_id": p_id, "tour": tour,
+                    "pp_player": spec.get("player"), "prop_type": spec.get("prop_type"),
+                    "line": line, "original_line": line, "surface": surface,
+                    "tournament": court or None, "start_timestamp": None,
+                    "projection": proj, "edge": edge, "edge_mag": abs(edge),
+                    "confidence": conf, "lean": data.get("lean"),
+                    "p1_win_prob": data.get("p1_win_prob"), "p2_win_prob": data.get("p2_win_prob"),
+                    "explanation": data.get("plain_english_explanation"),
+                    "score": conf + abs(edge), "data": data,
+                }
+            except Exception as exc:  # noqa: BLE001
+                log.warning("REPOST eval failed for %r: %s", spec.get("player"), exc)
+                return None
+
+    results = await asyncio.gather(*[_ev(s) for s in specs])
+    return [r for r in results if r]
+
+
 async def generate_picks(n: int = 3):
     """Return up to ``n`` Pick-of-the-Day picks ranked best-first (list, possibly
     empty; None when the board has no eligible props). Never raises.

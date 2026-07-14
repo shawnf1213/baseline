@@ -12,6 +12,38 @@ VARIANCE_THRESHOLDS = {
     "total_games_won":   (3.0, 6.0),
 }
 
+# Per-prop scaling for the edge-to-variance grade. Aces are the reference (1.0);
+# Break Points Won / Total Games lines sit structurally CLOSER to the projection
+# (smaller raw ratios), so their ratios are scaled UP so a strong play in that prop
+# grades comparably. Tunable as real per-prop ratio distributions accumulate.
+PROP_EVR_SCALE = {
+    "Aces":                    1.0,
+    "Double Faults":           1.5,
+    "Break Points Won":        1.6,
+    "Total Games":             1.9,
+    "Player Total Games Won":  1.5,
+}
+
+# Anchor points mapping a (prop-scaled) edge-to-variance ratio → confidence ceiling.
+# Interpolated between anchors so the grade is continuous, not stepped. Raw ratio
+# >= 2.5 bypasses this (absolute 90-95 override); 89 is the graded top so 90-95 is
+# reserved for genuine multi-σ blowouts.
+_EVR_ANCHORS = [(0.5, 72), (1.0, 80), (1.5, 85), (2.0, 88), (2.5, 89)]
+
+
+def _evr_grade(x: float) -> int:
+    """Piecewise-linear ceiling from a (prop-scaled) edge-to-variance ratio, so a
+    ratio of 0.9 and 0.3 grade differently instead of binning to one number."""
+    if x <= _EVR_ANCHORS[0][0]:
+        return _EVR_ANCHORS[0][1]
+    if x >= _EVR_ANCHORS[-1][0]:
+        return _EVR_ANCHORS[-1][1]
+    for (x0, y0), (x1, y1) in zip(_EVR_ANCHORS, _EVR_ANCHORS[1:]):
+        if x0 <= x <= x1:
+            return int(round(y0 + (y1 - y0) * (x - x0) / (x1 - x0)))
+    return _EVR_ANCHORS[-1][1]
+
+
 PROP_STAT_KEY = {
     "Aces":             "aces",
     "Double Faults":    "double_faults",
@@ -367,33 +399,28 @@ def calculate_confidence(
     if not both_deep and data_ceiling > 84:
         data_ceiling, _cap_reason, _cap_tag = 84, "85+ needs 15+ surface matches both sides on non-fallback data", "sample-capped"
 
-    # ── EDGE-TO-VARIANCE RATIO ceiling (replaces the flat ace-variance cap) ────
-    # Extreme confidence is EARNED by how far the line sits from the projection
-    # relative to the stat's own variability: EVR = |projection − line| / σ.
-    #   EVR ≥ 2.5 → the line is multiple σ from the projection (e.g. proj 2.7 aces
-    #              vs an 8.5 line) → 88-95 territory; OVERRIDES any variance cap.
-    #   1.5–2.5  → up to the mid-80s (85).
-    #   1.0–1.5  → low-80s (82).
-    #   < 1.0    → line within one σ of the projection → coin flip → 78, no matter
-    #              how deep the data.
-    # Segmenting by EVR (not by prop type) is deliberate: the audit's losing aces
-    # were LOW-ratio plays; a high-ratio play like Badosa must not be dragged down
-    # with them.
+    # ── EDGE-TO-VARIANCE RATIO — continuous, per-prop-scaled confidence grade ──
+    # Confidence is graded by how far the line sits from the projection relative to
+    # the stat's own variability: ratio = |projection − line| / σ. The grade is
+    # CONTINUOUS (interpolated, not binned) so 0.9 and 0.3 read differently. Each
+    # prop's ratio is scaled to its OWN distribution (BP / Total Games lines sit
+    # structurally closer to projections than ace lines) so a top-quartile BP play
+    # can reach the mid-80s even though its raw ratio looks modest next to an ace.
+    # A RAW ratio ≥ 2.5 is an absolute override (any prop) → opens 90-95 (Badosa).
+    # This grade is the NORMAL variance-based confidence, NOT a structural cap — so
+    # it carries NO display label; only the data-quality ceilings above do.
     _sigma = std_dev if (std_dev is not None and std_dev > 0) else None
     if _sigma is not None and isinstance(projection, (int, float)) and isinstance(prop_line, (int, float)):
-        evr = abs(projection - prop_line) / _sigma
-        if evr < 1.0:
-            evr_ceiling, evr_tag = 78, "coin-flip zone"
-        elif evr < 1.5:
-            evr_ceiling, evr_tag = 82, None
-        elif evr < 2.5:
-            evr_ceiling, evr_tag = 85, None
+        raw_evr = abs(projection - prop_line) / _sigma
+        if raw_evr >= 2.5:
+            evr_ceiling = 95
         else:
-            evr_ceiling, evr_tag = 95, None   # edge dwarfs variance → no cap
+            evr_ceiling = _evr_grade(raw_evr * PROP_EVR_SCALE.get(prop_type, 1.0))
         if evr_ceiling < data_ceiling:
+            # EVR is the tighter constraint → normal grading, so drop the label.
             data_ceiling = evr_ceiling
-            _cap_reason = f"edge-to-variance {evr:.1f}σ" + (f" — {evr_tag}" if evr_tag else "")
-            _cap_tag = "variance-capped"
+            _cap_tag = None
+            _cap_reason = f"edge/variance grade (ratio {raw_evr:.2f})"
 
     if data_ceiling < 95:
         breakdown["data_cap"] = {

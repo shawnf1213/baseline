@@ -1181,9 +1181,9 @@ PICKS_GEN_MINUTE = int(os.getenv("PICKS_GEN_MINUTE", "0") or "0")
 # (in addition to the normal daily run). The recurring schedule above is untouched;
 # dedup in _log_picks_pending prevents any double-counting. Set to "" to disable —
 # auto-reverts the next day.
-POD_EXTRA_RUN_DATE = os.getenv("POD_EXTRA_RUN_DATE", "2026-07-13")
-POD_EXTRA_RUN_HOUR = int(os.getenv("POD_EXTRA_RUN_HOUR", "23") or "23")
-POD_EXTRA_RUN_MINUTE = int(os.getenv("POD_EXTRA_RUN_MINUTE", "0") or "0")
+POD_EXTRA_RUN_DATE = os.getenv("POD_EXTRA_RUN_DATE", "2026-07-14")
+POD_EXTRA_RUN_HOUR = int(os.getenv("POD_EXTRA_RUN_HOUR", "0") or "0")
+POD_EXTRA_RUN_MINUTE = int(os.getenv("POD_EXTRA_RUN_MINUTE", "15") or "15")
 # Pre-generated bundle {ts, ranked, slip} produced by daily_picks_generate and
 # consumed by daily_results_post right after the recap.
 _daily_bundle = {"ts": 0.0, "ranked": None, "slip": []}
@@ -1631,6 +1631,44 @@ async def _post_daily_picks(channel, track: bool = True) -> str:
     return f"posted {len(ranked)} ranked, ⭐ {ranked[0]['player']} {ranked[0]['prop_type']}{slip_note}"
 
 
+# The EXACT plays posted at 9:18 PM on 7/13 (from that post; surfaces/courts
+# confirmed against the logged rows). Hardcoded because the DB holds many duplicate
+# runs from today's schedule changes and isn't a clean source. Re-scored with the
+# current model at 11:40 PM — same plays, same order, updated confidence.
+_REPOST_SPECS_0713 = [
+    {"player": "Panna Udvardy",        "opponent": "Leyre Romero Gormaz", "prop_type": "Break Points Won", "line": 4.5, "surface": "Clay", "tournament": "Iasi"},
+    {"player": "Aliaksandra Sasnovich", "opponent": "Anna Blinkova",       "prop_type": "Break Points Won", "line": 4.5, "surface": "Hard", "tournament": "Athens"},
+    {"player": "Simona Waltert",       "opponent": "Katarzyna Kawa",       "prop_type": "Break Points Won", "line": 5.5, "surface": "Clay", "tournament": "Iasi"},
+    {"player": "Laura Samson",         "opponent": "Laura Pigossi",        "prop_type": "Total Games",      "line": 19.5, "surface": "Clay", "tournament": "Kitzbuhel"},
+    {"player": "Ignacio Buse",         "opponent": "Stefanos Tsitsipas",   "prop_type": "Break Points Won", "line": 2.0, "surface": "Clay", "tournament": "Gstaad"},
+    {"player": "Martin Krumich",       "opponent": "Stefano Travaglia",    "prop_type": "Break Points Won", "line": 3.0, "surface": "Clay", "tournament": "Bastad"},
+]
+# 3x legs posted at 9:18: Sasnovich (Athens) + Samson (Kitzbuhel).
+_REPOST_SLIP_0713 = [_REPOST_SPECS_0713[1], _REPOST_SPECS_0713[3]]
+
+
+async def _repost_todays_plays(channel) -> str:
+    """Re-post the EXACT 9:18 PM plays (fixed specs) re-scored with the current
+    model — same plays, same order, updated confidence. Does NOT re-log, so
+    nothing double-counts; the original rows remain the record of truth."""
+    ranked = await pick_of_day.evaluate_fixed_props(_REPOST_SPECS_0713)  # order preserved
+    slip = await pick_of_day.evaluate_fixed_props(_REPOST_SLIP_0713)
+    if not ranked:
+        log.info("REPOST: re-eval produced nothing")
+        return "re-eval produced nothing"
+    await _annotate_form_alerts(ranked)
+
+    embeds = ranked_embeds(ranked)
+    for i in range(0, len(embeds), 10):
+        await channel.send(content=("@everyone" if i == 0 else None),
+                           embeds=embeds[i:i + 10], allowed_mentions=EVERYONE_MENTION)
+    if slip and len(slip) >= 2:
+        await channel.send(content="@everyone", embed=threex_embed(slip[:2]),
+                           allowed_mentions=EVERYONE_MENTION)
+    return (f"re-posted {len(ranked)} plays (updated confidence)"
+            + (" + 3x" if slip and len(slip) >= 2 else ""))
+
+
 @tasks.loop(time=datetime.time(hour=PICKS_GEN_HOUR, minute=PICKS_GEN_MINUTE, tzinfo=POD_TZINFO))
 async def daily_picks_generate():
     """Pre-generate the ranked list + 3x at 5:50 PM ET so they're ready to fire
@@ -1663,9 +1701,10 @@ async def _before_picks_generate():
 @tasks.loop(time=datetime.time(hour=POD_EXTRA_RUN_HOUR, minute=POD_EXTRA_RUN_MINUTE,
                                tzinfo=POD_TZINFO))
 async def extra_pod_run():
-    """One-off EXTRA run: on POD_EXTRA_RUN_DATE only, re-post the ranked list + 3x
-    at 11 PM ET, in addition to the normal daily run. No-op on any other date, so
-    the recurring schedule is untouched. Dedup logging prevents double-counting."""
+    """One-off EXTRA run: on POD_EXTRA_RUN_DATE only, RE-POST today's exact plays
+    (the ranked list + 3x from the earlier run) re-scored with the current model,
+    at 11:40 PM ET. Not a fresh board — the same plays, updated confidence. Does
+    NOT re-log, so nothing double-counts. No-op on any other date."""
     if not POD_CHANNEL_ID or not POD_EXTRA_RUN_DATE:
         return
     if datetime.datetime.now(POD_TZINFO).strftime("%Y-%m-%d") != POD_EXTRA_RUN_DATE:
@@ -1675,10 +1714,10 @@ async def extra_pod_run():
         if channel is None:
             log.warning("POD extra run: channel %s not found", POD_CHANNEL_ID)
             return
-        status = await _post_daily_picks(channel, track=True)
-        log.info("POD extra 11pm run (%s): %s", POD_EXTRA_RUN_DATE, status)
+        status = await _repost_todays_plays(channel)
+        log.info("POD extra 11:40pm re-post (%s): %s", POD_EXTRA_RUN_DATE, status)
     except Exception:  # noqa: BLE001
-        log.exception("POD extra run failed")
+        log.exception("POD extra re-post failed")
 
 
 @extra_pod_run.before_loop
