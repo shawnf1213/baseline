@@ -1210,7 +1210,7 @@ SLATE_MINUTE = int(os.getenv("SLATE_MINUTE", "0") or "0")
 # picks have been graded by the resolver. Defaults to the POD channel.
 RESULTS_CHANNEL_ID = int(os.getenv("RESULTS_CHANNEL_ID", str(POD_CHANNEL_ID or 0)) or "0")
 RESULTS_POST_HOUR = int(os.getenv("RESULTS_POST_HOUR", "19") or "19")
-RESULTS_POST_MINUTE = int(os.getenv("RESULTS_POST_MINUTE", "30") or "30")
+RESULTS_POST_MINUTE = int(os.getenv("RESULTS_POST_MINUTE", "45") or "45")
 # One-off skip: don't post the daily recap on this ET date (it already posted
 # earlier that day). Set to "" to disable. Resumes normally the next day.
 RESULTS_SKIP_DATE = os.getenv("RESULTS_SKIP_DATE", "2026-06-30")
@@ -1848,17 +1848,23 @@ def daily_recap_embed(rec: dict, target_date: str = None) -> discord.Embed:
               and _et_date_of(p.get("resolved_at")) == target_date]
     today = graded
 
-    # W/L drive the record + hit rate; PUSH and VOID (cancelled/DNP) are excluded
-    # from the denominator entirely.
+    # CASHED = W + PUSH — a push didn't miss, so it counts as cashed. The
+    # denominator is every play that actually PLAYED (W + L + PUSH); VOID/DNP
+    # (cancelled) never played, so it's excluded from both sides.
     t_w = sum(1 for p in graded if p["result"] == "W")
     t_l = sum(1 for p in graded if p["result"] == "L")
-    t_dec = t_w + t_l
-    t_rate = round(t_w / t_dec * 100) if t_dec else 0
+    t_p = sum(1 for p in graded if p["result"] == "PUSH")
+    t_cash = t_w + t_p
+    t_total = t_w + t_l + t_p
+    t_rate = round(t_cash / t_total * 100) if t_total else 0
 
     o_w, o_l = rec.get("wins", 0), rec.get("losses", 0)
-    o_rate = round(rec.get("win_rate", 0.0))
+    o_p = rec.get("pushes", 0) or 0
+    o_cash = o_w + o_p
+    o_total = o_w + o_l + o_p
+    o_rate = round(o_cash / o_total * 100) if o_total else 0
 
-    color = COLOR_UNDER if (t_dec and t_rate < 50) else COLOR_OVER
+    color = COLOR_UNDER if (t_total and t_rate < 50) else COLOR_OVER
     e = discord.Embed(title=f"📊 {header}", color=color)
 
     # 🟢 W · 🔴 L · ⚪ PUSH · 🚫 VOID (match cancelled — no action / DNP).
@@ -1877,8 +1883,9 @@ def daily_recap_embed(rec: dict, target_date: str = None) -> discord.Embed:
 
     e.add_field(
         name="​",
-        value=(f"**Today:** {t_w}-{t_l} ({t_rate}%)\n"
-               f"**Overall:** {o_w}-{o_l} ({o_rate:g}%)"),
+        value=(f"**Today:** {t_cash}/{t_total} cashed ({t_rate}%)"
+               + (f"  ·  incl. {t_p} push{'es' if t_p != 1 else ''}" if t_p else "") + "\n"
+               + f"**Overall:** {o_cash}/{o_total} cashed ({o_rate}%)"),
         inline=False)
     e.set_footer(text=FOOTER_GENERIC)
     return e
