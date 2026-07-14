@@ -1172,7 +1172,7 @@ POD_MINUTE = int(os.getenv("POD_MINUTE", "50") or "50")
 # Daily picks are PRE-GENERATED at 5:50 PM ET so the projections (~10 min) are
 # ready to fire right after the 6 PM recap. The recap job then posts: recap →
 # ranked list → 3x. (Env override PICKS_GEN_HOUR/MINUTE.)
-PICKS_GEN_HOUR = int(os.getenv("PICKS_GEN_HOUR", "20") or "20")
+PICKS_GEN_HOUR = int(os.getenv("PICKS_GEN_HOUR", "21") or "21")
 PICKS_GEN_MINUTE = int(os.getenv("PICKS_GEN_MINUTE", "0") or "0")
 # Pre-generated bundle {ts, ranked, slip} produced by daily_picks_generate and
 # consumed by daily_results_post right after the recap.
@@ -1194,7 +1194,7 @@ SLATE_MINUTE = int(os.getenv("SLATE_MINUTE", "0") or "0")
 # 11:45 PM ET by default — just before the Pick of the Day, after the day's
 # picks have been graded by the resolver. Defaults to the POD channel.
 RESULTS_CHANNEL_ID = int(os.getenv("RESULTS_CHANNEL_ID", str(POD_CHANNEL_ID or 0)) or "0")
-RESULTS_POST_HOUR = int(os.getenv("RESULTS_POST_HOUR", "20") or "20")
+RESULTS_POST_HOUR = int(os.getenv("RESULTS_POST_HOUR", "21") or "21")
 RESULTS_POST_MINUTE = int(os.getenv("RESULTS_POST_MINUTE", "15") or "15")
 # One-off skip: don't post the daily recap on this ET date (it already posted
 # earlier that day). Set to "" to disable. Resumes normally the next day.

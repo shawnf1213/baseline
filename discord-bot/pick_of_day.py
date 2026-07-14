@@ -55,6 +55,8 @@ MAX_CONCURRENT  = 4       # parallelise backend calcs so the full board (100+ pr
                           # evaluates inside the pre-gen window. CALC_RETRIES with
                           # backoff absorbs the occasional 502 under light concurrency.
 MATCH_THRESHOLD = 0.80    # fuzzy name-match threshold
+MAX_RANKED_PLAYS = 6      # post only the top-6 ranked plays (the 3x still draws
+                          # its legs from the full evaluated pool)
 MAX_PROPS       = 130     # evaluate (nearly) the whole board — the ranked list
                           # must show EVERY qualifying play, and the daily run is a
                           # pre-generated 10-min job, so a low cap would silently
@@ -801,10 +803,12 @@ async def generate_ranked_and_slip() -> dict:
         ordered = _promote_star(ordered)
         # One-off (today only): hold specific players out of the ⭐ slot.
         ordered = _apply_star_exclusions(ordered)
-        # 3x excludes only the ⭐ POTD (ordered[0]) and its match, not the whole
-        # ranked list — the list features everything; the slip must not re-use #1.
+        # 3x excludes only the ⭐ POTD (ordered[0]) and its match — drawn from the
+        # FULL evaluated pool (not just the posted top-6).
         slip = _select_slip(ordered, ordered[:1])
-        return {"ranked": ordered, "slip": slip}
+        # Post only the top-N plays (⭐ + the next best), even though the whole
+        # board was evaluated.
+        return {"ranked": ordered[:MAX_RANKED_PLAYS], "slip": slip}
     except Exception as exc:  # noqa: BLE001 — total isolation
         log.exception("POD generate_ranked_and_slip failed: %s", exc)
         return {"ranked": [], "slip": []}

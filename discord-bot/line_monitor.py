@@ -22,6 +22,7 @@ log = logging.getLogger("baseline-bot.linemonitor")
 INTERVAL_SECONDS = 30 * 60       # check every 30 minutes
 MOVE_THRESHOLD   = 0.5           # only alert on moves of this size or larger
 MAX_RUNTIME_SECS = 20 * 3600     # safety cap if a start time is unknown
+COINFLIP_EDGE    = 0.5           # |proj - new line| below this = coin flip → avoid
 
 
 def _recompute_lean(projection, line):
@@ -104,11 +105,29 @@ async def monitor(picks: list, get_lines, post_alert, interval: int = INTERVAL_S
 
                 proj = p.get("projection")
                 proj_txt = f"{proj:.1f}" if isinstance(proj, (int, float)) else "—"
+
+                # Re-evaluate the play against the NEW line: a bump toward the
+                # projection shrinks the edge → lower confidence; if the edge
+                # collapses into the coin-flip band, advise avoiding the prop.
+                conf_note = ""
+                if isinstance(proj, (int, float)):
+                    old_e = abs(proj - a["original"])
+                    new_e = abs(proj - cur)
+                    if new_e < COINFLIP_EDGE:
+                        conf_note = (f"\n🛑 **Now a coin flip** — the projection ({proj:.1f}) sits just "
+                                     f"{new_e:.1f} off the new line. **Avoid this prop.**")
+                    elif new_e < old_e:
+                        conf_note = (f"\n🔻 Edge shrank **{old_e:.1f} → {new_e:.1f}** — "
+                                     f"**confidence reduced**, weaker than at the original line.")
+                    elif new_e > old_e:
+                        conf_note = (f"\n🔺 Edge grew **{old_e:.1f} → {new_e:.1f}** — "
+                                     f"**confidence improved**.")
+
                 msg = (
                     f"📉 **Line Alert:** the line for **{p.get('player')} {p.get('prop_type')}** "
                     f"has moved from **{a['original']:g}** to **{cur:g}** since the pick was generated.\n"
                     f"The model originally projected **{orig_lean or '—'}** at **{proj_txt}** — "
-                    f"recalculating against the new line.\n{verdict}"
+                    f"recalculating against the new line.\n{verdict}{conf_note}"
                 )
                 try:
                     await post_alert(msg)
