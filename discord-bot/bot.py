@@ -1177,6 +1177,13 @@ POD_MINUTE = int(os.getenv("POD_MINUTE", "50") or "50")
 # ranked list → 3x. (Env override PICKS_GEN_HOUR/MINUTE.)
 PICKS_GEN_HOUR = int(os.getenv("PICKS_GEN_HOUR", "21") or "21")
 PICKS_GEN_MINUTE = int(os.getenv("PICKS_GEN_MINUTE", "0") or "0")
+# One-off EXTRA run: on this ET date ONLY, re-run the ranked list + 3x at 11 PM ET
+# (in addition to the normal daily run). The recurring schedule above is untouched;
+# dedup in _log_picks_pending prevents any double-counting. Set to "" to disable —
+# auto-reverts the next day.
+POD_EXTRA_RUN_DATE = os.getenv("POD_EXTRA_RUN_DATE", "2026-07-13")
+POD_EXTRA_RUN_HOUR = int(os.getenv("POD_EXTRA_RUN_HOUR", "23") or "23")
+POD_EXTRA_RUN_MINUTE = int(os.getenv("POD_EXTRA_RUN_MINUTE", "0") or "0")
 # Pre-generated bundle {ts, ranked, slip} produced by daily_picks_generate and
 # consumed by daily_results_post right after the recap.
 _daily_bundle = {"ts": 0.0, "ranked": None, "slip": []}
@@ -1376,13 +1383,44 @@ def _breakdown_json(p: dict) -> str:
 
 async def _log_picks_pending(picks: list, group: str = "potd"):
     """Feature 1 — log each pick to the durable results tracker as PENDING,
-    tagged with its pick group ("potd" or "3x")."""
+    tagged with its pick group ("potd" or "3x").
+
+    DEDUP: a (player, prop_type, group) already logged in the last ~18h is NOT
+    logged again — so a same-day re-run (e.g. an extra evening run) never creates
+    a duplicate row that would count twice when the prop resolves the next day."""
+    try:
+        rec = await asyncio.to_thread(results_tracker.get_record)
+        cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=18)
+        existing = set()
+        for q in (rec or {}).get("picks", []):
+            ga = q.get("generated_at")
+            try:
+                dt = datetime.datetime.fromisoformat((ga or "").replace("Z", "+00:00"))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=datetime.timezone.utc)
+            except Exception:  # noqa: BLE001
+                continue
+            if dt >= cutoff:
+                existing.add((pick_of_day._norm(q.get("player", "")),
+                              q.get("prop_type"), (q.get("pick_group") or "potd")))
+    except Exception:  # noqa: BLE001
+        existing = set()
+
+    logged = skipped = 0
     for p in picks:
+        key = (pick_of_day._norm(p.get("player", "")), p.get("prop_type"), group)
+        if key in existing:
+            skipped += 1
+            log.info("POD: skip duplicate log (already logged today): %s %s [%s]",
+                     p.get("player"), p.get("prop_type"), group)
+            continue
         rec = await asyncio.to_thread(results_tracker.log_pick, _pick_to_record(p, group))
         if rec:
             p["pick_id"] = rec.get("id")
-    log.info("POD: logged %d %s picks to results tracker",
-             sum(1 for p in picks if p.get("pick_id")), group)
+            logged += 1
+            existing.add(key)   # guard against duplicates within this batch too
+    log.info("POD: logged %d %s picks (%d skipped as same-day duplicates)",
+             logged, group, skipped)
 
 
 def _start_line_monitor(channel, picks: list):
@@ -1619,6 +1657,32 @@ async def daily_picks_generate():
 
 @daily_picks_generate.before_loop
 async def _before_picks_generate():
+    await client.wait_until_ready()
+
+
+@tasks.loop(time=datetime.time(hour=POD_EXTRA_RUN_HOUR, minute=POD_EXTRA_RUN_MINUTE,
+                               tzinfo=POD_TZINFO))
+async def extra_pod_run():
+    """One-off EXTRA run: on POD_EXTRA_RUN_DATE only, re-post the ranked list + 3x
+    at 11 PM ET, in addition to the normal daily run. No-op on any other date, so
+    the recurring schedule is untouched. Dedup logging prevents double-counting."""
+    if not POD_CHANNEL_ID or not POD_EXTRA_RUN_DATE:
+        return
+    if datetime.datetime.now(POD_TZINFO).strftime("%Y-%m-%d") != POD_EXTRA_RUN_DATE:
+        return
+    try:
+        channel = client.get_channel(POD_CHANNEL_ID)
+        if channel is None:
+            log.warning("POD extra run: channel %s not found", POD_CHANNEL_ID)
+            return
+        status = await _post_daily_picks(channel, track=True)
+        log.info("POD extra 11pm run (%s): %s", POD_EXTRA_RUN_DATE, status)
+    except Exception:  # noqa: BLE001
+        log.exception("POD extra run failed")
+
+
+@extra_pod_run.before_loop
+async def _before_extra_pod_run():
     await client.wait_until_ready()
 
 
@@ -2412,6 +2476,14 @@ async def on_ready():
                      PICKS_GEN_HOUR, PICKS_GEN_MINUTE, POD_TZINFO, POD_CHANNEL_ID)
         except Exception:
             log.exception("failed to start daily picks generation loop")
+    # One-off extra run (date-gated; no-op on other days).
+    if POD_CHANNEL_ID and POD_EXTRA_RUN_DATE and not extra_pod_run.is_running():
+        try:
+            extra_pod_run.start()
+            log.info("One-off extra POTD run scheduled %02d:%02d %s on %s",
+                     POD_EXTRA_RUN_HOUR, POD_EXTRA_RUN_MINUTE, POD_TZINFO, POD_EXTRA_RUN_DATE)
+        except Exception:
+            log.exception("failed to start extra POTD run loop")
 
     # Feature 1 — results auto-resolution (runs on startup + every few hours).
     if not daily_resolve_results.is_running():
