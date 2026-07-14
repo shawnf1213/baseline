@@ -1933,7 +1933,16 @@ async def prop_calculate(req: PropRequest):
         # ── SINGLE floor/cap — the final confidence step, in one place ────────
         # floor 25 / cap 95 (minus any per-prop ceiling, minus the data-quality /
         # variance ceiling), applied exactly once after every bonus and penalty.
+        _pre_cap = round(confidence) if isinstance(confidence, (int, float)) else None
         confidence = finalize_confidence(confidence, req.prop_type, _data_ceiling)
+        # A cap indicator is shown ONLY when a structural ceiling actually pulled
+        # the score down (the pre-cap value exceeded the data ceiling).
+        confidence_cap_reason = (
+            conf_result.get("cap_tag")
+            if (_data_ceiling < 95 and _pre_cap is not None
+                and _pre_cap > confidence and confidence == _data_ceiling)
+            else None
+        )
 
         # Archetypes
         p1_arch = classify_archetype(p1_all, req.tour)
@@ -2047,6 +2056,7 @@ async def prop_calculate(req: PropRequest):
             "opponent_tiebreak_rate": p2_tb_rate,
             "lean":                 lean,
             "confidence":           confidence,
+            "confidence_cap_reason": confidence_cap_reason,
             "confidence_breakdown": conf_result["breakdown"],
             # Feature 3 — data freshness / injury flag (advisory)
             "freshness_level":      _freshness.get("level", ""),

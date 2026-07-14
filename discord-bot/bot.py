@@ -582,9 +582,11 @@ def prop_embed(player, opponent, prop_type, surface, court_display, line, data) 
     # Verdict — grouped with blank lines for readability: context (win prob /
     # sets) first, then court, then the projection takeaway.
     g_context = "\n".join(x for x in (win_line, sets_line) if x)
+    _cap = data.get("confidence_cap_reason")
+    _cap_txt = f"  ·  _{_cap}_" if _cap else ""
     g_proj = (
         f"{dot} **{lean} {line:g}**  ·  Projection **{_num(proj)}**  ·  Edge **{edge_txt}**{star}\n"
-        f"Confidence  {_conf_bar(conf)}"
+        f"Confidence  {_conf_bar(conf)}{_cap_txt}"
     )
     # Player Total Games Won is player-specific — say whose games, and how the
     # projection breaks down into holds vs breaks.
@@ -1473,6 +1475,8 @@ def _ranked_field(pick: dict, rank: int):
     es_txt = f"{esets:.1f}" if isinstance(esets, (int, float)) else "—"
     fa = pick.get("form_alert")
     fa_txt = f"  ·  {fa}" if fa else ""
+    cap = data.get("confidence_cap_reason")
+    cap_txt = f" ({cap})" if cap else ""
     stats = _ranked_stats(pick["prop_type"], data)
     # Player Total Games Won knife-edge: line sits in the highest-variance band.
     if pick.get("coin_flip"):
@@ -1482,13 +1486,13 @@ def _ranked_field(pick: dict, rank: int):
         name = f"⭐ Pick of the Day — {pick['player']} vs {pick['opponent']}"
         loc = pick.get("tournament") or f"{pick.get('surface', '')} court"
         value = (f"{dot} **{lean} {pick['line']:g} {pick['prop_type']}**  ·  proj **{_num(proj)}**  ·  "
-                 f"edge **{edge_txt}**  ·  **{conf:.0f}%** conf{fa_txt}\n"
+                 f"edge **{edge_txt}**  ·  **{conf:.0f}%** conf{cap_txt}{fa_txt}\n"
                  f"Win prob **{wp_txt}**  ·  Exp sets **{es_txt}**  ·  {loc}\n"
                  f"{stats}")
     else:
         name = f"{rank}. {pick['player']} vs {pick['opponent']}"
         value = (f"{dot} **{lean} {pick['line']:g} {pick['prop_type']}** · proj {_num(proj)} · "
-                 f"edge {edge_txt} · {conf:.0f}% conf · Win {wp_txt} · Sets {es_txt}\n{stats}")
+                 f"edge {edge_txt} · {conf:.0f}% conf{cap_txt} · Win {wp_txt} · Sets {es_txt}\n{stats}")
     return name[:256], value[:1024]
 
 
@@ -2261,12 +2265,41 @@ async def weekly_calibration_log():
         dec = [p for p in picks if p.get("result") in ("W", "L")
                and isinstance(p.get("confidence"), (int, float)) and _recent(p)]
         log.info("CALIBRATION | rolling 30d | %d decided picks", len(dec))
+
+        # Confidence-band hit rates.
+        band_rates = []   # (label, hit%, n) for populated bands, low→high
         for lo, hi in ((70, 75), (75, 80), (80, 85), (85, 90), (90, 101)):
             b = [p for p in dec if lo <= p["confidence"] < hi]
             w = sum(1 for p in b if p["result"] == "W")
             hr = (w / len(b) * 100) if b else 0.0
             log.info("CALIBRATION |   %2d-%-3d | n=%2d | %d-%d | hit=%.0f%%",
                      lo, (hi if hi < 101 else 100), len(b), w, len(b) - w, hr)
+            if b:
+                band_rates.append(("%d-%d" % (lo, hi if hi < 101 else 100), hr, len(b)))
+
+        # Monotonicity — each higher populated band should hit >= the band below.
+        inversions = [(band_rates[i - 1], band_rates[i])
+                      for i in range(1, len(band_rates))
+                      if band_rates[i][1] < band_rates[i - 1][1]]
+        if not band_rates:
+            log.info("CALIBRATION | monotonicity: n/a (no populated bands)")
+        elif not inversions:
+            log.info("CALIBRATION | monotonicity: OK — bands are non-decreasing")
+        else:
+            for lower, higher in inversions:
+                log.warning("CALIBRATION | ⚠ INVERSION | %s hits %.0f%% (n=%d) but higher band "
+                            "%s hits only %.0f%% (n=%d)",
+                            lower[0], lower[1], lower[2], higher[0], higher[1], higher[2])
+
+        # Per-prop-type hit rate (spot a new failure pattern within a week).
+        by_type = {}
+        for p in dec:
+            by_type.setdefault(p.get("prop_type") or "?", []).append(p)
+        log.info("CALIBRATION | per prop type (30d):")
+        for pt, ps in sorted(by_type.items(), key=lambda kv: -len(kv[1])):
+            w = sum(1 for p in ps if p["result"] == "W")
+            log.info("CALIBRATION |   %-22s | n=%2d | %d-%d | hit=%.0f%%",
+                     pt[:22], len(ps), w, len(ps) - w, (w / len(ps) * 100) if ps else 0.0)
     except Exception:  # noqa: BLE001
         log.exception("weekly calibration log failed")
 

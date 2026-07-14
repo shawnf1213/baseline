@@ -122,7 +122,8 @@ def calculate_confidence(
 
     if n == 0 and overall_n == 0:
         return {"confidence": finalize_confidence(total, prop_type, 65),
-                "raw_total": total, "data_ceiling": 65, "breakdown": breakdown}
+                "raw_total": total, "data_ceiling": 65, "cap_tag": "data-capped",
+                "breakdown": breakdown}
 
     # 2. H2H bonus
     if has_h2h_surface:
@@ -343,16 +344,17 @@ def calculate_confidence(
     p2_n = len(opponent_surface_matches)
     data_ceiling = 95
     _cap_reason = ""
+    _cap_tag = None          # short display tag: data-capped / sample-capped / variance-capped
     for _bl in (p1_blended, p2_blended):
         if not _bl:
             continue
         _dq = _bl.get("_data_quality")
         if _dq == "thin":
             if data_ceiling > 65:
-                data_ceiling, _cap_reason = 65, "tour-average / very thin data"
+                data_ceiling, _cap_reason, _cap_tag = 65, "tour-average / very thin data", "data-capped"
         elif _bl.get("_surface_fallback"):
             if data_ceiling > 75:
-                data_ceiling, _cap_reason = 75, "surface-fallback data"
+                data_ceiling, _cap_reason, _cap_tag = 75, "surface-fallback data", "data-capped"
     both_deep = (
         n >= 15 and p2_n >= 15
         and not (p1_blended or {}).get("_surface_fallback")
@@ -361,12 +363,12 @@ def calculate_confidence(
         and (p2_blended or {}).get("_data_quality") != "thin"
     )
     if not both_deep and data_ceiling > 84:
-        data_ceiling, _cap_reason = 84, "85+ needs 15+ surface matches both sides on non-fallback data"
+        data_ceiling, _cap_reason, _cap_tag = 84, "85+ needs 15+ surface matches both sides on non-fallback data", "sample-capped"
     if prop_type in ("Aces", "Double Faults") and high_variance and data_ceiling > 80:
-        data_ceiling, _cap_reason = 80, f"high-variance {prop_type.lower()} (σ) — coin-flip stat"
+        data_ceiling, _cap_reason, _cap_tag = 80, f"high-variance {prop_type.lower()} (σ) — coin-flip stat", "variance-capped"
     if data_ceiling < 95:
         breakdown["data_cap"] = {
-            "score": 0, "max": 0,
+            "score": 0, "max": 0, "tag": _cap_tag,
             "label": f"Data-quality ceiling {data_ceiling} — {_cap_reason}",
         }
 
@@ -390,4 +392,4 @@ def calculate_confidence(
         high_variance, confidence, {k: v.get("score") for k, v in breakdown.items()},
     )
     return {"confidence": confidence, "raw_total": raw_total,
-            "data_ceiling": data_ceiling, "breakdown": breakdown}
+            "data_ceiling": data_ceiling, "cap_tag": _cap_tag, "breakdown": breakdown}
