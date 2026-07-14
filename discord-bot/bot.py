@@ -12,6 +12,7 @@ Slash commands: /prop  /h2h  /player  /help
 """
 
 import os
+import json
 import re
 import time
 import asyncio
@@ -1355,7 +1356,20 @@ def _pick_to_record(p: dict, group: str = "potd") -> dict:
         "original_line": p.get("original_line", p.get("line")),
         "tournament": p.get("tournament") or "", "surface": p.get("surface") or "",
         "pick_group": group,
+        "confidence_breakdown": _breakdown_json(p),
     }
+
+
+def _breakdown_json(p: dict) -> str:
+    """Compact JSON of the confidence component breakdown (for later calibration).
+    Empty string when unavailable. Truncated so a huge dict can't bloat a row."""
+    try:
+        bd = (p.get("data") or {}).get("confidence_breakdown")
+        if not bd:
+            return ""
+        return json.dumps(bd, separators=(",", ":"))[:2000]
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 async def _log_picks_pending(picks: list, group: str = "potd"):

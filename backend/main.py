@@ -166,6 +166,7 @@ class ResultLogRequest(BaseModel):
     tournament: str = ""
     surface: str = ""
     pick_group: str = "potd"             # "potd" or "3x"
+    confidence_breakdown: str = ""       # JSON snapshot of the confidence components
 
 
 class ResultUpdateRequest(BaseModel):

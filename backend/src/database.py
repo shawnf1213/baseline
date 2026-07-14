@@ -54,6 +54,9 @@ try:
         # "potd" (Pick of the Day) or "3x" (two-leg slip). Legacy rows are NULL
         # and treated as "potd" everywhere they're read.
         pick_group       = Column(String, default="potd")
+        # JSON snapshot of the confidence component breakdown at pick time, so a
+        # faithful calibration recompute is possible later. NULL on legacy rows.
+        confidence_breakdown = Column(String)
 
         def to_dict(self) -> dict:
             return {
@@ -72,6 +75,7 @@ try:
                 "tournament": self.tournament,
                 "surface": self.surface,
                 "pick_group": (self.pick_group or "potd"),
+                "confidence_breakdown": self.confidence_breakdown,
             }
 
     _SQLALCHEMY_OK = True
@@ -103,6 +107,8 @@ def init_db() -> None:
                 conn.execute(text(
                     "ALTER TABLE picks ADD COLUMN IF NOT EXISTS pick_group "
                     "VARCHAR DEFAULT 'potd'"))
+                conn.execute(text(
+                    "ALTER TABLE picks ADD COLUMN IF NOT EXISTS confidence_breakdown VARCHAR"))
         except Exception as mexc:  # noqa: BLE001 — non-fatal; column may already exist
             logger.warning("picks pick_group migration skipped: %s", mexc)
         _READY = True
@@ -149,6 +155,7 @@ def log_pick(rec: dict) -> dict:
                 tournament=rec.get("tournament", ""),
                 surface=rec.get("surface", ""),
                 pick_group=(rec.get("pick_group") or "potd"),
+                confidence_breakdown=rec.get("confidence_breakdown"),
             )
             s.add(row)
             s.flush()
