@@ -1175,8 +1175,13 @@ POD_MINUTE = int(os.getenv("POD_MINUTE", "50") or "50")
 # Daily picks are PRE-GENERATED at 5:50 PM ET so the projections (~10 min) are
 # ready to fire right after the 6 PM recap. The recap job then posts: recap →
 # ranked list → 3x. (Env override PICKS_GEN_HOUR/MINUTE.)
-PICKS_GEN_HOUR = int(os.getenv("PICKS_GEN_HOUR", "21") or "21")
-PICKS_GEN_MINUTE = int(os.getenv("PICKS_GEN_MINUTE", "0") or "0")
+# POTD trigger — the board eval starts here and the ranked list + 3x post when it
+# finishes (~10 min later). Independent of the recap, which posts earlier.
+PICKS_GEN_HOUR = int(os.getenv("PICKS_GEN_HOUR", "19") or "19")
+PICKS_GEN_MINUTE = int(os.getenv("PICKS_GEN_MINUTE", "50") or "50")
+# Ranked plays are delivered in pages of this many, each its own @everyone message
+# (top-12 → two messages: 1-6 then 7-12).
+RANKED_PAGE_SIZE = int(os.getenv("RANKED_PAGE_SIZE", "6") or "6")
 # One-off EXTRA run: on this ET date ONLY, re-run the ranked list + 3x at 11 PM ET
 # (in addition to the normal daily run). The recurring schedule above is untouched;
 # dedup in _log_picks_pending prevents any double-counting. Set to "" to disable —
@@ -1204,8 +1209,8 @@ SLATE_MINUTE = int(os.getenv("SLATE_MINUTE", "0") or "0")
 # 11:45 PM ET by default — just before the Pick of the Day, after the day's
 # picks have been graded by the resolver. Defaults to the POD channel.
 RESULTS_CHANNEL_ID = int(os.getenv("RESULTS_CHANNEL_ID", str(POD_CHANNEL_ID or 0)) or "0")
-RESULTS_POST_HOUR = int(os.getenv("RESULTS_POST_HOUR", "21") or "21")
-RESULTS_POST_MINUTE = int(os.getenv("RESULTS_POST_MINUTE", "15") or "15")
+RESULTS_POST_HOUR = int(os.getenv("RESULTS_POST_HOUR", "19") or "19")
+RESULTS_POST_MINUTE = int(os.getenv("RESULTS_POST_MINUTE", "30") or "30")
 # One-off skip: don't post the daily recap on this ET date (it already posted
 # earlier that day). Set to "" to disable. Resumes normally the next day.
 RESULTS_SKIP_DATE = os.getenv("RESULTS_SKIP_DATE", "2026-06-30")
@@ -1534,15 +1539,23 @@ def _ranked_field(pick: dict, rank: int):
     return name[:256], value[:1024]
 
 
-def ranked_embeds(ranked: list) -> list:
-    """The ranked-plays embed(s): ⭐ #1 first, then 2..N compact. Splits into
-    multiple embeds if Discord's field/char limits would be exceeded."""
+def ranked_embeds(ranked: list, start_rank: int = 1, total: int = None) -> list:
+    """The ranked-plays embed(s) for ONE page. ``start_rank`` is the absolute rank
+    of ranked[0] (so page 2 numbers 7..12 and only the true #1 gets the ⭐).
+    ``total`` is the full play count across pages. Splits further if Discord's
+    field/char limits would be exceeded."""
     today = datetime.datetime.now(POD_TZINFO)
-    title = f"🎾 Baseline Ranked Plays — {today.month}/{today.day}"
+    total = total if total is not None else len(ranked)
+    if start_rank == 1:
+        title = f"🎾 Baseline Ranked Plays — {today.month}/{today.day}"
+        desc = (f"**{total}** qualifying play{'s' if total != 1 else ''}, "
+                f"ranked by value (confidence-led). ⭐ = Pick of the Day.")
+    else:
+        title = f"🎾 Baseline Ranked Plays — {today.month}/{today.day} (cont.)"
+        desc = f"Plays **{start_rank}–{start_rank + len(ranked) - 1}** of {total}."
     embeds, e = [], discord.Embed(title=title, color=COLOR_OVER)
-    e.description = (f"**{len(ranked)}** qualifying play{'s' if len(ranked) != 1 else ''}, "
-                    f"ranked by value (confidence × edge). ⭐ = Pick of the Day.")
-    for i, pick in enumerate(ranked, 1):
+    e.description = desc
+    for i, pick in enumerate(ranked, start_rank):
         name, value = _ranked_field(pick, i)
         if len(e.fields) >= 24 or (len(e) + len(name) + len(value)) > 5500:
             embeds.append(e)
@@ -1607,14 +1620,14 @@ async def _post_daily_picks(channel, track: bool = True) -> str:
     if track:
         await _log_picks_pending(ranked, group="potd")
 
-    # Ranked list — one @everyone message (or several if it overflows a message's
-    # 10-embed cap). Only the first message pings.
-    embeds = ranked_embeds(ranked)
-    for i in range(0, len(embeds), 10):
-        chunk = embeds[i:i + 10]
+    # Ranked list — delivered in PAGES of 6 plays, each as its own @everyone
+    # message (top-12 → two messages: plays 1-6 then 7-12).
+    for start in range(0, len(ranked), RANKED_PAGE_SIZE):
+        page = ranked[start:start + RANKED_PAGE_SIZE]
+        embeds = ranked_embeds(page, start_rank=start + 1, total=len(ranked))
         await channel.send(
-            content=("@everyone" if (i == 0 and track) else None),
-            embeds=chunk, allowed_mentions=EVERYONE_MENTION)
+            content=("@everyone" if track else None),
+            embeds=embeds[:10], allowed_mentions=EVERYONE_MENTION)
 
     # Baseline 3x — a SEPARATE post right after the ranked list.
     if slip:
@@ -1671,26 +1684,27 @@ async def _repost_todays_plays(channel) -> str:
 
 @tasks.loop(time=datetime.time(hour=PICKS_GEN_HOUR, minute=PICKS_GEN_MINUTE, tzinfo=POD_TZINFO))
 async def daily_picks_generate():
-    """Pre-generate the ranked list + 3x at 5:50 PM ET so they're ready to fire
-    right after the 6 PM recap (the projection run takes ~10 min). Stores the
-    result in _daily_bundle; the recap job posts it."""
+    """THE POTD TRIGGER — fires at PICKS_GEN (7:50 PM ET): evaluates the board and
+    posts the ranked list (in pages of 6, each @everyone) + the 3x when the run
+    finishes (~10 min). Independent of the recap, which posts earlier at 7:30."""
     if not POD_CHANNEL_ID:
         return
-    # Honour the one-off skip date — don't pre-generate on a skip day.
-    if POD_SKIP_DATE and datetime.datetime.now(POD_TZINFO).strftime("%Y-%m-%d") == POD_SKIP_DATE:
-        _daily_bundle.update({"ts": time.time(), "ranked": [], "slip": []})
-        log.info("daily picks generate: skip-date %s — empty bundle", POD_SKIP_DATE)
-        return
     try:
-        bundle = await pick_of_day.generate_ranked_and_slip()
-        _daily_bundle.update({"ts": time.time(),
-                              "ranked": bundle.get("ranked") or [],
-                              "slip": bundle.get("slip") or []})
-        r = _daily_bundle["ranked"]
-        log.info("daily picks pre-generated: %d ranked, %s slip",
-                 len(r), len(_daily_bundle["slip"]))
+        channel = client.get_channel(POD_CHANNEL_ID)
+        if channel is None:
+            log.warning("POTD trigger: channel %s not found", POD_CHANNEL_ID)
+            return
+        # One-off skip date — post the no-value notice instead of generating.
+        if POD_SKIP_DATE and datetime.datetime.now(POD_TZINFO).strftime("%Y-%m-%d") == POD_SKIP_DATE:
+            e = discord.Embed(description=MSG_POD_SKIP, color=COLOR_NEUTRAL)
+            e.set_author(name="🎾 Baseline Ranked Plays")
+            await channel.send(content="@everyone", embed=e, allowed_mentions=EVERYONE_MENTION)
+            log.info("POTD trigger: skip-date %s — posted no-value notice", POD_SKIP_DATE)
+            return
+        status = await _post_daily_picks(channel, track=True)
+        log.info("POTD trigger: %s", status)
     except Exception:  # noqa: BLE001
-        log.exception("daily picks generation failed")
+        log.exception("POTD trigger failed")
 
 
 @daily_picks_generate.before_loop
@@ -2320,16 +2334,8 @@ async def daily_results_post():
         else:
             log.info("daily results: no graded record yet — skipping recap")
 
-        # 2) RANKED LIST + 3x — immediately after the recap. On the skip date,
-        #    post the no-value notice instead of generating.
-        if POD_SKIP_DATE and today == POD_SKIP_DATE:
-            e = discord.Embed(description=MSG_POD_SKIP, color=COLOR_NEUTRAL)
-            e.set_author(name="🎾 Baseline Ranked Plays")
-            await channel.send(content="@everyone", embed=e, allowed_mentions=EVERYONE_MENTION)
-            log.info("daily picks: skip-date %s — posted no-value notice", POD_SKIP_DATE)
-        else:
-            status = await _post_daily_picks(channel, track=True)
-            log.info("daily picks: %s", status)
+        # The picks are NOT posted here — the POTD trigger is its own job
+        # (daily_picks_generate) so the recap can land earlier, independently.
     except Exception:  # noqa: BLE001
         log.exception("daily results post failed")
 

@@ -55,8 +55,9 @@ MAX_CONCURRENT  = 4       # parallelise backend calcs so the full board (100+ pr
                           # evaluates inside the pre-gen window. CALC_RETRIES with
                           # backoff absorbs the occasional 502 under light concurrency.
 MATCH_THRESHOLD = 0.80    # fuzzy name-match threshold
-MAX_RANKED_PLAYS = 6      # post only the top-6 ranked plays (the 3x still draws
-                          # its legs from the full evaluated pool)
+MAX_RANKED_PLAYS = 12     # post the top-12 ranked plays (delivered as two pages of
+                          # 6 by the bot). The 3x still draws its legs from the
+                          # full evaluated pool.
 MAX_PROPS       = 130     # evaluate (nearly) the whole board — the ranked list
                           # must show EVERY qualifying play, and the daily run is a
                           # pre-generated 10-min job, so a low cap would silently
