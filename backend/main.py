@@ -2186,8 +2186,13 @@ async def prop_calculate(req: PropRequest):
         )
 
         # Data source transparency fields
-        p1_ta_career   = p1_blended.get("_ta_career_matches", 0)
-        p2_ta_career   = p2_blended.get("_ta_career_matches", 0)
+        # ⚠️ Despite the "_ta_" / "ta_matches" naming these are SOFASCORE stat-rich
+        # surface match counts, NOT Tennis Abstract. See the note in
+        # blended_stats.py. They are capped by the valid[:50] stats fetch and span
+        # ~52 weeks — they are NOT a career-depth sample, and the response's
+        # player_ta_matches / opponent_ta_matches fields inherit the same misnomer.
+        p1_ta_career   = p1_blended.get("_ta_career_matches", 0)   # stat-rich SS surface n
+        p2_ta_career   = p2_blended.get("_ta_career_matches", 0)   # stat-rich SS surface n
         p1_ss_recent   = p1_blended.get("_ss_recent_matches", 0)
         p2_ss_recent   = p2_blended.get("_ss_recent_matches", 0)
         p1_fallback    = p1_blended.get("_surface_fallback", False)

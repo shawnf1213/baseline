@@ -507,10 +507,18 @@ def get_blended_stats(
         "_ss_3yr_matches":        ss_3yr_matches,
         "_ss_last20_matches":     ss_last20_matches,
         "_ss_recent_matches":     ss_matches_with_stats,
-        # Legacy TA metadata keys — kept for compatibility with confidence.py
-        "_ta_career_matches":     ss_career_matches,
-        "_ta_3yr_matches":        ss_3yr_matches,
-        "_ta_last20_matches":     ss_last20_matches,
+        # ⚠️ MISNOMER — these "_ta_*" keys carry SOFASCORE counts, NOT Tennis
+        # Abstract data. The names are a legacy alias kept only because
+        # confidence.py reads them. Tennis Abstract is a SEPARATE, largely
+        # unavailable source (get_player_ta_stats; frequently returns
+        # ta_unavailable / null surface splits), and nothing below ever touches it.
+        # Read "_ta_career_matches" as "stat-rich Sofascore surface matches".
+        # This mislabel cost real diagnostic time on 2026-07-14/15: it implies a
+        # career-depth TA sample that does not exist — the value is capped by the
+        # valid[:50] stats fetch and spans ~52 weeks, not a career.
+        "_ta_career_matches":     ss_career_matches,   # = stat-rich SS surface matches
+        "_ta_3yr_matches":        ss_3yr_matches,      # = SS 3yr surface matches
+        "_ta_last20_matches":     ss_last20_matches,   # = SS last-20 surface matches
         "_surface_fallback":      surface_fallback,
         "_data_quality":          data_quality,
         "_sackmann_matches":      sack_matches,

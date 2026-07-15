@@ -92,3 +92,35 @@ printed in the SURFACE_AFFINITY log. One blended number hid the shape.
 held-out and diluted values side by side, so live data shows how often the
 correction changes the picture and whether the 3.0 trigger threshold still holds
 once affinities are measured honestly rather than shrunk toward zero.
+
+**Dual-window affinity: NOT BUILDABLE (investigated 2026-07-15, not shipped).**
+The plan was to blend a 52-week affinity with a career one (40/60) and flag
+divergence. Both premises failed against the data:
+
+* There is only ONE window. The `valid[:50]` stats fetch means only the ~50 most
+  recent matches ever get statistics — for Jones that is 414 matches -> 50
+  stat-rich spanning exactly 12.0 months. The "52-week window" and the "career
+  log" are the same rows, so a blend would average a number against itself and
+  the divergence flag could never fire.
+* Tennis Abstract cannot supply the career side. `ta_stats.surface_stats` carries
+  ace_pct / df_pct / first_in_pct / first_won_pct / second_won_pct / bp_saved_pct
+  / bp_conv_pct — but NO win rate, NO service games won, NO return games won,
+  i.e. none of the three affinity inputs (win rate alone is 50% of the score).
+  It is also null on all surfaces for Urgesi, one of the two players in the
+  motivating case, and its counts (Jones: 22/16/17 = 55) are no deeper than
+  Sofascore's.
+
+Consequence: the shipped affinity IS a 52-week figure and should be read as
+recent form, not career identity. Jones's +12.93 clay affinity is measured over
+one year; whether it is her career identity is NOT answerable from current data.
+
+Raising the valid[:50] cap would create a real career window but multiplies proxy
+volume on every cold fetch across every player — a deliberate infrastructure
+decision (cost + rate limits; see the 2026-07-14 Decodo exhaustion and Discord
+Cloudflare ban), explicitly NOT taken as a fallback inside this task.
+
+**Known defect, not yet fixed:** the differential's affinity and the per-surface
+ranking disagree (Urgesi clay: ranking -2.10, differential -15.09). The ranking
+computes both sides from raw match records; the differential compares
+quality-weighted surface stats against a raw held-out reference. The ranking is
+the honest number. The differential should read from the ranking.
