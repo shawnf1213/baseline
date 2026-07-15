@@ -1993,8 +1993,27 @@ async def prop_calculate(req: PropRequest):
         # adjust TRUST and INFORM the user — are unchanged. recent_form_avg is
         # still computed here for display/warning, but is NOT applied to proj_val.
         proj_val_premodel = proj_val
-        _pulled_unused, recent_form_avg = _recent_form_pull(
+        # ⚠️ THE PULLED VALUE IS DELIBERATELY DISCARDED — recent form does NOT move
+        # the projection. Read that again before assuming otherwise: the name below
+        # is _DISCARDED_recent_form_pull precisely so nobody concludes from a
+        # live-looking call that this feeds the number. It does not.
+        #
+        # Why it's disabled (kept, not deleted, so the reasoning survives): the
+        # pull dragged projections ~8% under book lines systematically — measured
+        # 5-above/7-below WITH the pull vs 7-above/5-below WITHOUT, i.e. the pull
+        # turned a natural spread into a one-sided bias. Recent form already moves
+        # the NUMBER in exactly one place (the blended-stats recency layer);
+        # pulling again here double-counted it.
+        #
+        # What recent_form_avg IS still used for: the divergence confidence penalty
+        # and the warning flag — those adjust TRUST and INFORM the reader. Neither
+        # touches proj_val. It is also returned in the response purely for display.
+        #
+        # Consequently it is NOT a component_trace step, and must never become one
+        # unless it is genuinely re-applied to the projection.
+        _DISCARDED_recent_form_pull, recent_form_avg = _recent_form_pull(
             proj_val, p1_data.get(f"{req.surface}_matches", []) or [], req.prop_type)
+        del _DISCARDED_recent_form_pull      # make the discard explicit, not incidental
 
         # ════ NEW SIGNALS applied as the top additive projection layer ═══════
         # THESE ARE PART OF THE PROJECTION CHAIN. They live outside the projector

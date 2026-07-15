@@ -1193,9 +1193,12 @@ PICKS_GEN_MINUTE = int(os.getenv("PICKS_GEN_MINUTE", "50") or "50")
 POD_EXTRA_RUN_DATE = os.getenv("POD_EXTRA_RUN_DATE", "2026-07-14")
 POD_EXTRA_RUN_HOUR = int(os.getenv("POD_EXTRA_RUN_HOUR", "22") or "22")
 POD_EXTRA_RUN_MINUTE = int(os.getenv("POD_EXTRA_RUN_MINUTE", "40") or "40")
-# Pre-generated bundle {ts, ranked, slip} produced by daily_picks_generate and
-# consumed by daily_results_post right after the recap.
-_daily_bundle = {"ts": 0.0, "ranked": None, "slip": []}
+# NOTE: the `_daily_bundle` pre-generated-bundle mechanism was REMOVED on
+# 2026-07-15. Nothing ever populated it, so its "reuse a bundle <40 min old" path
+# was permanently dead and the board was always evaluated at trigger time — while
+# the code read as though a pre-generation step existed. Cache warmth is now
+# handled explicitly by daily_cache_prewarm 30 minutes before generation, and the
+# board is evaluated exactly ONCE, at trigger time, against that warm cache.
 # Optional one-shot post on startup for verifying a deploy (off by default).
 POD_POST_ON_START = (os.getenv("POD_POST_ON_START", "0") or "0") not in ("0", "false", "False")
 _pod_startup_done = False
@@ -1805,21 +1808,26 @@ def _recent_pick_keys(hours: int = 12) -> set:
 
 async def _post_daily_picks(channel, track: bool = True) -> str:
     """Post the daily RANKED LIST (⭐ #1 = Pick of the Day, then 2..N of every
-    qualifying play), then the Baseline 3x slip immediately after. Uses the 5:50
-    pre-generated bundle when fresh (<40 min old); otherwise regenerates inline.
-    When ``track`` is set, logs every play (POTD group) + slip legs (3x group)
-    and starts the line-movement monitor over ALL of them. Never raises."""
-    fresh = (_daily_bundle.get("ranked") is not None
-             and (time.time() - (_daily_bundle.get("ts") or 0)) < 40 * 60)
-    if fresh:
-        ranked = _daily_bundle.get("ranked") or []
-        slip = _daily_bundle.get("slip") or []
-        log.info("daily picks: using pre-generated bundle (%d ranked)", len(ranked))
-    else:
-        bundle = await pick_of_day.generate_ranked_and_slip()
-        ranked = bundle.get("ranked") or []
-        slip = bundle.get("slip") or []
-        log.info("daily picks: regenerated inline (%d ranked)", len(ranked))
+    qualifying play), then the Baseline 3x slip immediately after. Evaluates the
+    board here, at trigger time. When ``track`` is set, logs every play (POTD
+    group) + slip legs (3x group) and starts the line-movement monitor over ALL
+    of them. Never raises.
+
+    The old `_daily_bundle` "pre-generated bundle, reused if <40 min old" path is
+    GONE. It was vestigial: nothing ever populated the dict, so `fresh` was always
+    False and this always regenerated inline — the branch was dead code that read
+    like a live optimisation, and it implied a pre-generation step that did not
+    exist. Cache warmth is now handled honestly by daily_cache_prewarm 30 minutes
+    ahead; the board is evaluated exactly ONCE here, against that warm cache."""
+    bundle = await pick_of_day.generate_ranked_and_slip()
+    ranked = bundle.get("ranked") or []
+    slip = bundle.get("slip") or []
+    log.info("daily picks: board evaluated at trigger time (%d ranked) — "
+             "cache pre-warmed at %02d:%02d", len(ranked),
+             ONEOFF_PREWARM_HM[0] if datetime.datetime.now(POD_TZINFO).strftime("%Y-%m-%d")
+             == ONEOFF_SCHED_DATE else PREWARM_HOUR,
+             ONEOFF_PREWARM_HM[1] if datetime.datetime.now(POD_TZINFO).strftime("%Y-%m-%d")
+             == ONEOFF_SCHED_DATE else PREWARM_MINUTE)
 
     if not ranked:
         no_play = discord.Embed(description=MSG_NO_PICK_DAILY, color=COLOR_NEUTRAL)
@@ -1997,9 +2005,8 @@ async def extra_pod_run():
         if channel is None:
             log.warning("POD extra run: channel %s not found", POD_CHANNEL_ID)
             return
-        _daily_bundle["ranked"] = None      # force a fresh scan
-        _daily_bundle["slip"] = None
-        _daily_bundle["ts"] = 0
+        # (No bundle to clear — _post_daily_picks always evaluates the board at
+        # trigger time now; the vestigial pre-generated-bundle path is gone.)
         status = await _post_daily_picks(channel, track=True)
         log.info("POD one-off %02d:%02d fresh run (%s): %s",
                  POD_EXTRA_RUN_HOUR, POD_EXTRA_RUN_MINUTE, POD_EXTRA_RUN_DATE, status)
