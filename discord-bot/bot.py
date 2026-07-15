@@ -59,10 +59,12 @@ FOOTER_TEXT = "Baseline — Data Driven. Optimizer Backed."
 # Player stats and projections are built from a recency-focused window — signal
 # that clearly so users know the data reflects current form, not career history.
 FOOTER_52W = "Baseline — Data Driven. Optimizer Backed. • Last 52 weeks"
-FOOTER_PROJECTION = (
-    "Baseline — Data Driven. Optimizer Backed. • Last 52 weeks • "
-    "Model projections, not betting advice."
-)
+# Short by design. The old footer ("Baseline — Data Driven. Optimizer Backed. •
+# Last 52 weeks • Model projections, not betting advice.") wrapped to TWO lines on
+# a phone under every single embed — more vertical space than some of the plays it
+# sat beneath. The disclaimer is the only part that has to be there; the slogan
+# and the data-window note were noise repeated on every post.
+FOOTER_PROJECTION = "Baseline · Model projections, not betting advice"
 
 # Per-request network timeouts (seconds). These are sized to the backend's
 # COLD-fetch latency, not the warm-cache case. The backend caches per player per
@@ -1493,33 +1495,28 @@ COLOR_THREEX = 0x9B59B6   # purple — distinct from the green/red POTD embeds
 def threex_embed(legs: list) -> discord.Embed:
     """The Baseline 3x — two independent legs packaged as one slip. Distinct
     purple color so it's visually separable from the Pick of the Day at a glance.
-    Each leg is its own field using the SAME compact two-line format as the
-    ranked board, with a divider between, and the slip note last."""
+
+    Both legs live in ONE field using the same compact two-line format as the
+    ranked board. Previously each leg took its own field plus a divider field
+    plus a slip-strength field — five fields and a two-line preamble to convey
+    two plays. The rules of the slip don't need restating every day; the legs do."""
     today = datetime.datetime.now(POD_TZINFO)
     e = discord.Embed(title=f"🎟️ Baseline 3x — {today.month}/{today.day}",
                       color=COLOR_THREEX)
-    e.description = (
-        "Two picks, one slip — **both legs must hit** to cash.\n"
-        "Different props and different matches than today's Pick of the Day."
-    )
+    lines = ["**Both legs must hit** to cash.", ""]
     for i, leg in enumerate(legs, 1):
-        loc = leg.get("tournament") or (f"{leg.get('surface')} court"
-                                        if leg.get("surface") else None)
-        body = f"{_play_headline(leg)}\n{_play_statline(leg)}"
-        if loc:
-            body += f"\n_{loc}_"
-        e.add_field(name=f"Leg {i}", value=body, inline=False)
+        lean = _lean_of(leg)
+        proj, conf = leg.get("projection"), leg.get("confidence")
+        bits = [f"{LEAN_DOT.get(lean, '⚪')} **{lean} {leg['line']:g}** {_short_prop(leg['prop_type'])}"]
+        if isinstance(proj, (int, float)):
+            bits.append(f"Proj **{proj:.1f}**")
+        if isinstance(conf, (int, float)):
+            bits.append(f"**{conf:.0f}%**")
+        lines.append(f"**{i}. {leg['player']}** vs {_short_opp(leg.get('opponent'))}")
+        lines.append(" · ".join(bits))
         if i < len(legs):
-            e.add_field(name="​", value="───────────────", inline=False)
-
-    confs = [c for c in (leg.get("confidence") for leg in legs)
-             if isinstance(c, (int, float))]
-    if confs:
-        e.add_field(
-            name="🔗 Slip Strength",
-            value=f"Both legs at **{min(confs):.0f}%+** confidence · "
-                  f"legs average **{sum(confs) / len(confs):.0f}%**.",
-            inline=False)
+            lines.append("")
+    e.description = "\n".join(lines)
     return _stamped_footer(e)
 
 
@@ -1549,6 +1546,28 @@ def _ranked_stats(prop_type: str, data: dict) -> str:
 #   result   -> ✅ win / ❌ loss / ⚪ push / 🚫 void (DNP)
 # Numbers: projections + edges to ONE decimal, confidence to a WHOLE percent.
 LEAN_DOT = {"OVER": "🟢", "UNDER": "🔴"}
+
+# Prop names, shortened for the list view. The full name is a big share of the
+# line width on a phone ("Player Total Games Won" is 22 chars), and it was what
+# pushed every play onto a third wrapped line.
+PROP_SHORT = {
+    "Break Points Won":       "BP Won",
+    "Player Total Games Won": "Games Won",
+    "Total Games":            "Total Games",
+    "Double Faults":          "DFs",
+    "Aces":                   "Aces",
+}
+
+
+def _short_prop(prop: str) -> str:
+    return PROP_SHORT.get(prop, prop or "")
+
+
+def _short_opp(name: str) -> str:
+    """'Lola Radivojević' -> 'L. Radivojević'. Keeps the matchup identifiable
+    while cutting the width that forced a line wrap."""
+    parts = (name or "").split()
+    return f"{parts[0][0]}. {' '.join(parts[1:])}" if len(parts) > 1 else (name or "")
 
 
 def _lean_of(pick: dict) -> str:
@@ -1598,41 +1617,60 @@ def _play_statline(pick: dict) -> str:
 
 
 def _ranked_line(pick: dict, rank: int) -> str:
-    """One ranked play in the LIST view — exactly two lines, no stat wall.
-    The depth lives in the ⭐ embed."""
-    return f"{_play_headline(pick, rank)}\n{_play_statline(pick)}"
+    """One ranked play in the LIST view — two SHORT lines that don't wrap on a
+    phone. Carries exactly what a subscriber needs to act: the play, the lean,
+    the projection, the confidence.
+
+    Edge is deliberately omitted here: it's just projection minus line, so it's
+    derivable from what's shown and was costing width that forced a third
+    wrapped line. All depth (key stats, win prob, expected sets) lives in the ⭐
+    embed only."""
+    lean = _lean_of(pick)
+    proj = pick.get("projection")
+    conf = pick.get("confidence")
+    l1 = f"**{rank}. {pick['player']}** vs {_short_opp(pick.get('opponent'))}"
+    bits = [f"{LEAN_DOT.get(lean, '⚪')} **{lean} {pick['line']:g}** {_short_prop(pick['prop_type'])}"]
+    if isinstance(proj, (int, float)):
+        bits.append(f"Proj **{proj:.1f}**")
+    if isinstance(conf, (int, float)):
+        bits.append(f"**{conf:.0f}%**")
+    return l1 + "\n" + " · ".join(bits)
 
 
 def potd_embed(pick: dict) -> discord.Embed:
     """The ⭐ Pick of the Day as its own dedicated embed, posted first.
 
-    Hierarchy: matchup bold at the top, then prop + line, then the lean (which
-    also drives the embed colour), then Projection / Edge / Confidence as three
-    INLINE fields so they read as a compact row of stats rather than a sentence.
-    Discord gives inline fields up to three-across on desktop and stacks them on
-    narrow mobile — three is the widest that degrades cleanly, which is why the
-    stat row is exactly three and the prop stats sit in their own full-width
-    field below rather than becoming a fourth column."""
+    THE ONLY PLACE WITH DEPTH. Every other post carries just the play, lean,
+    projection and confidence; the reasoning lives here.
+
+    The stat row is ONE line, not three inline fields. Inline fields render
+    three-across on desktop but STACK on a narrow phone, and each one costs a
+    label line plus a value line — so three numbers ate six lines and buried the
+    play. One dot-separated line reads identically on both clients."""
     data = pick.get("data") or {}
     lean = _lean_of(pick)
     e = discord.Embed(title="⭐ PICK OF THE DAY", color=_lean_color(lean))
 
     loc = pick.get("tournament") or (f"{pick.get('surface')} court"
                                      if pick.get("surface") else None)
+    proj, edge = pick.get("projection"), pick.get("edge")
+    conf = pick.get("confidence")
+
+    # The play, then the numbers, in two blocks — no field stacking.
     head = [f"**{pick['player']}** vs **{pick['opponent']}**",
-            f"{pick['prop_type']} — line **{pick['line']:g}**",
-            f"{LEAN_DOT.get(lean, '⚪')} **{lean}**"]
+            f"{LEAN_DOT.get(lean, '⚪')} **{lean} {pick['line']:g}** · {pick['prop_type']}"]
+    row = []
+    if isinstance(proj, (int, float)):
+        row.append(f"Proj **{proj:.1f}**")
+    if isinstance(edge, (int, float)):
+        row.append(f"Edge **{edge:+.1f}**")
+    if isinstance(conf, (int, float)):
+        row.append(f"Conf **{conf:.0f}%**")
+    if row:
+        head.append(" · ".join(row))
     if loc:
         head.append(f"_{loc}_")
     e.description = "\n".join(head)
-
-    proj, edge = pick.get("projection"), pick.get("edge")
-    conf = pick.get("confidence")
-    e.add_field(name="Projection", value=f"**{_num(proj)}**", inline=True)
-    e.add_field(name="Edge", value=f"**{_edge_txt(edge)}**", inline=True)
-    e.add_field(name="Confidence",
-                value=(f"**{conf:.0f}%**" if isinstance(conf, (int, float)) else "—"),
-                inline=True)
 
     stats = _ranked_stats(pick["prop_type"], data)
     if pick.get("coin_flip"):
@@ -1644,9 +1682,8 @@ def potd_embed(pick: dict) -> discord.Embed:
     fa = pick.get("form_alert")
     if fa:
         stats = ((stats + "\n") if stats else "") + fa
-    if stats:
-        e.add_field(name="Key Stats", value=stats[:1024], inline=False)
-
+    # Win prob / expected sets join Key Stats rather than taking a second field —
+    # one depth block, not two.
     ctx = []
     p1wp, esets = data.get("p1_win_prob"), data.get("expected_sets")
     if isinstance(p1wp, (int, float)):
@@ -1654,7 +1691,9 @@ def potd_embed(pick: dict) -> discord.Embed:
     if isinstance(esets, (int, float)):
         ctx.append(f"Exp sets **{esets:.1f}**")
     if ctx:
-        e.add_field(name="​", value=" · ".join(ctx), inline=False)
+        stats = ((stats + "\n") if stats else "") + " · ".join(ctx)
+    if stats:
+        e.add_field(name="Key Stats", value=stats[:1024], inline=False)
 
     return _stamped_footer(e)
 
@@ -1701,8 +1740,8 @@ def ranked_embeds(ranked: list, start_rank: int = 1, total: int = None) -> list:
         if idx:
             title += " (cont.)"
         e = discord.Embed(title=title, color=COLOR_NEUTRAL)
-        header = (f"Plays **{first}–{last}** of {total} · ranked by confidence.\n\n"
-                  if len(pages) > 1 or start_rank > 1 else "")
+        header = (f"Plays **{first}–{last}** of {total}\n\n"
+                  if len(pages) > 1 else "")
         e.description = header + "\n\n".join(page)
         embeds.append(e)
     _stamped_footer(embeds[-1])
