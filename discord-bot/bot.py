@@ -1189,8 +1189,8 @@ PICKS_GEN_MINUTE = int(os.getenv("PICKS_GEN_MINUTE", "50") or "50")
 # dedup in _log_picks_pending prevents any double-counting. Set to "" to disable —
 # auto-reverts the next day.
 POD_EXTRA_RUN_DATE = os.getenv("POD_EXTRA_RUN_DATE", "2026-07-14")
-POD_EXTRA_RUN_HOUR = int(os.getenv("POD_EXTRA_RUN_HOUR", "0") or "0")
-POD_EXTRA_RUN_MINUTE = int(os.getenv("POD_EXTRA_RUN_MINUTE", "15") or "15")
+POD_EXTRA_RUN_HOUR = int(os.getenv("POD_EXTRA_RUN_HOUR", "22") or "22")
+POD_EXTRA_RUN_MINUTE = int(os.getenv("POD_EXTRA_RUN_MINUTE", "10") or "10")
 # Pre-generated bundle {ts, ranked, slip} produced by daily_picks_generate and
 # consumed by daily_results_post right after the recap.
 _daily_bundle = {"ts": 0.0, "ranked": None, "slip": []}
@@ -1828,10 +1828,17 @@ async def _before_picks_generate():
 @tasks.loop(time=datetime.time(hour=POD_EXTRA_RUN_HOUR, minute=POD_EXTRA_RUN_MINUTE,
                                tzinfo=POD_TZINFO))
 async def extra_pod_run():
-    """One-off EXTRA run: on POD_EXTRA_RUN_DATE only, RE-POST today's exact plays
-    (the ranked list + 3x from the earlier run) re-scored with the current model,
-    at 11:40 PM ET. Not a fresh board — the same plays, updated confidence. Does
-    NOT re-log, so nothing double-counts. No-op on any other date."""
+    """One-off EXTRA run: on POD_EXTRA_RUN_DATE only, a FRESH POTD scan + post at
+    POD_EXTRA_RUN_HOUR:MINUTE ET (currently 10:10 PM on 2026-07-14). No-op on any
+    other date, so the normal recurring 7:50 PM trigger is untouched.
+
+    Fresh board — not the earlier re-post of fixed plays (that one-off is done).
+    The 5:50 pre-generated bundle is discarded first so this re-scans rather than
+    replaying a stale bundle from before tonight's confidence fixes.
+
+    track=True, so plays are logged and line-monitored like any real post.
+    _log_picks_pending de-dupes on (player, prop, group) within 18h, so anything
+    the 7:50 run already logged won't double-count; genuinely new plays will log."""
     if not POD_CHANNEL_ID or not POD_EXTRA_RUN_DATE:
         return
     if datetime.datetime.now(POD_TZINFO).strftime("%Y-%m-%d") != POD_EXTRA_RUN_DATE:
@@ -1841,10 +1848,14 @@ async def extra_pod_run():
         if channel is None:
             log.warning("POD extra run: channel %s not found", POD_CHANNEL_ID)
             return
-        status = await _repost_todays_plays(channel)
-        log.info("POD extra 11:40pm re-post (%s): %s", POD_EXTRA_RUN_DATE, status)
+        _daily_bundle["ranked"] = None      # force a fresh scan
+        _daily_bundle["slip"] = None
+        _daily_bundle["ts"] = 0
+        status = await _post_daily_picks(channel, track=True)
+        log.info("POD one-off %02d:%02d fresh run (%s): %s",
+                 POD_EXTRA_RUN_HOUR, POD_EXTRA_RUN_MINUTE, POD_EXTRA_RUN_DATE, status)
     except Exception:  # noqa: BLE001
-        log.exception("POD extra re-post failed")
+        log.exception("POD extra fresh run failed")
 
 
 @extra_pod_run.before_loop
