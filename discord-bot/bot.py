@@ -1496,22 +1496,23 @@ def threex_embed(legs: list) -> discord.Embed:
     """The Baseline 3x — two independent legs packaged as one slip. Distinct
     purple color so it's visually separable from the Pick of the Day at a glance.
 
-    Both legs live in ONE field using the same compact two-line format as the
-    ranked board. Previously each leg took its own field plus a divider field
-    plus a slip-strength field — five fields and a two-line preamble to convey
-    two plays. The rules of the slip don't need restating every day; the legs do."""
+    Just the legs. No preamble and no slip-strength block: the title says what
+    this is, and restating the rules of a two-leg slip every single day is noise
+    a returning subscriber reads past. Slip strength was derived from the two
+    confidences already shown — it told them nothing they couldn't see."""
     today = datetime.datetime.now(POD_TZINFO)
     e = discord.Embed(title=f"🎟️ Baseline 3x — {today.month}/{today.day}",
                       color=COLOR_THREEX)
-    lines = ["**Both legs must hit** to cash.", ""]
+    lines = []
     for i, leg in enumerate(legs, 1):
         lean = _lean_of(leg)
         proj, conf = leg.get("projection"), leg.get("confidence")
-        bits = [f"{LEAN_DOT.get(lean, '⚪')} **{lean} {leg['line']:g}** {_short_prop(leg['prop_type'])}"]
+        play = f"{lean} {leg['line']:g} {_short_prop(leg['prop_type'])}".upper()
+        bits = [f"{LEAN_DOT.get(lean, '⚪')} **{play}**"]
         if isinstance(proj, (int, float)):
-            bits.append(f"Proj **{proj:.1f}**")
+            bits.append(f"Proj {proj:.1f}")
         if isinstance(conf, (int, float)):
-            bits.append(f"**{conf:.0f}%**")
+            bits.append(f"{conf:.0f}%")
         lines.append(f"**{i}. {leg['player']}** vs {_short_opp(leg.get('opponent'))}")
         lines.append(" · ".join(bits))
         if i < len(legs):
@@ -1629,11 +1630,15 @@ def _ranked_line(pick: dict, rank: int) -> str:
     proj = pick.get("projection")
     conf = pick.get("confidence")
     l1 = f"**{rank}. {pick['player']}** vs {_short_opp(pick.get('opponent'))}"
-    bits = [f"{LEAN_DOT.get(lean, '⚪')} **{lean} {pick['line']:g}** {_short_prop(pick['prop_type'])}"]
+    # THE PLAY IS THE HEADLINE — bold AND uppercase so it outranks everything
+    # beside it. Projection and confidence are supporting numbers and are left
+    # in plain weight; if everything is bold, nothing is.
+    play = f"{lean} {pick['line']:g} {_short_prop(pick['prop_type'])}".upper()
+    bits = [f"{LEAN_DOT.get(lean, '⚪')} **{play}**"]
     if isinstance(proj, (int, float)):
-        bits.append(f"Proj **{proj:.1f}**")
+        bits.append(f"Proj {proj:.1f}")
     if isinstance(conf, (int, float)):
-        bits.append(f"**{conf:.0f}%**")
+        bits.append(f"{conf:.0f}%")
     return l1 + "\n" + " · ".join(bits)
 
 
@@ -1657,15 +1662,18 @@ def potd_embed(pick: dict) -> discord.Embed:
     conf = pick.get("confidence")
 
     # The play, then the numbers, in two blocks — no field stacking.
+    # THE PLAY IS THE HEADLINE — bold AND uppercase, on its own line, above the
+    # supporting numbers which stay in plain weight.
+    play = f"{lean} {pick['line']:g} {pick['prop_type']}".upper()
     head = [f"**{pick['player']}** vs **{pick['opponent']}**",
-            f"{LEAN_DOT.get(lean, '⚪')} **{lean} {pick['line']:g}** · {pick['prop_type']}"]
+            f"{LEAN_DOT.get(lean, '⚪')} **{play}**"]
     row = []
     if isinstance(proj, (int, float)):
-        row.append(f"Proj **{proj:.1f}**")
+        row.append(f"Proj {proj:.1f}")
     if isinstance(edge, (int, float)):
-        row.append(f"Edge **{edge:+.1f}**")
+        row.append(f"Edge {edge:+.1f}")
     if isinstance(conf, (int, float)):
-        row.append(f"Conf **{conf:.0f}%**")
+        row.append(f"Conf {conf:.0f}%")
     if row:
         head.append(" · ".join(row))
     if loc:
