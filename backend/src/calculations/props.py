@@ -400,6 +400,11 @@ def project_aces(
 
     # ── L3: Handedness matchup (Tennis Abstract) ──────────────────────────────
     hand_factor = 1.0
+    # WHY the factor ended up where it did — the trace must report the reason,
+    # not infer it from the value. hand_factor==1.0 is reachable three ways
+    # (handedness unknown, TA splits absent so the table returned neutral, or a
+    # real split that genuinely computed 1.0) and they are not the same fact.
+    hand_reason = "handedness unknown for one/both players — no adjustment"
     player_hand = player_ta.get("handedness") if player_ta else None
     opp_hand    = opponent_ta.get("handedness") if opponent_ta else None
 
@@ -423,8 +428,13 @@ def project_aces(
             if vs_spw and overall_spw and overall_spw > 0:
                 ratio = vs_spw / overall_spw
                 hand_factor = max(0.85, min(1.20, ratio))
+                hand_reason = ("TA legacy serve-pts split %s: %.3f ratio, clamped "
+                               "[0.85,1.20]" % (vs_key, ratio))
             else:
                 hand_factor = factor_table.get((player_hand, opp_hand), 1.0)
+                hand_reason = ("no TA handedness split — %s-vs-%s table value "
+                               "(%s surface)" % (player_hand, opp_hand,
+                                                 "Grass" if surface == "Grass" else "Clay/Hard"))
         else:
             # Use TA handedness ace_pct vs tour-average ace_pct on this surface
             ta_surf_stats = (player_ta.get("surface_stats") or {}).get(surface) or {}
@@ -432,8 +442,13 @@ def project_aces(
             if overall_ace_pct and overall_ace_pct > 0:
                 ratio = vs_ace_pct / overall_ace_pct
                 hand_factor = max(0.80, min(1.25, ratio))
+                hand_reason = ("TA ace_pct %s (%.2f%%) vs own surface ace_pct "
+                               "(%.2f%%): %.3f ratio, clamped [0.80,1.25]"
+                               % (vs_key, vs_ace_pct, overall_ace_pct, ratio))
             else:
                 hand_factor = factor_table.get((player_hand, opp_hand), 1.0)
+                hand_reason = ("TA split present but no own-surface ace_pct to "
+                               "compare — %s-vs-%s table value" % (player_hand, opp_hand))
 
     # ── Opponent ace-against rate (aces they concede per match on surface) ────
     # Direct measure: how many aces this opponent gives up as a returner.
@@ -524,9 +539,7 @@ def project_aces(
     _trace(trace, "L3_handedness",
            {"player_hand": player_hand, "opponent_hand": opp_hand,
             "in": round(_after_cpr, 3)},
-           hand_factor, _after_hand,
-           "1.0 = no adjustment (handedness unknown for one/both players)"
-           if hand_factor == 1.0 else "TA handedness split ratio, clamped")
+           hand_factor, _after_hand, hand_reason)
 
     # ── Surface ace factor — grass boosts, clay suppresses (see constant) ─────
     surface_ace_factor = _SURFACE_ACE_FACTOR.get(surface, 1.0)
