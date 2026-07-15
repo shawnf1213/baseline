@@ -98,10 +98,39 @@ PROP_MIN_CONF = {
 }
 
 
-def _min_conf_for(prop_type: str) -> int:
+# ── Thin-slate mode ──────────────────────────────────────────────────────────
+# Some days the board simply has nothing to analyse. Observed 2026-07-15: 1000
+# tennis props listed but only 101 STANDARD — Break Points Won had ZERO standard
+# lines (all 7 were goblins/demons, which are never played), and Aces had ONE. The
+# eligible board was 1 Aces + 30 PTGW + 35 Total Games — i.e. entirely the two
+# props carrying the HIGHEST bars (80 and 85), with the 75-bar props absent.
+#
+# The normal bars assume a full board where being selective costs nothing because
+# something else always qualifies. On a thin slate that assumption inverts: the
+# bars stop selecting the best plays and start selecting NOTHING. Holding a 85 bar
+# against a board that can only offer Total Games isn't discipline, it's just
+# silence.
+#
+# So when there is little to analyse, every gate drops to 70 and the ranking's
+# existing confidence-first / edge-tiebreak ordering does the discriminating —
+# with confidences compressed into a narrow band, the edge differential is what
+# actually separates the plays. The ranking rule itself is UNCHANGED: confidence
+# still outranks edge absolutely; edge just does more work when confidence ties.
+#
+# Gated on candidates actually SCORED (post 24h-window, post-resolution) — that is
+# the real "props to analyse" count, not the raw listing.
+THIN_SLATE_SCORED_MAX = 25   # fewer scored candidates than this => thin slate
+THIN_SLATE_MIN_CONF   = 70   # every gate drops to this when thin
+THIN_SLATE_NOTE = "⚠️ Play lightly — slate not very full today."
+
+
+def _min_conf_for(prop_type: str, thin: bool = False) -> int:
     """The minimum confidence a candidate of this prop type must clear to qualify.
-    Total Games (match total) → 85, Player Total Games Won → 80 (subject to the
-    bespoke blowout paths), everything else (Aces / Break Points) → 75."""
+    Normal board: Total Games → 85, Player Total Games Won → 80 (subject to the
+    bespoke blowout paths), everything else (Aces / Break Points) → 75.
+    THIN SLATE: every prop drops to 70 — see the block comment above."""
+    if thin:
+        return THIN_SLATE_MIN_CONF
     return PROP_MIN_CONF.get(prop_type, STANDARD_MIN_CONF)
 
 SEARCH_TIMEOUT = 10
@@ -495,19 +524,24 @@ def _apply_ptgw_knife_edge(pk: dict) -> None:
                  PLAYER_TGW_KNIFE_EDGE, PLAYER_TGW_KNIFE_PENALTY)
 
 
-def _ptgw_qualify(pk: dict):
+def _ptgw_qualify(pk: dict, thin: bool = False):
     """(qualifies, bar, path) for a Player Total Games Won candidate, using its
     current (post-knife-edge) confidence. path ∈ {'shallow-standard-80',
     'standard-80', 'blowout-under-75', 'blowout-over-strict'}.
 
-    DEPTH FIRST — see the block comment above. A shallow play gets the standard 80
-    bar and no exception; the backend has already capped it at 76, so it cannot
-    qualify."""
+    DEPTH FIRST — see the block comment above. A shallow play gets the standard
+    bar and no exception; the backend has already capped it at 76.
+
+    ``thin`` drops the base bar to THIN_SLATE_MIN_CONF (70). Note the blowout-under
+    relaxation is then clamped to the base too: at 70 the normal 75 relaxation
+    would be STRICTER than the standard bar, which would invert the exception into
+    a penalty. An exception must never make a play harder to qualify."""
     conf = pk.get("confidence") or 0
     proj, line = pk.get("projection"), pk.get("line")
     lean = _lean_dir(pk)
     gap = _win_prob_gap(pk)
-    base = _min_conf_for("Player Total Games Won")   # 80
+    base = _min_conf_for("Player Total Games Won", thin=thin)   # 80, or 70 if thin
+    blowout_under_bar = min(PLAYER_TGW_BLOWOUT_UNDER_BAR, base)
     blowout = gap is not None and gap > PLAYER_TGW_BLOWOUT_WPGAP
 
     deep, p1_n, p2_n = _ptgw_depth_ok(pk)
@@ -526,7 +560,8 @@ def _ptgw_qualify(pk: dict):
         return conf >= base, base, "shallow-standard-80"
 
     if blowout and lean == "UNDER":
-        return conf >= PLAYER_TGW_BLOWOUT_UNDER_BAR, PLAYER_TGW_BLOWOUT_UNDER_BAR, "blowout-under-75"
+        return (conf >= blowout_under_bar, blowout_under_bar,
+                "blowout-under-%d" % blowout_under_bar)
     if blowout and lean == "OVER":
         edge_ok = (isinstance(proj, (int, float)) and isinstance(line, (int, float))
                    and (proj - line) >= PLAYER_TGW_OVER_MIN_EDGE)
@@ -648,6 +683,19 @@ async def _rank_board():
     picks = []
     by_type_qual = {}   # qualifying count per prop type
     by_type_eval = {}   # SCORED count per prop type — the composition denominator
+
+    # THIN-SLATE CHECK — decided BEFORE any gating, from the candidates that
+    # actually scored. Everything is scored regardless; only the BAR changes, so
+    # this costs nothing and never re-evaluates the board.
+    scored = [r for r in results if isinstance(r, dict)]
+    thin_slate = len(scored) < THIN_SLATE_SCORED_MAX
+    if thin_slate:
+        log.info("POD_THIN_SLATE | only %d candidates scored (<%d) — dropping EVERY "
+                 "confidence gate to %d. Normal bars (75/80/85) select nothing on a "
+                 "board this thin; edge differential does the separating via the "
+                 "existing confidence-first / edge-tiebreak ranking.",
+                 len(scored), THIN_SLATE_SCORED_MAX, THIN_SLATE_MIN_CONF)
+
     for r in results:
         if not isinstance(r, dict):
             log.info("POD_CAND | EVAL_FAILED | %s", str(r)[:120])
@@ -659,7 +707,7 @@ async def _rank_board():
         path = ""
         if ptype == "Player Total Games Won":
             _apply_ptgw_knife_edge(r)
-            ok, bar, path = _ptgw_qualify(r)
+            ok, bar, path = _ptgw_qualify(r, thin=thin_slate)
             log.info("POD_PTGW | %-22s conf=%-3.0f proj=%-6.2f line=%-5s lean=%-5s gap=%-3.0f "
                      "coin_flip=%-5s -> path=%s bar=%d -> %s",
                      (r.get("player") or "")[:22], r.get("confidence") or 0,
@@ -667,7 +715,7 @@ async def _rank_board():
                      _win_prob_gap(r) or 0.0, bool(r.get("coin_flip")), path, bar,
                      "QUALIFIES" if ok else "below")
         else:
-            bar = _min_conf_for(ptype)
+            bar = _min_conf_for(ptype, thin=thin_slate)
             ok = (r.get("confidence") or 0) >= bar
         conf = r.get("confidence") or 0
         log.info("POD_CAND | %-22s %-18s line=%-5s conf=%-3.0f proj=%-6.2f edge=%+5.2f "
@@ -710,7 +758,7 @@ async def _rank_board():
             continue
         best_per_player.add(key)
         ordered.append(pk)
-    return ordered
+    return ordered, thin_slate
 
 
 def _select_potd(ordered: list, n: int = 3) -> list:
@@ -814,7 +862,7 @@ async def generate_potd_and_slip(n: int = 3, exclude_keys: set = None) -> dict:
     used by the evening scan so it never re-posts the afternoon's plays. Never
     raises."""
     try:
-        ordered = await _rank_board()
+        ordered, _thin = await _rank_board()
         if ordered is None:
             return {"potd": None, "slip": []}
         if exclude_keys:
@@ -923,11 +971,11 @@ async def generate_ranked_and_slip() -> dict:
                       avoidance + the two-legs-or-nothing quality bar as before.
     Never raises."""
     try:
-        ordered = await _rank_board()
+        ordered, thin_slate = await _rank_board()
         if ordered is None:
-            return {"ranked": None, "slip": []}
+            return {"ranked": None, "slip": [], "thin_slate": False}
         if not ordered:
-            return {"ranked": [], "slip": []}
+            return {"ranked": [], "slip": [], "thin_slate": thin_slate}
         # ⭐ gate: a Total Games play can't lead unless one player is a 90%+ favorite.
         ordered = _promote_star(ordered)
         # One-off (today only): hold specific players out of the ⭐ slot.
@@ -937,10 +985,11 @@ async def generate_ranked_and_slip() -> dict:
         slip = _select_slip(ordered, ordered[:1])
         # Post only the top-N plays (⭐ + the next best), even though the whole
         # board was evaluated.
-        return {"ranked": ordered[:MAX_RANKED_PLAYS], "slip": slip}
+        return {"ranked": ordered[:MAX_RANKED_PLAYS], "slip": slip,
+                "thin_slate": thin_slate}
     except Exception as exc:  # noqa: BLE001 — total isolation
         log.exception("POD generate_ranked_and_slip failed: %s", exc)
-        return {"ranked": [], "slip": []}
+        return {"ranked": [], "slip": [], "thin_slate": False}
 
 
 async def evaluate_fixed_props(specs: list) -> list:
@@ -1017,7 +1066,7 @@ async def generate_picks(n: int = 3):
     empty; None when the board has no eligible props). Never raises.
     Backwards-compatible wrapper around the shared evaluation pass."""
     try:
-        ordered = await _rank_board()
+        ordered, _thin = await _rank_board()
         if ordered is None:
             return None
         return _select_potd(ordered, n)

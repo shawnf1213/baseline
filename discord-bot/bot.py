@@ -1858,6 +1858,7 @@ async def _post_daily_picks(channel, track: bool = True) -> str:
     bundle = await pick_of_day.generate_ranked_and_slip()
     ranked = bundle.get("ranked") or []
     slip = bundle.get("slip") or []
+    thin_slate = bool(bundle.get("thin_slate"))
     log.info("daily picks: board evaluated at trigger time (%d ranked) — "
              "cache pre-warmed at %02d:%02d", len(ranked),
              ONEOFF_PREWARM_HM[0] if datetime.datetime.now(POD_TZINFO).strftime("%Y-%m-%d")
@@ -1878,8 +1879,14 @@ async def _post_daily_picks(channel, track: bool = True) -> str:
     # and the board arrive together rather than as separate pings.
     post = [potd_embed(ranked[0])] + ranked_embeds(ranked[1:], start_rank=2,
                                                    total=len(ranked))
+    # Thin-slate note — ONE line, and ONLY when the gates actually dropped to 70.
+    # It rides the message content (not an embed) so it's the first thing read,
+    # before the plays it qualifies. Silent on a normal board.
+    _content = "@everyone" if track else None
+    if thin_slate:
+        _content = ((_content + "\n") if _content else "") + pick_of_day.THIN_SLATE_NOTE
     await channel.send(
-        content=("@everyone" if track else None),
+        content=_content,
         embeds=post[:10], allowed_mentions=EVERYONE_MENTION)
     # Overflow (a board so long it needed >9 board embeds) continues unpinged.
     for i in range(10, len(post), 10):
