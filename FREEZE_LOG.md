@@ -188,3 +188,38 @@ so a week of boards will quantify it.
 Interacts with the valid[:50] cap: raising it would widen the held-out reference
 as well as create a career window. Still an infrastructure decision, still not
 taken here.
+
+#### Known remedy for the affinity seasonal blind spot (designed, NOT built)
+
+Parked deliberately as a post-certification follow-up so the week of
+None-vs-measured coverage logging lands on a prepared decision rather than an
+open question.
+
+**The blind spot.** The held-out reference dies exactly when the signal is most
+bettable: during a surface swing the newest-50 stat-rich window is nearly all one
+surface, so the "other surfaces" side of every delta starves and affinity returns
+None for a large share of the board (observed: Sonego vs Collignon, both None).
+Clay season is precisely when surface-form edges matter most and precisely when
+the current method goes dark.
+
+**The remedy: let the REFERENCE reach further back than the projection window.**
+The two do not need the same depth. The projection needs stat-rich serve/return
+detail and is rightly limited to the newest-50 fetch. The reference only needs to
+answer "how does this player do on their other surfaces" — and WIN RATE alone
+answers that from the raw match log, which carries `won` and `surface` on every
+match going back years (Jones: 414 matches vs 50 stat-rich). A win-rate-only
+held-out reference drawn from the full log keeps the reference alive when the
+recent window is single-surface.
+
+**Design notes for whoever builds it:**
+* Reference and measured side must stay commensurable — a win-rate-only reference
+  can only be differenced against a win-rate measured value, so this likely means
+  affinity degrades to its win-rate component (weight 0.50) when the serve/return
+  components have no reference, rather than mixing a deep win-rate reference with
+  a shallow serve/return one. Do NOT average across incommensurable bases (that
+  was the Entry 1a bug in another costume).
+* Flag which basis produced each affinity (full-fidelity vs win-rate-only) so the
+  differential can weight or gate on it, and so the calibration can separate them.
+* The deep reference is NOT quality-weighted and NOT stat-rich-gated; its own
+  sample guard should be on raw match count, not stat-rich count.
+* This does not need the valid[:50] cap raised — that is the point of it.
