@@ -1962,6 +1962,7 @@ async def prop_calculate(req: PropRequest):
                     p2_win_prob=tg_result.get("p2_win_prob"),
                     expected_sets=tg_result.get("expected_sets"),
                     tour=req.tour, match_format=match_fmt,
+                    trace=_ctrace,
                 )
                 # Carry the affinity differential + win prob forward. PTGW's own
                 # projector doesn't compute them — it consumes the Total Games

@@ -1508,6 +1508,7 @@ def project_player_games_won(
     expected_sets: float,
     tour: str = "ATP",
     match_format: str = "best_of_3",
+    trace: list = None,
 ) -> dict:
     """Project how many INDIVIDUAL games the SELECTED player wins in the match
     (distinct from the combined Total Games prop).
@@ -1565,7 +1566,48 @@ def project_player_games_won(
     opp_games = games_combined - fav_games
 
     projection = fav_games if sel_is_fav else opp_games
+    _pre_floor = projection
     projection = max(4.5, projection)                   # floor — even a swept loser wins a few
+
+    # ── Component trace ──────────────────────────────────────────────────────
+    # PTGW had NO trace coverage: its projection comes from here, but only aces
+    # and break points were instrumented. The FINAL assertion in main.py caught it
+    # honestly — debug=true 500'd on this prop because the last traced value never
+    # matched the served projection. That is the guard working; this is the fix.
+    # PTGW consumes the Total Games projection's win prob / expected sets, so those
+    # inputs are shown rather than recomputed.
+    _trace(trace, "PTGW_inputs",
+           {"games_combined": round(games_combined, 2),
+            "expected_sets": round(es, 2),
+            "player_win_prob": round(p_sel * 100, 1),
+            "player_is_favourite": sel_is_fav,
+            "bp_won_component": bp_won},
+           round(games_combined, 2), round(games_combined, 2),
+           "from the Total Games projection — PTGW splits that combined total "
+           "between the two players; it does not re-derive it")
+    _trace(trace, "PTGW_games_per_set",
+           {"avg_games_per_set": round(avg_gps, 2),
+            "set_winner_games": round(winner_gps, 2),
+            "set_loser_games": round(loser_gps, 2)},
+           round(avg_gps, 2), round(avg_gps, 2),
+           "combined / expected_sets, split into a winner's and loser's share")
+    _trace(trace, "PTGW_set_split",
+           {"favourite_set_wins": round(fav_set_wins, 2),
+            "favourite_set_losses": round(fav_set_losses, 2),
+            "favourite_games": round(fav_games, 2),
+            "opponent_games": round(opp_games, 2)},
+           round(fav_games, 2), round(_pre_floor, 2),
+           "favourite_games + opponent_games == games_combined exactly; the "
+           "SELECTED player takes whichever side they are on")
+    _trace(trace, "PTGW_floor",
+           {"pre_floor": round(_pre_floor, 2)},
+           4.5, round(projection, 2),
+           "floor 4.5 — even a swept loser wins a few games%s"
+           % (" [FLOOR BIT]" if projection > _pre_floor + 1e-9 else ""))
+    _trace(trace, "projector_output", {"chain_result": round(projection, 3)},
+           projection, round(projection, 1),
+           "END OF THE PROJECTOR — NOT the final number; main.py may still apply "
+           "post-projector modifiers (see the steps below and the real FINAL)")
 
     # Held / broken breakdown for display — split the projection in proportion to
     # the player's actual hold vs break tendency, so it sums to the projection

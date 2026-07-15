@@ -971,10 +971,18 @@ def _agg_split(all_m: list, stat_m: list) -> dict:
         (m["service_games_won"], m["service_games"]) for m in stat_m
         if m.get("service_games_won") is not None and m.get("service_games")
     ]
+    # DENOMINATORS ARE EXPOSED alongside the percentages. Without them a caller
+    # cannot tell a 300-game hold rate from a 16-game one, and they look identical.
+    # Real case (Gina Feistel, clay): 122 clay matches, 36 stat-rich, but only TWO
+    # carried service_games — so "Hold 93.75%" was 15/16 service games across two
+    # ITF matches, displayed next to matches_played=36 as if that were the sample.
+    # A rate without its denominator is not a statistic, it's a rumour.
     if _sgw_pairs:
         _tw = sum(w for w, _ in _sgw_pairs)
         _tp = sum(p for _, p in _sgw_pairs)
         result["service_games_won_pct"] = round(_tw / _tp * 100, 2) if _tp > 0 else None
+        result["service_games_n"] = _tp          # service games behind the pct
+        result["service_games_matches_n"] = len(_sgw_pairs)
     _rgw_pairs = [
         (m["return_games_won"], m["return_games"]) for m in stat_m
         if m.get("return_games_won") is not None and m.get("return_games")
@@ -983,6 +991,8 @@ def _agg_split(all_m: list, stat_m: list) -> dict:
         _tw = sum(w for w, _ in _rgw_pairs)
         _tp = sum(p for _, p in _rgw_pairs)
         result["return_games_won_pct"] = round(_tw / _tp * 100, 2) if _tp > 0 else None
+        result["return_games_n"] = _tp           # return games behind the pct
+        result["return_games_matches_n"] = len(_rgw_pairs)
 
     # BP generated per match = opportunities the player creates as a returner.
     # (return_bp_opportunities is already aggregated above; expose it explicitly

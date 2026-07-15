@@ -1548,6 +1548,12 @@ def threex_embed(legs: list) -> discord.Embed:
 
 
 # ── Ranked plays list (the daily post) ───────────────────────────────────────
+# Minimum service/return GAMES behind a displayed hold/return rate. ~40 games is
+# roughly 3 matches — enough that the rate reflects a player rather than an
+# afternoon. Below it the rate is shown as thin rather than as fact.
+MIN_GAMES_FOR_RATE = 40
+
+
 def _ranked_stats(prop_type: str, data: dict) -> str:
     """Key player stats for the prop — same fields as the /prop stat card."""
     ps = data.get("player_stats") or {}
@@ -1559,8 +1565,28 @@ def _ranked_stats(prop_type: str, data: dict) -> str:
         return (f"BP conv **{_pct(conv)}** · "
                 f"Opp BP faced **{_num(data.get('bp_blended_opp_faced'))}**/m")
     if prop_type == "Player Total Games Won":
-        return (f"Hold **{_pct(ps.get('service_games_won_pct'))}** · "
-                f"Ret games won **{_pct(ps.get('return_games_won_pct'))}**")
+        # SAMPLE-GATED. These rates divide by SERVICE GAMES, not matches, and the
+        # two populations diverge wildly: Gina Feistel had 36 stat-rich clay
+        # matches but only TWO carrying service_games, so "Hold 94%" was 15/16
+        # games from two ITF matches — displayed beside a 36-match count, and
+        # flatly contradicting the 26% win probability on the same card. A reader
+        # can only calibrate a rate against its denominator, so below the minimum
+        # we say the sample is thin instead of printing a number that reads as
+        # elite. Suppressing beats implying.
+        sg_n = ps.get("service_games_n")
+        rg_n = ps.get("return_games_n")
+        parts = []
+        if isinstance(sg_n, (int, float)) and sg_n >= MIN_GAMES_FOR_RATE:
+            parts.append(f"Hold **{_pct(ps.get('service_games_won_pct'))}**")
+        elif ps.get("service_games_won_pct") is not None:
+            parts.append(f"Hold _{_pct(ps.get('service_games_won_pct'))} "
+                         f"(only {sg_n or 0:g} games — thin)_")
+        if isinstance(rg_n, (int, float)) and rg_n >= MIN_GAMES_FOR_RATE:
+            parts.append(f"Ret games won **{_pct(ps.get('return_games_won_pct'))}**")
+        elif ps.get("return_games_won_pct") is not None:
+            parts.append(f"Ret _{_pct(ps.get('return_games_won_pct'))} "
+                         f"(only {rg_n or 0:g} games — thin)_")
+        return " · ".join(parts)
     if prop_type == "Total Games":
         ch = data.get("combined_hold")
         return f"Combined hold **{_pct(ch)}**" if ch is not None else ""
