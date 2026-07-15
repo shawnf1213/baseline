@@ -435,12 +435,19 @@ PLAYER_TGW_DEEP_MIN_MATCHES  = 15
 def _ptgw_depth_ok(pk: dict):
     """(deep, p1_n, p2_n) — do BOTH players clear the stat-rich depth bar?
 
-    Reads the same stat-rich counts the backend ceilings use. Unknown depth is
-    treated as SHALLOW (conservative): a missing count means we can't show the
-    data is deep, and this prop is compounded from several models, so the benefit
-    of the doubt goes to strictness."""
+    Prefers the backend's ``player_deep``/``opponent_deep`` flags, which are the
+    SINGLE SOURCE OF TRUTH: they already carry the 7-day depth hysteresis, so this
+    gate and the backend's own ceilings can't disagree about who is deep. A raw
+    count read here would flap independently of the ceiling that capped the score.
+
+    Falls back to the raw counts only if the flags are absent (older backend).
+    Unknown depth is treated as SHALLOW (conservative): a missing signal can't
+    demonstrate depth, and this prop compounds several models."""
     d = pk.get("data") or {}
     p1, p2 = d.get("player_ta_matches"), d.get("opponent_ta_matches")
+    d1, d2 = d.get("player_deep"), d.get("opponent_deep")
+    if isinstance(d1, bool) and isinstance(d2, bool):
+        return (d1 and d2), p1, p2
     if not isinstance(p1, (int, float)) or not isinstance(p2, (int, float)):
         return False, p1, p2
     return (p1 >= PLAYER_TGW_DEEP_MIN_MATCHES

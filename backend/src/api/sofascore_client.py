@@ -1471,10 +1471,16 @@ def _fetch_stats_parallel(event_ids: list) -> dict:
     results: dict = {}
     uncached: list = []
 
-    # Fix 4 — cache check before any network activity
+    # Cache check before any network activity.
+    # TRUTHY, not `is not None`: a failed fetch used to be stored as {} and {} is
+    # not None, so one transient proxy failure permanently removed that event from
+    # the stat-rich set for the life of the session — the count could only ever go
+    # DOWN. A completed match's statistics are immutable, so a previously-fetched
+    # event stat must never be lost to a later failure; only real payloads are
+    # cached (see the write below) and anything else is retried.
     for eid in event_ids:
         cached = st.session_state.get(f"ss_stats_{eid}")
-        if cached is not None:
+        if cached:
             results[eid] = cached
         else:
             uncached.append(eid)
@@ -1507,12 +1513,26 @@ def _fetch_stats_parallel(event_ids: list) -> dict:
                 time.sleep(0.5)
         return event_id, {}
 
+    _ok = _fail = 0
     with ThreadPoolExecutor(max_workers=10) as ex:
         for eid, data in ex.map(_fetch_one, uncached):
             results[eid] = data
-            # Update session state from main thread (map blocks until all done)
-            st.session_state[f"ss_stats_{eid}"] = data
-
+            # Update session state from main thread (map blocks until all done).
+            # ONLY cache a real payload. Caching {} on failure is what made the
+            # stat-rich count drift downward and never recover; leaving a failure
+            # uncached lets the next run retry it, so the count converges UP toward
+            # the true value instead of oscillating around it.
+            if data and data.get("statistics"):
+                st.session_state[f"ss_stats_{eid}"] = data
+                _ok += 1
+            else:
+                _fail += 1
+    if _fail:
+        logger.info(
+            "STATS_FETCH | %d/%d newly fetched OK, %d failed (left UNCACHED for retry "
+            "— cached events are kept, so the stat-rich count only converges upward)",
+            _ok, len(uncached), _fail,
+        )
     return results
 
 
@@ -1902,7 +1922,16 @@ def get_player_stats_by_surface(player_id, tour: str = "ATP") -> dict:
             surf_detected,
         )
 
-    logger.info("[STATS_FLOW] VALID_EVENTS | valid=%d (finished singles)", len(valid))
+    # DETERMINISTIC SELECTION — sort newest-first BEFORE the [:50] cap so the 50
+    # events we attempt are a pure function of the player's match history, not of
+    # the order the paginated API happened to return them in. Without this, two
+    # runs can attempt two different 50-event subsets of the same history and
+    # legitimately produce different stat-rich counts. Ties break on event id so
+    # the order is total (same-timestamp events can't reshuffle between runs).
+    valid.sort(key=lambda e: ((e.get("startTimestamp") or 0), (e.get("id") or 0)),
+               reverse=True)
+    logger.info("[STATS_FLOW] VALID_EVENTS | valid=%d (finished singles, sorted "
+                "newest-first before the %d-event stats cap)", len(valid), 50)
 
     # Fetch stats for the most recent 50 matches in parallel
     event_ids = [e.get("id", 0) for e in valid[:50]]

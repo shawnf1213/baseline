@@ -902,6 +902,46 @@ def _fill_min_viable(s: dict, all_s: dict, surf_n: int, tour: str) -> list:
     return fell_back
 
 
+# ── Depth hysteresis (stat-rich count noise guard) ───────────────────────────
+# A player's completed match history cannot shrink, so their true stat-rich count
+# on a surface is monotonically non-decreasing. Any READING that goes down is
+# measurement error (a degraded/partial stats fetch), not new information.
+#
+# Deterministic event selection + never caching failed stat fetches (see
+# sofascore_client) should make the counts reproducible on their own. This is the
+# safety net for whatever residual noise survives: once a player has measured
+# 15+ stat-rich matches on a surface, they KEEP deep status for that surface for
+# 7 days even if a later fetch reads lower. Deep status is gained from any single
+# healthy measurement and can only be lost by 7 days of persistently low reads,
+# never by one bad fetch.
+#
+# Deliberately gates DEEP STATUS only, not the raw count — the count still feeds
+# sample_size honestly; this just stops a threshold from flapping on noise.
+_DEEP_MIN_MATCHES = 15
+_DEEP_STATUS_TTL  = 7 * 24 * 3600
+_DEEP_STATUS: dict = {}          # (player_id, surface) -> ts last measured deep
+
+
+def _deep_with_hysteresis(pid, surface: str, measured_n, who: str = "") -> bool:
+    """Deep status for (player, surface), with 7-day retention. Logs a retention
+    so a play surviving on a remembered measurement is never silent."""
+    key = (str(pid), (surface or "").lower())
+    now = time.time()
+    if isinstance(measured_n, (int, float)) and measured_n >= _DEEP_MIN_MATCHES:
+        _DEEP_STATUS[key] = now
+        return True
+    ts = _DEEP_STATUS.get(key)
+    if ts is not None and (now - ts) < _DEEP_STATUS_TTL:
+        logger.info(
+            "DEPTH_HYSTERESIS | %s pid=%s surface=%s | measured=%s (<%d) but measured "
+            "deep %.1fh ago — RETAINING deep status (a completed match history cannot "
+            "shrink, so the low read is a degraded fetch, not new information)",
+            who, pid, surface, measured_n, _DEEP_MIN_MATCHES, (now - ts) / 3600.0,
+        )
+        return True
+    return False
+
+
 # ── Opponent-quality weighting (Improvement 1) ───────────────────────────────
 _QW_COUNT_STATS = {                       # weighted MEAN of per-match value
     "aces": "aces", "double_faults": "double_faults",
@@ -1835,6 +1875,12 @@ async def prop_calculate(req: PropRequest):
             p2_blended=p2_blended,
             projection=proj_val,
             prop_line=req.prop_line,
+            p1_deep=_deep_with_hysteresis(req.player_id, req.surface,
+                                          p1_blended.get("_ta_career_matches", 0),
+                                          req.player_name or "p1"),
+            p2_deep=_deep_with_hysteresis(req.opponent_id, req.surface,
+                                          p2_blended.get("_ta_career_matches", 0),
+                                          req.opponent_name or "p2"),
         )
         # Start from the RAW (unclamped) base total. Every modifier below is
         # additive; the floor/cap is applied EXACTLY ONCE via finalize_confidence
@@ -2121,6 +2167,13 @@ async def prop_calculate(req: PropRequest):
             "opponent_surface_fallback": p2_fallback,
             "data_quality":           data_quality,       # player (p1)
             "opponent_data_quality":  opp_data_quality,   # opponent (p2)
+            # Depth status AFTER hysteresis — the single source of truth for every
+            # depth gate (the backend's own ceilings and the bot's PTGW bar), so a
+            # noisy count can't make them disagree.
+            "player_deep":            _deep_with_hysteresis(
+                req.player_id, req.surface, p1_ta_career, req.player_name or "p1"),
+            "opponent_deep":          _deep_with_hysteresis(
+                req.opponent_id, req.surface, p2_ta_career, req.opponent_name or "p2"),
             # Limited-surface-data flags (ISSUE 2 — <10 surface matches)
             "player_limited_data":     player_limited_data,
             "opponent_limited_data":   opponent_limited_data,

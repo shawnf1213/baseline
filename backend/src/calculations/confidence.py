@@ -125,6 +125,8 @@ def calculate_confidence(
     p2_blended: dict = None,
     projection: float = None,
     prop_line: float = None,
+    p1_deep: bool = None,
+    p2_deep: bool = None,
 ) -> dict:
     stat_key = PROP_STAT_KEY.get(prop_type, "aces")
     breakdown = {}
@@ -405,8 +407,14 @@ def calculate_confidence(
         elif _bl.get("_surface_fallback"):
             if data_ceiling > 75:
                 data_ceiling, _cap_reason, _cap_tag = 75, "surface-fallback data", "data-capped"
+    # p1_deep / p2_deep come from the caller's depth hysteresis (a completed match
+    # history can't shrink, so a count that drops is a degraded fetch — see
+    # _deep_with_hysteresis in main.py). Fall back to the raw >=15 test when the
+    # caller doesn't supply them, so this stays correct for direct callers/tests.
+    _p1_deep = p1_deep if p1_deep is not None else (n >= 15)
+    _p2_deep = p2_deep if p2_deep is not None else (p2_n >= 15)
     both_deep = (
-        n >= 15 and p2_n >= 15
+        _p1_deep and _p2_deep
         and not (p1_blended or {}).get("_surface_fallback")
         and not (p2_blended or {}).get("_surface_fallback")
         and (p1_blended or {}).get("_data_quality") != "thin"
