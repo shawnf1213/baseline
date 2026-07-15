@@ -2635,7 +2635,11 @@ def get_h2h_summary(tour: str, p1: str, p2: str,
 
 def get_h2h_stat_avg(tour: str, p1: str, p2: str,
                      surface: Optional[str] = None) -> dict:
-    empty = {"ace": None, "df": None, "games_avg": None}
+    # stat_n / games_n are the MEETING COUNTS behind the averages. They were
+    # computed but not returned, so no caller could sample-gate the H2H blends —
+    # a single sparse meeting carried the same weight as five (see the H2H gates
+    # in props.py). Returning them is what makes gating possible.
+    empty = {"ace": None, "df": None, "games_avg": None, "stat_n": 0, "games_n": 0}
     p1_id = int(p1)
     p2_id = int(p2)
 
@@ -2670,11 +2674,26 @@ def get_h2h_stat_avg(tour: str, p1: str, p2: str,
                 bp_sum += parsed["bp_converted_count"]
             n += 1
 
+    logger.info(
+        "H2H_STAT_AVG | %s vs %s | surface=%s | meetings=%d | stat-rich=%d "
+        "(ace/df/bp basis) | with-games=%d | ace=%s df=%s bp=%s games=%s",
+        p1, p2, surface or "any", len(h2h), n, games_n,
+        round(ace_sum / n, 2) if n else None,
+        round(df_sum / n, 2) if n else None,
+        round(bp_sum / n, 2) if n else None,
+        round(games_sum / games_n, 1) if games_n else None,
+    )
     return {
         "ace":       round(ace_sum  / n,       2) if n       else None,
         "df":        round(df_sum   / n,       2) if n       else None,
         "bp":        round(bp_sum   / n,       2) if n       else None,
         "games_avg": round(games_sum / games_n, 1) if games_n else None,
+        # Meeting counts behind each average — the sample-gate inputs.
+        # stat_n  : meetings with PARSED statistics (ace/df/bp basis)
+        # games_n : meetings with a total-games count (score-derived; needs no
+        #           statistics call, so it is usually >= stat_n)
+        "stat_n":    n,
+        "games_n":   games_n,
     }
 
 

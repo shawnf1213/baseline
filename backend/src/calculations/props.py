@@ -35,6 +35,33 @@ def _trace(trace, name, inputs, value, running, note=""):
     return running
 
 
+# ── H2H sample gate ──────────────────────────────────────────────────────────
+# Every H2H blend below was ungated: any non-null average entered at FULL weight,
+# so ONE historical meeting moved the projection as hard as five. Observed
+# (Collignon vs Vacherot, Gstaad): an h2h_ace_avg of 1.0 — a single sparse
+# meeting — dragged a 7.0 ace projection to 5.8, a 17% cut, at 20% weight.
+#
+# The tennis reality: one prior meeting says almost nothing about ace counts.
+# Ace output is driven by current serve form and conditions, not by what happened
+# once against this opponent. So H2H must EARN its weight with meetings:
+#     < 3 meetings  -> contributes NOTHING
+#       3 meetings  -> half its full weight
+#       4 meetings  -> three-quarters
+#     >= 5 meetings -> full weight
+# Scaling by fraction (not fixed percentages) keeps each prop's own full weight
+# intact: aces 20% -> 10/15/20, DF 30% -> 15/22.5/30, Total Games 35% ->
+# 17.5/26.25/35.
+H2H_MIN_MEETINGS = 3
+_H2H_WEIGHT_SCALE = {3: 0.50, 4: 0.75}     # >=5 -> 1.0
+
+
+def _h2h_weight(full_weight: float, n) -> float:
+    """H2H blend weight scaled by meeting count; 0.0 below the minimum."""
+    if not isinstance(n, (int, float)) or n < H2H_MIN_MEETINGS:
+        return 0.0
+    return full_weight * _H2H_WEIGHT_SCALE.get(int(n), 1.0)
+
+
 # Tour-average aces faced per match — used to normalise opponent ace-against rate
 _TOUR_AVG_ACE_AGAINST = {"ATP": 5.5, "WTA": 3.0}
 
@@ -240,6 +267,7 @@ def project_aces(
     surface: str = "Hard",
     match_format: str = "best_of_3",
     trace: list = None,
+    h2h_stat_n: int = 0,          # stat-rich H2H meetings behind h2h_ace_avg
 ) -> dict:
     """
     5-layer ace projection model with expected-sets scaling:
@@ -550,15 +578,30 @@ def project_aces(
            {"surface": surface, "in": round(_after_hand, 3)},
            surface_ace_factor, proj, "grass boosts / clay suppresses")
 
-    # ── H2H blend (light, only when real H2H ace data exists) ─────────────────
-    if h2h_ace_avg is not None and h2h_ace_avg > 0:
+    # ── H2H blend — SAMPLE-GATED (see _h2h_weight) ───────────────────────────
+    _h2h_w = _h2h_weight(0.20, h2h_stat_n)
+    if h2h_ace_avg is not None and h2h_ace_avg > 0 and _h2h_w > 0:
         _pre_h2h = proj
-        proj = proj * 0.80 + h2h_ace_avg * 0.20
+        proj = proj * (1.0 - _h2h_w) + h2h_ace_avg * _h2h_w
         _trace(trace, "h2h_blend",
-               {"model_proj": round(_pre_h2h, 3), "h2h_ace_avg": h2h_ace_avg},
-               0.20, proj, "80/20 toward H2H (only when real H2H ace data exists)")
-    _trace(trace, "FINAL", {"chain_result": round(proj, 3)}, proj, round(proj, 1),
-           "rounded to 1dp for the response")
+               {"model_proj": round(_pre_h2h, 3), "h2h_ace_avg": h2h_ace_avg,
+                "h2h_stat_rich_meetings": h2h_stat_n},
+               _h2h_w, proj,
+               "weight scaled by meetings: %d -> %.0f%% (full weight 20%% needs "
+               ">=5)" % (h2h_stat_n, _h2h_w * 100))
+    elif h2h_ace_avg is not None and h2h_ace_avg > 0:
+        _trace(trace, "h2h_SKIPPED",
+               {"h2h_ace_avg": h2h_ace_avg, "h2h_stat_rich_meetings": h2h_stat_n,
+                "minimum_required": H2H_MIN_MEETINGS},
+               0.0, proj,
+               "H2H contributes NOTHING — only %s stat-rich meeting(s), below the "
+               "%d minimum. One meeting says almost nothing about ace counts."
+               % (h2h_stat_n, H2H_MIN_MEETINGS))
+    _trace(trace, "projector_output", {"chain_result": round(proj, 3)},
+           proj, round(proj, 1),
+           "END OF THE PROJECTOR — NOT the final number. main.py may still apply "
+           "indoor / altitude / H2H-psych modifiers after this; see the "
+           "post-projector steps and the real FINAL below.")
 
     p_matches = player_stats.get("matches_played", 0) or 0
     o_matches = opponent_stats.get("matches_played", 0) or 0
@@ -623,6 +666,7 @@ def project_double_faults(
     player_stats: dict,
     opponent_stats: dict,
     h2h_df_avg: float = None,
+    h2h_stat_n: int = 0,          # stat-rich H2H meetings behind h2h_df_avg
     player_ta: dict = None,
     opponent_ta: dict = None,
     tour: str = "ATP",
@@ -728,9 +772,18 @@ def project_double_faults(
     else:
         proj = ta_val
 
-    # ── H2H blend ────────────────────────────────────────────────────────────
-    if h2h_df_avg is not None and h2h_df_avg > 0:
-        proj = proj * 0.70 + h2h_df_avg * 0.30
+    # ── H2H blend — SAMPLE-GATED (see _h2h_weight) ───────────────────────────
+    # Was ungated at a 30% weight: one sparse meeting moved a DF projection by
+    # nearly a third. Same defect as the aces chain, larger blast radius.
+    _h2h_w_df = _h2h_weight(0.30, h2h_stat_n)
+    if h2h_df_avg is not None and h2h_df_avg > 0 and _h2h_w_df > 0:
+        proj = proj * (1.0 - _h2h_w_df) + h2h_df_avg * _h2h_w_df
+        logger.info("DF_H2H | avg=%.2f | %d stat-rich meetings -> weight %.0f%%",
+                    h2h_df_avg, h2h_stat_n, _h2h_w_df * 100)
+    elif h2h_df_avg is not None and h2h_df_avg > 0:
+        logger.info("DF_H2H_SKIPPED | avg=%.2f but only %s stat-rich meeting(s) "
+                    "(<%d) — H2H contributes nothing",
+                    h2h_df_avg, h2h_stat_n, H2H_MIN_MEETINGS)
 
     conf = _confidence(p_matches, o_matches, h2h_df_avg is not None)
 
@@ -1558,6 +1611,7 @@ def project_total_games(
     opponent_stats: dict,
     surface: str,
     h2h_games_avg: float = None,
+    h2h_games_n: int = 0,         # H2H meetings with a total-games count
     tour: str = "ATP",
     court: str = "",
     player_ta: dict = None,
@@ -1643,8 +1697,22 @@ def project_total_games(
     proj = games_per_set * exp_sets
 
     # ── H2H blend at 35% if available ────────────────────────────────────────
-    if h2h_games_avg is not None and h2h_games_avg > 0:
-        proj = proj * 0.65 + h2h_games_avg * 0.35
+    # ── H2H blend — SAMPLE-GATED (see _h2h_weight) ───────────────────────────
+    # The heaviest H2H weight in the codebase (35%) and it was ungated: a single
+    # prior meeting could move a total-games projection by more than a third.
+    # NOTE the gate reads games_n, not stat_n — total games is derived from the
+    # SCORE, so a meeting needs no parsed statistics to inform it. This is a
+    # genuinely different (and usually larger) sample than the ace/DF basis, so
+    # gating it on stat_n would discard meetings that are perfectly good here.
+    _h2h_w_tg = _h2h_weight(0.35, h2h_games_n)
+    if h2h_games_avg is not None and h2h_games_avg > 0 and _h2h_w_tg > 0:
+        proj = proj * (1.0 - _h2h_w_tg) + h2h_games_avg * _h2h_w_tg
+        logger.info("TG_H2H | avg=%.1f | %d meetings with games -> weight %.0f%%",
+                    h2h_games_avg, h2h_games_n, _h2h_w_tg * 100)
+    elif h2h_games_avg is not None and h2h_games_avg > 0:
+        logger.info("TG_H2H_SKIPPED | avg=%.1f but only %s meeting(s) with games "
+                    "(<%d) — H2H contributes nothing",
+                    h2h_games_avg, h2h_games_n, H2H_MIN_MEETINGS)
 
     # ── ST Pace Index surface adjustment for total games per set ─────────────
     # Thresholds updated for the ST Pace Index scale (not the old CPR scale):
@@ -2418,10 +2486,12 @@ def project_break_points(
            "deciding-set bonus, favourite only (additive, after C8)"
            if set_momentum_bonus else
            "not applied (needs exp_sets>%.1f AND player win prob>=50%%)" % _set_mom_thresh)
-    _trace(trace, "FINAL", {"chain_result": round(proj, 3)}, proj, round(proj, 1),
-           "rounded to 1dp for the response. hand_bp_factor and the H2H blend are "
-           "DIAGNOSTIC ONLY and deliberately do NOT touch proj — one calculation, "
-           "one number")
+    _trace(trace, "projector_output", {"chain_result": round(proj, 3)},
+           proj, round(proj, 1),
+           "END OF THE PROJECTOR — NOT the final number; main.py may still apply "
+           "indoor / H2H-psych modifiers after this. hand_bp_factor and the H2H "
+           "blend are DIAGNOSTIC ONLY and deliberately do NOT touch proj — one "
+           "calculation, one number")
 
     logger.info(
         "BP_COMBINED | base=%.3f | momentum=%.3f | before_format=%.3f | "

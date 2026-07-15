@@ -1255,6 +1255,11 @@ async def prop_calculate(req: PropRequest):
         h2h_df_avg       = h2h_stats.get("df")
         h2h_bp_avg       = h2h_stats.get("bp")
         h2h_games_avg    = h2h_stats.get("games_avg")
+        # Meeting counts behind those averages — the H2H sample-gate inputs.
+        # stat_n backs ace/df (needs parsed statistics); games_n backs the total-
+        # games average (score-derived, so usually the larger sample).
+        h2h_stat_n       = h2h_stats.get("stat_n", 0) or 0
+        h2h_games_n      = h2h_stats.get("games_n", 0) or 0
         h2h_surf_matches = h2h_summary.get("surface_matches", 0)
 
         # Canonicalize a free-form court/tournament name (e.g. Sofascore's
@@ -1785,10 +1790,12 @@ async def prop_calculate(req: PropRequest):
                 tour=req.tour, surface=req.surface,
                 match_format=match_fmt,
                 trace=_ctrace,
+                h2h_stat_n=h2h_stat_n,
             )
         elif req.prop_type == "Double Faults":
             result = project_double_faults(
                 p1_s, p2_s, h2h_df_avg,
+                h2h_stat_n=h2h_stat_n,
                 player_ta=player_ta_props, opponent_ta=opponent_ta_props,
                 tour=req.tour, surface=req.surface,
                 match_format=match_fmt,
@@ -1797,6 +1804,7 @@ async def prop_calculate(req: PropRequest):
         elif req.prop_type == "Total Games":
             result = project_total_games(
                 p1_s, p2_s, req.surface, h2h_games_avg,
+                h2h_games_n=h2h_games_n,
                 tour=req.tour, court=court_for_calc,
                 match_format=match_fmt,
                 player_ta=player_ta_props, opponent_ta=opponent_ta_props,
@@ -1899,6 +1907,7 @@ async def prop_calculate(req: PropRequest):
                 # projection) with their breaks (the BP-won projection).
                 tg_result = project_total_games(
                     p1_s, p2_s, req.surface, h2h_games_avg,
+                    h2h_games_n=h2h_games_n,
                     tour=req.tour, court=court_for_calc,
                     match_format=match_fmt,
                     player_ta=player_ta_props, opponent_ta=opponent_ta_props,
@@ -1946,6 +1955,15 @@ async def prop_calculate(req: PropRequest):
             proj_val, p1_data.get(f"{req.surface}_matches", []) or [], req.prop_type)
 
         # ════ NEW SIGNALS applied as the top additive projection layer ═══════
+        # THESE ARE PART OF THE PROJECTION CHAIN. They live outside the projector
+        # function, which meant every audit that read the projector's output was
+        # reading an intermediate value, not the number served. Each one is now a
+        # labelled trace step so the chain is auditable end to end.
+        _trace_pv = (lambda name, inputs, value, running, note:
+                     _ctrace.append({"step": len(_ctrace) + 1, "name": name,
+                                     "inputs": inputs, "value": value,
+                                     "running": running, "note": note})
+                     if _ctrace is not None else None)
         if isinstance(proj_val, (int, float)):
             # Signal 1 — indoor hard: faster, server-favouring conditions.
             if is_indoor_hard and req.prop_type == "Aces":
@@ -1953,11 +1971,15 @@ async def prop_calculate(req: PropRequest):
                 proj_val = round(proj_val * 1.065, 1)
                 result["_indoor_note"] = "Indoor hard court (faster, no wind) boosts ace projection +6.5%."
                 logger.info("SIGNAL1_INDOOR_ACE | %.1f -> %.1f (+6.5%%)", _pre, proj_val)
+                _trace_pv("post_indoor_hard", {"in": _pre, "is_indoor_hard": True},
+                          1.065, proj_val, "indoor hard boosts aces +6.5%")
             elif is_indoor_hard and req.prop_type == "Break Points Won":
                 _pre = proj_val
                 proj_val = round(proj_val * 0.96, 1)
                 result["_indoor_note"] = "Indoor hard court favours servers -- break-point conversion trimmed -4%."
                 logger.info("SIGNAL1_INDOOR_BP | %.1f -> %.1f (-4%%)", _pre, proj_val)
+                _trace_pv("post_indoor_hard", {"in": _pre, "is_indoor_hard": True},
+                          0.96, proj_val, "indoor hard favours servers, BP -4%")
             # Altitude — thin air boosts aces only (does not change the CPI).
             if is_altitude and req.prop_type == "Aces":
                 _pre = proj_val
@@ -1965,6 +1987,10 @@ async def prop_calculate(req: PropRequest):
                 result["_altitude_note"] = (
                     f"High-altitude venue (thin air, faster serves) boosts ace projection +{alt_pct}%.")
                 logger.info("ALTITUDE_ACE | %.1f -> %.1f (+%d%%)", _pre, proj_val, alt_pct)
+                _trace_pv("post_altitude", {"in": _pre, "venue": court_for_calc,
+                                            "altitude_pct": alt_pct},
+                          alt_factor, proj_val,
+                          "high-altitude venue: thin air, faster serves -> aces +%d%%" % alt_pct)
             # Signal 2 — H2H psychological edge (BP prop).
             if req.prop_type == "Break Points Won" and h2h_psych_mult != 1.0:
                 _pre = proj_val
@@ -1975,6 +2001,10 @@ async def prop_calculate(req: PropRequest):
                     f"by {abs(_h2h_gap)} of {_h2h_surf_n} -> BP {'+' if _pct >= 0 else ''}{_pct}%."
                 )
                 logger.info("SIGNAL2_H2H_APPLIED | %.1f -> %.1f (x%.2f)", _pre, proj_val, h2h_psych_mult)
+                _trace_pv("post_h2h_psych", {"in": _pre, "surface_h2h": _h2h_surf_n,
+                                             "gap": _h2h_gap, "direction": h2h_psych_dir},
+                          h2h_psych_mult, proj_val,
+                          "H2H psychological edge on the BP prop")
 
         # Signal 3 — tiebreak note (all props) + tiebreak-supplemented opponent
         # serve tier (BP prop). p1 = selected player, p2 = opponent.
@@ -2284,6 +2314,43 @@ async def prop_calculate(req: PropRequest):
 
         env_key   = result.get("environment") or detect_environment(p1_s, p2_s, surface=req.surface, tour=req.tour)
         env_label = ENVIRONMENT_LABELS.get(env_key, "Standard")
+
+        # ── Trace FINAL — assert-equal to what the response actually carries ──
+        # "FINAL" previously meant "the projector stopped here", while main.py went
+        # on to move the number — so the trace disagreed with model_projection and
+        # quietly misreported the chain. FINAL now means RESPONSE-EQUAL, and the
+        # assertion is what keeps it honest: in debug mode a mismatch is an ERROR,
+        # not a trace that lies. If a future adjustment is added without a trace
+        # step, this fails loudly on the next audit instead of hiding.
+        if _ctrace is not None:
+            _ctrace.append({
+                "step": len(_ctrace) + 1, "name": "FINAL",
+                "inputs": {"response_model_projection": proj_val},
+                "value": proj_val, "running": proj_val,
+                "note": "response-equal by assertion — this IS the served number",
+            })
+            _proj_steps = [e for e in _ctrace if e["name"] == "projector_output"]
+            if _proj_steps and _proj_steps[0]["running"] != proj_val:
+                logger.info(
+                    "TRACE_CHAIN | projector_output=%s -> FINAL=%s (post-projector "
+                    "adjustments moved the number; each is a labelled step)",
+                    _proj_steps[0]["running"], proj_val)
+            if isinstance(proj_val, (int, float)):
+                _last_running = None
+                for _e in reversed(_ctrace[:-1]):
+                    if isinstance(_e.get("running"), (int, float)):
+                        _last_running = _e["running"]
+                        break
+                if _last_running is not None and abs(_last_running - proj_val) > 0.05:
+                    raise HTTPException(
+                        status_code=500,
+                        detail=(
+                            "component_trace is INCOMPLETE: last traced running value "
+                            f"{_last_running} != served model_projection {proj_val}. "
+                            "An adjustment is mutating the projection without a trace "
+                            "step. Refusing to serve a trace that misreports the chain."
+                        ),
+                    )
 
         # Serialise H2H DataFrames
         def _df_records(key):
