@@ -1219,6 +1219,39 @@ CALIBRATION_MIN_SAMPLE = 40
 
 RESULTS_POST_HOUR = int(os.getenv("RESULTS_POST_HOUR", "19") or "19")
 RESULTS_POST_MINUTE = int(os.getenv("RESULTS_POST_MINUTE", "45") or "45")
+
+# ── One-off schedule override ────────────────────────────────────────────────
+# On ONEOFF_SCHED_DATE only, the recap and the POTD run at the times below
+# INSTEAD of their recurring slots. Each loop is registered at BOTH times and
+# _slot_is_live() decides which firing actually runs, so a day never posts twice
+# and no new task loop had to be wired up. Auto-reverts: on any other date the
+# one-off slot no-ops and the normal 7:45 / 7:50 slots run as usual.
+ONEOFF_SCHED_DATE = os.getenv("ONEOFF_SCHED_DATE", "2026-07-15")
+ONEOFF_RECAP_HM   = (17, 0)     # recap  — 5:00 PM ET
+ONEOFF_POTD_HM    = (18, 50)    # POTD   — 6:50 PM ET
+
+
+def _slot_is_live(oneoff_hm: tuple) -> bool:
+    """Should THIS firing run? True for the one-off slot on the override date, and
+    for the normal slot on every other date.
+
+    Matches on (hour, minute) with a couple of minutes' tolerance rather than
+    exact equality — the loop wakes at the scheduled second, but a slow event loop
+    could drift it past the minute boundary and silently skip the day's post.
+    Safe because the one-off and normal slots are far apart (5:00 vs 7:45,
+    6:50 vs 7:50)."""
+    now = datetime.datetime.now(POD_TZINFO)
+    mins_now = now.hour * 60 + now.minute
+    mins_off = oneoff_hm[0] * 60 + oneoff_hm[1]
+    is_oneoff_slot = abs(mins_now - mins_off) <= 2
+    is_oneoff_date = now.strftime("%Y-%m-%d") == ONEOFF_SCHED_DATE
+    live = is_oneoff_slot if is_oneoff_date else (not is_oneoff_slot)
+    if not live:
+        log.info("SLOT_SKIP | %s %02d:%02d | oneoff_date=%s (today=%s) oneoff_slot=%s "
+                 "— this firing is not the live slot today",
+                 "one-off" if is_oneoff_slot else "normal", now.hour, now.minute,
+                 ONEOFF_SCHED_DATE, now.strftime("%Y-%m-%d"), is_oneoff_slot)
+    return live
 # One-off skip: don't post the daily recap on this ET date (it already posted
 # earlier that day). Set to "" to disable. Resumes normally the next day.
 RESULTS_SKIP_DATE = os.getenv("RESULTS_SKIP_DATE", "2026-06-30")
@@ -1795,11 +1828,20 @@ async def _repost_todays_plays(channel) -> str:
             + (" + 3x" if slip and len(slip) >= 2 else ""))
 
 
-@tasks.loop(time=datetime.time(hour=PICKS_GEN_HOUR, minute=PICKS_GEN_MINUTE, tzinfo=POD_TZINFO))
+@tasks.loop(time=[
+    datetime.time(hour=ONEOFF_POTD_HM[0], minute=ONEOFF_POTD_HM[1], tzinfo=POD_TZINFO),
+    datetime.time(hour=PICKS_GEN_HOUR, minute=PICKS_GEN_MINUTE, tzinfo=POD_TZINFO),
+])
 async def daily_picks_generate():
-    """THE POTD TRIGGER — fires at PICKS_GEN (7:50 PM ET): evaluates the board and
-    posts the ranked list (in pages of 6, each @everyone) + the 3x when the run
-    finishes (~10 min). Independent of the recap, which posts earlier at 7:30."""
+    """THE POTD TRIGGER — evaluates the board and posts the ⭐ Pick of the Day +
+    Ranked Board (@everyone) + the 3x when the run finishes (~6-10 min).
+    Independent of the recap, which posts earlier.
+
+    Registered at BOTH the one-off slot (6:50 PM on ONEOFF_SCHED_DATE) and the
+    recurring slot (7:50 PM); _slot_is_live picks which one actually runs, so the
+    override date posts once at 6:50 and every other date once at 7:50."""
+    if not _slot_is_live(ONEOFF_POTD_HM):
+        return
     if not POD_CHANNEL_ID:
         return
     try:
@@ -2444,9 +2486,16 @@ async def _before_resolve():
 
 
 # ── Feature 1 — daily win/loss record auto-post (replaces the /results command) ──
-@tasks.loop(time=datetime.time(hour=RESULTS_POST_HOUR, minute=RESULTS_POST_MINUTE,
-                               tzinfo=POD_TZINFO))
+@tasks.loop(time=[
+    datetime.time(hour=ONEOFF_RECAP_HM[0], minute=ONEOFF_RECAP_HM[1], tzinfo=POD_TZINFO),
+    datetime.time(hour=RESULTS_POST_HOUR, minute=RESULTS_POST_MINUTE, tzinfo=POD_TZINFO),
+])
 async def daily_results_post():
+    """The daily recap. Registered at BOTH the one-off slot (5:00 PM on
+    ONEOFF_SCHED_DATE) and the recurring slot (7:45 PM); _slot_is_live picks which
+    firing runs so the day never posts the recap twice."""
+    if not _slot_is_live(ONEOFF_RECAP_HM):
+        return
     chan_id = RESULTS_CHANNEL_ID or POD_CHANNEL_ID
     if not chan_id:
         return
