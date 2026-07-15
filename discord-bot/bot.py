@@ -1190,7 +1190,7 @@ PICKS_GEN_MINUTE = int(os.getenv("PICKS_GEN_MINUTE", "50") or "50")
 # auto-reverts the next day.
 POD_EXTRA_RUN_DATE = os.getenv("POD_EXTRA_RUN_DATE", "2026-07-14")
 POD_EXTRA_RUN_HOUR = int(os.getenv("POD_EXTRA_RUN_HOUR", "22") or "22")
-POD_EXTRA_RUN_MINUTE = int(os.getenv("POD_EXTRA_RUN_MINUTE", "20") or "20")
+POD_EXTRA_RUN_MINUTE = int(os.getenv("POD_EXTRA_RUN_MINUTE", "40") or "40")
 # Pre-generated bundle {ts, ranked, slip} produced by daily_picks_generate and
 # consumed by daily_results_post right after the recap.
 _daily_bundle = {"ts": 0.0, "ranked": None, "slip": []}
