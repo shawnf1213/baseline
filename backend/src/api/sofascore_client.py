@@ -1471,6 +1471,67 @@ def _get_event_statistics(event_id: int) -> dict:
     return data
 
 
+# ── Durable cache helpers (scopes 2/3 and 3/3) ───────────────────────────────
+# Postgres is the durability layer behind the in-process caches; memory stays the
+# hot path. Each helper swallows every DB error — a Postgres problem must cost
+# cache warmth and nothing else, never a request.
+#
+# A note on SIZE, because these two scopes differ sharply:
+#   • event statistics — small per row, IMMUTABLE, no TTL. Rows accumulate, which
+#     is the whole point: a match played last month should never be refetched.
+#   • player surface aggregates — LARGE (all_matches can run to hundreds of
+#     entries plus per-surface copies). The memory key carries a 6h bucket, but
+#     the DB key deliberately does NOT: a bucketed DB key would mint a new row
+#     every 6 hours per player and never reread the old ones, growing without
+#     bound. One stable row per player, overwritten, with a 6h TTL gives the same
+#     freshness semantics and a bounded table.
+_PLAYER_SURFACE_DB_MAX_BYTES = 4 * 1024 * 1024   # skip absurd payloads
+
+
+def _event_stats_from_db(eid):
+    try:
+        from src import database
+        return database.cache_get(f"ss_stats_{eid}")
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _event_stats_to_db(eid, data) -> None:
+    try:
+        from src import database
+        database.cache_set(f"ss_stats_{eid}", data, ttl_seconds=None)   # immutable
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _surface_db_key(pid: int) -> str:
+    return f"ss_surface_v6_{pid}"      # NO bucket — see the note above
+
+
+def _player_surface_from_db(pid: int):
+    try:
+        from src import database
+        return database.cache_get(_surface_db_key(pid))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _player_surface_to_db(pid: int, surfaces: dict) -> None:
+    try:
+        import json as _json
+        from src import database
+        _size = len(_json.dumps(surfaces))
+        if _size > _PLAYER_SURFACE_DB_MAX_BYTES:
+            logger.info("SURFACE_DB_SKIP | pid=%d | payload %.1fMB exceeds the "
+                        "%.0fMB cap — memory-only", pid, _size / 1e6,
+                        _PLAYER_SURFACE_DB_MAX_BYTES / 1e6)
+            return
+        database.cache_set(_surface_db_key(pid), surfaces,
+                           ttl_seconds=_CACHE_BUCKET_SECS)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _fetch_stats_parallel(event_ids: list) -> dict:
     """
     Fetch event statistics for multiple events concurrently (up to 10 at once).
@@ -1492,6 +1553,17 @@ def _fetch_stats_parallel(event_ids: list) -> dict:
         cached = st.session_state.get(f"ss_stats_{eid}")
         if cached:
             results[eid] = cached
+            continue
+        # Durable layer (scope 3/3). A COMPLETED match's statistics are immutable,
+        # so these rows have NO TTL — once fetched, correct forever. This is the
+        # highest-value cache to persist: event stats are what stat_matches is
+        # built from, which drives the stat-rich counts, which drive n / o_n /
+        # p2_n and deep status. Losing them on deploy is what made those counts
+        # reset and made cross-deploy reproducibility unobservable.
+        durable = _event_stats_from_db(eid)
+        if durable:
+            results[eid] = durable
+            st.session_state[f"ss_stats_{eid}"] = durable   # hydrate memory
         else:
             uncached.append(eid)
 
@@ -1534,6 +1606,11 @@ def _fetch_stats_parallel(event_ids: list) -> dict:
             # the true value instead of oscillating around it.
             if data and data.get("statistics"):
                 st.session_state[f"ss_stats_{eid}"] = data
+                # GUARD BEFORE WRITE-THROUGH: only a payload with real statistics
+                # reaches here — a failed/empty fetch takes the else branch and is
+                # written NOWHERE, so it can overwrite neither memory nor a healthy
+                # Postgres row. Same rule as the in-memory guard, applied durably.
+                _event_stats_to_db(eid, data)
                 _ok += 1
             else:
                 _fail += 1
@@ -1882,6 +1959,18 @@ def get_player_stats_by_surface(player_id, tour: str = "ATP") -> dict:
         logger.info("SURFACE_CACHE_HIT | pid=%s | bucket=%s", pid, _bucket)
         record_cache_hit()
         return st.session_state[cache_key]
+
+    # Durable layer (scope 2/3): read ONCE on a memory miss, then hydrate memory
+    # so the rest of this bucket never touches the DB again. TTL is enforced
+    # inside cache_get, so a row that merely survived a restart cannot be served
+    # stale — an expired row is a miss and we refetch below.
+    _durable = _player_surface_from_db(pid)
+    if _durable:
+        logger.info("SURFACE_DB_HIT | pid=%s | hydrated from Postgres (survived "
+                    "restart) — no refetch", pid)
+        st.session_state[cache_key] = _durable
+        record_cache_hit()
+        return _durable
 
     logger.info("[STATS_FLOW] START | player_id=%d tour=%s", pid, tour)
 
@@ -2315,7 +2404,11 @@ def get_player_stats_by_surface(player_id, tour: str = "ATP") -> dict:
         surfaces["_degraded_fetch"] = True
         return surfaces
 
+    # Reached ONLY past the degraded-fetch guard above — every degraded branch
+    # returns early, so a degraded snapshot can overwrite neither memory nor a
+    # healthy Postgres row. Guard first, write-through second.
     st.session_state[cache_key] = surfaces
+    _player_surface_to_db(pid, surfaces)
     return surfaces
 
 
