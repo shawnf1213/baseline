@@ -1105,6 +1105,15 @@ def surface_affinity(stats: dict, held_out: bool = True):
     Scaled by surface sample size beyond the minimum, so a just-qualifying 5-match
     record still can't assert a full-strength affinity."""
     if held_out:
+        # SINGLE SOURCE: when the caller has already computed this player's
+        # affinity for this surface from raw match records (the per-surface
+        # ranking in main.py), use THAT number. Re-deriving it here from `stats`
+        # would compare quality-weighted surface figures against a raw held-out
+        # reference and disagree with the ranking for the same player+surface.
+        # One affinity per player per surface, raw-record basis, quality weighting
+        # excluded — the ranking is the only place it's computed.
+        if "surface_affinity_precomputed" in stats:
+            return stats["surface_affinity_precomputed"]
         n_s = stats.get("surface_stat_n") or 0
         n_o = stats.get("heldout_stat_n") or 0
         if n_s < AFFINITY_MIN_SURFACE_N or n_o < AFFINITY_MIN_OTHER_N:

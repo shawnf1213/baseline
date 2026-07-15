@@ -1638,6 +1638,19 @@ async def prop_calculate(req: PropRequest):
             # Full best-to-worst surface ranking (CHANGE 2) — each surface held
             # out of its own reference. Stored so it's auditable, not just logged.
             _s["surface_ranking"] = _surface_ranking(_pdata, _s.get("player_name", "?"))
+            # SINGLE SOURCE for affinity. The ranking computes both sides of every
+            # delta from RAW match records; _s's own surface stats have been
+            # through quality-weighting, so letting the differential re-derive
+            # affinity from _s compared a quality-weighted surface figure against
+            # a raw held-out reference — apples to oranges, and it produced a
+            # different number than the ranking for the same player+surface
+            # (Urgesi clay: ranking -2.10, differential -15.09). Quality weighting
+            # is deliberately excluded from affinity: it adjusts for OPPONENT
+            # strength, which is exactly the thing affinity must not absorb — a
+            # surface preference is about the player, not who they happened to face.
+            _s["surface_affinity_precomputed"] = next(
+                (r["affinity"] for r in _s["surface_ranking"]
+                 if r["surface"] == req.surface), None)
             _rank_txt = " > ".join(
                 "%s %s%s" % (r["surface"],
                              ("%+.1f" % r["affinity"]) if r["affinity"] is not None else "n/a",
