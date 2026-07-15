@@ -1181,7 +1181,9 @@ PICKS_GEN_HOUR = int(os.getenv("PICKS_GEN_HOUR", "19") or "19")
 PICKS_GEN_MINUTE = int(os.getenv("PICKS_GEN_MINUTE", "50") or "50")
 # Ranked plays are delivered in pages of this many, each its own @everyone message
 # (top-12 → two messages: 1-6 then 7-12).
-RANKED_PAGE_SIZE = int(os.getenv("RANKED_PAGE_SIZE", "6") or "6")
+# NOTE: RANKED_PAGE_SIZE (6-plays-per-message paging) was retired when the ⭐ got
+# its own embed — the board is now one compact two-lines-per-play list that fits a
+# single embed, and splits only at play boundaries if it ever outgrows one.
 # One-off EXTRA run: on this ET date ONLY, re-run the ranked list + 3x at 11 PM ET
 # (in addition to the normal daily run). The recurring schedule above is untouched;
 # dedup in _log_picks_pending prevents any double-counting. Set to "" to disable —
@@ -1455,38 +1457,37 @@ def _start_line_monitor(channel, picks: list):
 COLOR_THREEX = 0x9B59B6   # purple — distinct from the green/red POTD embeds
 
 
-def _leg_line(leg: dict, idx: int) -> str:
-    """One 3x leg: player, opponent, prop, line, lean, projection, confidence."""
-    lean = (leg.get("lean") or "").upper() or ("OVER" if (leg.get("edge") or 0) >= 0 else "UNDER")
-    arrow = "🔼" if lean == "OVER" else "🔽"
-    proj = leg.get("projection")
-    proj_txt = f"{proj:.1f}" if isinstance(proj, (int, float)) else "—"
-    loc = leg.get("tournament") or f"{leg.get('surface','')} court"
-    return (f"**Leg {idx}** {arrow} **{leg['player']}** {lean} {leg['line']:g} {leg['prop_type']}\n"
-            f"┕ vs {leg['opponent']} · {loc} · proj {proj_txt} · {leg.get('confidence', 0):.0f}% conf")
-
-
 def threex_embed(legs: list) -> discord.Embed:
     """The Baseline 3x — two independent legs packaged as one slip. Distinct
-    purple color so it's visually separable from the Pick of the Day at a glance."""
-    e = discord.Embed(color=COLOR_THREEX)
-    e.set_author(name="🎟️ Baseline 3x")
+    purple color so it's visually separable from the Pick of the Day at a glance.
+    Each leg is its own field using the SAME compact two-line format as the
+    ranked board, with a divider between, and the slip note last."""
+    today = datetime.datetime.now(POD_TZINFO)
+    e = discord.Embed(title=f"🎟️ Baseline 3x — {today.month}/{today.day}",
+                      color=COLOR_THREEX)
     e.description = (
-        "Two picks, one slip — **both legs must hit** to cash. "
+        "Two picks, one slip — **both legs must hit** to cash.\n"
         "Different props and different matches than today's Pick of the Day."
     )
     for i, leg in enumerate(legs, 1):
-        e.add_field(name="​", value=_leg_line(leg, i), inline=False)
-    confs = [leg.get("confidence", 0) or 0 for leg in legs]
+        loc = leg.get("tournament") or (f"{leg.get('surface')} court"
+                                        if leg.get("surface") else None)
+        body = f"{_play_headline(leg)}\n{_play_statline(leg)}"
+        if loc:
+            body += f"\n_{loc}_"
+        e.add_field(name=f"Leg {i}", value=body, inline=False)
+        if i < len(legs):
+            e.add_field(name="​", value="───────────────", inline=False)
+
+    confs = [c for c in (leg.get("confidence") for leg in legs)
+             if isinstance(c, (int, float))]
     if confs:
-        weakest = min(confs)
         e.add_field(
             name="🔗 Slip Strength",
-            value=f"Both legs at **{weakest:.0f}%+** confidence · "
+            value=f"Both legs at **{min(confs):.0f}%+** confidence · "
                   f"legs average **{sum(confs) / len(confs):.0f}%**.",
             inline=False)
-    e.set_footer(text=FOOTER_PROJECTION)
-    return e
+    return _stamped_footer(e)
 
 
 # ── Ranked plays list (the daily post) ───────────────────────────────────────
@@ -1509,67 +1510,169 @@ def _ranked_stats(prop_type: str, data: dict) -> str:
     return ""
 
 
-def _ranked_field(pick: dict, rank: int):
-    """(name, value) for one ranked play. rank 1 = ⭐ Pick of the Day (fuller);
-    the rest are a consistent compact format."""
-    data = pick.get("data") or {}
-    lean = (pick.get("lean") or "").upper() or ("OVER" if (pick.get("edge") or 0) >= 0 else "UNDER")
-    dot = "🟢" if lean == "OVER" else "🔴" if lean == "UNDER" else "⚪"
-    proj, edge = pick.get("projection"), pick.get("edge")
-    conf = pick.get("confidence") or 0
-    p1wp = data.get("p1_win_prob")
-    esets = data.get("expected_sets")
-    edge_txt = (f"{'+' if (edge or 0) >= 0 else ''}{edge:.1f}") if isinstance(edge, (int, float)) else "—"
-    wp_txt = f"{p1wp:.0f}%" if isinstance(p1wp, (int, float)) else "—"
-    es_txt = f"{esets:.1f}" if isinstance(esets, (int, float)) else "—"
-    fa = pick.get("form_alert")
-    fa_txt = f"  ·  {fa}" if fa else ""
-    cap = data.get("confidence_cap_reason")
-    cap_txt = f" ({cap})" if cap else ""
-    stats = _ranked_stats(pick["prop_type"], data)
-    # Player Total Games Won knife-edge: line sits in the highest-variance band.
-    if pick.get("coin_flip"):
-        stats = (stats + "\n" if stats else "") + "⚠️ **Coin-flip zone** — line in the highest-variance band"
+# ── Shared presentation helpers ──────────────────────────────────────────────
+# One indicator per concept, never stacked:
+#   lean     -> 🟢 OVER / 🔴 UNDER / ⚪ no lean
+#   result   -> ✅ win / ❌ loss / ⚪ push / 🚫 void (DNP)
+# Numbers: projections + edges to ONE decimal, confidence to a WHOLE percent.
+LEAN_DOT = {"OVER": "🟢", "UNDER": "🔴"}
 
-    if rank == 1:
-        name = f"⭐ Pick of the Day — {pick['player']} vs {pick['opponent']}"
-        loc = pick.get("tournament") or f"{pick.get('surface', '')} court"
-        value = (f"{dot} **{lean} {pick['line']:g} {pick['prop_type']}**  ·  proj **{_num(proj)}**  ·  "
-                 f"edge **{edge_txt}**  ·  **{conf:.0f}%** conf{cap_txt}{fa_txt}\n"
-                 f"Win prob **{wp_txt}**  ·  Exp sets **{es_txt}**  ·  {loc}\n"
-                 f"{stats}")
-    else:
-        name = f"{rank}. {pick['player']} vs {pick['opponent']}"
-        value = (f"{dot} **{lean} {pick['line']:g} {pick['prop_type']}** · proj {_num(proj)} · "
-                 f"edge {edge_txt} · {conf:.0f}% conf{cap_txt} · Win {wp_txt} · Sets {es_txt}\n{stats}")
-    return name[:256], value[:1024]
+
+def _lean_of(pick: dict) -> str:
+    return (pick.get("lean") or "").upper() or (
+        "OVER" if (pick.get("edge") or 0) >= 0 else "UNDER")
+
+
+def _lean_color(lean: str) -> int:
+    return COLOR_OVER if lean == "OVER" else COLOR_UNDER if lean == "UNDER" else COLOR_NEUTRAL
+
+
+def _edge_txt(edge) -> str:
+    """Signed edge to one decimal, e.g. +4.4 / -2.3. Em-dash when unavailable."""
+    return f"{edge:+.1f}" if isinstance(edge, (int, float)) else "—"
+
+
+def _stamped_footer(e: discord.Embed, text: str = FOOTER_PROJECTION) -> discord.Embed:
+    """Footer = the standing disclaimer + today's date, so a screenshot of any
+    post carries its own date."""
+    d = datetime.datetime.now(POD_TZINFO)
+    e.set_footer(text=f"{text} • {d.month}/{d.day}")
+    return e
+
+
+def _play_headline(pick: dict, rank: int = None) -> str:
+    """'2. Player vs Opponent — Break Points Won 3.5' (rank optional)."""
+    prefix = f"**{rank}.** " if rank else ""
+    return (f"{prefix}**{pick['player']}** vs {pick['opponent']} — "
+            f"{pick['prop_type']} {pick['line']:g}")
+
+
+def _play_statline(pick: dict) -> str:
+    """The one-line stat row: '🔴 UNDER · Proj 4.2 · Edge -2.3 · 76%'.
+    Fields that have no value are OMITTED rather than shown as blank/N-A."""
+    lean = _lean_of(pick)
+    bits = [f"{LEAN_DOT.get(lean, '⚪')} **{lean}**"]
+    proj = pick.get("projection")
+    if isinstance(proj, (int, float)):
+        bits.append(f"Proj {proj:.1f}")
+    edge = pick.get("edge")
+    if isinstance(edge, (int, float)):
+        bits.append(f"Edge {edge:+.1f}")
+    conf = pick.get("confidence")
+    if isinstance(conf, (int, float)):
+        bits.append(f"**{conf:.0f}%**")
+    return " · ".join(bits)
+
+
+def _ranked_line(pick: dict, rank: int) -> str:
+    """One ranked play in the LIST view — exactly two lines, no stat wall.
+    The depth lives in the ⭐ embed."""
+    return f"{_play_headline(pick, rank)}\n{_play_statline(pick)}"
+
+
+def potd_embed(pick: dict) -> discord.Embed:
+    """The ⭐ Pick of the Day as its own dedicated embed, posted first.
+
+    Hierarchy: matchup bold at the top, then prop + line, then the lean (which
+    also drives the embed colour), then Projection / Edge / Confidence as three
+    INLINE fields so they read as a compact row of stats rather than a sentence.
+    Discord gives inline fields up to three-across on desktop and stacks them on
+    narrow mobile — three is the widest that degrades cleanly, which is why the
+    stat row is exactly three and the prop stats sit in their own full-width
+    field below rather than becoming a fourth column."""
+    data = pick.get("data") or {}
+    lean = _lean_of(pick)
+    e = discord.Embed(title="⭐ PICK OF THE DAY", color=_lean_color(lean))
+
+    loc = pick.get("tournament") or (f"{pick.get('surface')} court"
+                                     if pick.get("surface") else None)
+    head = [f"**{pick['player']}** vs **{pick['opponent']}**",
+            f"{pick['prop_type']} — line **{pick['line']:g}**",
+            f"{LEAN_DOT.get(lean, '⚪')} **{lean}**"]
+    if loc:
+        head.append(f"_{loc}_")
+    e.description = "\n".join(head)
+
+    proj, edge = pick.get("projection"), pick.get("edge")
+    conf = pick.get("confidence")
+    e.add_field(name="Projection", value=f"**{_num(proj)}**", inline=True)
+    e.add_field(name="Edge", value=f"**{_edge_txt(edge)}**", inline=True)
+    e.add_field(name="Confidence",
+                value=(f"**{conf:.0f}%**" if isinstance(conf, (int, float)) else "—"),
+                inline=True)
+
+    stats = _ranked_stats(pick["prop_type"], data)
+    if pick.get("coin_flip"):
+        stats = ((stats + "\n") if stats else "") + \
+            "⚠️ **Coin-flip zone** — line in the highest-variance band"
+    cap = data.get("confidence_cap_reason")
+    if cap:
+        stats = ((stats + "\n") if stats else "") + f"_Capped: {cap}_"
+    fa = pick.get("form_alert")
+    if fa:
+        stats = ((stats + "\n") if stats else "") + fa
+    if stats:
+        e.add_field(name="Key Stats", value=stats[:1024], inline=False)
+
+    ctx = []
+    p1wp, esets = data.get("p1_win_prob"), data.get("expected_sets")
+    if isinstance(p1wp, (int, float)):
+        ctx.append(f"Win prob **{p1wp:.0f}%**")
+    if isinstance(esets, (int, float)):
+        ctx.append(f"Exp sets **{esets:.1f}**")
+    if ctx:
+        e.add_field(name="​", value=" · ".join(ctx), inline=False)
+
+    return _stamped_footer(e)
+
+
+_DESC_LIMIT = 3800        # Discord's description cap is 4096 — leave headroom
 
 
 def ranked_embeds(ranked: list, start_rank: int = 1, total: int = None) -> list:
-    """The ranked-plays embed(s) for ONE page. ``start_rank`` is the absolute rank
-    of ranked[0] (so page 2 numbers 7..12 and only the true #1 gets the ⭐).
-    ``total`` is the full play count across pages. Splits further if Discord's
-    field/char limits would be exceeded."""
+    """The RANKED BOARD — every qualifying play from ``start_rank`` on, two lines
+    each, blank line between. The ⭐ is NOT here; it gets its own embed via
+    potd_embed() posted above this one.
+
+    Plays are joined into the description (not one field each) because Discord
+    pads consecutive fields with uneven whitespace on mobile, which is exactly
+    the run-together look this replaces. A blank line between blocks renders the
+    same on both clients.
+
+    Splits into further embeds ONLY at play boundaries — a play's two lines are
+    never separated across embeds."""
     today = datetime.datetime.now(POD_TZINFO)
-    total = total if total is not None else len(ranked)
-    if start_rank == 1:
-        title = f"🎾 Baseline Ranked Plays — {today.month}/{today.day}"
-        desc = (f"**{total}** qualifying play{'s' if total != 1 else ''}, "
-                f"ranked by value (confidence-led). ⭐ = Pick of the Day.")
-    else:
-        title = f"🎾 Baseline Ranked Plays — {today.month}/{today.day} (cont.)"
-        desc = f"Plays **{start_rank}–{start_rank + len(ranked) - 1}** of {total}."
-    embeds, e = [], discord.Embed(title=title, color=COLOR_OVER)
-    e.description = desc
-    for i, pick in enumerate(ranked, start_rank):
-        name, value = _ranked_field(pick, i)
-        if len(e.fields) >= 24 or (len(e) + len(name) + len(value)) > 5500:
-            embeds.append(e)
-            e = discord.Embed(color=COLOR_OVER)
-        e.add_field(name=name, value=value, inline=False)
-    if e.fields or not embeds:
+    total = total if total is not None else len(ranked) + start_rank - 1
+    if not ranked:
+        return []
+
+    blocks = [_ranked_line(p, i) for i, p in enumerate(ranked, start_rank)]
+
+    pages, cur = [], []
+    for b in blocks:
+        candidate = "\n\n".join(cur + [b])
+        if cur and len(candidate) > _DESC_LIMIT:
+            pages.append(cur)
+            cur = [b]
+        else:
+            cur.append(b)
+    if cur:
+        pages.append(cur)
+
+    embeds = []
+    rank_cursor = start_rank
+    for idx, page in enumerate(pages):
+        first, last = rank_cursor, rank_cursor + len(page) - 1
+        rank_cursor = last + 1
+        title = f"🎾 Ranked Board — {today.month}/{today.day}"
+        if idx:
+            title += " (cont.)"
+        e = discord.Embed(title=title, color=COLOR_NEUTRAL)
+        header = (f"Plays **{first}–{last}** of {total} · ranked by confidence.\n\n"
+                  if len(pages) > 1 or start_rank > 1 else "")
+        e.description = header + "\n\n".join(page)
         embeds.append(e)
-    embeds[-1].set_footer(text=FOOTER_PROJECTION)
+    _stamped_footer(embeds[-1])
     return embeds
 
 
@@ -1626,14 +1729,17 @@ async def _post_daily_picks(channel, track: bool = True) -> str:
     if track:
         await _log_picks_pending(ranked, group="potd")
 
-    # Ranked list — delivered in PAGES of 6 plays, each as its own @everyone
-    # message (top-12 → two messages: plays 1-6 then 7-12).
-    for start in range(0, len(ranked), RANKED_PAGE_SIZE):
-        page = ranked[start:start + RANKED_PAGE_SIZE]
-        embeds = ranked_embeds(page, start_rank=start + 1, total=len(ranked))
-        await channel.send(
-            content=("@everyone" if track else None),
-            embeds=embeds[:10], allowed_mentions=EVERYONE_MENTION)
+    # ⭐ Pick of the Day gets its OWN embed, posted first, then the ranked board
+    # (plays 2..N) below it. Both ride one @everyone message so the headline play
+    # and the board arrive together rather than as separate pings.
+    post = [potd_embed(ranked[0])] + ranked_embeds(ranked[1:], start_rank=2,
+                                                   total=len(ranked))
+    await channel.send(
+        content=("@everyone" if track else None),
+        embeds=post[:10], allowed_mentions=EVERYONE_MENTION)
+    # Overflow (a board so long it needed >9 board embeds) continues unpinged.
+    for i in range(10, len(post), 10):
+        await channel.send(embeds=post[i:i + 10])
 
     # Baseline 3x — a SEPARATE post right after the ranked list.
     if slip:
@@ -1677,7 +1783,8 @@ async def _repost_todays_plays(channel) -> str:
         return "re-eval produced nothing"
     await _annotate_form_alerts(ranked)
 
-    embeds = ranked_embeds(ranked)
+    embeds = [potd_embed(ranked[0])] + ranked_embeds(ranked[1:], start_rank=2,
+                                                     total=len(ranked))
     for i in range(0, len(embeds), 10):
         await channel.send(content=("@everyone" if i == 0 else None),
                            embeds=embeds[i:i + 10], allowed_mentions=EVERYONE_MENTION)
@@ -1873,13 +1980,21 @@ def daily_recap_embed(rec: dict, target_date: str = None) -> discord.Embed:
     color = COLOR_UNDER if (t_total and t_rate < 50) else COLOR_OVER
     e = discord.Embed(title=f"📊 {header}", color=color)
 
-    # 🟢 W · 🔴 L · ⚪ PUSH · 🚫 VOID (match cancelled — no action / DNP).
-    icon = {"W": "🟢", "L": "🔴", "PUSH": "⚪", "VOID": "🚫"}
+    # One indicator per concept: ✅ win · ❌ loss · ⚪ push · 🚫 void (DNP).
+    icon = {"W": "✅", "L": "❌", "PUSH": "⚪", "VOID": "🚫"}
     if graded:
         rows = []
         for p in graded:
-            row = (f"{icon.get(p['result'], '⚪')} **{p['player']}** {p.get('lean', '')} "
-                   f"{p.get('line', '')} {p['prop_type']}")
+            # Result indicator LEADS, then player, prop, line, lean — one compact
+            # line. Empty parts are dropped rather than rendering a gap.
+            bits = [p["player"]]
+            if p.get("prop_type"):
+                bits.append(str(p["prop_type"]))
+            if isinstance(p.get("line"), (int, float)):
+                bits.append(f"{p['line']:g}")
+            if p.get("lean"):
+                bits.append(str(p["lean"]).upper())
+            row = f"{icon.get(p['result'], '⚪')} **{bits[0]}** {' '.join(bits[1:])}".rstrip()
             if p["result"] == "VOID":
                 row += " — **DNP** (cancelled)"
             rows.append(row)
@@ -1887,14 +2002,16 @@ def daily_recap_embed(rec: dict, target_date: str = None) -> discord.Embed:
     else:
         e.description = "_No picks resolved today._"
 
-    e.add_field(
-        name="​",
-        value=(f"**Today:** {t_cash}/{t_total} cashed ({t_rate}%)"
-               + (f"  ·  incl. {t_p} push{'es' if t_p != 1 else ''}" if t_p else "") + "\n"
-               + f"**Overall:** {o_cash}/{o_total} cashed ({o_rate}%)"),
-        inline=False)
-    e.set_footer(text=FOOTER_GENERIC)
-    return e
+    # Summary block, separated from the pick list. Discord already spaces fields
+    # apart, so the separation is a leading newline inside this field rather than
+    # an extra empty spacer field (no field is left blank).
+    today_line = f"**Today:** {t_cash}/{t_total} cashed ({t_rate}%)"
+    if t_p:
+        today_line += f"  ·  incl. {t_p} push{'es' if t_p != 1 else ''}"
+    e.add_field(name="📋 Record",
+                value=f"{today_line}\n**Overall:** {o_cash}/{o_total} cashed ({o_rate}%)",
+                inline=False)
+    return _stamped_footer(e, FOOTER_GENERIC)
 
 
 def results_embed(rec: dict) -> discord.Embed:
