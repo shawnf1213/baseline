@@ -1229,7 +1229,7 @@ RESULTS_POST_MINUTE = int(os.getenv("RESULTS_POST_MINUTE", "45") or "45")
 # and no new task loop had to be wired up. Auto-reverts: on any other date the
 # one-off slot no-ops and the normal 7:45 / 7:50 slots run as usual.
 ONEOFF_SCHED_DATE = os.getenv("ONEOFF_SCHED_DATE", "2026-07-15")
-ONEOFF_RECAP_HM   = (17, 0)     # recap  — 5:00 PM ET
+ONEOFF_RECAP_HM   = (17, 30)    # recap  — 5:30 PM ET
 ONEOFF_POTD_HM    = (18, 50)    # POTD   — 6:50 PM ET
 
 
