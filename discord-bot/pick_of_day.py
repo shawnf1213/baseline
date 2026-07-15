@@ -890,47 +890,86 @@ STAR_TOTAL_GAMES_MIN_WP = 90.0
 # compounding models), so every strong one pins to exactly 80 and they tie; letting
 # a ceiling-pinned play lead the card would make the ⭐ an edge-magnitude contest.
 # It still ranks anywhere in the list — it just can't be the headline play.
-_STAR_INELIGIBLE_PROPS = {"Player Total Games Won"}
+_STAR_INELIGIBLE_PROPS = set()      # nothing is banned outright; see _star_eligible
+
+# A PTGW UNDER may hold the ⭐ ONLY when the structure carries it, not the stats.
+# The 7/15 18:50 post is the case this exists for: Gina Feistel UNDER 11.5 went out
+# as ⭐ on "Hold 94%" that was 15/16 service games from TWO ITF matches, against an
+# opponent who was only a 73% favourite. A games-won UNDER is a bet that the match
+# is short and one-sided. What makes that true is the OPPONENT overwhelming the
+# player — not a thin hold rate on the player's own side. So:
+#   • the opponent must be overwhelmingly dominant (>= 85% win prob), and
+#   • the player's hold/return rates must rest on a real sample of GAMES.
+# Neither alone is enough. Below either, the play can still rank — it just can't
+# be the headline.
+STAR_PTGW_MIN_OPP_WP    = 85.0   # opponent win prob for a PTGW UNDER to lead
+STAR_PTGW_MIN_RATE_GAMES = 40    # service games behind the player's hold rate
 
 
 def _star_eligible(pk: dict) -> bool:
-    """True if this play may occupy the ⭐ Pick-of-the-Day slot. Player Total Games
-    Won is never eligible. Total Games is eligible only when the stronger player's
-    win probability is >= 90%. Everything else (Aces / Break Points Won) is always
-    eligible — in practice the ⭐ comes from those two."""
-    if pk.get("prop_type") in _STAR_INELIGIBLE_PROPS:
-        return False
-    if pk.get("prop_type") != "Total Games":
-        return True
+    """True if this play may occupy the ⭐ Pick-of-the-Day slot.
+
+      • Aces / Break Points Won — always eligible.
+      • Total Games            — needs a 90%+ favourite.
+      • Player Total Games Won — UNDER needs an overwhelmingly dominant opponent
+        (>=85% win prob) AND a hold rate built on >=40 service games. OVER is not
+        eligible: a games-won OVER leading the card has no structural story.
+    """
+    prop = pk.get("prop_type")
     d = pk.get("data") or {}
+
+    if prop == "Player Total Games Won":
+        if _lean_dir(pk) != "UNDER":
+            return False
+        p1wp = d.get("p1_win_prob")
+        if not isinstance(p1wp, (int, float)):
+            return False
+        opp_wp = 100.0 - p1wp
+        if opp_wp < STAR_PTGW_MIN_OPP_WP:
+            return False
+        # Thin-sample guard: the rates that justify a games-won read must exist.
+        ps = d.get("player_stats") or {}
+        sg_n = ps.get("service_games_n")
+        return isinstance(sg_n, (int, float)) and sg_n >= STAR_PTGW_MIN_RATE_GAMES
+
+    if prop != "Total Games":
+        return True
     wps = [w for w in (d.get("p1_win_prob"), d.get("p2_win_prob"))
            if isinstance(w, (int, float))]
     return bool(wps) and max(wps) >= STAR_TOTAL_GAMES_MIN_WP
 
 
-def _promote_star(ordered: list) -> list:
-    """Ensure ordered[0] (the ⭐) is a star-eligible play — i.e. not Player Total
-    Games Won (never eligible) and not a Total Games play without a 90%+ favorite.
-    If it isn't, promote the highest-ranked ⭐-eligible play to the front; the rest
-    keep their rank order. No-op when the top play is already eligible or when
-    nothing else qualifies for the star."""
-    if not ordered or _star_eligible(ordered[0]):
-        return ordered
+def _promote_star(ordered: list):
+    """(ordered, has_star). Puts a ⭐-eligible play at ordered[0] when one exists.
+
+    Returns has_star=False when NOTHING on the board can hold the ⭐ — and the
+    caller then posts a ranked board with NO Pick of the Day.
+
+    This used to fall back to "keep the ineligible play as ⭐ rather than post no
+    ⭐", which quietly defeated the eligibility rules the moment a board was
+    single-prop. On 7/15 every qualifying play was PTGW, so nothing was eligible,
+    the fallback fired, and Gina Feistel's thin-data UNDER led the card — exactly
+    the play the rules were written to keep out of that slot. A ⭐ is a claim that
+    one play is the best on the board; when no play can carry that claim, the
+    honest output is no ⭐, not the least-bad one wearing the badge."""
+    if not ordered:
+        return ordered, False
+    if _star_eligible(ordered[0]):
+        return ordered, True
     blocked = ordered[0]
     idx = next((i for i, p in enumerate(ordered) if _star_eligible(p)), None)
     if idx is None:
-        # Nothing on the board is star-eligible (e.g. only games props qualified) —
-        # leave as-is rather than post no ⭐.
-        log.info("POD: top play (%s %s) can't hold the ⭐ and no star-eligible play "
-                 "exists on the board — keeping it as ⭐",
+        log.info("POD_NO_STAR | top play (%s %s) can't hold the ⭐ and NO play on "
+                 "the board is ⭐-eligible — posting the ranked board with no Pick "
+                 "of the Day rather than promoting an ineligible play",
                  blocked.get("player"), blocked.get("prop_type"))
-        return ordered
+        return ordered, False
     star = ordered.pop(idx)
     log.info("POD: %s %s is not ⭐-eligible — demoted; promoting %s %s (conf %s) "
              "to Pick of the Day",
              blocked.get("player"), blocked.get("prop_type"),
              star.get("player"), star.get("prop_type"), star.get("confidence"))
-    return [star] + ordered
+    return [star] + ordered, True
 
 
 # One-off: on this ET date, keep these players OUT of the ⭐ Pick-of-the-Day slot
@@ -973,23 +1012,24 @@ async def generate_ranked_and_slip() -> dict:
     try:
         ordered, thin_slate = await _rank_board()
         if ordered is None:
-            return {"ranked": None, "slip": [], "thin_slate": False}
+            return {"ranked": None, "slip": [], "thin_slate": False, "has_star": False}
         if not ordered:
-            return {"ranked": [], "slip": [], "thin_slate": thin_slate}
-        # ⭐ gate: a Total Games play can't lead unless one player is a 90%+ favorite.
-        ordered = _promote_star(ordered)
+            return {"ranked": [], "slip": [], "thin_slate": thin_slate, "has_star": False}
+        # ⭐ gate. has_star=False -> the board is posted with NO Pick of the Day.
+        ordered, has_star = _promote_star(ordered)
         # One-off (today only): hold specific players out of the ⭐ slot.
         ordered = _apply_star_exclusions(ordered)
         # 3x excludes only the ⭐ POTD (ordered[0]) and its match — drawn from the
-        # FULL evaluated pool (not just the posted top-6).
-        slip = _select_slip(ordered, ordered[:1])
+        # FULL evaluated pool (not just the posted top-6). With NO ⭐ there is
+        # nothing to exclude, so the slip may draw from the whole board.
+        slip = _select_slip(ordered, ordered[:1] if has_star else [])
         # Post only the top-N plays (⭐ + the next best), even though the whole
         # board was evaluated.
         return {"ranked": ordered[:MAX_RANKED_PLAYS], "slip": slip,
-                "thin_slate": thin_slate}
+                "thin_slate": thin_slate, "has_star": has_star}
     except Exception as exc:  # noqa: BLE001 — total isolation
         log.exception("POD generate_ranked_and_slip failed: %s", exc)
-        return {"ranked": [], "slip": [], "thin_slate": False}
+        return {"ranked": [], "slip": [], "thin_slate": False, "has_star": False}
 
 
 async def evaluate_fixed_props(specs: list) -> list:

@@ -1233,8 +1233,8 @@ RESULTS_POST_MINUTE = int(os.getenv("RESULTS_POST_MINUTE", "45") or "45")
 # one-off slot no-ops and the normal 7:45 / 7:50 slots run as usual.
 ONEOFF_SCHED_DATE = os.getenv("ONEOFF_SCHED_DATE", "2026-07-15")
 ONEOFF_RECAP_HM   = (18, 15)    # recap  — 6:15 PM ET
-ONEOFF_POTD_HM    = (18, 50)    # POTD   — 6:50 PM ET
-ONEOFF_PREWARM_HM = (18, 20)    # cache pre-warm — 30 min before the one-off POTD
+ONEOFF_POTD_HM    = (19, 30)    # POTD   — 7:30 PM ET
+ONEOFF_PREWARM_HM = (19, 0)     # cache pre-warm — 30 min before the one-off POTD
 
 # ── Cache pre-warm ───────────────────────────────────────────────────────────
 # Runs 30 minutes before the POTD generation and throws its results away. The
@@ -1885,6 +1885,7 @@ async def _post_daily_picks(channel, track: bool = True) -> str:
     ranked = bundle.get("ranked") or []
     slip = bundle.get("slip") or []
     thin_slate = bool(bundle.get("thin_slate"))
+    has_star = bool(bundle.get("has_star"))
     log.info("daily picks: board evaluated at trigger time (%d ranked) — "
              "cache pre-warmed at %02d:%02d", len(ranked),
              ONEOFF_PREWARM_HM[0] if datetime.datetime.now(POD_TZINFO).strftime("%Y-%m-%d")
@@ -1903,8 +1904,16 @@ async def _post_daily_picks(channel, track: bool = True) -> str:
     # ⭐ Pick of the Day gets its OWN embed, posted first, then the ranked board
     # (plays 2..N) below it. Both ride one @everyone message so the headline play
     # and the board arrive together rather than as separate pings.
-    post = [potd_embed(ranked[0])] + ranked_embeds(ranked[1:], start_rank=2,
-                                                   total=len(ranked))
+    # No ⭐ when nothing on the board can carry it (see _promote_star): post the
+    # ranked board alone rather than badge a play that failed the eligibility
+    # rules. A Pick of the Day is a claim; some boards don't support one.
+    if has_star:
+        post = [potd_embed(ranked[0])] + ranked_embeds(ranked[1:], start_rank=2,
+                                                       total=len(ranked))
+    else:
+        post = ranked_embeds(ranked, start_rank=1, total=len(ranked))
+        log.info("daily picks: NO ⭐ — no play on the board is star-eligible; "
+                 "posting the ranked board alone")
     # Thin-slate note — ONE line, and ONLY when the gates actually dropped to 70.
     # It rides the message content (not an embed) so it's the first thing read,
     # before the plays it qualifies. Silent on a normal board.
