@@ -917,6 +917,14 @@ def _fill_min_viable(s: dict, all_s: dict, surf_n: int, tour: str) -> list:
 #
 # Deliberately gates DEEP STATUS only, not the raw count — the count still feeds
 # sample_size honestly; this just stops a threshold from flapping on noise.
+# Underdog games-won UNDER penalty — see the application site near the lean
+# resolution. Two tiers rather than a scale: the signal is directional, and a
+# smooth ramp would imply a precision the affinity estimate doesn't have.
+UNDERDOG_AFFINITY_MIN_GAP    = 4.0    # meaningful affinity edge to the underdog
+UNDERDOG_AFFINITY_STRONG_GAP = 8.0    # strong edge -> the larger penalty
+UNDERDOG_UNDER_PENALTY_MIN   = 8
+UNDERDOG_UNDER_PENALTY_MAX   = 12
+
 _DEEP_MIN_MATCHES = 15
 _DEEP_STATUS_TTL  = 7 * 24 * 3600
 _DEEP_STATUS: dict = {}          # (player_id, surface) -> ts last measured deep
@@ -1540,6 +1548,12 @@ async def prop_calculate(req: PropRequest):
         for _s, _at, _rec, _3y in ((p1_s, _p1_at, _p1_recent, _p1_3yr),
                                    (p2_s, _p2_at, _p2_recent, _p2_3yr)):
             _s["overall_win_rate"]                    = _at.get("win_rate")
+            # Surface-affinity inputs: each surface stat needs its all-surface
+            # twin so affinity can measure the player against THEIR OWN baseline
+            # (see surface_affinity in props.py). Without these the affinity score
+            # silently falls back to win rate alone.
+            _s["overall_service_games_won_pct"]       = _at.get("service_games_won_pct")
+            _s["overall_return_games_won_pct"]        = _at.get("return_games_won_pct")
             _s["overall_first_serve_pts_won"]         = _at.get("first_serve_pts_won")
             _s["overall_second_serve_pts_won"]        = _at.get("second_serve_pts_won")
             _s["overall_return_first_serve_pts_won"]  = _at.get("return_first_serve_pts_won")
@@ -1781,6 +1795,13 @@ async def prop_calculate(req: PropRequest):
                     expected_sets=tg_result.get("expected_sets"),
                     tour=req.tour, match_format=match_fmt,
                 )
+                # Carry the affinity differential + win prob forward. PTGW's own
+                # projector doesn't compute them — it consumes the Total Games
+                # projection's — but the underdog games-won confidence penalty
+                # below needs both.
+                for _k in ("p_affinity", "o_affinity", "affinity_gap",
+                           "affinity_shift", "p1_win_prob", "p2_win_prob"):
+                    result.setdefault(_k, tg_result.get(_k))
             else:
                 result = bp_result
 
@@ -2001,6 +2022,33 @@ async def prop_calculate(req: PropRequest):
                            req.prop_type, proj_val)
 
         lean = _resolve_lean(proj_val, req.prop_line, result.get("lean", ""))
+
+        # ── Underdog games-won UNDER penalty (surface-affinity differential) ──
+        # When the underdog is on their best surface against a favourite on their
+        # worst, the scoreline that actually shows up is the competitive loss —
+        # 4-6 6-7, 6-7 5-7 — which clears a games-won line the level gap said it
+        # wouldn't. An UNDER on the underdog's games won is precisely the bet that
+        # loses in those matches, so it earns a penalty rather than a bonus.
+        # OVERs are untouched: they're the side the affinity argument supports.
+        _aff_gap = result.get("affinity_gap")
+        _p1wp = result.get("p1_win_prob")
+        if (req.prop_type == "Player Total Games Won"
+                and lean == "UNDER"
+                and isinstance(_aff_gap, (int, float))
+                and isinstance(_p1wp, (int, float))
+                and _p1wp < 50.0                       # the player IS the underdog
+                and _aff_gap >= UNDERDOG_AFFINITY_MIN_GAP):
+            _pen = (UNDERDOG_UNDER_PENALTY_MAX
+                    if _aff_gap >= UNDERDOG_AFFINITY_STRONG_GAP
+                    else UNDERDOG_UNDER_PENALTY_MIN)
+            confidence -= _pen
+            logger.info(
+                "AFFINITY_UNDERDOG_PENALTY | %s %s UNDER | win_prob=%.1f (underdog) | "
+                "affinity gap=%+.1f in the underdog's favour -> -%d confidence "
+                "(competitive-loss scorelines beat this line)",
+                req.player_name, req.prop_type, _p1wp, _aff_gap, _pen,
+            )
+
         # Edge-based ceiling — a SEPARATE rule (caps confidence when the
         # projection barely clears the line), not the floor/cap. Applied before
         # the single finalize step below.
@@ -2167,6 +2215,12 @@ async def prop_calculate(req: PropRequest):
             "opponent_surface_fallback": p2_fallback,
             "data_quality":           data_quality,       # player (p1)
             "opponent_data_quality":  opp_data_quality,   # opponent (p2)
+            # Surface-affinity differential (positive = this surface suits them
+            # relative to their OWN all-surface baseline).
+            "player_surface_affinity":   result.get("p_affinity"),
+            "opponent_surface_affinity": result.get("o_affinity"),
+            "surface_affinity_gap":      result.get("affinity_gap"),
+            "surface_affinity_shift":    result.get("affinity_shift"),
             # Depth status AFTER hysteresis — the single source of truth for every
             # depth gate (the backend's own ceilings and the bot's PTGW bar), so a
             # noisy count can't make them disagree.

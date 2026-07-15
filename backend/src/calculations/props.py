@@ -1041,9 +1041,59 @@ def _is_bo5_match(tour: str, court: str) -> bool:
     return tour == "ATP" and court in GRAND_SLAMS
 
 
+# ── Surface affinity ─────────────────────────────────────────────────────────
+# The model compares players' raw surface stats and their overall level, but it
+# never asks which player the surface RELATIVELY favours. Those are different
+# questions: Jones can be the better player overall while clay is her worst
+# surface, and Urgesi the lower-level player while clay is her best — a matchup
+# far tighter than the level gap implies.
+#
+# Affinity measures a player against THEIR OWN all-surface baseline, so absolute
+# level cancels out. A player whose clay win rate runs 12pp above their overall
+# win rate has strong positive clay affinity whether they're ranked 20 or 200.
+#
+# Win rate carries the most weight (it's the outcome), with service and return
+# games won as the mechanism behind it — a surface that suits a player shows up
+# as holding and breaking more than they usually do.
+_AFFINITY_WEIGHTS = {"win_rate": 0.50, "service_games_won_pct": 0.25,
+                     "return_games_won_pct": 0.25}
+_AFFINITY_FULL_SAMPLE = 8      # stat-rich surface matches for full weight
+SURFACE_AFFINITY_MIN_GAP   = 3.0    # affinity gap below this = not meaningful
+SURFACE_AFFINITY_K         = 1.0    # win-prob gap narrowed per point of affinity gap
+SURFACE_AFFINITY_MAX_SHIFT = 15.0   # hard cap on the narrowing (pp of gap)
+SURFACE_AFFINITY_MIN_KEEP  = 2.0    # favourite must stay favourite by >= this
+
+
+def surface_affinity(stats: dict):
+    """How much this surface suits the player RELATIVE TO THEIR OWN baseline, in
+    percentage points. Positive = a strong surface for them, negative = weak.
+    None when no surface-vs-overall pair is available.
+
+    Scaled by surface sample size: a 3-match surface record can't assert a strong
+    affinity, so the score is damped toward 0 until the sample reaches
+    _AFFINITY_FULL_SAMPLE. This is a RELATIVE measure — it says nothing about how
+    good the player is, only about which surface is theirs."""
+    pairs = (("win_rate", "overall_win_rate"),
+             ("service_games_won_pct", "overall_service_games_won_pct"),
+             ("return_games_won_pct", "overall_return_games_won_pct"))
+    num = den = 0.0
+    for surf_key, ov_key in pairs:
+        sv, ov = stats.get(surf_key), stats.get(ov_key)
+        if isinstance(sv, (int, float)) and isinstance(ov, (int, float)):
+            w = _AFFINITY_WEIGHTS[surf_key]
+            num += (sv - ov) * w
+            den += w
+    if den <= 0:
+        return None
+    raw = num / den
+    n = stats.get("surface_matches") or stats.get("matches_played") or 0
+    return raw * min(1.0, n / _AFFINITY_FULL_SAMPLE)
+
+
 def _estimate_win_prob(p_stats: dict, o_stats: dict,
                        p_rank: int = None, o_rank: int = None,
-                       p_form: list = None, o_form: list = None) -> tuple:
+                       p_form: list = None, o_form: list = None,
+                       detail: dict = None) -> tuple:
     """
     Estimate (p_win_prob_pct, o_win_prob_pct, gap_pct) using surface win rate,
     ranking (if available), and recent form (last-10 W/L).
@@ -1131,8 +1181,44 @@ def _estimate_win_prob(p_stats: dict, o_stats: dict,
     total_w = sum(w for _, w in components)
     p_prob = sum(share * w for share, w in components) / total_w if total_w > 0 else 50.0
     p_prob = max(5.0, min(95.0, p_prob))
+
+    # ── Surface-affinity differential ────────────────────────────────────────
+    # Everything above measures LEVEL. This asks who the surface favours, and
+    # only ever makes the matchup TIGHTER: when the underdog is on their best
+    # surface against a favourite on their worst, the level gap overstates the
+    # real gap. The favourite always stays the favourite (SURFACE_AFFINITY_MIN_KEEP),
+    # and an affinity edge for the FAVOURITE is deliberately ignored — widening a
+    # gap on this signal would compound the level estimate rather than correct it.
+    p_aff, o_aff = surface_affinity(p_stats), surface_affinity(o_stats)
+    aff_gap = shift = 0.0
+    if p_aff is not None and o_aff is not None:
+        aff_gap = p_aff - o_aff
+        gap0 = abs(p_prob - (100.0 - p_prob))
+        # The underdog is whoever sits below 50. Only narrow when the affinity
+        # gap points THEIR way.
+        under_is_p = p_prob < 50.0
+        under_aff_gap = aff_gap if under_is_p else -aff_gap
+        if under_aff_gap >= SURFACE_AFFINITY_MIN_GAP and gap0 > SURFACE_AFFINITY_MIN_KEEP:
+            shift = min(SURFACE_AFFINITY_MAX_SHIFT, under_aff_gap * SURFACE_AFFINITY_K)
+            shift = min(shift, gap0 - SURFACE_AFFINITY_MIN_KEEP)  # keep the favourite ahead
+            # Narrowing the GAP by `shift` moves each side by half of it.
+            p_prob += (shift / 2.0) if under_is_p else -(shift / 2.0)
+            p_prob = max(5.0, min(95.0, p_prob))
+
     o_prob = 100.0 - p_prob
     gap = abs(p_prob - o_prob)
+    if detail is not None:
+        detail.update({"p_affinity": p_aff, "o_affinity": o_aff,
+                       "affinity_gap": aff_gap, "affinity_shift": shift})
+    if p_aff is not None and o_aff is not None:
+        logger.info(
+            "SURFACE_AFFINITY | p=%+.1f o=%+.1f | gap=%+.1f | gap narrowed by %.1fpp "
+            "-> win_prob %.1f/%.1f (gap %.1f)%s",
+            p_aff, o_aff, aff_gap, shift, p_prob, o_prob, gap,
+            "" if shift else " — no shift (affinity gap favours the favourite, "
+                             "is below the %.0f threshold, or the match is already even)"
+                             % SURFACE_AFFINITY_MIN_GAP,
+        )
     return p_prob, o_prob, gap
 
 
@@ -1377,12 +1463,14 @@ def project_total_games(
     # match_format is the source of truth (set by the caller; respects the ATP
     # Grand Slam Qualifying toggle), NOT the court alone.
     is_bo5 = (match_format == "best_of_5")
+    _aff_detail = {}
     p_prob, o_prob, win_prob_gap = _estimate_win_prob(
         player_stats, opponent_stats,
         p_rank=player_stats.get("rank") or player_stats.get("currentRank"),
         o_rank=opponent_stats.get("rank") or opponent_stats.get("currentRank"),
         p_form=player_stats.get("form") or player_stats.get("recent_form"),
         o_form=opponent_stats.get("form") or opponent_stats.get("recent_form"),
+        detail=_aff_detail,
     )
     exp_sets, comp_label = _expected_sets_from_gap(win_prob_gap, is_bo5)
     avg_hist_sets = _AVG_HISTORICAL_SETS.get(tour, 2.45)
@@ -1453,6 +1541,14 @@ def project_total_games(
         "p2_win_prob":         round(o_prob, 1),
         "avg_historical_sets": round(avg_hist_sets, 2),
         "is_bo5":              is_bo5,
+        # Surface-affinity differential — carried out so the caller can apply the
+        # underdog games-won confidence penalty and display the scores. PTGW takes
+        # its win prob / expected sets from THIS projection, so the affinity shift
+        # already flows into the underdog's games-won number.
+        "p_affinity":          _aff_detail.get("p_affinity"),
+        "o_affinity":          _aff_detail.get("o_affinity"),
+        "affinity_gap":        _aff_detail.get("affinity_gap"),
+        "affinity_shift":      _aff_detail.get("affinity_shift"),
     }
 
 
