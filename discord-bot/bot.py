@@ -1232,7 +1232,7 @@ RESULTS_POST_MINUTE = int(os.getenv("RESULTS_POST_MINUTE", "45") or "45")
 # and no new task loop had to be wired up. Auto-reverts: on any other date the
 # one-off slot no-ops and the normal 7:45 / 7:50 slots run as usual.
 ONEOFF_SCHED_DATE = os.getenv("ONEOFF_SCHED_DATE", "2026-07-15")
-ONEOFF_RECAP_HM   = (17, 30)    # recap  — 5:30 PM ET
+ONEOFF_RECAP_HM   = (18, 15)    # recap  — 6:15 PM ET
 ONEOFF_POTD_HM    = (18, 50)    # POTD   — 6:50 PM ET
 ONEOFF_PREWARM_HM = (18, 20)    # cache pre-warm — 30 min before the one-off POTD
 
@@ -1872,8 +1872,6 @@ async def _post_daily_picks(channel, track: bool = True) -> str:
         return "no qualifying plays — posted no-play notice"
 
     await _annotate_form_alerts(ranked)
-    if track:
-        await _log_picks_pending(ranked, group="potd")
 
     # ⭐ Pick of the Day gets its OWN embed, posted first, then the ranked board
     # (plays 2..N) below it. Both ride one @everyone message so the headline play
@@ -1886,6 +1884,19 @@ async def _post_daily_picks(channel, track: bool = True) -> str:
     # Overflow (a board so long it needed >9 board embeds) continues unpinged.
     for i in range(10, len(post), 10):
         await channel.send(embeds=post[i:i + 10])
+
+    # ── LOG ONLY AFTER A SUCCESSFUL SEND ─────────────────────────────────────
+    # This used to log BEFORE posting, so a board that was never published — or
+    # was superseded by a later re-run — still entered the permanent record. On
+    # 7/14 that put Parks Total Games and Sakkari Total Games into the ledger from
+    # a 22:26 board, and 18 minutes later the Total Games bar moved 80 -> 85 and
+    # both dropped off the card that actually posted. The recap then scored two
+    # plays no subscriber was ever shown.
+    # The record must contain what was PUBLISHED, nothing else. If the send above
+    # raises, we never reach this line and nothing is logged — which is correct:
+    # an unposted play is not a play.
+    if track:
+        await _log_picks_pending(ranked, group="potd")
 
     # Baseline 3x — a SEPARATE post right after the ranked list.
     if slip:

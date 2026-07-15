@@ -27,10 +27,18 @@ logger = logging.getLogger("baseline.features")
 
 # prop_type (canonical) -> per-match field name in all_matches records
 PROP_FIELD = {
-    "Aces":             "aces",
-    "Double Faults":    "double_faults",
-    "Break Points Won": "bp_converted_count",
-    "Total Games":      "total_match_games",
+    "Aces":                   "aces",
+    "Double Faults":          "double_faults",
+    "Break Points Won":       "bp_converted_count",
+    "Total Games":            "total_match_games",
+    # Player Total Games Won was MISSING until 2026-07-15. resolve_pick does
+    # PROP_FIELD.get(prop_type) and bails to NEEDS REVIEW on None, so every PTGW
+    # pick was unresolvable FOREVER — it sat PENDING and the daily recap silently
+    # omitted it, while every other prop resolved normally. Two posted plays
+    # (Urgesi, Penickova) were missing from the 7/15 recap for exactly this
+    # reason. The data was always present: total_games_won is on every match
+    # record. A prop the model can PICK must be a prop the resolver can SCORE.
+    "Player Total Games Won": "total_games_won",
 }
 
 FRESH_AMBER_DAYS = 21
