@@ -1790,16 +1790,39 @@ _SURFACE_HOLD_CACHE: dict = {}
 _SURFACE_HOLD_TTL = 7 * 24 * 3600   # 7 days
 
 
+def _hold_db_key(pid: int, surface: str) -> str:
+    return f"surface_hold_v1_{pid}_{surface}"
+
+
 def peek_surface_hold(player_id, surface: str):
     """Cached surface hold % for a player, or None if not cached/fresh. NEVER
-    triggers a network fetch — for cache-first batch lookups."""
+    triggers a network fetch — for cache-first batch lookups.
+
+    Two layers: memory (hot path) then Postgres (durability). Postgres is read
+    ONLY on a memory miss — lazily, per key, no bulk load at boot — and a hit
+    hydrates memory so subsequent reads never touch the DB.
+
+    Why the DB layer exists: this cache used to live only in the process, so every
+    deploy wiped it. Measured across a push: opponents resolved went 5/7 -> 0/7,
+    and the BP quality adjustment (a pure function of cache state) moved with it.
+    Cache warmth was being destroyed by the act of shipping."""
     try:
-        key = (int(player_id), surface)
+        pid = int(player_id)
     except (TypeError, ValueError):
         return None
+    key = (pid, surface)
     hit = _SURFACE_HOLD_CACHE.get(key)
     if hit and (time.time() - hit[1]) < _SURFACE_HOLD_TTL:
         return hit[0]
+    # Memory miss -> try the durable layer once, then hydrate memory from it.
+    try:
+        from src import database
+        val = database.cache_get(_hold_db_key(pid, surface))
+    except Exception:  # noqa: BLE001 — durability must never break a read
+        val = None
+    if val is not None:
+        _SURFACE_HOLD_CACHE[key] = (val, time.time())
+        return val
     return None
 
 
@@ -1818,10 +1841,22 @@ def get_player_surface_hold(player_id, surface: str, tour: str = "ATP"):
     hold = (data.get(surface) or {}).get("service_games_won_pct")
     if hold is None:
         hold = (data.get("All") or {}).get("service_games_won_pct")
+    # GUARD BEFORE WRITE-THROUGH. `hold is not None` IS the guard for this cache:
+    # a degraded fetch yields None (no stats parsed -> no service_games_won_pct on
+    # either the surface or the All fallback), and None is never written. So a
+    # degraded fetch can overwrite neither memory nor a healthy Postgres row — the
+    # same rule the surface-stats guard enforces, applied to the durable layer.
     if hold is not None:
         try:
-            _SURFACE_HOLD_CACHE[(int(player_id), surface)] = (hold, time.time())
+            pid = int(player_id)
         except (TypeError, ValueError):
+            return hold
+        _SURFACE_HOLD_CACHE[(pid, surface)] = (hold, time.time())
+        try:
+            from src import database
+            database.cache_set(_hold_db_key(pid, surface), hold,
+                               ttl_seconds=_SURFACE_HOLD_TTL)
+        except Exception:  # noqa: BLE001 — a DB problem costs warmth, nothing else
             pass
     return hold
 

@@ -86,11 +86,33 @@ try:
                 "pre_guard": int(self.pre_guard or 0),
             }
 
+    class CacheEntry(Base):
+        """Durable key-value cache — the DURABILITY layer behind the in-process
+        caches, not a per-read dependency.
+
+        Why: every cache in this app lived only in the process. A Railway deploy
+        wipes them, so the opponent-hold cache measured 5/7 opponents resolved,
+        then 0/7 immediately after a push — and the BP quality adjustment (a pure
+        function of cache state) moved with it. Cache warmth was being destroyed
+        by the act of shipping, which also silently reset the stat-rich counts and
+        made cross-deploy reproducibility impossible to observe.
+
+        Design: memory stays the hot path. Postgres is read ONCE per key on the
+        first miss (lazy hydrate — no bulk load at boot) and written through on
+        every set. Warm reads never touch Postgres, so there is no latency change.
+        """
+        __tablename__ = "cache_entries"
+        cache_key   = Column(String, primary_key=True)
+        value       = Column(String, nullable=False)      # JSON
+        written_at  = Column(DateTime(timezone=True), server_default=func.now())
+        ttl_seconds = Column(Integer)                     # NULL = never expires
+
     _SQLALCHEMY_OK = True
 except Exception as exc:  # pragma: no cover — missing dep shouldn't crash the app
     logger.warning("SQLAlchemy unavailable — results DB disabled: %s", exc)
     _SQLALCHEMY_OK = False
     Pick = None  # type: ignore
+    CacheEntry = None  # type: ignore
 
 
 def init_db() -> None:
@@ -247,6 +269,74 @@ def pending_picks() -> list:
     except Exception as exc:  # noqa: BLE001
         logger.exception("pending_picks failed: %s", exc)
         return []
+
+
+# ── Durable cache (see CacheEntry) ──────────────────────────────────────────
+# Every helper degrades to a no-op / miss when the DB is unavailable, so a
+# Postgres problem costs cache warmth and NOTHING else — the callers still have
+# their in-memory layer and their network fallback.
+def cache_get(key: str):
+    """Value for ``key``, or None on miss/expiry/DB-unavailable. TTL is enforced
+    HERE on read: an expired row is a miss and the caller refetches, so a stale
+    value can never be served just because it survived a restart."""
+    if not _READY:
+        return None
+    try:
+        with _session() as s:
+            row = s.get(CacheEntry, key)
+            if row is None:
+                return None
+            if row.ttl_seconds:
+                age = (datetime.now(timezone.utc) - row.written_at).total_seconds()
+                if age > row.ttl_seconds:
+                    return None          # expired -> treat as a miss
+            import json as _json
+            return _json.loads(row.value)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("cache_get(%s) failed — treating as miss: %s", key, str(exc)[:120])
+        return None
+
+
+def cache_set(key: str, value, ttl_seconds: int = None) -> bool:
+    """Write-through upsert. ttl_seconds=None means NEVER expires — correct for
+    immutable data (a completed match's statistics cannot change).
+
+    NOTE FOR CALLERS: this does not know whether ``value`` is trustworthy. The
+    degraded-fetch guard must run BEFORE calling this — a degraded fetch must
+    never overwrite a healthy row, exactly as it must never overwrite a healthy
+    in-memory entry."""
+    if not _READY:
+        return False
+    try:
+        import json as _json
+        payload = _json.dumps(value)
+        with _session() as s:
+            row = s.get(CacheEntry, key)
+            if row is None:
+                s.add(CacheEntry(cache_key=key, value=payload,
+                                 ttl_seconds=ttl_seconds,
+                                 written_at=datetime.now(timezone.utc)))
+            else:
+                row.value = payload
+                row.ttl_seconds = ttl_seconds
+                row.written_at = datetime.now(timezone.utc)
+            return True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("cache_set(%s) failed — memory-only this run: %s", key, str(exc)[:120])
+        return False
+
+
+def cache_stats() -> dict:
+    """Row count + oldest/newest write — for verifying the layer is actually
+    persisting rather than silently no-opping."""
+    if not _READY:
+        return {"ready": False, "rows": 0}
+    try:
+        with _session() as s:
+            n = s.query(CacheEntry).count()
+            return {"ready": True, "rows": n}
+    except Exception:  # noqa: BLE001
+        return {"ready": False, "rows": 0}
 
 
 def _avg(vals: list):
