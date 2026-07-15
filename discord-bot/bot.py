@@ -1231,6 +1231,28 @@ RESULTS_POST_MINUTE = int(os.getenv("RESULTS_POST_MINUTE", "45") or "45")
 ONEOFF_SCHED_DATE = os.getenv("ONEOFF_SCHED_DATE", "2026-07-15")
 ONEOFF_RECAP_HM   = (17, 30)    # recap  — 5:30 PM ET
 ONEOFF_POTD_HM    = (18, 50)    # POTD   — 6:50 PM ET
+ONEOFF_PREWARM_HM = (18, 20)    # cache pre-warm — 30 min before the one-off POTD
+
+# ── Cache pre-warm ───────────────────────────────────────────────────────────
+# Runs 30 minutes before the POTD generation and throws its results away. The
+# ONLY thing it produces is a warm cache.
+#
+# Why it exists: the BP opponent-hold quality adjustment is CACHE-ONLY (see
+# _bp_quality_adjusted_generated) — it never awaits a fetch, so its value is a
+# pure function of cache state. That killed the timing race, but a COLD run still
+# computes on a thin cache: measured 1/7 opponents resolved on the first run,
+# climbing to 5/7 by the fifth as background warming landed, moving the BP
+# projection 6.1 <-> 6.0. The generation job runs cold every day, so the picks
+# that actually get posted were the ones computed on the thinnest cache.
+#
+# This fixes it at the SCHEDULING layer, not the math layer: warm first, then
+# compute. No change to how any number is calculated — the same computation just
+# runs against a full cache instead of an empty one.
+#
+# Proxy cost is ~neutral: these fetches already happened as background warming
+# during the generation run. They are moved earlier, not added.
+PREWARM_HOUR   = int(os.getenv("PREWARM_HOUR", "19") or "19")     # 30 min before
+PREWARM_MINUTE = int(os.getenv("PREWARM_MINUTE", "20") or "20")   # the 7:50 POTD
 
 
 def _slot_is_live(oneoff_hm: tuple) -> bool:
@@ -1873,6 +1895,44 @@ async def _repost_todays_plays(channel) -> str:
                            allowed_mentions=EVERYONE_MENTION)
     return (f"re-posted {len(ranked)} plays (updated confidence)"
             + (" + 3x" if slip and len(slip) >= 2 else ""))
+
+
+@tasks.loop(time=[
+    datetime.time(hour=ONEOFF_PREWARM_HM[0], minute=ONEOFF_PREWARM_HM[1], tzinfo=POD_TZINFO),
+    datetime.time(hour=PREWARM_HOUR, minute=PREWARM_MINUTE, tzinfo=POD_TZINFO),
+])
+async def daily_cache_prewarm():
+    """Walk the day's board 30 minutes before generation and THROW THE RESULTS
+    AWAY. The only product is a warm cache — see the block comment on
+    ONEOFF_PREWARM_HM for why this is a scheduling fix, not a math one.
+
+    Posts nothing. Never raises: a failed pre-warm must degrade to 'the
+    generation runs cold', exactly as it does today, never to a missing POTD."""
+    if not _slot_is_live(ONEOFF_PREWARM_HM):
+        return
+    try:
+        t0 = time.time()
+        bundle = await pick_of_day.generate_ranked_and_slip()
+        n = len(bundle.get("ranked") or [])
+        log.info(
+            "PREWARM | board walked in %.1f min | %d qualifying plays (DISCARDED — "
+            "this run exists only to warm the player-stats and opponent-hold "
+            "caches so the %02d:%02d generation computes warm). Check BP_QADJ "
+            "resolved-fraction on the next run: it should now sit near 1.0.",
+            (time.time() - t0) / 60.0, n,
+            ONEOFF_POTD_HM[0] if datetime.datetime.now(POD_TZINFO).strftime("%Y-%m-%d")
+            == ONEOFF_SCHED_DATE else PICKS_GEN_HOUR,
+            ONEOFF_POTD_HM[1] if datetime.datetime.now(POD_TZINFO).strftime("%Y-%m-%d")
+            == ONEOFF_SCHED_DATE else PICKS_GEN_MINUTE,
+        )
+    except Exception:  # noqa: BLE001
+        log.exception("PREWARM failed — generation will run cold (no worse than "
+                      "before the pre-warm existed)")
+
+
+@daily_cache_prewarm.before_loop
+async def _before_cache_prewarm():
+    await client.wait_until_ready()
 
 
 @tasks.loop(time=[
@@ -2772,10 +2832,23 @@ async def on_ready():
     if POD_CHANNEL_ID and not daily_picks_generate.is_running():
         try:
             daily_picks_generate.start()
-            log.info("Daily picks pre-generation scheduled at %02d:%02d %s -> channel %s",
-                     PICKS_GEN_HOUR, PICKS_GEN_MINUTE, POD_TZINFO, POD_CHANNEL_ID)
+            log.info("POTD trigger scheduled at %02d:%02d %s (one-off %02d:%02d on %s) "
+                     "-> channel %s",
+                     PICKS_GEN_HOUR, PICKS_GEN_MINUTE, POD_TZINFO,
+                     ONEOFF_POTD_HM[0], ONEOFF_POTD_HM[1], ONEOFF_SCHED_DATE,
+                     POD_CHANNEL_ID)
         except Exception:
             log.exception("failed to start daily picks generation loop")
+    # Cache pre-warm — 30 min before generation. Started SEPARATELY from the POTD
+    # trigger so a pre-warm failure can never stop the picks from being posted.
+    if not daily_cache_prewarm.is_running():
+        try:
+            daily_cache_prewarm.start()
+            log.info("Cache pre-warm scheduled at %02d:%02d %s (one-off %02d:%02d on %s)",
+                     PREWARM_HOUR, PREWARM_MINUTE, POD_TZINFO,
+                     ONEOFF_PREWARM_HM[0], ONEOFF_PREWARM_HM[1], ONEOFF_SCHED_DATE)
+        except Exception:
+            log.exception("failed to start cache pre-warm loop")
     # One-off extra run (date-gated; no-op on other days).
     if POD_CHANNEL_ID and POD_EXTRA_RUN_DATE and not extra_pod_run.is_running():
         try:
