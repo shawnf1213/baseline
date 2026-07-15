@@ -223,3 +223,54 @@ recent window is single-surface.
 * The deep reference is NOT quality-weighted and NOT stat-rich-gated; its own
   sample guard should be on raw match count, not stat-rich count.
 * This does not need the valid[:50] cap raised — that is the point of it.
+
+---
+
+## DECIDED (2026-07-15): raise the stats-fetch window 50 -> 150, AFTER certification
+
+Taken deliberately as an infrastructure decision, not as a side effect of a
+modelling task — it was correctly refused twice as a fallback (once inside the
+affinity work, once inside the dual-window investigation).
+
+**Rationale.** 150 stat-rich matches is ~3 years of texture: a real career
+reference for the affinity remedy, honest variance estimates, and blend layers
+that finally average over genuinely different windows instead of the same 50
+matches wearing different labels.
+
+**Sequencing: PHASE 1 certification first, PHASE 2 cap second.** Certify the
+current model, change the cap, re-verify, and only then does the freeze clock
+start for real — one model, one window, one uninterrupted ledger.
+
+**Guardrails agreed:**
+1. Backfill through the EVENT-LEVEL cache — completed-match stats are immutable,
+   so fetch only the ~100 additional events per player and never refetch what is
+   cached. NOTE: this is only safe because of the 2026-07-14 fix that stopped
+   caching failures as `{}` — without it, extending the window would re-poison.
+2. Warm gradually — board players first on their next natural fetch, no mass
+   overnight backfill. Log daily proxy call volume before/after so the Decodo
+   cost is measured, not guessed.
+3. Deterministic newest-N selection and every guard stay unchanged. The window
+   widens; the rules governing it do not.
+4. Rerun all four certification cases after the change. Record the date: a
+   SECOND baseline break the calibration ledger must not pool across, same as
+   2026-07-15.
+5. The affinity career reference + dual-window blend become buildable on the
+   wider window — build them LAST, per the recorded remedy, degrading to
+   win-rate basis with the flag rather than diluting deep against shallow.
+
+**⚠️ CORRECTION — guardrail 2 assumes a throttle that DOES NOT EXIST.**
+`_search_throttle()` (min-gap under a lock) is wired ONLY into the search path.
+The stats path (`_fetch_stats_parallel`) has NO throttle: up to 10 concurrent
+calls through a ThreadPoolExecutor with no inter-request spacing; the only
+`sleep(0.5)` is a per-event retry backoff. At 150 that is 150 unpaced calls per
+cold player — the exact burst shape behind this week's Decodo exhaustion and the
+Discord Cloudflare 1015 ban. **A stats-path throttle must be BUILT as part of
+Phase 2, before the cap is raised.** Do not treat it as existing.
+
+**Accepted cost:** every player's stats shift again when their window triples, so
+projections/affinities/confidences all move once more and the clean post-guard
+sample restarts. Accepted knowingly: better to break the baseline once more this
+week than to accumulate three weeks of sample and discard it in August. Note this
+interacts with CALIBRATION_MIN_SAMPLE=40 — the weekly table stays suppressed until
+40 post-change picks accumulate, roughly two weeks from the cap change, not from
+2026-07-15.
