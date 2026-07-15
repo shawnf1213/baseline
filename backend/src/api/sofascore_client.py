@@ -150,6 +150,17 @@ _player_session_lock = threading.Lock()
 # evaluate matches that don't change minute-to-minute).
 _CACHE_BUCKET_SECS = 6 * 3600
 
+# ── Degraded-fetch cache guard (see get_player_stats_by_surface) ─────────────
+# A proxy/stats-API outage can return every EVENT successfully while returning no
+# per-match STATISTICS. The resulting records look structurally fine (score,
+# opponent, timestamp) but carry no aces/DF/BP, so every stat-driven confidence
+# guard reads the player as near-empty. Caching that poisons the whole 6h bucket.
+_DEGRADED_MIN_REQUESTED  = 20    # don't judge yield on a tiny request set
+_DEGRADED_MIN_YIELD      = 0.10  # absolute floor, ONLY when no prior snapshot exists
+                                 # (kept low: genuine ITF-only players legitimately
+                                 #  have near-zero stat coverage on Sofascore)
+_DEGRADED_VS_PRIOR_RATIO = 0.50  # <50% of a prior healthy snapshot = collapse
+
 # Proxy-usage / cache counters (STEP 7) — logged daily so the cache hit rate and
 # live proxy volume are visible in Railway without reproducing issues live.
 _counter_lock = threading.Lock()
@@ -2160,19 +2171,77 @@ def get_player_stats_by_surface(player_id, tour: str = "ATP") -> dict:
     surfaces["_stale_cache"] = False
     surfaces["_stat_match_count"] = len(stat_matches)
 
-    # Only cache when we actually got STAT-RICH matches. Events can succeed
-    # (e.g. 42 matches found) while the per-match statistics calls all come back
-    # empty (transient stats-API/proxy failure) — that yields N/A serve stats.
-    # Caching that would serve blank serve/return stats for the whole 6h window;
-    # leaving it uncached lets the next request re-fetch and recover.
-    if stat_matches:
-        st.session_state[cache_key] = surfaces
-    else:
-        logger.warning(
-            "SURFACE_NO_STATS | pid=%d | %d events but 0 stat-rich matches — "
-            "NOT caching (would serve N/A serve stats); next request retries",
-            pid, len(all_match_stats),
+    # ── DEGRADED-FETCH CACHE GUARD ───────────────────────────────────────────
+    # Events can succeed (hundreds of matches found) while the per-match
+    # statistics calls come back empty — a transient stats-API / proxy failure.
+    # The records then carry score/opponent/timestamp but NO aces/DF/BP, so every
+    # stat-driven guard downstream sees a near-empty player.
+    #
+    # The old guard was `if stat_matches:` — a truthiness test that only rejected
+    # ZERO. A Decodo outage produced 1 stat-rich match out of 50 requested for a
+    # player who really has ~38; that 1 passed the test and poisoned the cache for
+    # the whole bucket, and every confidence score computed against it was wrong.
+    #
+    # So compare the stat-rich yield against what we actually ASKED for, and
+    # additionally never let a degraded fetch overwrite a healthy prior snapshot.
+    _requested = len(event_ids)
+    _got = len(stat_matches)
+    _yield = (_got / _requested) if _requested else 0.0
+
+    # Best prior snapshot for this player, from any earlier bucket.
+    healthy, healthy_bucket = None, -1
+    _prefix = f"ss_surface_v6_{pid}_"
+    for k in list(st.session_state.keys()):
+        if not k.startswith(_prefix) or k == cache_key:
+            continue
+        try:
+            b = int(k.rsplit("_", 1)[1])
+        except (ValueError, IndexError):
+            continue
+        cv = st.session_state.get(k) or {}
+        if (cv.get("_stat_match_count") or 0) > _got and b > healthy_bucket:
+            healthy, healthy_bucket = cv, b
+    _prior_n = (healthy.get("_stat_match_count") or 0) if healthy is not None else None
+
+    # Two independent triggers, in confidence order:
+    #  1. COLLAPSE vs a prior healthy snapshot — the strongest signal. The player
+    #     demonstrably had coverage before, so a sudden drop is our failure, not
+    #     the player's history changing.
+    #  2. ABSOLUTE floor — only used when there's no prior snapshot to compare
+    #     against. Deliberately low: a genuine ITF-only player really can have
+    #     almost no stats on Sofascore, and treating that as degraded would mean
+    #     never caching them and re-fetching (burning proxy) on every request.
+    _degraded, _why = False, ""
+    if _requested >= _DEGRADED_MIN_REQUESTED:
+        if _prior_n is not None and _got < _prior_n * _DEGRADED_VS_PRIOR_RATIO:
+            _degraded = True
+            _why = ("coverage collapsed vs prior healthy snapshot (%d -> %d stat-rich)"
+                    % (_prior_n, _got))
+        elif _prior_n is None and _yield < _DEGRADED_MIN_YIELD:
+            _degraded = True
+            _why = ("stat yield %.0f%% below %.0f%% floor and no prior snapshot"
+                    % (_yield * 100, _DEGRADED_MIN_YIELD * 100))
+
+    if _degraded:
+        logger.error(
+            "SURFACE_DEGRADED_FETCH | pid=%d | stat-rich=%d/%d requested | %d events | "
+            "%s | NOT caching as authoritative | %s",
+            pid, _got, _requested, len(all_match_stats), _why,
+            ("serving healthy bucket %d (%d stat-rich)" % (healthy_bucket, _prior_n))
+            if healthy is not None else "no healthy prior snapshot — returning degraded UNCACHED",
         )
+        if healthy is not None:
+            healthy = dict(healthy)
+            healthy["_stale_cache"] = True
+            healthy["_degraded_refetch"] = True
+            return healthy
+        # No prior snapshot: return the degraded result so the caller still gets
+        # SOMETHING, but do NOT cache it — the next request re-fetches and can
+        # recover as soon as the proxy/stats API is healthy again.
+        surfaces["_degraded_fetch"] = True
+        return surfaces
+
+    st.session_state[cache_key] = surfaces
     return surfaces
 
 

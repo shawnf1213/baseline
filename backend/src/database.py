@@ -57,6 +57,13 @@ try:
         # JSON snapshot of the confidence component breakdown at pick time, so a
         # faithful calibration recompute is possible later. NULL on legacy rows.
         confidence_breakdown = Column(String)
+        # 1 = this pick's confidence was computed BEFORE the degraded-fetch cache
+        # guard shipped (2026-07-14), so it may have been scored against a poisoned
+        # Sofascore snapshot (events present, per-match statistics missing — a
+        # player's usable match count collapsing to ~0). Those scores are not
+        # trustworthy calibration inputs. The pick RECORD stands as posted and is
+        # never altered; this flag only excludes it from calibration maths.
+        pre_guard = Column(Integer, default=0)
 
         def to_dict(self) -> dict:
             return {
@@ -76,6 +83,7 @@ try:
                 "surface": self.surface,
                 "pick_group": (self.pick_group or "potd"),
                 "confidence_breakdown": self.confidence_breakdown,
+                "pre_guard": int(self.pre_guard or 0),
             }
 
     _SQLALCHEMY_OK = True
@@ -109,6 +117,21 @@ def init_db() -> None:
                     "VARCHAR DEFAULT 'potd'"))
                 conn.execute(text(
                     "ALTER TABLE picks ADD COLUMN IF NOT EXISTS confidence_breakdown VARCHAR"))
+                # pre_guard: every row that already exists when this column is
+                # first created predates the degraded-fetch cache guard, so it is
+                # backfilled to 1 exactly once. NULL is the "never seen" marker —
+                # after this UPDATE no row is NULL, so a redeploy can't reflag
+                # post-guard picks. New picks default to 0 via the column default.
+                conn.execute(text(
+                    "ALTER TABLE picks ADD COLUMN IF NOT EXISTS pre_guard INTEGER"))
+                _bf = conn.execute(text(
+                    "UPDATE picks SET pre_guard = 1 WHERE pre_guard IS NULL"))
+                if getattr(_bf, "rowcount", 0):
+                    logger.info("picks pre_guard backfill: %d existing rows marked "
+                                "pre-cache-guard (excluded from calibration maths)",
+                                _bf.rowcount)
+                conn.execute(text(
+                    "ALTER TABLE picks ALTER COLUMN pre_guard SET DEFAULT 0"))
         except Exception as mexc:  # noqa: BLE001 — non-fatal; column may already exist
             logger.warning("picks pick_group migration skipped: %s", mexc)
         _READY = True

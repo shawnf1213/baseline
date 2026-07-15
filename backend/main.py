@@ -928,7 +928,18 @@ def _opp_quality_weighted(surf_matches, rankings):
     (looked up by opponent_id; tournament-tier weight when the opponent isn't in
     the rankings list — retired/unranked/ID mismatch) and compute raw +
     opponent-quality-weighted averages for the key stats.
-    Returns ({stat: {raw, weighted}}, ranking_match_rate_pct)."""
+    Returns ({stat: {raw, weighted}}, ranking_match_rate_pct).
+
+    RANK SOURCE — opponent rank weighting sources ONLY from the Sofascore current-
+    rankings cache (get_current_rankings: ATP + WTA singles, ranks 1-500 per tour,
+    matched on Sofascore player ID, refreshed weekly), with tier_proxy_weight() as
+    the fallback for anyone outside it. Jeff Sackmann's rank CSVs are NOT a source
+    here and never fire: load_player_sackmann_data() is a hard no-op since the
+    tennis_atp/tennis_wta repos went private (every CSV 404s), so any
+    *_sackmann_matches=0 in the logs/response is that dead path, not a lookup miss.
+    The proxy is expected on ITF/challenger boards, where opponents rank past 500
+    and Sofascore simply doesn't publish a number — that is acceptable degradation,
+    not a bug to chase."""
     ms = [m for m in (surf_matches or []) if isinstance(m, dict)]
     if len(ms) < 5:                       # too few matches → weighting is noise
         return {}, 0.0
@@ -951,9 +962,26 @@ def _opp_quality_weighted(surf_matches, rankings):
         m["_opp_rank"] = rank if rank is not None else 999
         m["_opp_weight"] = w
         rows.append((m, w))
-    match_rate = round(ranked / len(ms) * 100, 1)
-    logger.info("QW_COVERAGE | %d matches | %.0f%% via current ranking, rest via tournament-tier fallback",
-                len(ms), match_rate)
+    # Coverage is reported over the matches the weighting ACTUALLY aggregates —
+    # i.e. those carrying a numeric stat field. Stat-poor matches are skipped by
+    # the isinstance() guards in the loops below, so counting them in the
+    # denominator understates coverage badly: a player with 414 raw clay matches
+    # but 39 stat-rich ones reported 37.4% when real coverage on the matches that
+    # contribute was 61.5%. Fall back to the full list if no match carries stats,
+    # so the figure is never divided by zero.
+    _contrib = [m for m, _w in rows
+                if any(isinstance(m.get(f), (int, float)) for f in _QW_COUNT_STATS.values())]
+    _denom = _contrib or ms
+    _ranked_contrib = sum(
+        1 for m in _denom
+        if m.get("_opp_rank") is not None and m.get("_opp_rank") != 999
+    )
+    match_rate = round(_ranked_contrib / len(_denom) * 100, 1)
+    logger.info(
+        "QW_COVERAGE | %d stat-rich of %d raw matches | %.0f%% via current ranking, "
+        "rest via tournament-tier fallback",
+        len(_contrib), len(ms), match_rate,
+    )
     out = {}
     for key, fld in _QW_COUNT_STATS.items():
         wn = wd = rn = rd = 0.0
@@ -1980,7 +2008,12 @@ async def prop_calculate(req: PropRequest):
         p2_ss_recent   = p2_blended.get("_ss_recent_matches", 0)
         p1_fallback    = p1_blended.get("_surface_fallback", False)
         p2_fallback    = p2_blended.get("_surface_fallback", False)
-        data_quality   = p1_blended.get("_data_quality", "moderate")
+        # data_quality is the PLAYER's (p1). The opponent's is exposed separately
+        # as opponent_data_quality — the confidence ceilings in confidence.py gate
+        # on BOTH sides, so an audit that can only see p1 is blind to half of what
+        # actually caps a score.
+        data_quality     = p1_blended.get("_data_quality", "moderate")
+        opp_data_quality = p2_blended.get("_data_quality", "moderate")
         p1_sack_count  = p1_blended.get("_sackmann_matches", 0)
         p2_sack_count  = p2_blended.get("_sackmann_matches", 0)
         p1_sack_weight = p1_blended.get("_sackmann_weight", 0.0)
@@ -2086,7 +2119,8 @@ async def prop_calculate(req: PropRequest):
             "opponent_ss_matches":  p2_ss_recent,
             "player_surface_fallback":   p1_fallback,
             "opponent_surface_fallback": p2_fallback,
-            "data_quality":         data_quality,
+            "data_quality":           data_quality,       # player (p1)
+            "opponent_data_quality":  opp_data_quality,   # opponent (p2)
             # Limited-surface-data flags (ISSUE 2 — <10 surface matches)
             "player_limited_data":     player_limited_data,
             "opponent_limited_data":   opponent_limited_data,

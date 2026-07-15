@@ -60,6 +60,11 @@ PROP_CONFIDENCE_CEILING = {
     "Player Total Games Won": 80,
 }
 
+# PTGW only: ceiling when the depth test fails (either side under 15 stat-rich
+# surface matches). Sits below the 80 prop ceiling so sample depth still
+# discriminates for a prop whose ceiling would otherwise flatten every play to 80.
+_PTGW_SHALLOW_CEILING = 76
+
 SECTION_LABELS = {
     "sample_size": "Sample Size",
     "h2h":         "H2H Data",
@@ -132,7 +137,15 @@ def calculate_confidence(
     # partial backstop so a deep, in-form player isn't scored like an unknown
     # just because the surface window is short — the projection itself leans on
     # that all-surface data via the blended stats.
-    n = len(player_surface_matches)
+    # STAT-RICH count, not len(player_surface_matches). The raw list holds EVERY
+    # surface match (score/opponent/timestamp), including ones with no parsed
+    # statistics — Erjavec had 330 raw clay matches but only 38 with aces/DF/BP.
+    # Scoring sample depth off the raw list credits matches the stat averages
+    # never saw. Every count guard in this module now reads the same stat-rich
+    # definition (n, o_n, p2_n) so they cannot disagree about what "usable" means.
+    # The LISTS are still used for stat extraction (consistency/recency), where
+    # stat-poor entries drop out naturally via _extract_series.
+    n = ta_career_surface_matches
     overall_n = 0
     if p1_blended:
         overall_n = (p1_blended.get("overall_matches_played")
@@ -142,15 +155,15 @@ def calculate_confidence(
     eff_n = n + min(overall_n, 60) * 0.25
 
     if eff_n < 5:
-        sample_score, sample_label = 0, f"{n} surf / {overall_n} overall — very limited data"
+        sample_score, sample_label = 0, f"{n} surf / {overall_n} overall (stat-rich) —very limited data"
     elif eff_n <= 10:
-        sample_score, sample_label = 20, f"{n} surf / {overall_n} overall — small effective sample"
+        sample_score, sample_label = 20, f"{n} surf / {overall_n} overall (stat-rich) —small effective sample"
     elif eff_n <= 20:
-        sample_score, sample_label = 35, f"{n} surf / {overall_n} overall — moderate effective sample"
+        sample_score, sample_label = 35, f"{n} surf / {overall_n} overall (stat-rich) —moderate effective sample"
     elif eff_n <= 40:
-        sample_score, sample_label = 50, f"{n} surf / {overall_n} overall — good effective sample"
+        sample_score, sample_label = 50, f"{n} surf / {overall_n} overall (stat-rich) —good effective sample"
     else:
-        sample_score, sample_label = 60, f"{n} surf / {overall_n} overall — large effective sample"
+        sample_score, sample_label = 60, f"{n} surf / {overall_n} overall (stat-rich) —large effective sample"
     breakdown["sample_size"] = {"score": sample_score, "max": 60, "label": sample_label}
     total += sample_score
 
@@ -238,13 +251,16 @@ def calculate_confidence(
     total += recency_score
 
     # 5. Opponent data quality
-    o_n = len(opponent_surface_matches)
+    # Stat-rich count (see the note on `n`). This previously read the RAW list and
+    # printed e.g. "Strong opponent data (330 surface matches)" — awarding a full
+    # +10 — for an opponent with 38 usable matches, or 1 during a stats outage.
+    o_n = opp_ta_career_matches
     if o_n > 10:
-        opp_score, opp_label = 10, f"Strong opponent data ({o_n} surface matches)"
+        opp_score, opp_label = 10, f"Strong opponent data ({o_n} stat-rich surface matches)"
     elif o_n >= 5:
-        opp_score, opp_label = 0, f"Moderate opponent data ({o_n} surface matches)"
+        opp_score, opp_label = 0, f"Moderate opponent data ({o_n} stat-rich surface matches)"
     else:
-        opp_score, opp_label = -10, f"Limited opponent data ({o_n} surface matches)"
+        opp_score, opp_label = -10, f"Limited opponent data ({o_n} stat-rich surface matches)"
     breakdown["opponent"] = {"score": opp_score, "max": 10, "label": opp_label}
     total += opp_score
 
@@ -375,7 +391,7 @@ def calculate_confidence(
     #          non-thin data — otherwise cap 84.
     #   Ace variance: a high-variance Aces / Double Faults prop caps at 80 — a big
     #          projected edge on a coin-flip stat is not "high confidence".
-    p2_n = len(opponent_surface_matches)
+    p2_n = opp_ta_career_matches      # stat-rich (see the note on `n`)
     data_ceiling = 95
     _cap_reason = ""
     _cap_tag = None          # short display tag: data-capped / sample-capped / variance-capped
@@ -398,6 +414,18 @@ def calculate_confidence(
     )
     if not both_deep and data_ceiling > 84:
         data_ceiling, _cap_reason, _cap_tag = 84, "85+ needs 15+ surface matches both sides on non-fallback data", "sample-capped"
+
+    # ── PTGW depth distinction (below its prop ceiling) ───────────────────────
+    # Player Total Games Won is hard-capped at 80 by PROP_CONFIDENCE_CEILING, which
+    # sits BELOW the 84 depth cap above — so that cap can never bind for this prop,
+    # and a 5-surface-match player scored identically to a 39-match one. Re-introduce
+    # the depth signal underneath the ceiling: full 80 only when BOTH sides are deep,
+    # otherwise 76. With the POD bar at 80 this means only deep-data PTGW plays
+    # qualify — the intended strictness for a prop compounded from several models.
+    if prop_type == "Player Total Games Won" and not both_deep and data_ceiling > _PTGW_SHALLOW_CEILING:
+        data_ceiling = _PTGW_SHALLOW_CEILING
+        _cap_reason = "Player Total Games Won needs 15+ stat-rich surface matches both sides for 80"
+        _cap_tag = "sample-capped"
 
     # ── EDGE-TO-VARIANCE RATIO — continuous, per-prop-scaled confidence grade ──
     # Confidence is graded by how far the line sits from the projection relative to

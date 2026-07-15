@@ -40,8 +40,8 @@ BROWSER_UA = (
 # PrizePicks stat_type (lowercased) -> Baseline prop_type.
 # NOTE: PrizePicks has BOTH "Total Games" (the match total) and "Total Games Won"
 # (a single player's games won) — different stats, both modelled by Baseline
-# ("Total Games" and "Player Total Games Won"), held to stricter bars — 90% and
-# 80% respectively (see PROP_MIN_CONF).
+# ("Total Games" and "Player Total Games Won"), both held to a stricter 80% bar
+# (see PROP_MIN_CONF).
 PROP_MAP = {
     "aces":             "Aces",
     "double faults":    "Double Faults",
@@ -67,25 +67,31 @@ MAX_LOOKAHEAD_HOURS = 24  # only pick matches that play within this many hours
 #   STANDARD (75): Aces / Break Points Won / Double Faults. The ranked list shows
 #   every qualifying play, so the bar is set to keep the list to genuinely strong
 #   plays (>=75% confidence).
-#   HIGH BAR (90): Total Games (match total) AND Player Total Games Won. Both are
+#   HIGH BAR (80): Total Games (match total) AND Player Total Games Won. Both are
 #   derived, higher-variance stats — the match total depends on BOTH players'
 #   combined performance plus match-length variance, and per-player games won is
-#   compounded from holds + breaks + win-prob share — so they only surface when
-#   the data strongly supports them.
+#   compounded from holds + breaks + win-prob share — so they carry a bar above
+#   standard and only surface when the data strongly supports them.
+#   Total Games sat at 90 until 2026-07-14, when a full-board audit showed the
+#   model does not produce 90+ on that prop: all 33 Total Games candidates that
+#   night scored <=80, so the bar wasn't gating the category, it was silently
+#   excluding it. 80 keeps it a rare, genuinely-strong play instead of dead
+#   weight. Total Games still cannot take the ⭐ slot without a 90% favourite
+#   (see _star_eligible) — that gate is unchanged.
 STANDARD_MIN_CONF    = 75   # Aces / Break Points Won / Double Faults
-TOTAL_GAMES_MIN_CONF = 90   # Total Games (match total) — highest bar
-PLAYER_TGW_MIN_CONF  = 80   # Player Total Games Won — mid bar
+TOTAL_GAMES_MIN_CONF = 80   # Total Games (match total) — high bar
+PLAYER_TGW_MIN_CONF  = 80   # Player Total Games Won — high bar (bespoke paths below)
 # Per-prop overrides; anything not listed uses STANDARD_MIN_CONF.
 PROP_MIN_CONF = {
-    "Total Games":             TOTAL_GAMES_MIN_CONF,   # 90
+    "Total Games":             TOTAL_GAMES_MIN_CONF,   # 80
     "Player Total Games Won":  PLAYER_TGW_MIN_CONF,    # 80
 }
 
 
 def _min_conf_for(prop_type: str) -> int:
     """The minimum confidence a candidate of this prop type must clear to qualify.
-    Total Games (match total) → 90, Player Total Games Won → 80, everything else
-    (Aces / Break Points) → 75."""
+    Total Games (match total) → 80, Player Total Games Won → 80 (subject to the
+    bespoke blowout paths), everything else (Aces / Break Points) → 75."""
     return PROP_MIN_CONF.get(prop_type, STANDARD_MIN_CONF)
 
 SEARCH_TIMEOUT = 10
@@ -110,7 +116,9 @@ if _env_excl.strip():
     _POD_EXCLUDE |= {_norm(x) for x in _env_excl.split(",") if x.strip()}
 
 # Prop types never used for Pick of the Day (excluded by request).
-_POD_EXCLUDE_PROPS = {"Double Faults", "Player Total Games Won"}
+# Player Total Games Won was excluded on 2026-07-13 and re-included on 2026-07-14
+# by request, gated at 80 via its bespoke blowout paths (see _ptgw_qualify).
+_POD_EXCLUDE_PROPS = {"Double Faults"}
 
 
 def _is_excluded(name: str) -> bool:
@@ -354,12 +362,11 @@ async def _evaluate(prop: dict, sem: asyncio.Semaphore):
             "confidence": conf, "lean": data.get("lean"),
             "p1_win_prob": data.get("p1_win_prob"), "p2_win_prob": data.get("p2_win_prob"),
             "explanation": data.get("plain_english_explanation"),
-            # Ranking score — CONFIDENCE-DOMINANT. Confidence is the primary term;
-            # edge magnitude only nudges within/near a confidence tier. This is an
-            # additive blend (was multiplicative conf*edge, which let a big
-            # projected edge outrank a more-confident play). Now a few points of
-            # extra confidence beats a larger projected edge — e.g. Ann Li's
-            # conf-95 BP play outranks her conf-91 Total Games play.
+            # Legacy combined score — kept for logging/diagnostics ONLY. It is NOT
+            # the ranking key; see _rank_key(), which orders confidence-first with
+            # edge as a pure tiebreaker. This additive blend still let a big edge
+            # overcome a higher confidence (an 80-conf/6.0-edge play outscored an
+            # 81-conf/4.4-edge one), which is exactly what the ranking rule forbids.
             "score": conf + abs(edge),
             "data": data,
         }
@@ -458,10 +465,28 @@ def _ptgw_qualify(pk: dict):
     return conf >= base, base, "standard-80"
 
 
+def _rank_key(pk: dict) -> tuple:
+    """Ranking key (sort DESCENDING). Two explicit levels, confidence first:
+
+      1. confidence  — the primary and dominant term
+      2. edge_mag    — tiebreaker ONLY, among plays of equal confidence
+
+    A play with genuinely higher confidence therefore ALWAYS outranks a lower-
+    confidence one no matter how large the latter's projected edge. This replaces
+    the old additive ``conf + abs(edge)`` score, under which a ceiling-pinned
+    80-conf play with a 6.0 edge (86) jumped ahead of an 81-conf play with a 4.4
+    edge (85.4) — inverting the rule that confidence outweighs edge. Props with a
+    hard confidence ceiling (Player Total Games Won caps at 80) all tie at the
+    ceiling and now order by edge among THEMSELVES, at the bottom of their band,
+    instead of leapfrogging higher-confidence plays.
+    """
+    return (pk.get("confidence") or 0, pk.get("edge_mag") or abs(pk.get("edge") or 0))
+
+
 def _passes_quality(pk: dict) -> bool:
     """Quality gate. Player Total Games Won uses the bespoke path logic above (75
     blowout-under / strict blowout-over / 80 standard); every other prop clears a
-    flat bar (75 standard, 90 Total Games)."""
+    flat bar (75 standard, 80 Total Games)."""
     if pk.get("prop_type") == "Player Total Games Won":
         return _ptgw_qualify(pk)[0]
     return (pk.get("confidence") or 0) >= _min_conf_for(pk.get("prop_type"))
@@ -587,7 +612,7 @@ async def _rank_board():
              "qualifying per prop type: %s",
              len(uniq), len(picks), STANDARD_MIN_CONF, TOTAL_GAMES_MIN_CONF,
              dict(by_type_qual) or "none")
-    picks.sort(key=lambda x: x["score"], reverse=True)
+    picks.sort(key=_rank_key, reverse=True)
     # Keep only each player's single best-scoring play so the ranking has one
     # entry per player (no same player twice for different props).
     best_per_player, ordered = set(), []
@@ -724,10 +749,21 @@ async def generate_potd_and_slip(n: int = 3, exclude_keys: set = None) -> dict:
 STAR_TOTAL_GAMES_MIN_WP = 90.0
 
 
+# Props that may NEVER hold the ⭐ Pick-of-the-Day slot, however well they score.
+# Player Total Games Won is hard-capped at 80 confidence (it's derived from several
+# compounding models), so every strong one pins to exactly 80 and they tie; letting
+# a ceiling-pinned play lead the card would make the ⭐ an edge-magnitude contest.
+# It still ranks anywhere in the list — it just can't be the headline play.
+_STAR_INELIGIBLE_PROPS = {"Player Total Games Won"}
+
+
 def _star_eligible(pk: dict) -> bool:
-    """True if this play may occupy the ⭐ Pick-of-the-Day slot. Any prop other
-    than Total Games is always eligible; a Total Games play is eligible only when
-    the stronger player's win probability is >= 90%."""
+    """True if this play may occupy the ⭐ Pick-of-the-Day slot. Player Total Games
+    Won is never eligible. Total Games is eligible only when the stronger player's
+    win probability is >= 90%. Everything else (Aces / Break Points Won) is always
+    eligible — in practice the ⭐ comes from those two."""
+    if pk.get("prop_type") in _STAR_INELIGIBLE_PROPS:
+        return False
     if pk.get("prop_type") != "Total Games":
         return True
     d = pk.get("data") or {}
@@ -737,23 +773,27 @@ def _star_eligible(pk: dict) -> bool:
 
 
 def _promote_star(ordered: list) -> list:
-    """Ensure ordered[0] (the ⭐) isn't a Total Games play without a 90%+ favorite.
-    If it is, promote the highest-scoring ⭐-eligible play to the front; the rest
-    keep their score order. No-op when the top play is already eligible or when
+    """Ensure ordered[0] (the ⭐) is a star-eligible play — i.e. not Player Total
+    Games Won (never eligible) and not a Total Games play without a 90%+ favorite.
+    If it isn't, promote the highest-ranked ⭐-eligible play to the front; the rest
+    keep their rank order. No-op when the top play is already eligible or when
     nothing else qualifies for the star."""
     if not ordered or _star_eligible(ordered[0]):
         return ordered
+    blocked = ordered[0]
     idx = next((i for i, p in enumerate(ordered) if _star_eligible(p)), None)
-    if idx is None or idx == 0:
-        # Nothing else is star-eligible (e.g. board is only sub-90% Total Games) —
+    if idx is None:
+        # Nothing on the board is star-eligible (e.g. only games props qualified) —
         # leave as-is rather than post no ⭐.
-        log.info("POD: top play is a sub-90%% Total Games and no other star-eligible "
-                 "play exists — keeping it as ⭐")
+        log.info("POD: top play (%s %s) can't hold the ⭐ and no star-eligible play "
+                 "exists on the board — keeping it as ⭐",
+                 blocked.get("player"), blocked.get("prop_type"))
         return ordered
     star = ordered.pop(idx)
-    log.info("POD: %s Total Games has no 90%%+ favorite — demoted from ⭐; "
-             "promoting %s %s to Pick of the Day",
-             ordered[0].get("player") if ordered else "?", star.get("player"), star.get("prop_type"))
+    log.info("POD: %s %s is not ⭐-eligible — demoted; promoting %s %s (conf %s) "
+             "to Pick of the Day",
+             blocked.get("player"), blocked.get("prop_type"),
+             star.get("player"), star.get("prop_type"), star.get("confidence"))
     return [star] + ordered
 
 

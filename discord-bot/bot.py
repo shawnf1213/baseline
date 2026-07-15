@@ -1209,6 +1209,12 @@ SLATE_MINUTE = int(os.getenv("SLATE_MINUTE", "0") or "0")
 # 11:45 PM ET by default — just before the Pick of the Day, after the day's
 # picks have been graded by the resolver. Defaults to the POD channel.
 RESULTS_CHANNEL_ID = int(os.getenv("RESULTS_CHANNEL_ID", str(POD_CHANNEL_ID or 0)) or "0")
+# Minimum post-guard decided picks before the weekly calibration table means
+# anything. All history up to 2026-07-14 is pre-guard (confidence possibly scored
+# on a cache-poisoned snapshot), so the clean sample restarts from zero and the
+# table stays suppressed until it rebuilds rather than reporting noise.
+CALIBRATION_MIN_SAMPLE = 40
+
 RESULTS_POST_HOUR = int(os.getenv("RESULTS_POST_HOUR", "19") or "19")
 RESULTS_POST_MINUTE = int(os.getenv("RESULTS_POST_MINUTE", "45") or "45")
 # One-off skip: don't post the daily recap on this ET date (it already posted
@@ -2378,9 +2384,27 @@ async def weekly_calibration_log():
             except Exception:  # noqa: BLE001
                 return False
 
-        dec = [p for p in picks if p.get("result") in ("W", "L")
-               and isinstance(p.get("confidence"), (int, float)) and _recent(p)]
-        log.info("CALIBRATION | rolling 30d | %d decided picks", len(dec))
+        # POST-GUARD ONLY. Picks flagged pre_guard=1 had their confidence computed
+        # before the degraded-fetch cache guard shipped (2026-07-14), so they may
+        # have been scored against a poisoned Sofascore snapshot (events present,
+        # per-match statistics missing → a player's usable match count collapsing
+        # to ~0). Those numbers say nothing about whether the model is calibrated,
+        # so every figure below — band hit rates, monotonicity, per-prop table —
+        # computes exclusively from post-guard picks. The pick records themselves
+        # are untouched and still count toward the public W/L record.
+        _all_dec = [p for p in picks if p.get("result") in ("W", "L")
+                    and isinstance(p.get("confidence"), (int, float)) and _recent(p)]
+        dec = [p for p in _all_dec if not int(p.get("pre_guard") or 0)]
+        _excluded = len(_all_dec) - len(dec)
+        log.info("CALIBRATION | rolling 30d | %d decided post-guard picks "
+                 "(%d pre-guard excluded — confidence may be cache-contaminated)",
+                 len(dec), _excluded)
+        if len(dec) < CALIBRATION_MIN_SAMPLE:
+            log.info("CALIBRATION | SAMPLE TOO SMALL — %d/%d post-guard picks. "
+                     "Bands/monotonicity suppressed until the clean sample rebuilds; "
+                     "no conclusions should be drawn from the pre-guard history.",
+                     len(dec), CALIBRATION_MIN_SAMPLE)
+            return
 
         # Confidence-band hit rates.
         band_rates = []   # (label, hit%, n) for populated bands, low→high
