@@ -1525,8 +1525,9 @@ def threex_embed(legs: list) -> discord.Embed:
     this is, and restating the rules of a two-leg slip every single day is noise
     a returning subscriber reads past. Slip strength was derived from the two
     confidences already shown — it told them nothing they couldn't see."""
-    today = datetime.datetime.now(POD_TZINFO)
-    e = discord.Embed(title=f"🎟️ Baseline 3x — {today.month}/{today.day}",
+    # Dated by the SLATE (when the legs play), not by when this was generated.
+    slate = _slate_date(legs)
+    e = discord.Embed(title=f"🎟️ Baseline 3x — {slate.month}/{slate.day}",
                       color=COLOR_THREEX)
     lines = []
     for i, leg in enumerate(legs, 1):
@@ -1543,7 +1544,7 @@ def threex_embed(legs: list) -> discord.Embed:
         if i < len(legs):
             lines.append("")
     e.description = "\n".join(lines)
-    return _stamped_footer(e)
+    return _stamped_footer(e, when=slate)
 
 
 # ── Ranked plays list (the daily post) ───────────────────────────────────────
@@ -1610,10 +1611,37 @@ def _edge_txt(edge) -> str:
     return f"{edge:+.1f}" if isinstance(edge, (int, float)) else "—"
 
 
-def _stamped_footer(e: discord.Embed, text: str = FOOTER_PROJECTION) -> discord.Embed:
-    """Footer = the standing disclaimer + today's date, so a screenshot of any
-    post carries its own date."""
-    d = datetime.datetime.now(POD_TZINFO)
+def _slate_date(picks) -> datetime.datetime:
+    """The ET date the plays actually PLAY — not the date they were generated.
+
+    Picks are selected by a 24-hour lookahead, so an evening trigger is always
+    building TOMORROW's card: the 7/14 22:26 post covered 7/15 matches but was
+    labelled 7/14, which made the next day's recap look like it was scoring a
+    different day's plays. The slate date is a property of the matches, so read it
+    from the matches — every pick carries start_timestamp.
+
+    Uses the MOST COMMON match date among the plays (a late-evening board can
+    straddle two dates; the bulk of the card is the card). Falls back to 'now'
+    only when no pick carries a start time."""
+    from collections import Counter
+    dates = []
+    for p in (picks or []):
+        ts = p.get("start_timestamp")
+        if isinstance(ts, (int, float)) and ts > 0:
+            dates.append(datetime.datetime.fromtimestamp(ts, datetime.timezone.utc)
+                         .astimezone(POD_TZINFO).date())
+    if not dates:
+        return datetime.datetime.now(POD_TZINFO)
+    top = Counter(dates).most_common(1)[0][0]
+    return datetime.datetime(top.year, top.month, top.day, tzinfo=POD_TZINFO)
+
+
+def _stamped_footer(e: discord.Embed, text: str = FOOTER_PROJECTION,
+                    when: datetime.datetime = None) -> discord.Embed:
+    """Footer = the standing disclaimer + the date the post is ABOUT, so a
+    screenshot carries its own date. Pass ``when`` (the slate date) for pick
+    posts; results posts pass their own date; anything else falls back to now."""
+    d = when or datetime.datetime.now(POD_TZINFO)
     e.set_footer(text=f"{text} • {d.month}/{d.day}")
     return e
 
@@ -1679,7 +1707,12 @@ def potd_embed(pick: dict) -> discord.Embed:
     play. One dot-separated line reads identically on both clients."""
     data = pick.get("data") or {}
     lean = _lean_of(pick)
-    e = discord.Embed(title="⭐ PICK OF THE DAY", color=_lean_color(lean))
+    # Titled with the SLATE date — the day this match PLAYS. A 10pm trigger builds
+    # tomorrow's card, so "PICK OF THE DAY" without a date (or with the generation
+    # date) tells a subscriber the wrong day.
+    _sl = _slate_date([pick])
+    e = discord.Embed(title=f"⭐ PICK OF THE DAY — {_sl.month}/{_sl.day}",
+                      color=_lean_color(lean))
 
     loc = pick.get("tournament") or (f"{pick.get('surface')} court"
                                      if pick.get("surface") else None)
@@ -1728,7 +1761,8 @@ def potd_embed(pick: dict) -> discord.Embed:
     if stats:
         e.add_field(name="Key Stats", value=stats[:1024], inline=False)
 
-    return _stamped_footer(e)
+    # Dated by the SLATE (when this match plays), not by when it was generated.
+    return _stamped_footer(e, when=_slate_date([pick]))
 
 
 _DESC_LIMIT = 3800        # Discord's description cap is 4096 — leave headroom
@@ -1746,7 +1780,9 @@ def ranked_embeds(ranked: list, start_rank: int = 1, total: int = None) -> list:
 
     Splits into further embeds ONLY at play boundaries — a play's two lines are
     never separated across embeds."""
-    today = datetime.datetime.now(POD_TZINFO)
+    # Dated by the SLATE (when these plays play), not by when they were
+    # generated — an evening trigger always builds TOMORROW's card.
+    slate = _slate_date(ranked)
     total = total if total is not None else len(ranked) + start_rank - 1
     if not ranked:
         return []
@@ -1769,7 +1805,7 @@ def ranked_embeds(ranked: list, start_rank: int = 1, total: int = None) -> list:
     for idx, page in enumerate(pages):
         first, last = rank_cursor, rank_cursor + len(page) - 1
         rank_cursor = last + 1
-        title = f"🎾 Ranked Board — {today.month}/{today.day}"
+        title = f"🎾 Ranked Board — {slate.month}/{slate.day}"
         if idx:
             title += " (cont.)"
         e = discord.Embed(title=title, color=COLOR_NEUTRAL)
@@ -1777,7 +1813,7 @@ def ranked_embeds(ranked: list, start_rank: int = 1, total: int = None) -> list:
                   if len(pages) > 1 else "")
         e.description = header + "\n\n".join(page)
         embeds.append(e)
-    _stamped_footer(embeds[-1])
+    _stamped_footer(embeds[-1], when=slate)
     return embeds
 
 
