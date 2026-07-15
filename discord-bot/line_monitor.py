@@ -24,6 +24,16 @@ MOVE_THRESHOLD   = 0.5           # only alert on moves of this size or larger
 MAX_RUNTIME_SECS = 20 * 3600     # safety cap if a start time is unknown
 COINFLIP_EDGE    = 0.5           # |proj - new line| below this = coin flip → avoid
 
+# Prop names shortened for alerts — same convention as the pick posts, and the
+# same reason: the full name is most of the line width on a phone.
+_SHORT_PROP = {
+    "Break Points Won":       "BP Won",
+    "Player Total Games Won": "Games Won",
+    "Total Games":            "Total Games",
+    "Double Faults":          "DFs",
+    "Aces":                   "Aces",
+}
+
 
 def _recompute_lean(projection, line):
     if projection is None or line is None:
@@ -93,41 +103,46 @@ async def monitor(picks: list, get_lines, post_alert, interval: int = INTERVAL_S
                     continue                 # already alerted for this departure
                 a["alerted"] = True
 
+                # ── Alert copy: two lines, no narration ──────────────────────
+                # Was four sentences explaining what a line move is and that the
+                # model was recalculating — process commentary a subscriber does
+                # not need. They need: which play, where the line went, whether the
+                # lean survives, and what it did to the edge. Everything else was
+                # words. Same short-prop / bold-play conventions as the pick posts.
                 p = a["pick"]
                 orig_lean = (p.get("lean") or "").upper()
                 new_lean = _recompute_lean(p.get("projection"), cur)
+                proj = p.get("projection")
+
                 if new_lean and orig_lean and new_lean != orig_lean:
-                    verdict = f"⚠️ Lean has **FLIPPED** — now **{new_lean}** at {cur:g}."
+                    verdict = f"⚠️ **FLIPPED → {new_lean}**"
                 elif new_lean:
-                    verdict = f"✅ Lean still holds — **{new_lean}** at {cur:g}."
+                    verdict = f"✅ **{new_lean} holds**"
                 else:
                     verdict = ""
 
-                proj = p.get("projection")
-                proj_txt = f"{proj:.1f}" if isinstance(proj, (int, float)) else "—"
-
-                # Re-evaluate the play against the NEW line: a bump toward the
-                # projection shrinks the edge → lower confidence; if the edge
-                # collapses into the coin-flip band, advise avoiding the prop.
-                conf_note = ""
+                # Re-evaluate against the NEW line: a bump toward the projection
+                # shrinks the edge; if it collapses into the coin-flip band, say so
+                # plainly — that is the one case where the advice changes.
+                bits = []
+                if verdict:
+                    bits.append(verdict)
                 if isinstance(proj, (int, float)):
                     old_e = abs(proj - a["original"])
                     new_e = abs(proj - cur)
+                    bits.append(f"Proj {proj:.1f}")
                     if new_e < COINFLIP_EDGE:
-                        conf_note = (f"\n🛑 **Now a coin flip** — the projection ({proj:.1f}) sits just "
-                                     f"{new_e:.1f} off the new line. **Avoid this prop.**")
-                    elif new_e < old_e:
-                        conf_note = (f"\n🔻 Edge shrank **{old_e:.1f} → {new_e:.1f}** — "
-                                     f"**confidence reduced**, weaker than at the original line.")
-                    elif new_e > old_e:
-                        conf_note = (f"\n🔺 Edge grew **{old_e:.1f} → {new_e:.1f}** — "
-                                     f"**confidence improved**.")
+                        verdict = "🛑 **COIN FLIP — AVOID**"
+                        bits = [verdict, f"Proj {proj:.1f}", f"Edge {new_e:.1f}"]
+                    elif abs(new_e - old_e) >= 0.05:
+                        arrow = "🔻" if new_e < old_e else "🔺"
+                        bits.append(f"{arrow} Edge {old_e:.1f} → {new_e:.1f}")
 
+                _prop_short = _SHORT_PROP.get(p.get("prop_type"), p.get("prop_type") or "")
                 msg = (
-                    f"📉 **Line Alert:** the line for **{p.get('player')} {p.get('prop_type')}** "
-                    f"has moved from **{a['original']:g}** to **{cur:g}** since the pick was generated.\n"
-                    f"The model originally projected **{orig_lean or '—'}** at **{proj_txt}** — "
-                    f"recalculating against the new line.\n{verdict}{conf_note}"
+                    f"📉 **{p.get('player')}** — {_prop_short} "
+                    f"**{a['original']:g} → {cur:g}**\n"
+                    + " · ".join(bits)
                 )
                 try:
                     await post_alert(msg)
