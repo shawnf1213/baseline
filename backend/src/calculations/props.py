@@ -7,6 +7,34 @@ from src.constants import (
 
 logger = logging.getLogger(__name__)
 
+
+# ── Component trace (permanent admin-only instrumentation) ───────────────────
+# Every projection component appends one entry here when a trace list is passed,
+# so "is the projection working properly" is a single API call instead of log
+# archaeology. Passing trace=None (the default, and what every production caller
+# does) makes every _trace call a no-op, so this costs nothing on the hot path.
+#
+# Contract per entry:
+#   step      ordinal position in the chain
+#   name      the component's identity (C1, cpr_factor, ...)
+#   inputs    the values that FED this component
+#   value     the component's OWN value (the multiplier/addend it contributes)
+#   running   the chain's running result AFTER this component applies
+#   note      how it was sourced / whether a clamp or floor bit
+def _trace(trace, name, inputs, value, running, note=""):
+    if trace is None:
+        return running
+    trace.append({
+        "step":    len(trace) + 1,
+        "name":    name,
+        "inputs":  inputs,
+        "value":   round(value, 4) if isinstance(value, (int, float)) else value,
+        "running": round(running, 4) if isinstance(running, (int, float)) else running,
+        "note":    note,
+    })
+    return running
+
+
 # Tour-average aces faced per match — used to normalise opponent ace-against rate
 _TOUR_AVG_ACE_AGAINST = {"ATP": 5.5, "WTA": 3.0}
 
@@ -211,6 +239,7 @@ def project_aces(
     tour: str = "ATP",
     surface: str = "Hard",
     match_format: str = "best_of_3",
+    trace: list = None,
 ) -> dict:
     """
     5-layer ace projection model with expected-sets scaling:
@@ -266,6 +295,14 @@ def project_aces(
         win_prob_gap, expected_sets, comp_label,
         avg_hist_sets, per_set_scale, sp_per_set, avg_service_pts,
     )
+    _trace(trace, "sets_scaling",
+           {"win_prob_gap": round(win_prob_gap, 2), "competitiveness": comp_label,
+            "expected_sets": expected_sets, "avg_historical_sets": avg_hist_sets,
+            "is_bo5": is_bo5, "tour": tour},
+           per_set_scale, per_set_scale,
+           "per_set_scale = expected_sets/avg_historical_sets; applied to the "
+           "per-match ace average BEFORE the base blend, so it is already inside "
+           "every running value below")
 
     # ── L1: Base ace rate — blend surface form with an overall anchor ─────────
     # Three signals feed the base, and NONE of them is the whole story:
@@ -322,6 +359,16 @@ def project_aces(
             "ACE_BASE_BLEND | surface=%.2f (src=%s n=%d w=%.2f) overall=%.2f -> base=%.2f",
             surface_base, "TA" if ta_used else "SS", surf_n, w_surf, overall_base, base,
         )
+        _trace(trace, "L1_base_blend",
+               {"surface_base": round(surface_base, 3),
+                "surface_src": "TA" if ta_used else "Sofascore",
+                "surface_n": surf_n,
+                "overall_anchor": round(overall_base, 3),
+                "per_set_scale_already_applied": round(per_set_scale, 3)},
+               w_surf, base,
+               "w_surf = min(0.65, n/(n+8)) — THIS is the 65/35: surface capped at "
+               "65%%, overall anchor always >=35%%%s"
+               % (" [CAPPED at 0.65]" if surf_n / (surf_n + 8.0) > 0.65 else ""))
     elif surface_base and surface_base > 0:
         base = surface_base
     elif overall_base > 0:
@@ -432,12 +479,26 @@ def project_aces(
         # aces on their OWN serve — so the opponent effect has a modest
         # ceiling. Damp 70% toward neutral and clamp to ±22%: a 2x
         # ace-conceder yields ~1.22x, a stingy returner ~0.80x.
-        opp_factor = 1.0 + (raw_opp_factor - 1.0) * 0.30
-        opp_factor = max(0.78, min(1.22, opp_factor))
+        _undamped = 1.0 + (raw_opp_factor - 1.0) * 0.30
+        opp_factor = max(0.78, min(1.22, _undamped))
         blended = base * opp_factor
+        _trace(trace, "L4_opponent_ace_against",
+               {"opp_ace_against_per_match": round(opp_ace_against, 3),
+                "tour_avg_ace_against": tour_avg_ag,
+                "raw_ratio": round(raw_opp_factor, 3),
+                "base_in": round(base, 3)},
+               opp_factor, blended,
+               "RELATIVE MULTIPLIER, not a blend: 1.0+(ratio-1)*0.30 (70%% damped), "
+               "clamped [0.78,1.22]%s. NOTE: this REPLACED an older 65/35 blend "
+               "toward the opponent's ace COUNT, which was biased against big "
+               "servers; w_player/w_opp in the return dict are back-compat aliases."
+               % (" [CLAMP BIT]" if abs(_undamped - opp_factor) > 1e-9 else ""))
     else:
         opp_factor = 1.0
         blended = base   # no opponent data → player baseline alone
+        _trace(trace, "L4_opponent_ace_against",
+               {"opp_ace_against_per_match": None, "base_in": round(base, 3)},
+               1.0, blended, "no opponent ace-against data — player baseline alone")
     # Diagnostic-compat aliases
     w_player = 1.0
     w_opp = round(opp_factor, 3)
@@ -446,18 +507,45 @@ def project_aces(
     # ── L5: Court speed (ST Pace Index) — surface-relative multiplier ─────────
     from src.constants import GENERIC_SURFACE_CPR as _GEN_SURF_CPR
     surface_baseline = _GEN_SURF_CPR.get(surface, CPR_NEUTRAL)
-    cpr_factor = 1.0 + (cpr - surface_baseline) * 0.018
-    cpr_factor = max(0.65, min(1.35, cpr_factor))
+    _cpr_undamped = 1.0 + (cpr - surface_baseline) * 0.018
+    cpr_factor = max(0.65, min(1.35, _cpr_undamped))
+    _after_cpr = blended * cpr_factor
+    _trace(trace, "L5_cpr_pace_index",
+           {"court": court or "(none)", "court_pace_index": cpr,
+            "surface_baseline_cpr": surface_baseline,
+            "delta_vs_surface": round(cpr - surface_baseline, 2),
+            "blended_in": round(blended, 3)},
+           cpr_factor, _after_cpr,
+           "1.0+(cpr-surface_baseline)*0.018, clamped [0.65,1.35]%s%s"
+           % (" [CLAMP BIT]" if abs(_cpr_undamped - cpr_factor) > 1e-9 else "",
+              " — court not in COURT_CPR, using CPR_NEUTRAL" if court and court not in COURT_CPR else ""))
+
+    _after_hand = _after_cpr * hand_factor
+    _trace(trace, "L3_handedness",
+           {"player_hand": player_hand, "opponent_hand": opp_hand,
+            "in": round(_after_cpr, 3)},
+           hand_factor, _after_hand,
+           "1.0 = no adjustment (handedness unknown for one/both players)"
+           if hand_factor == 1.0 else "TA handedness split ratio, clamped")
 
     # ── Surface ace factor — grass boosts, clay suppresses (see constant) ─────
     surface_ace_factor = _SURFACE_ACE_FACTOR.get(surface, 1.0)
 
     # ── Final projection — blend × CPR × handedness × surface ─────────────────
     proj = blended * cpr_factor * hand_factor * surface_ace_factor
+    _trace(trace, "surface_ace_factor",
+           {"surface": surface, "in": round(_after_hand, 3)},
+           surface_ace_factor, proj, "grass boosts / clay suppresses")
 
     # ── H2H blend (light, only when real H2H ace data exists) ─────────────────
     if h2h_ace_avg is not None and h2h_ace_avg > 0:
+        _pre_h2h = proj
         proj = proj * 0.80 + h2h_ace_avg * 0.20
+        _trace(trace, "h2h_blend",
+               {"model_proj": round(_pre_h2h, 3), "h2h_ace_avg": h2h_ace_avg},
+               0.20, proj, "80/20 toward H2H (only when real H2H ace data exists)")
+    _trace(trace, "FINAL", {"chain_result": round(proj, 3)}, proj, round(proj, 1),
+           "rounded to 1dp for the response")
 
     p_matches = player_stats.get("matches_played", 0) or 0
     o_matches = opponent_stats.get("matches_played", 0) or 0
@@ -1630,6 +1718,7 @@ def project_break_points(
     bp_generated_quality_adj: float = None,      # Part 2: quality-adjusted BP gen
     bp_generated_raw: float = None,              # raw BP gen per match (display/conf)
     bp_forward_server_factor: float = 1.0,       # Part 2: current-opp serve-quality
+    trace: list = None,                          # component trace (admin diagnostic)
 ) -> dict:
     """
     8-component break points won projection:
@@ -2079,6 +2168,48 @@ def project_break_points(
         c4_serve_qual, c5_surf_adj, c6_cpr_mod, base_proj,
     )
 
+    # ── Component trace: C1..C6, each with its inputs and the running result ──
+    _r = _trace(trace, "C1_opp_bp_faced",
+                {"raw_opp_bp_faced_surface": raw_opp_bp_faced,
+                 "opp_surface_stat_n": opp_surf_sample,
+                 "tour_avg_bp_faced": round(tour_avg_bp, 3),
+                 "min_credible_bp": round(min_credible_bp, 3),
+                 "bp_generated_quality_adj": bp_generated_quality_adj,
+                 "bp_forward_server_factor": bp_forward_server_factor},
+                c1_opp_bp_faced, c1_opp_bp_faced,
+                "opponent BPs faced per match on this surface, from stat-rich "
+                "data. source=%s" % c1_source)
+    _r = _trace(trace, "C2_returner_creation_mult",
+                {"basis": c2_basis, "delta_pct": round(c2_delta_pct, 3),
+                 "in": round(_r, 3)},
+                c2_returner_mult, _r * c2_returner_mult,
+                "how much MORE/LESS this returner creates vs their own baseline. "
+                "source=%s" % c2_source)
+    _r = _r * c2_returner_mult
+    _prev = _r
+    _r = _r * (conv_rate_pct / 100.0)
+    _trace(trace, "C3_conversion_rate",
+           {"conv_rate_pct": round(conv_rate_pct, 2), "in": round(_prev, 3),
+            "blend": "0.60*surface + 0.40*overall (Sofascore side)"},
+           conv_rate_pct / 100.0, _r,
+           "BP conversion — the 60/40 surface/overall blend lives here")
+    _prev = _r
+    _r = _r * c4_serve_qual
+    _trace(trace, "C4_serve_quality",
+           {"opponent_hold_context": True, "tour": tour, "in": round(_prev, 3)},
+           c4_serve_qual, _r,
+           "opponent serve-quality adjustment using %s tour thresholds" % tour)
+    _prev = _r
+    _r = _r * c5_surf_adj
+    _trace(trace, "C5_surface_adj",
+           {"surface": surface, "in": round(_prev, 3)},
+           c5_surf_adj, _r, "player-specific surface adjustment")
+    _prev = _r
+    _r = _r * c6_cpr_mod
+    _trace(trace, "C6_cpr_modifier",
+           {"court": court or "(none)", "surface": surface, "in": round(_prev, 3)},
+           c6_cpr_mod, _r, "within-surface pace variation; base_proj complete")
+
     # ═════════════════════════════════════════════════════════════════════════
     # COMPONENT 7 — Break-back momentum bonus (additive)
     #
@@ -2233,6 +2364,27 @@ def project_break_points(
     # ─────────────────────────────────────────────────────────────────────────
     proj_before_format = base_proj + momentum_bonus
     proj               = proj_before_format * c8_format_mult
+    _trace(trace, "C7_momentum_bonus",
+           {"opp_projected_bp": round(opp_proj_bp, 3),
+            "surface_momentum_mult": surface_momentum_mult,
+            "momentum_raw": round(momentum_bonus_raw, 3),
+            "cap": momentum_cap, "base_proj_in": round(base_proj, 3)},
+           momentum_bonus, proj_before_format,
+           "ADDITIVE (absolute breaks), applied BEFORE C8. cap=%.2f (%s)%s"
+           % (momentum_cap, "BO5 ATP" if _is_bo5_for_cap else "BO3",
+              " [CAP BIT: raw %.3f -> %.3f]" % (momentum_bonus_raw, momentum_bonus)
+              if momentum_capped else ""))
+    _trace(trace, "C8_expected_sets_scaling",
+           {"expected_sets": expected_sets, "avg_historical_sets": avg_hist_sets,
+            "win_prob_gap": round(win_prob_gap, 2), "is_bo5": is_bo5,
+            "raw_ratio": round(expected_sets / max(avg_hist_sets, 0.01), 4),
+            "in": round(proj_before_format, 3)},
+           c8_format_mult, proj,
+           "C8 = exp_sets/avg_hist%s. INVARIANT: non-BO5 capped at 1.0 — per-match "
+           "bp_faced already embeds match length, so scaling ABOVE baseline would "
+           "double-count it. CAP HELD: %s"
+           % (", then min(1.0, ...) for non-BO5" if not is_bo5 else " (BO5 keeps upward scaling)",
+              "yes (<=1.0)" if c8_format_mult <= 1.0 else "NO — c8=%.3f EXCEEDS 1.0" % c8_format_mult))
 
     # ── Set momentum (Improvement 6): a player who takes the pivotal middle set
     # carries momentum into the decider. When the match projects to a deciding
@@ -2245,6 +2397,18 @@ def project_break_points(
         proj += set_momentum_bonus
         logger.info("BP_SET_MOMENTUM | exp_sets=%.2f thresh=%.1f p_prob=%.0f%% -> +%.2f BP",
                     expected_sets, _set_mom_thresh, p_prob, set_momentum_bonus)
+    _trace(trace, "set_momentum_bonus",
+           {"expected_sets": expected_sets, "threshold": _set_mom_thresh,
+            "player_win_prob": round(p_prob, 1),
+            "in": round(proj - set_momentum_bonus, 3)},
+           set_momentum_bonus, proj,
+           "deciding-set bonus, favourite only (additive, after C8)"
+           if set_momentum_bonus else
+           "not applied (needs exp_sets>%.1f AND player win prob>=50%%)" % _set_mom_thresh)
+    _trace(trace, "FINAL", {"chain_result": round(proj, 3)}, proj, round(proj, 1),
+           "rounded to 1dp for the response. hand_bp_factor and the H2H blend are "
+           "DIAGNOSTIC ONLY and deliberately do NOT touch proj — one calculation, "
+           "one number")
 
     logger.info(
         "BP_COMBINED | base=%.3f | momentum=%.3f | before_format=%.3f | "

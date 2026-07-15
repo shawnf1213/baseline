@@ -385,6 +385,13 @@ class PropRequest(BaseModel):
     # ATP Grand Slam qualifying rounds are best-of-3 (main draw is best-of-5).
     # Only meaningful for ATP Grand Slam courts; ignored otherwise.
     qualifying: bool = False
+    # ADMIN DIAGNOSTIC ONLY — when true the response carries `component_trace`,
+    # every step of the calculation chain in order with its inputs, its own value
+    # and the running result. Opt-in and off by default: no bot or frontend caller
+    # sets it, so it can never reach a member-facing post. Permanent
+    # instrumentation — future "is the projection right?" audits call this instead
+    # of doing log archaeology.
+    debug: bool = False
 
 
 class H2HRequest(BaseModel):
@@ -1765,6 +1772,11 @@ async def prop_calculate(req: PropRequest):
             req.opponent_name, p2_surface_n, opponent_limited_data,
         )
 
+        # Component trace — populated only when req.debug is set (admin
+        # diagnostic). None on every normal call, which makes each _trace() call
+        # inside the projectors a no-op, so this costs nothing in production.
+        _ctrace = [] if req.debug else None
+
         # Run projection
         if req.prop_type == "Aces":
             result = project_aces(
@@ -1772,6 +1784,7 @@ async def prop_calculate(req: PropRequest):
                 player_ta=player_ta_props, opponent_ta=opponent_ta_props,
                 tour=req.tour, surface=req.surface,
                 match_format=match_fmt,
+                trace=_ctrace,
             )
         elif req.prop_type == "Double Faults":
             result = project_double_faults(
@@ -1878,6 +1891,7 @@ async def prop_calculate(req: PropRequest):
                 bp_generated_quality_adj=bp_qadj,
                 bp_generated_raw=bp_raw_gen,
                 bp_forward_server_factor=bp_forward_factor,
+                trace=_ctrace,
             )
 
             if req.prop_type == "Player Total Games Won":
@@ -2321,6 +2335,10 @@ async def prop_calculate(req: PropRequest):
             "opponent_ss_matches":  p2_ss_recent,
             "player_surface_fallback":   p1_fallback,
             "opponent_surface_fallback": p2_fallback,
+            # ADMIN DIAGNOSTIC — present ONLY when the caller sent debug=true.
+            # No bot or frontend caller does, so it never reaches a member-facing
+            # post. `None` on every normal request.
+            "component_trace":        _ctrace,
             "data_quality":           data_quality,       # player (p1)
             "opponent_data_quality":  opp_data_quality,   # opponent (p2)
             # Surface-affinity differential (positive = this surface suits them
