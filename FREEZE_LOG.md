@@ -59,3 +59,36 @@ selection, stat-rich count standardisation), which independently moved
 projections. Post-freeze calibration should treat **2026-07-15 as a baseline
 break** and not pool results across it. See also `picks.pre_guard`, which marks
 picks scored before the cache guard shipped.
+
+### Entry 1a — Correction to the affinity MEASUREMENT (2026-07-15)
+
+Not a new model change: same feature, same freeze window. Entry 1's mechanism is
+unchanged; what it measures was wrong.
+
+**The bug.** Affinity compared a surface against `overall_*` — but "overall"
+INCLUDES the surface being measured, so every player was partly compared against
+themselves. The dilution is worst exactly where the signal matters most: a player
+whose matches are mostly clay has a nearly-all-clay "overall", so their true clay
+affinity all but vanishes. Every affinity was pulled toward zero, and the
+differential under-fired.
+
+**The fix (held-out baseline).** Surface S is now measured against the player's
+OTHER surfaces only — clay vs hard+grass, hard vs clay+grass. The measured surface
+never appears in its own reference. The pooled reference is rate-weighted SUM/SUM
+over the held-out matches, so it is automatically weighted by each surface's
+match count (40 hard + 6 grass produces a hard-dominated reference).
+
+**Minimum sample guard.** Affinity requires >= 5 stat-rich matches on the surface
+AND >= 8 stat-rich across the others. Below either, affinity is null, logged as
+insufficient, and the differential does not fire — no adjustment from
+unmeasurable affinity. Both sides of a difference need support; a baseline built
+from 2 matches is not a baseline.
+
+**Surface ranking.** Each player now carries an explicit best->worst affinity
+ranking across hard/clay/grass, stored in the player data, exposed in the API and
+printed in the SURFACE_AFFINITY log. One blended number hid the shape.
+
+**Temporary instrumentation (remove after 2026-07-22).** SURFACE_AFFINITY logs the
+held-out and diluted values side by side, so live data shows how often the
+correction changes the picture and whether the 3.0 trigger threshold still holds
+once affinities are measured honestly rather than shrunk toward zero.

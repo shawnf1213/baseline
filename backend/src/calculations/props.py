@@ -1064,28 +1064,66 @@ SURFACE_AFFINITY_MAX_SHIFT = 15.0   # hard cap on the narrowing (pp of gap)
 SURFACE_AFFINITY_MIN_KEEP  = 2.0    # favourite must stay favourite by >= this
 
 
-def surface_affinity(stats: dict):
+AFFINITY_MIN_SURFACE_N = 5    # stat-rich matches ON the measured surface
+AFFINITY_MIN_OTHER_N   = 8    # stat-rich matches across the OTHER surfaces
+
+
+def _affinity_raw(stats: dict, base_suffix: str):
+    """Weighted mean of (surface stat - baseline stat) for the three affinity
+    inputs. ``base_suffix`` selects the reference: 'heldout_' (the player's OTHER
+    surfaces) or 'overall_' (all surfaces, INCLUDING this one)."""
+    num = den = 0.0
+    for surf_key in ("win_rate", "service_games_won_pct", "return_games_won_pct"):
+        sv, bv = stats.get(surf_key), stats.get(base_suffix + surf_key)
+        if isinstance(sv, (int, float)) and isinstance(bv, (int, float)):
+            w = _AFFINITY_WEIGHTS[surf_key]
+            num += (sv - bv) * w
+            den += w
+    return (num / den) if den > 0 else None
+
+
+def surface_affinity(stats: dict, held_out: bool = True):
     """How much this surface suits the player RELATIVE TO THEIR OWN baseline, in
     percentage points. Positive = a strong surface for them, negative = weak.
-    None when no surface-vs-overall pair is available.
+    None when it cannot be measured honestly.
 
-    Scaled by surface sample size: a 3-match surface record can't assert a strong
-    affinity, so the score is damped toward 0 until the sample reaches
-    _AFFINITY_FULL_SAMPLE. This is a RELATIVE measure — it says nothing about how
-    good the player is, only about which surface is theirs."""
-    pairs = (("win_rate", "overall_win_rate"),
-             ("service_games_won_pct", "overall_service_games_won_pct"),
-             ("return_games_won_pct", "overall_return_games_won_pct"))
-    num = den = 0.0
-    for surf_key, ov_key in pairs:
-        sv, ov = stats.get(surf_key), stats.get(ov_key)
-        if isinstance(sv, (int, float)) and isinstance(ov, (int, float)):
-            w = _AFFINITY_WEIGHTS[surf_key]
-            num += (sv - ov) * w
-            den += w
-    if den <= 0:
+    HELD-OUT baseline (default): the reference is the player's OTHER surfaces.
+    Measuring against overall_* is circular — 'overall' includes the surface being
+    measured, so a clay specialist's clay results inflate the baseline they're
+    compared against and every affinity is pulled toward zero. The dilution is
+    worst exactly where the signal matters most: a player with mostly clay matches
+    has a nearly-all-clay 'overall', so their true clay affinity all but vanishes.
+    Pass held_out=False for the legacy diluted method (kept only for the
+    side-by-side comparison log).
+
+    MINIMUM SAMPLE: needs >= AFFINITY_MIN_SURFACE_N stat-rich matches on the
+    surface AND >= AFFINITY_MIN_OTHER_N across the others. Both sides of a
+    difference need enough support — a baseline built from 2 matches is not a
+    baseline. Below either threshold the affinity is None and the differential
+    does not fire for that player: no adjustment from unmeasurable affinity.
+
+    Scaled by surface sample size beyond the minimum, so a just-qualifying 5-match
+    record still can't assert a full-strength affinity."""
+    if held_out:
+        n_s = stats.get("surface_stat_n") or 0
+        n_o = stats.get("heldout_stat_n") or 0
+        if n_s < AFFINITY_MIN_SURFACE_N or n_o < AFFINITY_MIN_OTHER_N:
+            logger.info(
+                "SURFACE_AFFINITY | %s | INSUFFICIENT SAMPLE — surface stat-rich=%d "
+                "(need %d), other-surface stat-rich=%d (need %d) — affinity=None, "
+                "differential will not fire for this player",
+                stats.get("player_name", "?"), n_s, AFFINITY_MIN_SURFACE_N,
+                n_o, AFFINITY_MIN_OTHER_N,
+            )
+            return None
+        raw = _affinity_raw(stats, "heldout_")
+        if raw is None:
+            return None
+        return raw * min(1.0, n_s / _AFFINITY_FULL_SAMPLE)
+
+    raw = _affinity_raw(stats, "overall_")
+    if raw is None:
         return None
-    raw = num / den
     n = stats.get("surface_matches") or stats.get("matches_played") or 0
     return raw * min(1.0, n / _AFFINITY_FULL_SAMPLE)
 
@@ -1210,15 +1248,24 @@ def _estimate_win_prob(p_stats: dict, o_stats: dict,
     if detail is not None:
         detail.update({"p_affinity": p_aff, "o_affinity": o_aff,
                        "affinity_gap": aff_gap, "affinity_shift": shift})
-    if p_aff is not None and o_aff is not None:
-        logger.info(
-            "SURFACE_AFFINITY | p=%+.1f o=%+.1f | gap=%+.1f | gap narrowed by %.1fpp "
-            "-> win_prob %.1f/%.1f (gap %.1f)%s",
-            p_aff, o_aff, aff_gap, shift, p_prob, o_prob, gap,
-            "" if shift else " — no shift (affinity gap favours the favourite, "
-                             "is below the %.0f threshold, or the match is already even)"
-                             % SURFACE_AFFINITY_MIN_GAP,
-        )
+    # OLD-vs-NEW comparison (temporary — remove after 2026-07-22). The held-out
+    # baseline replaced the diluted overall_* one; logging both for a week shows
+    # how often the correction changes the picture, and whether the 3.0 trigger
+    # threshold still makes sense once affinities are measured honestly rather
+    # than shrunk toward zero by their own surface.
+    p_old, o_old = surface_affinity(p_stats, held_out=False), surface_affinity(o_stats, held_out=False)
+    _fmt = lambda v: ("%+.1f" % v) if isinstance(v, (int, float)) else "n/a"
+    _gap_old = (p_old - o_old) if (p_old is not None and o_old is not None) else None
+    logger.info(
+        "SURFACE_AFFINITY | NEW(held-out) p=%s o=%s gap=%s | OLD(diluted) p=%s o=%s "
+        "gap=%s | fires=%s shift=%.1fpp -> win_prob %.1f/%.1f (gap %.1f)%s",
+        _fmt(p_aff), _fmt(o_aff), _fmt(aff_gap if (p_aff is not None and o_aff is not None) else None),
+        _fmt(p_old), _fmt(o_old), _fmt(_gap_old),
+        bool(shift), shift, p_prob, o_prob, gap,
+        "" if shift else " — no shift (affinity unmeasurable, gap favours the "
+                         "favourite, gap below the %.0f threshold, or match already even)"
+                         % SURFACE_AFFINITY_MIN_GAP,
+    )
     return p_prob, o_prob, gap
 
 

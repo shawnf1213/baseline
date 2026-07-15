@@ -85,6 +85,7 @@ from src.calculations.props import (
     project_total_games,
     project_break_points,
     project_player_games_won,
+    surface_affinity,
     generate_scouting_report,
     detect_environment,
     _server_quality_tier_sgw,
@@ -920,6 +921,50 @@ def _fill_min_viable(s: dict, all_s: dict, surf_n: int, tour: str) -> list:
 # Underdog games-won UNDER penalty — see the application site near the lean
 # resolution. Two tiers rather than a scale: the signal is directional, and a
 # smooth ramp would imply a precision the affinity estimate doesn't have.
+def _surf_stat_block(matches: list) -> dict:
+    """win_rate / service+return games won % over a list of stat-rich match
+    records. Rates are SUM/SUM (not a mean of per-match rates), so a match with
+    more games carries proportionally more weight — and so a pooled multi-surface
+    reference is automatically weighted by each surface's match count, which is
+    what makes a 40-hard/6-grass player's reference hard-dominated."""
+    if not matches:
+        return {}
+    wins = sum(1 for m in matches if m.get("won"))
+    out = {"win_rate": round(wins / len(matches) * 100, 2)}
+    for key, nf, df in (("service_games_won_pct", "service_games_won", "service_games"),
+                        ("return_games_won_pct", "return_games_won", "return_games")):
+        n = sum(m.get(nf) or 0 for m in matches if isinstance(m.get(nf), (int, float)))
+        d = sum(m.get(df) or 0 for m in matches if isinstance(m.get(df), (int, float)))
+        out[key] = round(n / d * 100, 2) if d > 0 else None
+    return out
+
+
+def _surface_ranking(pdata: dict, name: str) -> list:
+    """Held-out affinity for EVERY surface, best to worst.
+
+    Each surface is measured against the player's OTHER surfaces only — the
+    surface being measured never appears in its own reference. One blended number
+    hides the shape: 'clay is Jones's second surface at +1.2 while grass is her
+    worst at -6.4' is the readable form, and it's what makes an affinity claim
+    checkable rather than asserted."""
+    rich = [m for m in (pdata.get("all_matches") or [])
+            if m.get("surface") and isinstance(m.get("aces"), (int, float))]
+    rank = []
+    for surf in ("Hard", "Clay", "Grass"):
+        same = [m for m in rich if m["surface"] == surf]
+        held = [m for m in rich if m["surface"] != surf]
+        d = {"player_name": name,
+             "surface_stat_n": len(same), "heldout_stat_n": len(held)}
+        d.update(_surf_stat_block(same))
+        for k, v in _surf_stat_block(held).items():
+            d["heldout_" + k] = v
+        rank.append({"surface": surf, "affinity": surface_affinity(d),
+                     "stat_n": len(same)})
+    # Best first; unmeasurable surfaces sort last.
+    rank.sort(key=lambda r: (r["affinity"] is None, -(r["affinity"] or 0.0)))
+    return rank
+
+
 UNDERDOG_AFFINITY_MIN_GAP    = 4.0    # meaningful affinity edge to the underdog
 UNDERDOG_AFFINITY_STRONG_GAP = 8.0    # strong edge -> the larger penalty
 UNDERDOG_UNDER_PENALTY_MIN   = 8
@@ -1561,6 +1606,51 @@ async def prop_calculate(req: PropRequest):
             _s["competition_level"] = (_rec.get("competition_level")
                                        or _3y.get("competition_level")
                                        or _at.get("competition_level"))
+
+        # ── HELD-OUT surface baseline (affinity reference) ───────────────────
+        # Affinity asks "is this surface better FOR THIS PLAYER than their norm".
+        # Measuring against overall_* is circular: overall INCLUDES the surface
+        # being measured, so a clay specialist's clay results inflate the very
+        # baseline they're compared to and every affinity shrinks toward zero.
+        # The honest reference is the player's OTHER surfaces, held out.
+        # Built from the raw per-match records (stat-rich only — a match with no
+        # parsed statistics tells us nothing about how the surface suits them).
+        for _s, _pdata in ((p1_s, p1_data), (p2_s, p2_data)):
+            _held = [m for m in (_pdata.get("all_matches") or [])
+                     if m.get("surface") and m.get("surface") != req.surface
+                     and isinstance(m.get("aces"), (int, float))]
+            _same = [m for m in (_pdata.get("all_matches") or [])
+                     if m.get("surface") == req.surface
+                     and isinstance(m.get("aces"), (int, float))]
+            _s["surface_stat_n"] = len(_same)
+            _s["heldout_stat_n"] = len(_held)
+            if _held:
+                _wins = sum(1 for m in _held if m.get("won"))
+                _s["heldout_win_rate"] = round(_wins / len(_held) * 100, 2)
+                for _pct_key, _num_f, _den_f in (
+                        ("heldout_service_games_won_pct", "service_games_won", "service_games"),
+                        ("heldout_return_games_won_pct",  "return_games_won",  "return_games")):
+                    _n = sum(m.get(_num_f) or 0 for m in _held
+                             if isinstance(m.get(_num_f), (int, float)))
+                    _d = sum(m.get(_den_f) or 0 for m in _held
+                             if isinstance(m.get(_den_f), (int, float)))
+                    _s[_pct_key] = round(_n / _d * 100, 2) if _d > 0 else None
+            # Full best-to-worst surface ranking (CHANGE 2) — each surface held
+            # out of its own reference. Stored so it's auditable, not just logged.
+            _s["surface_ranking"] = _surface_ranking(_pdata, _s.get("player_name", "?"))
+            _rank_txt = " > ".join(
+                "%s %s%s" % (r["surface"],
+                             ("%+.1f" % r["affinity"]) if r["affinity"] is not None else "n/a",
+                             "(n=%d)" % r["stat_n"])
+                for r in _s["surface_ranking"])
+            logger.info(
+                "AFFINITY_BASELINE | %s | measuring %s: stat-rich=%d, held-out "
+                "other-surface stat-rich=%d | held-out ref WR=%s SGW=%s RGW=%s | "
+                "surface ranking (best->worst): %s",
+                _s.get("player_name", "?"), req.surface, len(_same), len(_held),
+                _s.get("heldout_win_rate"), _s.get("heldout_service_games_won_pct"),
+                _s.get("heldout_return_games_won_pct"), _rank_txt,
+            )
 
         # All-surface ace rate + surface ace sample size — lets project_aces
         # regress a thin-surface ace base toward the player's broader rate so one
@@ -2221,6 +2311,9 @@ async def prop_calculate(req: PropRequest):
             "opponent_surface_affinity": result.get("o_affinity"),
             "surface_affinity_gap":      result.get("affinity_gap"),
             "surface_affinity_shift":    result.get("affinity_shift"),
+            # Full best->worst held-out surface ranking per player.
+            "player_surface_ranking":    p1_s.get("surface_ranking"),
+            "opponent_surface_ranking":  p2_s.get("surface_ranking"),
             # Depth status AFTER hysteresis — the single source of truth for every
             # depth gate (the backend's own ceilings and the bot's PTGW bar), so a
             # noisy count can't make them disagree.
