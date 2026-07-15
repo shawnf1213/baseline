@@ -119,8 +119,72 @@ volume on every cold fetch across every player — a deliberate infrastructure
 decision (cost + rate limits; see the 2026-07-14 Decodo exhaustion and Discord
 Cloudflare ban), explicitly NOT taken as a fallback inside this task.
 
-**Known defect, not yet fixed:** the differential's affinity and the per-surface
-ranking disagree (Urgesi clay: ranking -2.10, differential -15.09). The ranking
-computes both sides from raw match records; the differential compares
-quality-weighted surface stats against a raw held-out reference. The ranking is
-the honest number. The differential should read from the ranking.
+**~~Known defect~~ — FIXED 2026-07-15 (commit 96957a5).** The differential's
+affinity and the per-surface ranking disagreed (Urgesi clay: ranking -2.10,
+differential -15.09) because the ranking computed both sides of every delta from
+raw match records while the differential re-derived affinity from `p1_s`, whose
+surface stats have been through quality-weighting — a quality-weighted surface
+figure measured against a raw held-out reference.
+
+The ranking is now the SINGLE SOURCE: main.py precomputes the measured surface's
+affinity from it and `surface_affinity()` returns that value directly. Quality
+weighting is excluded from affinity by design — it adjusts for OPPONENT strength,
+which is exactly what affinity must not absorb, since a surface preference is a
+property of the player, not of who they happened to face.
+
+Verified live: Urgesi clay reads -2.10 in both the ranking and the differential,
+Jones +12.93 in both; unit profiles unchanged (+12.00 / -13.00 / 0.00, both
+sample guards fire); the asymmetric favourite-ignore rule is intact (underdog
+edge narrows the gap 26.7 -> 11.7, hitting the 15pp cap; favourite edge moves it
+by +0.0). Case 1 reproduces identically across two consecutive runs.
+
+---
+
+## Verification status (as of 2026-07-15)
+
+The model is **NOT yet certified frozen**. A four-case end-to-end verification was
+specified; only Case 1 has been run.
+
+* **Case 1 — Urgesi vs Jones, clay, PTGW — PASSES.** Stat-rich 26/25 (both clear
+  the 5/8 guards); affinity Urgesi -2.10 / Jones +12.93 from the single source;
+  gap -15.03 points at the FAVOURITE so the differential correctly does not fire;
+  win prob 16.9/83.1; expected sets 2.1; projection 7.9 vs line 8.5; UNDER at
+  confidence 65 — below the 80 PTGW bar, so it does not qualify. Identical across
+  two consecutive runs.
+* **Cases 2, 3, 4 — NOT RUN.** ATP aces chain, WTA break-points chain, and the
+  thin-data guard case. Most of their components (65/35 opponent ace blend, CPR
+  modifier, handedness, returner-creation multiplier, 60/40 conversion blend, C8
+  cap, momentum bonus) are not exposed in the API response, so verifying them
+  needs log inspection or added instrumentation — not response diffs.
+* **Also not run:** the modifier-budget (<=15% from base) check and the
+  no-raw-count audit.
+* **Already verified, do not redo:** deterministic newest-50 event selection,
+  cached-event-stat merge on fetch failure, and run-to-run reproducibility — all
+  passed the three-run test (Chiesa 30/26, Sakkari 33/23, Penickova 26/29,
+  identical across three runs).
+
+**Do not mark this baseline verified until Cases 2-4 pass.** The post-guard
+calibration sample measures against whatever is certified here, so certifying an
+unverified baseline would silently corrupt every calibration number downstream.
+
+### Affinity measurability limit (found 2026-07-15, Case 4)
+
+The held-out method needs BOTH >=5 stat-rich on the measured surface AND >=8
+across the OTHER surfaces. But the stat-rich window is only the newest ~50
+matches (valid[:50]), and mid-swing that window is dominated by ONE surface — so
+the held-out reference starves and affinity returns None.
+
+Observed: Sonego vs Collignon on clay — affinity None for BOTH players, guards
+firing correctly, differential unable to fire. Urgesi (26 clay + 11 hard) and
+Jones (25 clay + 21 hard + 4 grass) clear it; players whose last 50 matches are
+almost all clay do not.
+
+This is the guard working as designed (no adjustment from unmeasurable affinity),
+not a bug — but it means the affinity differential is expected to be INACTIVE for
+a meaningful share of a single-surface-swing board. Its real coverage is an open
+question; the SURFACE_AFFINITY log line reports None vs measured per projection,
+so a week of boards will quantify it.
+
+Interacts with the valid[:50] cap: raising it would widen the held-out reference
+as well as create a career window. Still an infrastructure decision, still not
+taken here.
