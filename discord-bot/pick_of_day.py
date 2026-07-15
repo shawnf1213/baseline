@@ -78,19 +78,29 @@ MAX_LOOKAHEAD_HOURS = 24  # only pick matches that play within this many hours
 #   excluding it. 80 keeps it a rare, genuinely-strong play instead of dead
 #   weight. Total Games still cannot take the ⭐ slot without a 90% favourite
 #   (see _star_eligible) — that gate is unchanged.
-STANDARD_MIN_CONF    = 75   # Aces / Break Points Won / Double Faults
-TOTAL_GAMES_MIN_CONF = 80   # Total Games (match total) — high bar
+STANDARD_MIN_CONF    = 75   # Aces / Break Points Won (Double Faults is excluded)
+# Total Games moved 80 -> 85 on 2026-07-14. After the data-integrity fixes (cache
+# guard, deterministic event selection, stat-rich standardisation) the cleaner
+# samples raised measured variance on Aces/BP Won — which the EVR grade correctly
+# reads as less certainty, dropping those scores — while Total Games, a
+# match-level aggregate of both players, held steady. That inverted the intended
+# prop preference: TG started filling the board at 80-82 while the props the model
+# is actually built around got squeezed out. The bar restores the hierarchy at the
+# QUALIFICATION layer rather than by touching any score: TG must now be genuinely
+# strong (85+) to make the list at all, and still needs a 90%+ favourite to take
+# the ⭐ (see _star_eligible). Nothing about how TG is scored changed.
+TOTAL_GAMES_MIN_CONF = 85   # Total Games (match total) — highest list bar
 PLAYER_TGW_MIN_CONF  = 80   # Player Total Games Won — high bar (bespoke paths below)
 # Per-prop overrides; anything not listed uses STANDARD_MIN_CONF.
 PROP_MIN_CONF = {
-    "Total Games":             TOTAL_GAMES_MIN_CONF,   # 80
+    "Total Games":             TOTAL_GAMES_MIN_CONF,   # 85
     "Player Total Games Won":  PLAYER_TGW_MIN_CONF,    # 80
 }
 
 
 def _min_conf_for(prop_type: str) -> int:
     """The minimum confidence a candidate of this prop type must clear to qualify.
-    Total Games (match total) → 80, Player Total Games Won → 80 (subject to the
+    Total Games (match total) → 85, Player Total Games Won → 80 (subject to the
     bespoke blowout paths), everything else (Aces / Break Points) → 75."""
     return PROP_MIN_CONF.get(prop_type, STANDARD_MIN_CONF)
 
@@ -636,12 +646,14 @@ async def _rank_board():
     # opponent-weighted recent-form pull, so excluding on it again
     # double-counted it. It's still computed + logged as an info signal.
     picks = []
-    by_type_qual = {}   # STEP 4 — qualifying count per prop type
+    by_type_qual = {}   # qualifying count per prop type
+    by_type_eval = {}   # SCORED count per prop type — the composition denominator
     for r in results:
         if not isinstance(r, dict):
             log.info("POD_CAND | EVAL_FAILED | %s", str(r)[:120])
             continue
         ptype = r.get("prop_type")
+        by_type_eval[ptype] = by_type_eval.get(ptype, 0) + 1
         # Player Total Games Won: apply the knife-edge penalty (mutates conf +
         # coin_flip) FIRST, then resolve its bespoke qualification path.
         path = ""
@@ -667,10 +679,27 @@ async def _rank_board():
         if ok:
             picks.append(r)
             by_type_qual[ptype] = by_type_qual.get(ptype, 0) + 1
-    log.info("POD: evaluated=%d eligible=%d (bars: standard=%d, Total Games=%d) | "
-             "qualifying per prop type: %s",
+    log.info("POD: evaluated=%d eligible=%d (bars: standard=%d, Total Games=%d, "
+             "Player TGW=%d)",
              len(uniq), len(picks), STANDARD_MIN_CONF, TOTAL_GAMES_MIN_CONF,
-             dict(by_type_qual) or "none")
+             PLAYER_TGW_MIN_CONF)
+
+    # ── BOARD COMPOSITION ────────────────────────────────────────────────────
+    # One line per prop type: how many were scored vs how many qualified, and what
+    # SHARE of the final list each type holds. Composition drift is the thing that
+    # gets noticed by eye far too late — Total Games quietly filling the board at
+    # 80-82 after the data fixes changed measured variance is exactly the pattern
+    # this makes visible daily. A type trending toward a majority share is the
+    # signal to look at its bar, not at the individual plays.
+    _total_q = len(picks)
+    for _pt in sorted(set(list(by_type_eval.keys()) + list(by_type_qual.keys()))):
+        _ev, _q = by_type_eval.get(_pt, 0), by_type_qual.get(_pt, 0)
+        log.info("POD_COMPOSITION | %-22s scored=%-3d qualified=%-3d (%4.1f%% pass) "
+                 "| %4.1f%% of list | bar=%d",
+                 _pt or "?", _ev, _q, (_q / _ev * 100) if _ev else 0.0,
+                 (_q / _total_q * 100) if _total_q else 0.0, _min_conf_for(_pt))
+    log.info("POD_COMPOSITION | TOTAL qualifying=%d | by type: %s",
+             _total_q, dict(by_type_qual) or "none")
     picks.sort(key=_rank_key, reverse=True)
     # Keep only each player's single best-scoring play so the ranking has one
     # entry per player (no same player twice for different props).
