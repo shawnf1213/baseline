@@ -396,7 +396,20 @@ def _lean_dir(pk: dict) -> str:
 
 
 # ── Player Total Games Won — bespoke qualification ───────────────────────────
-# The prop's biggest variance source is SET COUNT. Rules (PTGW only):
+# DEPTH GOVERNS. The depth test runs FIRST and outranks every exception below:
+#   • SHALLOW (either side < 15 stat-rich surface matches): bar is the standard 80
+#     with NO exceptions. The backend independently caps such plays at 76 (see
+#     _PTGW_SHALLOW_CEILING in confidence.py), so a shallow PTGW play can never
+#     qualify — blowout or not.
+#     WHY the blowout exception cannot rescue a shallow play: the exception is
+#     justified by a large win-probability gap, but that gap is ITSELF computed
+#     from the same shallow data. Letting it relax the bar would let a thin-data
+#     play borrow credibility from its own uncertain conclusion — the evidence for
+#     the exception is exactly as unreliable as the play it would be excusing.
+#     So the relaxation is only available to plays that already passed the depth
+#     test, i.e. the same deep-data condition that permits the full 80 ceiling.
+#
+# Only for plays PASSING the depth test, the set-count rules apply (PTGW only):
 #   • BLOWOUT-UNDER (75): win-prob gap > 35pp AND lean UNDER. A projected blowout
 #     near-locks the set count (2 sets), removing that variance and making an
 #     UNDER meaningfully safer — so it may qualify at 75 instead of 80.
@@ -409,10 +422,29 @@ def _lean_dir(pk: dict) -> str:
 #     highest-variance band (straight-sets scorelines cluster at 12-14 games, so
 #     12.5/13 lines are coin-flips) — subtract 10 confidence and flag it.
 PLAYER_TGW_BLOWOUT_WPGAP     = 35.0   # win-prob gap (pp) above which blowout logic applies
-PLAYER_TGW_BLOWOUT_UNDER_BAR = 75     # relaxed bar for a blowout UNDER
+PLAYER_TGW_BLOWOUT_UNDER_BAR = 75     # relaxed bar for a blowout UNDER — DEEP DATA ONLY
 PLAYER_TGW_OVER_MIN_EDGE     = 1.5    # blowout OVER must clear the line by >= this
 PLAYER_TGW_KNIFE_EDGE        = 0.7    # |proj - line| <= this → coin-flip zone
 PLAYER_TGW_KNIFE_PENALTY     = 10     # confidence subtracted in the coin-flip zone
+# Stat-rich surface matches required on BOTH sides for a PTGW play to reach the
+# 80 ceiling AND to be eligible for the blowout-under relaxation. Mirrors the
+# backend's own depth test so the bar and the ceiling agree on "deep".
+PLAYER_TGW_DEEP_MIN_MATCHES  = 15
+
+
+def _ptgw_depth_ok(pk: dict):
+    """(deep, p1_n, p2_n) — do BOTH players clear the stat-rich depth bar?
+
+    Reads the same stat-rich counts the backend ceilings use. Unknown depth is
+    treated as SHALLOW (conservative): a missing count means we can't show the
+    data is deep, and this prop is compounded from several models, so the benefit
+    of the doubt goes to strictness."""
+    d = pk.get("data") or {}
+    p1, p2 = d.get("player_ta_matches"), d.get("opponent_ta_matches")
+    if not isinstance(p1, (int, float)) or not isinstance(p2, (int, float)):
+        return False, p1, p2
+    return (p1 >= PLAYER_TGW_DEEP_MIN_MATCHES
+            and p2 >= PLAYER_TGW_DEEP_MIN_MATCHES), p1, p2
 
 
 def _win_prob_gap(pk: dict):
@@ -448,14 +480,34 @@ def _apply_ptgw_knife_edge(pk: dict) -> None:
 
 def _ptgw_qualify(pk: dict):
     """(qualifies, bar, path) for a Player Total Games Won candidate, using its
-    current (post-knife-edge) confidence. path ∈ {'standard-80',
-    'blowout-under-75', 'blowout-over-strict'}."""
+    current (post-knife-edge) confidence. path ∈ {'shallow-standard-80',
+    'standard-80', 'blowout-under-75', 'blowout-over-strict'}.
+
+    DEPTH FIRST — see the block comment above. A shallow play gets the standard 80
+    bar and no exception; the backend has already capped it at 76, so it cannot
+    qualify."""
     conf = pk.get("confidence") or 0
     proj, line = pk.get("projection"), pk.get("line")
     lean = _lean_dir(pk)
     gap = _win_prob_gap(pk)
     base = _min_conf_for("Player Total Games Won")   # 80
     blowout = gap is not None and gap > PLAYER_TGW_BLOWOUT_WPGAP
+
+    deep, p1_n, p2_n = _ptgw_depth_ok(pk)
+    if not deep:
+        # Log ONLY when the depth rule actually overrode an exception the play
+        # would otherwise have received — that's the interaction worth watching.
+        if blowout and lean == "UNDER":
+            log.info(
+                "POD_PTGW_DEPTH_BLOCK | %-22s p1=%s p2=%s stat-rich (need %d both) | "
+                "gap=%.0fpp UNDER would have relaxed the bar to %d — WITHHELD, bar stays "
+                "%d (the gap is computed from the same shallow data) | conf=%.0f -> %s",
+                (pk.get("player") or "")[:22], p1_n, p2_n, PLAYER_TGW_DEEP_MIN_MATCHES,
+                gap or 0.0, PLAYER_TGW_BLOWOUT_UNDER_BAR, base, conf,
+                "still qualifies" if conf >= base else "blocked",
+            )
+        return conf >= base, base, "shallow-standard-80"
+
     if blowout and lean == "UNDER":
         return conf >= PLAYER_TGW_BLOWOUT_UNDER_BAR, PLAYER_TGW_BLOWOUT_UNDER_BAR, "blowout-under-75"
     if blowout and lean == "OVER":
