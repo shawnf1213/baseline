@@ -274,3 +274,49 @@ week than to accumulate three weeks of sample and discard it in August. Note thi
 interacts with CALIBRATION_MIN_SAMPLE=40 — the weekly table stays suppressed until
 40 post-change picks accumulate, roughly two weeks from the cap change, not from
 2026-07-15.
+
+### Entry 2 — games_per_set: per-tour empirical fit (2026-07-15)
+
+**A PROJECTION-FORMULA change, shipped during the freeze.** Entry 1 was scoped to
+the win-prob/expected-sets layer, which the freeze does not cover. This one DOES
+touch a prop formula, deliberately, because the formula was measurably wrong.
+
+**The bug.** `games_per_set` was:
+    >75 : 9.5 + (ch-75)/15 | >=65 : 8.5 + (ch-65)/10 | else max(7.5, 7.5+(ch-50)/15)
+calibrated for ATP hold levels and applied to BOTH tours. ATP sits at a mean
+combined hold of 79.9% where it was roughly right (+/-0.3). WTA sits at 64.5% —
+where it was wrong by -0.5 to -2.3 games/set across its ENTIRE operating range.
+Its low end claimed a 50%-hold set averages 7.5 games; a set is FIRST TO 6, so
+6-1 is already 7.
+
+**How it surfaced.** The 7/16 board posted four PTGW UNDERs. Book had both live
+matches at a 20.5 total priced -120/-120 BOTH ways; we projected 18.9 and 18.0.
+PTGW splits that combined total between the players, so every games-won projection
+inherited the shortfall (Feistel 7.9 vs a book-implied 8.5). The UNDERs were still
+correct — PrizePicks was hanging 10.5/11.5 against a book-implied 8.5 — but we
+were right for the wrong reason, and the same bias flips us onto the WRONG side on
+a tight line while showing 80% confidence.
+
+**The fit.** 1,233 completed matches (ATP 603 / WTA 630), deduped by event. Each
+match supplies both variables from itself: combined_hold from its own
+service/return games, games_per_set from its own total games / sets.
+    ATP: games_per_set = 5.8218 + 0.05061 * combined_hold   (R^2 0.157)
+    WTA: games_per_set = 7.2399 + 0.03294 * combined_hold   (R^2 0.093)
+Clamped to the observed support [8.3, 11.0]. Both live matches now land within ~1
+game of the book (was -1.6 / -2.5).
+
+**The finding that outlives the fix: R^2 is 0.09-0.16.** Combined hold explains
+only ~10-15% of games-per-set variance; residual sd ~1.2 games/set => ~+/-2.8
+games on a 2.3-set total. TOTAL GAMES IS INTRINSICALLY NEAR-COIN-FLIP — which is
+precisely why books price it -120/-120 both ways. The 85 confidence bar on that
+prop is claiming a precision the statistic cannot support, and should be revisited
+against this number rather than against intuition.
+
+**Known approximation.** x in the fit is the IN-MATCH combined hold; the model
+feeds a SEASON-AVERAGE hold, which is less dispersed. Feeding a less-variable x
+into a curve fitted on a more-variable one under-disperses the output slightly.
+Accepted versus a curve that was simply wrong, but it is not free.
+
+**BASELINE BREAK.** This moves EVERY Total Games and Player Total Games Won
+projection up ~1-2 games. Calibration must not pool across 2026-07-15. Some
+existing UNDERs weaken or flip; that is the fix working.

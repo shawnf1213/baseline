@@ -62,6 +62,60 @@ def _h2h_weight(full_weight: float, n) -> float:
     return full_weight * _H2H_WEIGHT_SCALE.get(int(n), 1.0)
 
 
+# ── games_per_set: per-tour empirical fit ────────────────────────────────────
+# Fitted 2026-07-15 on 1,233 completed matches (ATP 603 / WTA 630), deduped by
+# event. Each match supplies BOTH variables from itself:
+#     player hold   = service_games_won / service_games
+#     opponent hold = 1 - return_games_won / return_games
+#     combined_hold = mean of the two          -> x
+#     games_per_set = total_match_games / sets_played  -> y
+#
+# WHY IT WAS REPLACED. The old curve was:
+#     >75 : 9.5 + (ch-75)/15   |   >=65 : 8.5 + (ch-65)/10
+#     else: max(7.5, 7.5 + (ch-50)/15)
+# It was calibrated for ATP hold levels and applied to BOTH tours. ATP sits at a
+# mean combined hold of 79.9%, where it was roughly right (+/-0.3). WTA sits at
+# 64.5% — where it was wrong by -0.5 to -2.3 games/set across its ENTIRE
+# operating range. Measured on the live board: Feistel/Samson projected a combined
+# 18.9 against a book total of 20.5 priced -120/-120 both ways. The shortfall was
+# ~0.7 games/set * 2.3 sets = the whole 1.6-game gap, and Player Total Games Won
+# inherited it because PTGW splits this total between the players.
+# The old low end also claimed a 50%-hold set averages 7.5 games, which is close to
+# impossible: a set is FIRST TO 6, so 6-1 is already 7.
+#
+# FITTED SLOPES are much gentler than the old 1/15 = 0.0667: ATP 0.0506, WTA
+# 0.0329. The old curve over-reacted to hold. The real data is remarkably flat —
+# WTA averages 8.6-9.1 games/set across holds from 40 to 65 — because a set needs
+# six games won regardless of who is holding.
+#
+# HONEST LIMITS OF THIS FIT (read before trusting it):
+#   * R^2 = 0.157 (ATP) / 0.093 (WTA). Combined hold explains only ~10-15% of the
+#     variance in games/set. It is a WEAK predictor, and this curve should be
+#     understood as "the conditional mean", not a precise forecast.
+#   * Residual sd = ~1.2 games/set => ~+/-2.8 games on a 2.3-set total. Total Games
+#     is intrinsically near-coin-flip, which is exactly why books price it at
+#     -120/-120 both ways. Any confidence claim on that prop must respect this.
+#   * x here is the IN-MATCH combined hold; the model feeds a SEASON-AVERAGE hold,
+#     which is less dispersed. Feeding a less-variable x into a curve fitted on a
+#     more-variable one under-disperses the output slightly. Acceptable versus a
+#     curve that is simply wrong, but it is a known approximation.
+#   * Clamped to the observed support [8.3, 11.0] — the fit is not evidence about
+#     holds outside the sampled range.
+_GPS_FIT = {           # (intercept, slope) — games_per_set = a + b * combined_hold
+    "ATP": (5.8218, 0.05061),
+    "WTA": (7.2399, 0.03294),
+}
+_GPS_MIN, _GPS_MAX = 8.3, 11.0
+
+
+def _games_per_set(combined_hold: float, tour: str = "ATP") -> float:
+    """Expected games per set from the combined hold rate, per tour. See the fit
+    note above — especially the R^2: this is a conditional mean over a noisy
+    relationship, not a precise prediction."""
+    a, b = _GPS_FIT.get(tour, _GPS_FIT["ATP"])
+    return max(_GPS_MIN, min(_GPS_MAX, a + b * _safe(combined_hold, 65.0)))
+
+
 # Tour-average aces faced per match — used to normalise opponent ace-against rate
 _TOUR_AVG_ACE_AGAINST = {"ATP": 5.5, "WTA": 3.0}
 
@@ -1701,14 +1755,8 @@ def project_total_games(
     p1_srv = p1_srv_ss  # keep for reporting
     p2_srv = p2_srv_ss
 
-    # ── Games per set from combined hold rate ─────────────────────────────────
-    if combined_hold > 75:
-        games_per_set = 9.5 + (combined_hold - 75) / 15
-        games_per_set = min(10.5, games_per_set)
-    elif combined_hold >= 65:
-        games_per_set = 8.5 + (combined_hold - 65) / 10
-    else:
-        games_per_set = max(7.5, 7.5 + (combined_hold - 50) / 15)
+    # ── Games per set from combined hold rate — PER-TOUR EMPIRICAL FIT ───────
+    games_per_set = _games_per_set(combined_hold, tour)
 
     # ── Expected sets — driven by win-probability gap, not flat tour avg ──
     p1_wr = _safe(player_stats.get("win_rate"), 50.0)
