@@ -446,3 +446,19 @@ mid-slate AND wiped the in-process stat-rich cache, shifting those inputs.
   identical behaviour. The PTGW probability base and new response keys execute /
   appear only for PTGW.
 No non-PTGW number can move.
+
+**Verification (2026-07-16, PTGW_ENABLED still FALSE).** The four 7/16 losers,
+re-run through the new chain from their logged Pick records:
+  Feistel U11.5  old 80 (POSTED) L → new P(over) 0.182, conf 62 — no post
+  Faria   U10.5  old 77 L         → new P(over) 0.472, conf 53 — no post
+  Basil.  U11.5  old 75 L         → new P(over) 0.365, conf 63 — no post
+  Pelleg. U10.5  old 79 L         → new P(over) 0.447, conf 55 — no post
+All four fall to 53-63, below even the 75 blowout-under exception bar they
+originally qualified under. NULL CHECK PASSES: no loser survives at the 80 bar,
+and none reaches 75. No lean flipped (all were genuine underdogs) — the model
+still tilts under but refuses high conviction on a bimodal coin-flip. Basilashvili
+remains a directional miss (new p_under 0.635 vs an actual over) but is harmless
+below the bar. The empirical fit and this backtest are reproducible in
+analysis/fit_ptgw_scenarios.py (data analysis/ptgw_rows.json) and
+analysis/ptgw_backtest.py. PTGW_ENABLED stays FALSE until Shawn reviews live
+shadow output and flips it.
