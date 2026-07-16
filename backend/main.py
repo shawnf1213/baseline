@@ -58,10 +58,15 @@ from src.api.sofascore_client import (
     get_player_surface_hold,
     peek_surface_hold,
     get_player_next_match,
+    get_match_moneyline_prob,
     get_h2h_summary,
     get_h2h_stat_avg,
     SofascoreBlockedError,
 )
+
+# FS market anchor (1A): weight on the de-vigged market win prob when blending
+# with the model prob. blended = w·market + (1−w)·model.
+WINPROB_MARKET_WEIGHT = 0.7
 from src.api.tennis_abstract import get_player_ta_stats, build_props_ta_view
 from src.api.sackmann import (
     load_player_sackmann_data,
@@ -1872,8 +1877,31 @@ async def prop_calculate(req: PropRequest):
                 tour=req.tour, court=court_for_calc, match_format=match_fmt,
                 player_ta=player_ta_props, opponent_ta=opponent_ta_props,
             )
+            # ── MARKET WIN-PROB ANCHOR (1A) ──────────────────────────────────
+            # The model systematically underrates favourites. De-vig the two-way
+            # moneyline of the upcoming Sofascore event into a market win prob and
+            # blend: blended = w·market + (1−w)·model. No moneyline -> model-only,
+            # flagged 'unanchored' (confidence capped at 70 downstream). The blended
+            # prob feeds the mixture, so P(3 sets|win/lose) and the whole scenario
+            # distribution shift consistently.
+            _model_wp = (_tg_r.get("p1_win_prob") or 50.0) / 100.0
+            _ml = await asyncio.to_thread(
+                get_match_moneyline_prob,
+                req.player_id, req.opponent_id, req.tour)
+            _mkt_wp = _ml.get("market_p1") if isinstance(_ml, dict) else None
+            _anchored = isinstance(_mkt_wp, (int, float))
+            if _anchored:
+                _blended_wp = (WINPROB_MARKET_WEIGHT * _mkt_wp
+                               + (1.0 - WINPROB_MARKET_WEIGHT) * _model_wp)
+            else:
+                _blended_wp = _model_wp
+            logger.info("FS_WINPROB | %s | model=%.3f market=%s blended=%.3f anchored=%s (%s)",
+                        req.player_name or "player", _model_wp,
+                        ("%.3f" % _mkt_wp) if _anchored else "None",
+                        _blended_wp, _anchored,
+                        (_ml.get("reason") if isinstance(_ml, dict) else "no data") or "ok")
             result = project_fantasy_score(
-                p_sel=(_tg_r.get("p1_win_prob") or 50.0) / 100.0,
+                p_sel=max(0.02, min(0.98, _blended_wp)),
                 ace_proj=_ace_r.get("projection"),
                 df_proj=_df_r.get("projection"),
                 expected_sets=_tg_r.get("expected_sets"),
@@ -1885,6 +1913,10 @@ async def prop_calculate(req: PropRequest):
             # Carry win prob forward for the guard/display, like PTGW does.
             for _k in ("p1_win_prob", "p2_win_prob"):
                 result.setdefault(_k, _tg_r.get(_k))
+            result["fs_model_wp"] = round(_model_wp, 4)
+            result["fs_market_wp"] = round(_mkt_wp, 4) if _anchored else None
+            result["fs_blended_wp"] = round(_blended_wp, 4)
+            result["fs_anchored"] = _anchored
         else:  # Break Points Won  OR  Player Total Games Won (both use the BP model)
             # All-surface player stats for Step 9 sanity check
             _p1_all_at = p1_data.get("All_all_time_stats") or {}
@@ -2242,6 +2274,13 @@ async def prop_calculate(req: PropRequest):
             # edge. Composite props on the platform's own scoring are rarely
             # mispriced by a full outcome band. Cap at 70 and flag; the Badosa
             # absolute-override does NOT extend to FS.
+            # UNANCHORED cap (1A): no market moneyline available -> model-only ->
+            # cap confidence at 70 (same ceiling as divergence).
+            if not result.get("fs_anchored", True) and confidence > FS_DIVERGENCE_CONF_CAP:
+                confidence = FS_DIVERGENCE_CONF_CAP
+                logger.info("FS_UNANCHORED | %s line=%.1f -> cap %d (no market moneyline)",
+                            req.player_name or "player", req.prop_line or 0,
+                            FS_DIVERGENCE_CONF_CAP)
             _fs_divergent = bool(result.get("fs_divergent"))
             _fs_guard_note = None
             if _fs_divergent:
@@ -2642,11 +2681,18 @@ async def prop_calculate(req: PropRequest):
             "fs_p_over":            _fs_p_over,
             "fs_scenario_probs":    result.get("fs_scenario_probs"),
             "fs_scenario_breakdown": result.get("fs_scenario_breakdown"),
+            "fs_fair_line":         result.get("fs_fair_line"),
+            "fs_mixture_mean":      result.get("fs_mixture_mean"),
             "fs_implied_claim":     _fs_implied_claim,
             "fs_line_position":     _fs_line_position,
             "fs_divergent":         _fs_divergent,
             "fs_guard_note":        _fs_guard_note,
             "fs_knife_edge":        _fs_knife_edge,
+            # Win-prob anchor (model / de-vigged market / blended) + anchored flag.
+            "fs_model_wp":          result.get("fs_model_wp"),
+            "fs_market_wp":         result.get("fs_market_wp"),
+            "fs_blended_wp":        result.get("fs_blended_wp"),
+            "fs_anchored":          result.get("fs_anchored"),
             # Feature 3 — data freshness / injury flag (advisory)
             "freshness_level":      _freshness.get("level", ""),
             "freshness_message":    _freshness.get("message", ""),

@@ -2503,6 +2503,78 @@ def get_player_next_match(player_id, tour: str = "ATP") -> dict:
     return result
 
 
+def _frac_to_decimal(frac):
+    """PrizePicks/Sofascore fractional odds string 'a/b' -> decimal odds (b+a)/b."""
+    try:
+        n, d = str(frac).split("/")
+        n, d = float(n), float(d)
+        return (n / d) + 1.0 if d else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def get_match_moneyline_prob(player_id, opponent_id=None, tour: str = "ATP") -> dict:
+    """Market win probability for the SELECTED player, de-vigged from the two-way
+    'Full time' moneyline of their upcoming Sofascore event (proportional method).
+
+    Returns {market_p1, market_p2, overround, event_id, opponent_matches} or
+    {market_p1: None, reason: ...} when no usable moneyline is available. Cached 1h.
+    Never raises. This is the market ANCHOR for the scenario mixtures — where it is
+    None the caller runs model-only ('unanchored')."""
+    pid = int(player_id)
+    ck = f"ss_ml_{pid}_{int(time.time()) // 3600}"
+    if ck in st.session_state:
+        return st.session_state[ck]
+    out = {"market_p1": None, "reason": "no moneyline"}
+    try:
+        ne = _get(f"{BASE_URL}/team/{pid}/near-events")
+        ev = (ne or {}).get("nextEvent") or {}
+        eid = ev.get("id")
+        home = ev.get("homeTeam") or {}
+        away = ev.get("awayTeam") or {}
+        if not eid:
+            out["reason"] = "no upcoming event"
+            st.session_state[ck] = out
+            return out
+        opp_id = away.get("id") if home.get("id") == pid else home.get("id")
+        opp_matches = (opponent_id is None) or (str(opp_id) == str(opponent_id))
+        od = _get(f"{BASE_URL}/event/{eid}/odds/1/all")
+        markets = (od or {}).get("markets") or []
+        ft = next((m for m in markets
+                   if (m.get("marketName") or "").lower() in ("full time", "match winner")), None)
+        if not ft:
+            out["reason"] = "no full-time market"
+            st.session_state[ck] = out
+            return out
+        choices = ft.get("choices") or []
+        # '1' = home, '2' = away.
+        c_home = next((c for c in choices if c.get("name") == "1"), None)
+        c_away = next((c for c in choices if c.get("name") == "2"), None)
+        dh = _frac_to_decimal((c_home or {}).get("fractionalValue"))
+        da = _frac_to_decimal((c_away or {}).get("fractionalValue"))
+        if not dh or not da:
+            out["reason"] = "unparseable odds"
+            st.session_state[ck] = out
+            return out
+        ih, ia = 1.0 / dh, 1.0 / da              # implied (with vig)
+        tot = ih + ia
+        ph, pa = ih / tot, ia / tot              # de-vigged (proportional)
+        # Map to the selected player (pid).
+        if home.get("id") == pid:
+            mp1, mp2 = ph, pa
+        else:
+            mp1, mp2 = pa, ph
+        out = {"market_p1": round(mp1, 4), "market_p2": round(mp2, 4),
+               "overround": round(tot - 1.0, 4), "event_id": eid,
+               "opponent_matches": opp_matches, "reason": None}
+        st.session_state[ck] = out
+        return out
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("moneyline fetch failed pid=%s: %s", pid, exc)
+        out["reason"] = "fetch error"
+        return out
+
+
 # Sofascore tennis CATEGORY ids — the per-tour scheduled-events endpoints
 # (category/{id}/scheduled-events/{date}) still work where the sport-level one
 # now 404s. ATP main tour = 3, WTA main tour = 6.

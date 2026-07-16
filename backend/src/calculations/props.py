@@ -1673,6 +1673,27 @@ def ptgw_scenario_mixture(p_sel, prop_line, tour="ATP", match_format="best_of_3"
     }
 
 
+def _mixture_median(p_over_at, lo, hi, iters=30):
+    """Solve for the line where P(over) = 0.50 (the distribution's MEDIAN) by
+    bisection. p_over_at(x) must be monotonically DECREASING in x. This is the
+    'fair line' for a bimodal prop — unlike the mean, it's a value the outcome can
+    actually take, and it's exactly the 50/50 line the book is pricing against."""
+    for _ in range(iters):
+        mid = 0.5 * (lo + hi)
+        if p_over_at(mid) > 0.5:
+            lo = mid          # need a HIGHER line to push P(over) down to 0.5
+        else:
+            hi = mid
+    return round(0.5 * (lo + hi), 1)
+
+
+def ptgw_fair_line(p_sel, tour="ATP", match_format="best_of_3"):
+    """Median (fair line) of the PTGW scenario mixture — the displayed projection."""
+    return _mixture_median(
+        lambda x: ptgw_scenario_mixture(p_sel, x, tour, match_format)["p_over"],
+        0.0, 30.0)
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # FANTASY SCORE  (PrizePicks tennis)  — scenario-mixture, built on the PTGW machinery
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1826,6 +1847,14 @@ def fantasy_score_mixture(p_sel, ace_proj, df_proj, expected_sets, prop_line,
     }
 
 
+def fs_fair_line(p_sel, ace_proj, df_proj, expected_sets, tour="ATP", match_format="best_of_3"):
+    """Median (fair line) of the FS scenario mixture — the displayed projection."""
+    return _mixture_median(
+        lambda x: fantasy_score_mixture(p_sel, ace_proj, df_proj, expected_sets, x,
+                                        tour, match_format)["p_over"],
+        -10.0, 45.0)
+
+
 def project_fantasy_score(p_sel, ace_proj, df_proj, expected_sets, prop_line,
                           tour="ATP", match_format="best_of_3", player_name="",
                           trace: list = None) -> dict:
@@ -1834,7 +1863,12 @@ def project_fantasy_score(p_sel, ace_proj, df_proj, expected_sets, prop_line,
     match claim, mirroring the PTGW contract so main.py can grade it identically."""
     mix = fantasy_score_mixture(p_sel, ace_proj, df_proj, expected_sets, prop_line,
                                 tour=tour, match_format=match_format)
-    projection = mix["mixture_mean"]
+    # DISPLAYED projection = the MEDIAN (fair line), not the mean: FS is bimodal
+    # and the mean lands in the empty valley between the win and loss bands — a
+    # score that almost never occurs. The median IS a real, 50/50 value. The mean
+    # is retained internally as fs_mixture_mean.
+    fair_line = fs_fair_line(p_sel, ace_proj, df_proj, expected_sets, tour, match_format)
+    projection = fair_line
     who = player_name or "player"
     lean = "OVER" if mix["p_over"] >= 0.5 else "UNDER"
     line = prop_line or 0
@@ -1866,6 +1900,7 @@ def project_fantasy_score(p_sel, ace_proj, df_proj, expected_sets, prop_line,
         "fs_p_win_match": mix["p_win_match"],
         "fs_scenario_probs": mix["scenario_probs"],
         "fs_scenario_breakdown": mix["scenario_breakdown"],
+        "fs_fair_line": fair_line,
         "fs_mixture_mean": round(mix["mixture_mean"], 2),
         "fs_implied_claim": claim,
         "fs_line_position": line_position,
@@ -1959,20 +1994,22 @@ def project_player_games_won(
     mix = None
     if isinstance(prop_line, (int, float)) and prop_line > 0:
         mix = ptgw_scenario_mixture(p_sel, prop_line, tour=tour, match_format=match_format)
-        # The mixture mean is the physically-honest central tendency (it integrates
-        # the same set structure); use it as the displayed projection so the number
-        # the user sees is consistent with the probability that grades it.
-        projection = max(4.5, mix["mixture_mean"])
+        # DISPLAYED projection = the MEDIAN (fair line), not the mean: PTGW is
+        # bimodal, so the mean sits in the valley between the win and loss bands.
+        # The median is a real 50/50 value. The mean is retained as ptgw_mixture_mean.
+        fair_line = max(4.5, ptgw_fair_line(p_sel, tour=tour, match_format=match_format))
+        projection = fair_line
         _trace(trace, "PTGW_scenario_mixture",
                {"line": prop_line,
                 "p_win_match": mix["p_win_match"],
                 "scenario_probs": mix["scenario_probs"],
                 "p3_win": mix["p3_win"], "p3_lose": mix["p3_lose"],
-                "over_contrib": mix["over_contrib"]},
+                "over_contrib": mix["over_contrib"],
+                "fair_line_median": fair_line, "mixture_mean": round(mix["mixture_mean"], 2)},
                round(mix["p_over"], 4), round(projection, 2),
-               "P(over %.1f) = Σ P(scenario)·P(games>line|scenario) = %.3f; "
-               "mixture mean %.2f is the displayed projection (NOT graded vs line)"
-               % (prop_line, mix["p_over"], mix["mixture_mean"]))
+               "P(over %.1f) = Σ P(scenario)·P(games>line|scenario) = %.3f; displayed "
+               "projection = fair line (median) %.1f; mean %.2f logged internally"
+               % (prop_line, mix["p_over"], fair_line, mix["mixture_mean"]))
 
     # ── Component trace ──────────────────────────────────────────────────────
     # PTGW had NO trace coverage: its projection comes from here, but only aces
