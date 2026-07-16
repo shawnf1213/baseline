@@ -1761,9 +1761,11 @@ def _ranked_line(pick: dict, rank: int) -> str:
     play = f"{lean} {pick['line']:g} {_short_prop(pick['prop_type'])}".upper()
     _demon = "😈 DEMON " if pick.get("odds_type") == "demon" else ""
     bits = [f"{LEAN_DOT.get(lean, '⚪')} {_demon}**{play}**"]
-    # Bimodal props (FS / PTGW) display the MEDIAN as a "Fair line" vs the book
-    # line, not a mean "Proj" (the mean is a valley score that never occurs).
-    _bimodal = pick.get("prop_type") in ("Fantasy Score", "Player Total Games Won")
+    # PTGW displays its MEDIAN as a "Fair line" vs the book line (its mean is a
+    # valley score that never occurs). Fantasy Score displays like every other
+    # prop — plain Proj · conf% — by request. (Its projection is still the median
+    # internally; only the label is plain.)
+    _bimodal = pick.get("prop_type") == "Player Total Games Won"
     if isinstance(proj, (int, float)):
         bits.append(f"Fair line {proj:.1f} vs book {pick['line']:g}" if _bimodal
                     else f"Proj {proj:.1f}")
@@ -1781,9 +1783,7 @@ def _ranked_line(pick: dict, rank: int) -> str:
     if pick.get("prop_type") == "Player Total Games Won" and pick.get("ptgw_implied_claim"):
         _corr = "  ⚠️ correlated" if pick.get("ptgw_correlated") else ""
         out += f"\n📐 _{pick['ptgw_implied_claim']}_{_corr}"
-    # Fantasy Score shows its implied match lean, same transparency rule as PTGW.
-    if pick.get("prop_type") == "Fantasy Score" and pick.get("fs_implied_claim"):
-        out += f"\n📐 _{pick['fs_implied_claim']}_"
+    # Fantasy Score shows NO implied-claim line — it reads like any other prop.
     return out
 
 
