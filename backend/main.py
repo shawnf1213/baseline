@@ -86,6 +86,7 @@ from src.calculations.props import (
     project_break_points,
     project_player_games_won,
     project_fantasy_score,
+    FS_DIVERGENCE_CONF_CAP,
     surface_affinity,
     generate_scouting_report,
     detect_environment,
@@ -2221,6 +2222,9 @@ async def prop_calculate(req: PropRequest):
         _fs_p_over = (result.get("fs_p_over")
                       if req.prop_type == "Fantasy Score" else None)
         _fs_implied_claim = None
+        _fs_line_position = None
+        _fs_divergent = False
+        _fs_guard_note = None
         _fs_knife_edge = False
         if _fs_p_over is not None:
             _fs_lean = "OVER" if _fs_p_over >= 0.5 else "UNDER"
@@ -2230,10 +2234,35 @@ async def prop_calculate(req: PropRequest):
             _fs_prob_base = True
             _fs_knife_edge = 0.45 <= _fs_p_over <= 0.55
             _fs_implied_claim = result.get("fs_implied_claim")
-            logger.info("FS_PROB_BASE | %s line=%.1f p_over=%.3f lean=%s base_conf=%.1f "
-                        "knife_edge=%s | %s",
+            _fs_line_position = result.get("fs_line_position")
+            # ── DIVERGENCE GUARD (point 4) ───────────────────────────────────
+            # When the model and the book disagree on WHICH OUTCOME is expected
+            # (proj band != line band — e.g. a three-set read against a dominant-
+            # win line), the large P(over) is presumed model error, NOT a real
+            # edge. Composite props on the platform's own scoring are rarely
+            # mispriced by a full outcome band. Cap at 70 and flag; the Badosa
+            # absolute-override does NOT extend to FS.
+            _fs_divergent = bool(result.get("fs_divergent"))
+            _fs_guard_note = None
+            if _fs_divergent:
+                _p1n = p1_blended.get("_ta_career_matches", 0)
+                _p2n = p2_blended.get("_ta_career_matches", 0)
+                _fs_guard_note = ("model/book scenario disagreement — verify inputs "
+                                  "(proj band %s vs line band %s; stat-rich p1=%s p2=%s)"
+                                  % (result.get("fs_proj_band"), result.get("fs_line_band"),
+                                     _p1n, _p2n))
+                if confidence > FS_DIVERGENCE_CONF_CAP:
+                    confidence = FS_DIVERGENCE_CONF_CAP
+                logger.info("FS_DIVERGENCE | %s line=%.1f proj_band=%s line_band=%s -> "
+                            "cap %d | stat-rich p1=%s p2=%s",
+                            req.player_name or "player", req.prop_line or 0,
+                            result.get("fs_proj_band"), result.get("fs_line_band"),
+                            FS_DIVERGENCE_CONF_CAP, _p1n, _p2n)
+            logger.info("FS_PROB_BASE | %s line=%.1f p_over=%.3f lean=%s conf=%.1f "
+                        "knife_edge=%s divergent=%s | %s | %s",
                         req.player_name or "player", req.prop_line or 0, _fs_p_over,
-                        _fs_lean, confidence, _fs_knife_edge, _fs_implied_claim or "?")
+                        _fs_lean, confidence, _fs_knife_edge, _fs_divergent,
+                        _fs_line_position or "?", _fs_implied_claim or "?")
         # A single flag for the mean-edge skips below (both prob-base props).
         _prob_base = _ptgw_prob_base or _fs_prob_base
         # Consistency tier for display comes straight from the confidence
@@ -2612,7 +2641,11 @@ async def prop_calculate(req: PropRequest):
             # ── Fantasy Score scenario-mixture surface (None for other props) ─────
             "fs_p_over":            _fs_p_over,
             "fs_scenario_probs":    result.get("fs_scenario_probs"),
+            "fs_scenario_breakdown": result.get("fs_scenario_breakdown"),
             "fs_implied_claim":     _fs_implied_claim,
+            "fs_line_position":     _fs_line_position,
+            "fs_divergent":         _fs_divergent,
+            "fs_guard_note":        _fs_guard_note,
             "fs_knife_edge":        _fs_knife_edge,
             # Feature 3 — data freshness / injury flag (advisory)
             "freshness_level":      _freshness.get("level", ""),

@@ -124,6 +124,11 @@ FS_ENABLED = os.getenv("FS_ENABLED", "false").strip().lower() in (
 # Slate-correlation guard (Part 3): at most this many PTGW picks per board, and a
 # flag when multiple share the same implied direction. Only enforced once enabled.
 PTGW_MAX_PER_BOARD = 2
+# Total Games (match total) floods the board: it's a match-level stat with many
+# qualifying lines and, since the games_per_set fit, a low-information prop capped
+# at 80. Left uncapped it crowds out the props the model is actually built around.
+# Keep only the highest-ranked few per board.
+TOTAL_GAMES_MAX_PER_BOARD = 3
 
 
 # ── Thin-slate mode ──────────────────────────────────────────────────────────
@@ -946,6 +951,17 @@ async def _rank_board():
                     pk["ptgw_correlated"] = True
                 log.info("POD_PTGW_CORR | %d PTGW picks ALL %s — correlated cluster flagged",
                          len(_ptgw), next(iter(_dirs)))
+
+    # ── Total Games board cap ────────────────────────────────────────────────
+    # Keep only the highest-ranked TOTAL_GAMES_MAX_PER_BOARD Total Games plays; the
+    # rest are dropped so the board isn't dominated by a low-information prop. The
+    # ⭐ can still be a Total Games play if it's the strongest overall.
+    _tg = [pk for pk in ordered if pk.get("prop_type") == "Total Games"]
+    if len(_tg) > TOTAL_GAMES_MAX_PER_BOARD:
+        _drop = set(id(pk) for pk in _tg[TOTAL_GAMES_MAX_PER_BOARD:])
+        log.info("POD_TG_CAP | %d Total Games picks > cap %d — dropping %d lowest-ranked",
+                 len(_tg), TOTAL_GAMES_MAX_PER_BOARD, len(_drop))
+        ordered = [pk for pk in ordered if id(pk) not in _drop]
     return ordered, thin_slate
 
 

@@ -1711,6 +1711,65 @@ _FS_SCEN_SETS = {
     "best_of_5": {"S1": 3.0, "S2": 4.5, "S3": 4.5, "S4": 3.0},
 }
 FS_CONF_CEILING = 80   # composite high-variance prop — ceiling until the ledger says more
+FS_DIVERGENCE_CONF_CAP = 70   # cap when model & book disagree on the OUTCOME (point 4)
+
+# Scenario labels, ordered HIGH FS -> LOW FS. FS rises monotonically with outcome
+# quality (comfortable win > tight win > three-set win > three-set loss > straight
+# loss), so a line partitions the ordered bands at one boundary.
+_FS_ORDER = ["S1", "S2", "S3", "S4"]
+_FS_LABEL = {"S1": "a straight-sets win", "S2": "a three-set win",
+             "S3": "a three-set loss", "S4": "a straight-sets loss"}
+
+
+def _fs_band_of(value, breakdown):
+    """The scenario band whose mean is nearest to `value` (the outcome the value
+    implies)."""
+    return min(_FS_ORDER, key=lambda s: abs(value - breakdown[s]["fs_mu"]))
+
+
+def _fs_describe(lean, line, projection, breakdown, who):
+    """Derive the implied claim + line-position classification from WHICH scenarios
+    actually clear the line — never a static over/under->win/lose mapping. Returns
+    (claim, line_position, proj_band, line_band, divergent)."""
+    # Classify each scenario vs the line by its own P(FS > line). A scenario the
+    # line cuts THROUGH (meaningful mass on both sides) is a "split" — the upper
+    # (comfortable) part clears the line, the lower part doesn't.
+    over, under, split = [], [], []
+    for s in _FS_ORDER:
+        po = breakdown[s]["p_over"]
+        (over if po >= 0.7 else under if po <= 0.3 else split).append(s)
+
+    def _join(items):
+        items = list(items)
+        if not items:
+            return ""
+        if len(items) == 1:
+            return items[0]
+        return ", ".join(items[:-1]) + " or " + items[-1]
+
+    line_band = _fs_band_of(line, breakdown)
+    proj_band = _fs_band_of(projection, breakdown)
+    line_position = "book line sits in the %s band" % _FS_LABEL[line_band]
+
+    if lean == "OVER":
+        # The OVER wins on the scenarios above the line: the `over` set, plus the
+        # UPPER (comfortable) part of any straddled band.
+        need = [_FS_LABEL[s] for s in over] + ["a comfortable %s" % _FS_LABEL[s][2:] for s in split]
+        claim = ("%s O%.1f — needs %s" % (who, line, _join(need))) if need else \
+                ("%s O%.1f — needs the very top outcome" % (who, line))
+    else:
+        # The UNDER wins UNLESS one of the scenarios above the line lands (the
+        # `over` set + the comfortable part of any straddle). If everything is
+        # below the line, it hits on any outcome.
+        beats = [_FS_LABEL[s] for s in over] + ["a comfortable %s" % _FS_LABEL[s][2:] for s in split]
+        claim = ("%s U%.1f — hits unless %s" % (who, line, _join(beats))) if beats else \
+                ("%s U%.1f — hits on essentially any outcome" % (who, line))
+
+    # Divergence: model and book point at DIFFERENT outcome bands (not just a
+    # margin disagreement). E.g. proj in the three-set band vs a line in the
+    # straight-sets-win band.
+    divergent = proj_band != line_band
+    return claim, line_position, proj_band, line_band, divergent
 
 
 def fantasy_score_mixture(p_sel, ace_proj, df_proj, expected_sets, prop_line,
@@ -1777,23 +1836,26 @@ def project_fantasy_score(p_sel, ace_proj, df_proj, expected_sets, prop_line,
                                 tour=tour, match_format=match_format)
     projection = mix["mixture_mean"]
     who = player_name or "player"
-    lean_over = mix["p_over"] >= 0.5
-    if lean_over:
-        claim = "%s O%.1f ⇒ needs %s competitive or winning" % (
-            who, prop_line or 0, who)
-    else:
-        claim = "%s U%.1f ⇒ needs %s to lose, likely in straights" % (
-            who, prop_line or 0, who)
+    lean = "OVER" if mix["p_over"] >= 0.5 else "UNDER"
+    line = prop_line or 0
+    # Claim + line-position are DERIVED from which scenarios clear the line — never
+    # a static over/under -> win/lose mapping (that mapping is invalid for FS: the
+    # line can sit INSIDE the win bands).
+    claim, line_position, proj_band, line_band, divergent = _fs_describe(
+        lean, line, projection, mix["scenario_breakdown"], who)
     _trace(trace, "FS_scenario_mixture",
            {"line": prop_line, "p_win_match": mix["p_win_match"],
             "ace_proj": round(ace_proj, 2) if isinstance(ace_proj, (int, float)) else ace_proj,
             "df_proj": round(df_proj, 2) if isinstance(df_proj, (int, float)) else df_proj,
             "scenario_probs": mix["scenario_probs"],
-            "scenario_breakdown": mix["scenario_breakdown"]},
+            "scenario_breakdown": mix["scenario_breakdown"],
+            "proj_band": proj_band, "line_band": line_band, "divergent": divergent},
            round(mix["p_over"], 4), round(projection, 2),
            "FS = 10 + games_margin + 3·set_margin + 0.5(aces−DF); P(over %.1f)=%.3f "
-           "= Σ P(scenario)·P(FS>line|scenario); mixture mean %.2f is the displayed "
-           "projection (NOT graded vs line)" % (prop_line or 0, mix["p_over"], projection))
+           "= Σ P(scenario)·P(FS>line|scenario); %s; %s"
+           % (prop_line or 0, mix["p_over"], line_position,
+              "MODEL/BOOK OUTCOME DISAGREEMENT (proj band %s vs line band %s)"
+              % (proj_band, line_band) if divergent else "proj & line agree on the outcome band"))
     _trace(trace, "projector_output", {"chain_result": round(projection, 3)},
            projection, round(projection, 1),
            "END OF THE PROJECTOR — main.py maps confidence from p_over")
@@ -1803,8 +1865,13 @@ def project_fantasy_score(p_sel, ace_proj, df_proj, expected_sets, prop_line,
         "fs_p_under": round(mix["p_under"], 4),
         "fs_p_win_match": mix["p_win_match"],
         "fs_scenario_probs": mix["scenario_probs"],
+        "fs_scenario_breakdown": mix["scenario_breakdown"],
         "fs_mixture_mean": round(mix["mixture_mean"], 2),
         "fs_implied_claim": claim,
+        "fs_line_position": line_position,
+        "fs_proj_band": proj_band,
+        "fs_line_band": line_band,
+        "fs_divergent": divergent,
         "lean": "",
     }
 
