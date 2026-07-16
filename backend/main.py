@@ -168,6 +168,8 @@ class ResultLogRequest(BaseModel):
     surface: str = ""
     pick_group: str = "potd"             # "potd" or "3x"
     confidence_breakdown: str = ""       # JSON snapshot of the confidence components
+    odds_type: str = "standard"          # "standard" or "demon"
+    board_policy_version: str = "v2"     # board qualification policy in force
 
 
 class ResultUpdateRequest(BaseModel):

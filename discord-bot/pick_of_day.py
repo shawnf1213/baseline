@@ -161,8 +161,19 @@ THIN_SLATE_NOTE = "⚠️ Play lightly — slate not very full today."
 BOARD_MIN_CONF = 65   # uniform board + 3x-pool floor
 SLIP_MIN_CONF  = 70   # a 3x leg must clear this (above the board floor)
 POTD_THRESHOLD = 80   # uniform Pick-of-the-Day bar, every eligible prop
-# The one and only ⭐ exclusion: Double Faults may never be the Pick of the Day.
+# The ⭐ exclusions: Double Faults never leads the card, and neither does any DEMON
+# (its boosted payout structure is not part of the standard public POTD record).
 POD_STAR_EXCLUDE_PROPS = {"Double Faults"}
+
+# ── Demon props (boosted alternate lines, over-only) ─────────────────────────
+# Demons are evaluated through the normal projection chain but held to ELEVATED
+# bars — most are traps; only a few are mispriced our way. Config values:
+DEMON_MIN_CONF = 85    # a demon must clear this confidence (above the 65 board floor)
+DEMON_MIN_EDGE = 0.9   # AND the projection must clear the boosted line by this many
+                       # units (absolute edge in the prop's own units)
+# Note: the backend data ceiling already requires BOTH players 15+ stat-rich for
+# any 85+ confidence, so a demon at 85 implicitly rests on deep data — we do NOT
+# weaken that ceiling for demons.
 # One week from the v2 cutover, log picks that qualify under v2 but would have been
 # excluded under v1 (so we can see exactly what the looser floor lets in).
 V2_CUTOVER_DATE   = "2026-07-16"
@@ -271,10 +282,13 @@ def _parse_board(board: dict) -> list:
         prop_type = PROP_MAP.get((attr.get("stat_type") or "").strip().lower())
         if not prop_type or prop_type in _POD_EXCLUDE_PROPS:
             continue
-        # Only ever use the STANDARD line. PrizePicks also lists "demon" (boosted,
-        # higher line) and "goblin" (reduced, lower line) variants — never pick
-        # those, and never fabricate a line when no standard one exists; just skip.
-        if (attr.get("odds_type") or "standard").lower() != "standard":
+        # PrizePicks lists "standard", "demon" (boosted, higher line, over-only,
+        # modified payout) and "goblin" (reduced, lower line) variants. v2+demon:
+        # standard and demon are BOTH evaluated (demons under stricter bars, see
+        # _demon_qualifies); goblins remain excluded entirely; any other exotic
+        # type is skipped. Never fabricate a line when none exists.
+        _ot = (attr.get("odds_type") or "standard").lower()
+        if _ot not in ("standard", "demon"):
             continue
         line = attr.get("line_score")
         if line is None:
@@ -307,7 +321,15 @@ def _parse_board(board: dict) -> list:
         except (TypeError, ValueError):
             continue
         out.append({"player": pname, "opponent": opponent,
-                    "prop_type": prop_type, "line": line_f})
+                    "prop_type": prop_type, "line": line_f, "odds_type": _ot})
+    # Attach the STANDARD-line context to each demon (same player + prop), so the
+    # display can show members "the boosted line vs the normal one". None when the
+    # board carries no standard variant for that prop.
+    std_lines = {(e["player"], e["prop_type"]): e["line"]
+                 for e in out if e["odds_type"] == "standard"}
+    for e in out:
+        if e["odds_type"] == "demon":
+            e["standard_line"] = std_lines.get((e["player"], e["prop_type"]))
     return out
 
 
@@ -447,6 +469,8 @@ async def _evaluate(prop: dict, sem: asyncio.Semaphore):
             "player_id": p_id, "tour": tour,
             "pp_player": prop["player"],              # original PrizePicks name (board matching)
             "prop_type": prop["prop_type"], "line": line, "original_line": line,
+            "odds_type": prop.get("odds_type", "standard"),
+            "standard_line": prop.get("standard_line"),   # demon's normal-line context
             "surface": payload["surface"], "tournament": tournament,
             "start_timestamp": nm.get("start_timestamp"),
             "projection": proj, "edge": edge, "edge_mag": abs(edge),
@@ -649,8 +673,49 @@ def _passes_quality(pk: dict) -> bool:
     """v2 board quality gate — a single uniform floor for EVERY prop type. The
     PTGW bespoke bar logic is retired; PTGW's depth ceiling and structural guards
     still shape its confidence upstream (in confidence.py / main.py), and here it
-    clears the same 65 floor as everything else."""
+    clears the same 65 floor as everything else. Demons use _demon_qualifies."""
+    if pk.get("odds_type") == "demon":
+        return _demon_qualifies(pk)
     return (pk.get("confidence") or 0) >= BOARD_MIN_CONF
+
+
+def _demon_qualifies(pk: dict) -> bool:
+    """A demon qualifies for the board/3x ONLY when it clears the elevated demon
+    bars AND points OVER (demons are over-only by platform rule). Every rejection
+    is logged so the bars can be reviewed against what they filter. Returns False
+    (never posts) unless all three hold: OVER lean, conf >= 85, edge >= 0.9."""
+    conf = pk.get("confidence") or 0
+    proj = pk.get("projection")
+    line = pk.get("line")
+    edge = (proj - line) if isinstance(proj, (int, float)) and isinstance(line, (int, float)) else None
+    who = (pk.get("player") or "")[:22]
+    # Over-only: a demon whose model edge points UNDER is not a play, ever.
+    if _lean_dir(pk) != "OVER":
+        log.info("POD_DEMON_REJECT | demon_under_no_play | %-22s %-18s line=%-5s "
+                 "proj=%-6s conf=%-3.0f edge=%s — demons are over-only, discarded",
+                 who, (pk.get("prop_type") or "")[:18], line,
+                 "%.2f" % proj if isinstance(proj, (int, float)) else "?", conf,
+                 "%+.2f" % edge if edge is not None else "?")
+        return False
+    conf_ok = conf >= DEMON_MIN_CONF
+    edge_ok = edge is not None and edge >= DEMON_MIN_EDGE
+    if conf_ok and edge_ok:
+        log.info("POD_DEMON_OK | %-22s %-18s line=%-5s proj=%-6.2f conf=%-3.0f edge=%+.2f "
+                 "(bars %d/%.1f) -> QUALIFIES",
+                 who, (pk.get("prop_type") or "")[:18], line, proj, conf, edge,
+                 DEMON_MIN_CONF, DEMON_MIN_EDGE)
+        return True
+    _why = []
+    if not conf_ok:
+        _why.append("conf %.0f < %d" % (conf, DEMON_MIN_CONF))
+    if not edge_ok:
+        _why.append("edge %s < %.1f" % (("%+.2f" % edge) if edge is not None else "?", DEMON_MIN_EDGE))
+    log.info("POD_DEMON_REJECT | %-22s %-18s line=%-5s proj=%-6s conf=%-3.0f edge=%s -> "
+             "below bars (%s)",
+             who, (pk.get("prop_type") or "")[:18], line,
+             "%.2f" % proj if isinstance(proj, (int, float)) else "?", conf,
+             "%+.2f" % edge if edge is not None else "?", "; ".join(_why))
+    return False
 
 
 # Per-match stat field per prop, for the recent-form-vs-line check.
@@ -709,10 +774,12 @@ async def _rank_board():
         log.info("POD: no eligible tennis props on the board")
         return None
 
-    # One evaluation per (player, prop) — the projection is line-independent.
+    # One evaluation per (player, prop, odds_type) — the projection is line-
+    # independent, but a demon carries a DIFFERENT (boosted) line than the
+    # standard, so both variants must be evaluated separately against their lines.
     seen, by_type = set(), {}
     for pr in props:
-        k = (_norm(pr["player"]), pr["prop_type"])
+        k = (_norm(pr["player"]), pr["prop_type"], pr.get("odds_type", "standard"))
         if k in seen:
             continue
         seen.add(k)
@@ -771,30 +838,38 @@ async def _rank_board():
                          r.get("ptgw_p_over"), r.get("line"), _lean_dir(r),
                          r.get("ptgw_implied_claim") or "?")
                 continue
-        # v2: ONE uniform floor for every prop type.
-        bar = _min_conf_for(ptype)
+        # Demons: elevated bars, over-only (see _demon_qualifies, which logs its
+        # own accept/reject line). Standard props: the uniform v2 65 floor.
         conf = r.get("confidence") or 0
-        ok = conf >= bar
-        log.info("POD_CAND | %-22s %-18s line=%-5s conf=%-3.0f proj=%-6.2f edge=%+5.2f "
-                 "recent_ok=%-5s bar=%d -> %s",
-                 (r.get("player") or "")[:22], (ptype or "")[:18],
-                 r.get("line"), conf, r.get("projection") or 0.0, r.get("edge") or 0.0,
-                 _recent_supports_lean(r), bar,
-                 "QUALIFIES" if ok else ("below v2 floor %d" % bar))
+        if r.get("odds_type") == "demon":
+            bar = DEMON_MIN_CONF
+            ok = _demon_qualifies(r)
+        else:
+            bar = _min_conf_for(ptype)
+            ok = conf >= bar
+            log.info("POD_CAND | %-22s %-18s line=%-5s conf=%-3.0f proj=%-6.2f edge=%+5.2f "
+                     "recent_ok=%-5s bar=%d -> %s",
+                     (r.get("player") or "")[:22], (ptype or "")[:18],
+                     r.get("line"), conf, r.get("projection") or 0.0, r.get("edge") or 0.0,
+                     _recent_supports_lean(r), bar,
+                     "QUALIFIES" if ok else ("below v2 floor %d" % bar))
         if ok:
             picks.append(r)
             by_type_qual[ptype] = by_type_qual.get(ptype, 0) + 1
             # One-week v2-vs-v1 delta: would this pick have been EXCLUDED under v1?
             if datetime.now(_ET).strftime("%Y-%m-%d") <= V2_DIFF_LOG_UNTIL:
+                _is_demon = r.get("odds_type") == "demon"
                 _v1_excluded_df = ptype == "Double Faults"   # v1 barred DF from the board
-                _v1_ok = (not _v1_excluded_df) and conf >= _v1_min_conf_for(ptype)
+                # v1 evaluated neither DF (board-excluded) nor demons (odds_type filtered).
+                _v1_ok = (not _v1_excluded_df) and (not _is_demon) and conf >= _v1_min_conf_for(ptype)
                 if not _v1_ok:
+                    _why = ("evaluated demons (odds_type filtered)" if _is_demon
+                            else "excluded DF from board" if _v1_excluded_df
+                            else "bar was %d" % _v1_min_conf_for(ptype))
                     log.info("POD_V2_DIFF | %-22s %-18s conf=%-3.0f line=%-5s -> ADDED by v2 "
-                             "(v1 %s) | new since the uniform-65 floor",
+                             "(v1 never %s)",
                              (r.get("player") or "")[:22], (ptype or "")[:18], conf,
-                             r.get("line"),
-                             "excluded DF from board" if _v1_excluded_df
-                             else "bar was %d" % _v1_min_conf_for(ptype))
+                             r.get("line"), _why)
     log.info("POD: evaluated=%d eligible=%d (v2 uniform board floor=%d, POTD bar=%d)",
              len(uniq), len(picks), BOARD_MIN_CONF, POTD_THRESHOLD)
 
@@ -1005,7 +1080,12 @@ def _star_eligible(pk: dict) -> bool:
     entirely inside the projection/guard chain, not in a second selection gate.
 
     (PTGW is theoretical here until PTGW_ENABLED flips: its confidence ceiling is
-    80/76, so it can only ever star at exactly its ceiling — no special handling.)"""
+    80/76, so it can only ever star at exactly its ceiling — no special handling.)
+
+    Demons are NEVER star-eligible: the boosted-payout structure is not part of the
+    standard public POTD record, which stays standard-only."""
+    if pk.get("odds_type") == "demon":
+        return False
     if pk.get("prop_type") in POD_STAR_EXCLUDE_PROPS:
         return False
     return (pk.get("confidence") or 0) >= POTD_THRESHOLD

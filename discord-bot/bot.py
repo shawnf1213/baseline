@@ -1475,6 +1475,8 @@ def _pick_to_record(p: dict, group: str = "potd") -> dict:
         "tournament": p.get("tournament") or "", "surface": p.get("surface") or "",
         "pick_group": group,
         "confidence_breakdown": _breakdown_json(p),
+        # standard vs demon — so the results tracker / recaps / hit rates segment.
+        "odds_type": (p.get("odds_type") or "standard"),
     }
 
 
@@ -1570,13 +1572,18 @@ def threex_embed(legs: list) -> discord.Embed:
         lean = _lean_of(leg)
         proj, conf = leg.get("projection"), leg.get("confidence")
         play = f"{lean} {leg['line']:g} {_short_prop(leg['prop_type'])}".upper()
-        bits = [f"{LEAN_DOT.get(lean, '⚪')} **{play}**"]
+        _demon = "😈 DEMON " if leg.get("odds_type") == "demon" else ""
+        bits = [f"{LEAN_DOT.get(lean, '⚪')} {_demon}**{play}**"]
         if isinstance(proj, (int, float)):
             bits.append(f"Proj {proj:.1f}")
         if isinstance(conf, (int, float)):
             bits.append(f"{conf:.0f}%")
         lines.append(f"**{i}. {leg['player']}** vs {_short_opp(leg.get('opponent'))}")
         lines.append(" · ".join(bits))
+        if leg.get("odds_type") == "demon":
+            _std = leg.get("standard_line")
+            _ctx = (f" (standard {_std:g})" if isinstance(_std, (int, float)) else "")
+            lines.append(f"😈 _Boosted demon line {leg['line']:g}{_ctx} — over-only_")
         if i < len(legs):
             lines.append("")
     e.description = "\n".join(lines)
@@ -1749,12 +1756,19 @@ def _ranked_line(pick: dict, rank: int) -> str:
     # beside it. Projection and confidence are supporting numbers and are left
     # in plain weight; if everything is bold, nothing is.
     play = f"{lean} {pick['line']:g} {_short_prop(pick['prop_type'])}".upper()
-    bits = [f"{LEAN_DOT.get(lean, '⚪')} **{play}**"]
+    _demon = "😈 DEMON " if pick.get("odds_type") == "demon" else ""
+    bits = [f"{LEAN_DOT.get(lean, '⚪')} {_demon}**{play}**"]
     if isinstance(proj, (int, float)):
         bits.append(f"Proj {proj:.1f}")
     if isinstance(conf, (int, float)):
         bits.append(f"{conf:.0f}%")
     out = l1 + "\n" + " · ".join(bits)
+    # Demon: show the boosted line against its standard-line context so nobody
+    # mistakes a demon for a normal prop.
+    if pick.get("odds_type") == "demon":
+        _std = pick.get("standard_line")
+        _ctx = (f" (standard {_std:g})" if isinstance(_std, (int, float)) else "")
+        out += f"\n😈 _Boosted demon line {pick['line']:g}{_ctx} — over-only_"
     # PTGW carries its implied match claim on the ranked line too (required field).
     if pick.get("prop_type") == "Player Total Games Won" and pick.get("ptgw_implied_claim"):
         _corr = "  ⚠️ correlated" if pick.get("ptgw_correlated") else ""

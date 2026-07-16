@@ -71,6 +71,10 @@ try:
         # Existing rows are backfilled to v1; new picks default to v2. Calibration
         # can report per-prop hit rates split by policy version without a reset.
         board_policy_version = Column(String, default="v2")
+        # PrizePicks odds_type: "standard" or "demon" (goblins are never posted).
+        # Lets the tracker / recaps / hit-rate reports segment standard vs demon.
+        # Existing rows are backfilled to "standard".
+        odds_type = Column(String, default="standard")
 
         def to_dict(self) -> dict:
             return {
@@ -92,6 +96,7 @@ try:
                 "confidence_breakdown": self.confidence_breakdown,
                 "pre_guard": int(self.pre_guard or 0),
                 "board_policy_version": (self.board_policy_version or "v1"),
+                "odds_type": (self.odds_type or "standard"),
             }
 
     class CacheEntry(Base):
@@ -178,6 +183,13 @@ def init_db() -> None:
                 conn.execute(text(
                     "ALTER TABLE picks ALTER COLUMN board_policy_version "
                     "SET DEFAULT 'v2'"))
+                # odds_type: existing rows predate demon evaluation -> "standard".
+                conn.execute(text(
+                    "ALTER TABLE picks ADD COLUMN IF NOT EXISTS odds_type VARCHAR"))
+                conn.execute(text(
+                    "UPDATE picks SET odds_type = 'standard' WHERE odds_type IS NULL"))
+                conn.execute(text(
+                    "ALTER TABLE picks ALTER COLUMN odds_type SET DEFAULT 'standard'"))
         except Exception as mexc:  # noqa: BLE001 — non-fatal; column may already exist
             logger.warning("picks pick_group migration skipped: %s", mexc)
         _READY = True
@@ -226,6 +238,7 @@ def log_pick(rec: dict) -> dict:
                 pick_group=(rec.get("pick_group") or "potd"),
                 confidence_breakdown=rec.get("confidence_breakdown"),
                 board_policy_version=(rec.get("board_policy_version") or "v2"),
+                odds_type=(rec.get("odds_type") or "standard"),
             )
             s.add(row)
             s.flush()
@@ -467,4 +480,15 @@ def record_summary() -> dict:
     summary = _summarize(potd)
     summary["threex_legs"] = _summarize(threex)
     summary["threex_slips"] = _slip_record(threex)
+
+    # Standard vs demon segmentation (weekly report line). Compact — counts and
+    # win rate only, not the full pick lists, so the payload stays small.
+    def _seg(rows):
+        s = _summarize(rows)
+        return {"total": s["total"], "wins": s["wins"], "losses": s["losses"],
+                "win_rate": s["win_rate"], "avg_confidence_wins": s["avg_confidence_wins"]}
+    summary["by_odds_type"] = {
+        "standard": _seg([p for p in picks if (p.get("odds_type") or "standard") == "standard"]),
+        "demon":    _seg([p for p in picks if (p.get("odds_type") or "standard") == "demon"]),
+    }
     return summary

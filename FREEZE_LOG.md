@@ -501,3 +501,39 @@ moved from the 91%-fav Total Games (v1's only TG-eligible) to the highest-
 confidence non-DF play (v2). The no-POTD path yielded has_star=False with the
 board intact and the highest star-eligible confidence logged (DF correctly
 ignored). Harness: scratchpad verify_v2_policy.py.
+
+---
+
+## Entry 5 — Demon prop evaluation (2026-07-16)
+
+Demon evaluation enabled under elevated bars (85 conf / 0.9 edge), over-only,
+star-blocked. SELECTION policy; projection math untouched.
+
+**What changed (selection only).**
+- Board scan no longer discards odds_type=demon; demons run through the normal
+  projection chain for their prop type. Goblins remain excluded entirely. odds_type
+  flows through the pipeline into Pick records (new column, default "standard");
+  the results tracker / recaps / hit rates segment standard vs demon
+  (record_summary.by_odds_type).
+- Demon qualification (config): DEMON_MIN_CONF=85 AND DEMON_MIN_EDGE=0.9 (absolute
+  edge in the prop's units). Demons are OVER-only by platform rule — a demon whose
+  model edge points UNDER is discarded and logged POD_DEMON_REJECT | demon_under_
+  no_play. Every below-bar demon is logged (line/proj/conf/edge) as a rejection log
+  to review what the bars filter. The backend's 85+ data ceiling (both players 15+
+  stat-rich) is NOT weakened — a demon at 85 implicitly rests on deep data.
+- Demons are board/3x eligible when they clear their bars, but NEVER star-eligible:
+  the boosted-payout structure is not part of the standard public POTD record.
+- Display: a "😈 DEMON" tag on the ranked line and 3x leg, with the boosted line
+  shown against its standard-line context, so a demon can never be mistaken for a
+  standard prop.
+
+**What did NOT change.** No projection, confidence, or guard math. The demon line
+is graded by the same chain as any other line; demons simply face a higher bar and
+an over-only rule at the SELECTION layer.
+
+**Verification.** Unit tests: a demon OVER at conf 86 / edge 1.0 qualifies; conf 84
+rejects (below 85); edge 0.5 rejects (below 0.9); an UNDER-leaning demon is
+discarded as demon_under_no_play; a demon is never star-eligible; standard props
+still clear the 65 floor. Because demons are graded by EVR on the boosted (higher)
+line, clearing BOTH the 0.9 edge and 85 confidence requires the projection to beat
+the boosted line by a real margin — most demons reject, as intended.
