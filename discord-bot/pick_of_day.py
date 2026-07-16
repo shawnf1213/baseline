@@ -115,11 +115,12 @@ PROP_MIN_CONF = {
 # DO NOT default this to true — it stays false until explicitly enabled.
 PTGW_ENABLED = os.getenv("PTGW_ENABLED", "false").strip().lower() in (
     "1", "true", "yes", "on")
-# Fantasy Score verification gate — same pattern as PTGW. Default FALSE: FS is
-# excluded from the posted board / 3x / POTD and computed in SHADOW (its projection
-# logged on live slates, POD_FS_SHADOW) until Shawn reviews a week of shadow output
-# against actuals and flips it. FS reuses the PTGW scenario mixture.
-FS_ENABLED = os.getenv("FS_ENABLED", "false").strip().lower() in (
+# Fantasy Score gate. ENABLED (2026-07-16) after the shadow review + fixes: market
+# win-prob anchor, median "fair line" display, derived claim, and the divergence
+# guard (which caps FS at 70 whenever model & book disagree on the outcome — so FS
+# favourites post as flagged volume plays, never as the ⭐). Set FS_ENABLED=false to
+# return it to shadow. FS reuses the PTGW scenario mixture.
+FS_ENABLED = os.getenv("FS_ENABLED", "true").strip().lower() in (
     "1", "true", "yes", "on")
 # Slate-correlation guard (Part 3): at most this many PTGW picks per board, and a
 # flag when multiple share the same implied direction. Only enforced once enabled.
