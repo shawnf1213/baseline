@@ -75,6 +75,10 @@ try:
         # Lets the tracker / recaps / hit-rate reports segment standard vs demon.
         # Existing rows are backfilled to "standard".
         odds_type = Column(String, default="standard")
+        # 1 = this record is a superseded / earlier-generation / duplicate pick that
+        # must NOT count toward the public record or appear in recaps. Kept in the
+        # DB for the reproducibility audit, never deleted. Default 0 = counts.
+        excluded_from_record = Column(Integer, default=0)
 
         def to_dict(self) -> dict:
             return {
@@ -97,6 +101,7 @@ try:
                 "pre_guard": int(self.pre_guard or 0),
                 "board_policy_version": (self.board_policy_version or "v1"),
                 "odds_type": (self.odds_type or "standard"),
+                "excluded_from_record": int(self.excluded_from_record or 0),
             }
 
     class CacheEntry(Base):
@@ -190,6 +195,16 @@ def init_db() -> None:
                     "UPDATE picks SET odds_type = 'standard' WHERE odds_type IS NULL"))
                 conn.execute(text(
                     "ALTER TABLE picks ALTER COLUMN odds_type SET DEFAULT 'standard'"))
+                # excluded_from_record: superseded / duplicate picks flagged out of
+                # the record + recaps but retained for audit. Existing rows -> 0.
+                conn.execute(text(
+                    "ALTER TABLE picks ADD COLUMN IF NOT EXISTS "
+                    "excluded_from_record INTEGER"))
+                conn.execute(text(
+                    "UPDATE picks SET excluded_from_record = 0 "
+                    "WHERE excluded_from_record IS NULL"))
+                conn.execute(text(
+                    "ALTER TABLE picks ALTER COLUMN excluded_from_record SET DEFAULT 0"))
         except Exception as mexc:  # noqa: BLE001 — non-fatal; column may already exist
             logger.warning("picks pick_group migration skipped: %s", mexc)
         _READY = True
@@ -263,6 +278,26 @@ def update_result(pick_id: int, result: str) -> bool:
     except Exception as exc:  # noqa: BLE001
         logger.exception("update_result failed: %s", exc)
         return False
+
+
+def set_excluded(ids: list, excluded: bool = True) -> int:
+    """Flag (or unflag) pick rows as excluded_from_record. Retains the rows; only
+    the flag changes. Returns the number of rows updated."""
+    if not _READY or not ids:
+        return 0
+    try:
+        n = 0
+        with _session() as s:
+            for pid in ids:
+                row = s.get(Pick, int(pid))
+                if row is None:
+                    continue
+                row.excluded_from_record = 1 if excluded else 0
+                n += 1
+        return n
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("set_excluded failed: %s", exc)
+        return 0
 
 
 def delete_pick(pick_id: int) -> bool:
@@ -469,7 +504,10 @@ def record_summary() -> dict:
     Pick of the Day (the headline product; legacy NULL-group rows count here);
     ``threex_legs`` is the individual-leg record and ``threex_slips`` is the
     paired slip record for the 3x."""
-    picks = all_picks()  # most recent first
+    # EXCLUDE superseded / duplicate records (excluded_from_record=1) from every
+    # record computation and from the recap's pick list. They remain in the DB
+    # (all_picks) for the audit, just invisible to the public record.
+    picks = [p for p in all_picks() if not p.get("excluded_from_record")]
 
     def _grp(p):
         return (p.get("pick_group") or "potd").lower()

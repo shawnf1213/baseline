@@ -229,6 +229,19 @@ async def results_delete(pick_id: int):
     return {"ok": database.delete_pick(pick_id)}
 
 
+class ExcludeRequest(BaseModel):
+    ids: list[int]
+    excluded: bool = True
+
+
+@app.post("/api/results/exclude")
+async def results_exclude(req: ExcludeRequest):
+    """Flag (or unflag) pick rows as excluded_from_record — superseded / duplicate
+    picks kept in the DB for audit but removed from the public record + recaps."""
+    from src import database
+    return {"updated": database.set_excluded(req.ids, req.excluded)}
+
+
 class ResolveRequest(BaseModel):
     player: str
     opponent: str = ""
