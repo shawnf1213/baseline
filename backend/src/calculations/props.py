@@ -1490,22 +1490,37 @@ def _expected_sets_from_gap(win_prob_gap: float, is_bo5: bool) -> tuple:
     """
     Map a win-probability gap to (expected_sets, competitiveness_label).
     """
+    # ── FORMAT CEILINGS ARE MATHEMATICAL, NOT TUNABLE ────────────────────────
+    # BO3: exp_sets = 2 + P(3 sets), and P(3 sets) = 2q(1-q) which MAXES at 0.5
+    #      (q = per-set win prob = 0.5). So exp_sets <= 2.5. ALWAYS.
+    # BO5: at q=0.5, P(3-0)=0.250 -> 3 sets, P(3-1)=0.375 -> 4, P(3-2)=0.375 -> 5,
+    #      giving E[sets] = 4.125. So exp_sets <= 4.125. ALWAYS.
+    #
+    # The even-matchup values were 2.6 and 4.4 — both ABOVE their format's
+    # mathematical ceiling, i.e. claiming more sets than the format can produce
+    # even between two coin-flip players. 2.6 implies P(3 sets)=60%; the maximum
+    # is 50% and the measured rate across 409 WTA matches is 32.8%.
+    #
+    # Surfaced by a 24.1 total-games projection: 9.25 gps x 2.60 = 24.05. The real
+    # expectation for an even WTA match is 0.5*18.0 + 0.5*28.25 = 23.1 — which is
+    # exactly 9.25 x 2.50. The error predates the games_per_set fit; raising gps
+    # to its correct level simply made it visible.
     if is_bo5:
         if win_prob_gap > 40:
             return 3.3, "Heavy favorite"
         if win_prob_gap > 25:
             return 3.7, "Clear favorite"
         if win_prob_gap > 10:
-            return 4.1, "Slight favorite"
-        return 4.4, "Even matchup"
+            return 4.0, "Slight favorite"
+        return 4.1, "Even matchup"        # was 4.4 — above the 4.125 ceiling
     else:
         if win_prob_gap > 40:
             return 2.1, "Heavy favorite"
         if win_prob_gap > 25:
             return 2.3, "Clear favorite"
         if win_prob_gap > 10:
-            return 2.5, "Slight favorite"
-        return 2.6, "Even matchup"
+            return 2.45, "Slight favorite"
+        return 2.5, "Even matchup"        # was 2.6 — above the 2.5 ceiling
 
 
 def _per_set_scale(tour: str, expected_sets: float) -> float:

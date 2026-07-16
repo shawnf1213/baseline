@@ -352,3 +352,35 @@ remains as the historical marker of the first break. Tonight's 8:20 PM ET run is
 
 The clean sample therefore restarts from tonight, and the weekly table stays
 suppressed until 40 post-baseline picks accumulate (~2 days at current volume).
+
+#### Entry 2b — expected_sets exceeded its format's mathematical ceiling (2026-07-15)
+
+Found from a user-reported 24.1 total-games projection. Not a tuning problem — the
+values were outside what the format can physically produce.
+
+**The maths.** BO3: exp_sets = 2 + P(3 sets), and P(3 sets) = 2q(1-q), which MAXES
+at 0.5 when q (per-set win prob) = 0.5. So exp_sets <= 2.5, ALWAYS. BO5 at q=0.5:
+P(3-0)=0.250 -> 3 sets, P(3-1)=0.375 -> 4, P(3-2)=0.375 -> 5, giving E[sets] =
+4.125. So exp_sets <= 4.125, ALWAYS.
+
+**The bug.** Even-matchup values were BO3 2.6 and BO5 4.4 — both ABOVE their
+ceiling. 2.6 implies P(3 sets) = 60%; the maximum between two coin-flip players is
+50%, and the measured rate across 409 WTA matches is 32.8%. The model was claiming
+more sets than the format can produce.
+
+**Fix.** BO3 even 2.6 -> 2.5, slight 2.5 -> 2.45. BO5 even 4.4 -> 4.1, slight
+4.1 -> 4.0. Verified every bucket now sits inside its ceiling.
+
+**Verification.** Even WTA at ch=61: was 9.25 x 2.60 = 24.05. Now 9.25 x 2.50 =
+23.12. Measured E[TMG | even] from 409 matches = 0.5*18.00 + 0.5*28.25 = 23.13.
+
+**This error PREDATES entry 2.** Raising games_per_set to its correct level simply
+made it visible — at the old gps of 8.23 the same match produced 21.4, which
+looked unremarkable. Two compensating errors were cancelling: a gps that was too
+LOW and an exp_sets that was too HIGH. Fixing one exposed the other, which is the
+normal way compensating errors surface, and a reminder that a projection landing
+near the book is not evidence that its components are right.
+
+**Also confirmed sound:** proj = E[gps] x E[sets] is valid here — mean(gps) x
+mean(sets) = 21.27 vs actual mean TMG 21.36 across 409 matches (error -0.09), so
+the independence assumption behind the multiplication holds well enough.
