@@ -455,8 +455,16 @@ def calculate_confidence(
     # A RAW ratio ≥ 2.5 is an absolute override (any prop) → opens 90-95 (Badosa).
     # This grade is the NORMAL variance-based confidence, NOT a structural cap — so
     # it carries NO display label; only the data-quality ceilings above do.
+    # PTGW is EXCLUDED from EVR grading (FREEZE exception): its distribution is
+    # bimodal, so |projection − line| / σ — which assumes a unimodal spread around
+    # the mean — is the wrong instrument (a "fat edge on the mean" is a disguised
+    # moneyline bet). PTGW confidence is instead mapped from the scenario-mixture
+    # P(over) in main.py. The data-level and PTGW 80/76 ceilings above STILL apply;
+    # only the EVR ceiling is skipped here.
     _sigma = std_dev if (std_dev is not None and std_dev > 0) else None
-    if _sigma is not None and isinstance(projection, (int, float)) and isinstance(prop_line, (int, float)):
+    if (prop_type != "Player Total Games Won"
+            and _sigma is not None
+            and isinstance(projection, (int, float)) and isinstance(prop_line, (int, float))):
         raw_evr = abs(projection - prop_line) / _sigma
         if raw_evr >= 2.5:
             evr_ceiling = 95

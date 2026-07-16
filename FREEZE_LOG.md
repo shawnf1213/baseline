@@ -384,3 +384,65 @@ near the book is not evidence that its components are right.
 **Also confirmed sound:** proj = E[gps] x E[sets] is valid here — mean(gps) x
 mean(sets) = 21.27 vs actual mean TMG 21.36 across 409 matches (error -0.09), so
 the independence assumption behind the multiplication holds well enough.
+
+---
+
+## Entry 3 — PTGW projection chain rebuild (scoped exception, 2026-07-16)
+
+**Scope of the exception.** PTGW projection chain rebuild — a STRUCTURAL math
+error (a bimodal distribution treated as a point estimate). This is the only prop
+touched. Aces / Double Faults / Break Points Won / Total Games are UNCHANGED —
+proven below, not asserted.
+
+**What was wrong (audit).** Every PTGW pick on 7/16 lost (Feistel U11.5→12,
+Basilashvili U11.5→15, Pellegrino U10.5→16, Faria U10.5→13). Not variance — the
+market falsified the outputs. Feistel was +162 (P(win)≈36% de-vigged), and any
+BO3 winner scores ≥12 games (two sets × 6), so P(over 11.5) ≥ 36% before counting
+3-set losses. An 80% UNDER confidence was mathematically impossible.
+The chain projected a single MEAN (`project_player_games_won`) and graded it with
+EVR = |projection − line| / σ. PTGW is BIMODAL: a straight-set loss lands ~6-9
+games, ANY other outcome ~12-17. The mean sits in a valley the distribution rarely
+occupies, and σ is a unimodal spread — so EVR is the wrong instrument, and a "fat
+edge on the mean" was a disguised moneyline bet on the straight-set-loss mode.
+The two same-day boards (Feistel 9.6 vs 6.7; Sasnovich 8.3 vs 7.0) were the deploy
+cache-wipe: PTGW consumes `games_combined`/`expected_sets`/`win_prob` from the
+Total Games chain, and the 20:39 exp_sets deploy both changed the multiplier
+mid-slate AND wiped the in-process stat-rich cache, shifting those inputs.
+
+**The rebuild.**
+- SCENARIO-MIXTURE MODEL (`ptgw_scenario_mixture` in props.py): four scenarios —
+  S1 win-straights · S2 win-decider · S3 lose-decider · S4 lose-straights.
+  P(over) = Σ P(scenario)·P(games > line | scenario). Confidence = 100·P(chosen
+  side). "80% confidence" now literally means the side hits 80% of the time.
+- EMPIRICAL FIT: constants fit from 2,028 real Sofascore matches (ATP n=995 BO3,
+  WTA n=941 BO3) — Sackmann (the spec's stated source) is DEAD (repos 404 / loader
+  disabled), so the substitute is the same per-match source the games_per_set fit
+  used; Shawn approved it. Method recorded in scratchpad/fit_ptgw_scenarios.py.
+  BO5 uses a spec-sanctioned sane fallback table (winner min 18, not 12); the GS
+  BO5 sample (ATP n=92, WTA n=0) is too thin to fit.
+- HARD WINNER FLOOR: a BO3 winner always wins ≥12 games (18 in BO5), so
+  P(over | win-scenario)=1.0 below that line — enforcing the identity the audit
+  rests on: P(over) ≥ P(win), always.
+- STRUCTURAL GUARDS (model-independent): BO3 line ≥11.5 → UNDER conf ≤ 100·P(lose)
+  (BO5 ≥17.5); ANY PTGW UNDER blocked when model win prob >40%; max 2 PTGW/board +
+  correlated-direction flag; implied match claim required on every PTGW pick.
+- EVR skipped for PTGW in confidence.py; _edge_cap, the +8 dominant bonus, and the
+  affinity underdog penalty skipped for PTGW in main.py — each is the same
+  bimodal-mean-vs-line comparison.
+- VERIFICATION GATE: PTGW_ENABLED (default FALSE). While false, PTGW is excluded
+  from the ranked board / 3x / POTD, /prop returns "under rebuild", and the new
+  chain runs in SHADOW (POD_PTGW_SHADOW logs its projection). Stays false until
+  Shawn reviews live shadow output and flips it.
+
+**Freeze compliance (scope check).** Non-PTGW paths are behaviour-identical:
+- props.py: edits confined to `import math`, the new mixture function, and inside
+  `project_player_games_won`. project_aces / _double_faults / _break_points /
+  _total_games: untouched.
+- confidence.py: the ONLY change adds `prop_type != "Player Total Games Won"` to
+  the EVR guard — for every non-PTGW prop that condition is True, so the block runs
+  byte-identically and every other prop gets the same EVR ceiling as before.
+- main.py: every shared-path edit (dominant bonus, underdog penalty, _edge_cap) is
+  gated by `not _ptgw_prob_base`, which is always True for non-PTGW props →
+  identical behaviour. The PTGW probability base and new response keys execute /
+  appear only for PTGW.
+No non-PTGW number can move.

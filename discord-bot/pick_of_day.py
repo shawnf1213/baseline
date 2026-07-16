@@ -104,6 +104,20 @@ PROP_MIN_CONF = {
     "Player Total Games Won":  PLAYER_TGW_MIN_CONF,    # 80
 }
 
+# ── PTGW verification gate (structural rebuild — see FREEZE_LOG.md) ───────────
+# The PTGW chain was rebuilt from a mean-vs-line EVR grade to a scenario-mixture
+# P(over) model after every 7/16 PTGW pick lost. Until Shawn reviews the live
+# shadow output and flips this flag, PTGW is EXCLUDED from the posted board, the
+# 3x slip, and POTD eligibility, and /prop returns "PTGW under rebuild". The new
+# chain STILL runs on every board evaluation and logs its projection in shadow
+# mode (POD_PTGW_SHADOW), so it can be judged on live slates without posting.
+# DO NOT default this to true — it stays false until explicitly enabled.
+PTGW_ENABLED = os.getenv("PTGW_ENABLED", "false").strip().lower() in (
+    "1", "true", "yes", "on")
+# Slate-correlation guard (Part 3): at most this many PTGW picks per board, and a
+# flag when multiple share the same implied direction. Only enforced once enabled.
+PTGW_MAX_PER_BOARD = 2
+
 
 # ── Thin-slate mode ──────────────────────────────────────────────────────────
 # Some days the board simply has nothing to analyse. Observed 2026-07-15: 1000
@@ -407,6 +421,12 @@ async def _evaluate(prop: dict, sem: asyncio.Semaphore):
             "projection": proj, "edge": edge, "edge_mag": abs(edge),
             "confidence": conf, "lean": data.get("lean"),
             "p1_win_prob": data.get("p1_win_prob"), "p2_win_prob": data.get("p2_win_prob"),
+            # PTGW scenario-mixture surface (None for other props) — used by the
+            # shadow log, the correlation guard, and the implied-claim display.
+            "ptgw_p_over": data.get("ptgw_p_over"),
+            "ptgw_p_win_match": data.get("ptgw_p_win_match"),
+            "ptgw_implied_claim": data.get("ptgw_implied_claim"),
+            "ptgw_knife_edge": data.get("ptgw_knife_edge"),
             "explanation": data.get("plain_english_explanation"),
             # Legacy combined score — kept for logging/diagnostics ONLY. It is NOT
             # the ranking key; see _rank_key(), which orders confidence-first with
@@ -715,6 +735,17 @@ async def _rank_board():
         if ptype == "Player Total Games Won":
             _apply_ptgw_knife_edge(r)
             ok, bar, path = _ptgw_qualify(r, thin=thin_slate)
+            if not PTGW_ENABLED:
+                # SHADOW MODE: the rebuilt chain has run (the backend logged its
+                # P(over) and the confidence here IS the new probability base); we
+                # record what it WOULD have done, then exclude it from the board.
+                log.info("POD_PTGW_SHADOW | %-22s conf=%-3.0f p_over=%-5s line=%-5s lean=%-5s "
+                         "would=%s bar=%d claim=%s — EXCLUDED (PTGW_ENABLED=false, rebuild)",
+                         (r.get("player") or "")[:22], r.get("confidence") or 0,
+                         r.get("ptgw_p_over"), r.get("line"), _lean_dir(r),
+                         "QUALIFY" if ok else "below", bar,
+                         r.get("ptgw_implied_claim") or "?")
+                continue
             log.info("POD_PTGW | %-22s conf=%-3.0f proj=%-6.2f line=%-5s lean=%-5s gap=%-3.0f "
                      "coin_flip=%-5s -> path=%s bar=%d -> %s",
                      (r.get("player") or "")[:22], r.get("confidence") or 0,
@@ -765,6 +796,26 @@ async def _rank_board():
             continue
         best_per_player.add(key)
         ordered.append(pk)
+
+    # ── Part 3 slate-correlation guard (only meaningful once PTGW_ENABLED) ────
+    # Cap PTGW at PTGW_MAX_PER_BOARD (keep the highest-ranked), and flag when the
+    # surviving PTGW picks all imply the same match direction (e.g. all "favourite
+    # wins in straights") — a correlated cluster that is really one bet repeated.
+    if PTGW_ENABLED:
+        _ptgw = [pk for pk in ordered if pk.get("prop_type") == "Player Total Games Won"]
+        if len(_ptgw) > PTGW_MAX_PER_BOARD:
+            _drop = set(id(pk) for pk in _ptgw[PTGW_MAX_PER_BOARD:])
+            log.info("POD_PTGW_CORR | %d PTGW picks > cap %d — dropping %d lowest-ranked",
+                     len(_ptgw), PTGW_MAX_PER_BOARD, len(_drop))
+            ordered = [pk for pk in ordered if id(pk) not in _drop]
+            _ptgw = _ptgw[:PTGW_MAX_PER_BOARD]
+        if len(_ptgw) >= 2:
+            _dirs = {_lean_dir(pk) for pk in _ptgw}
+            if len(_dirs) == 1:
+                for pk in _ptgw:
+                    pk["ptgw_correlated"] = True
+                log.info("POD_PTGW_CORR | %d PTGW picks ALL %s — correlated cluster flagged",
+                         len(_ptgw), next(iter(_dirs)))
     return ordered, thin_slate
 
 

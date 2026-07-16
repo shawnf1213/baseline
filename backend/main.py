@@ -1962,6 +1962,7 @@ async def prop_calculate(req: PropRequest):
                     p2_win_prob=tg_result.get("p2_win_prob"),
                     expected_sets=tg_result.get("expected_sets"),
                     tour=req.tour, match_format=match_fmt,
+                    prop_line=req.prop_line,
                     trace=_ctrace,
                 )
                 # Carry the affinity differential + win prob forward. PTGW's own
@@ -2119,6 +2120,46 @@ async def prop_calculate(req: PropRequest):
         # Data-quality / variance ceiling (Fixes B/C + ace variance) — passed to
         # the single finalize step so it caps AFTER all modifiers.
         _data_ceiling = conf_result.get("data_ceiling", 95)
+
+        # ══ PTGW: probability base, not the EVR/component grade (FREEZE exception) ══
+        # PTGW confidence maps DIRECTLY from the scenario-mixture P(over) computed in
+        # props.py. An "80% confidence" now literally means the modelled side hits
+        # 80% of the time. The lean is set from P(over) here (not proj-vs-line), and
+        # the mean-edge instruments — the +8 dominant bonus, the affinity underdog
+        # penalty, and _edge_cap — are ALL skipped for PTGW below, because each is a
+        # disguised comparison of the bimodal mean to the line.
+        _ptgw_prob_base = False
+        _ptgw_p_over = (result.get("ptgw_p_over")
+                        if req.prop_type == "Player Total Games Won" else None)
+        _ptgw_p_win = None          # selected player's match-win prob (0-1)
+        _ptgw_implied_claim = None
+        _ptgw_knife_edge = False
+        if _ptgw_p_over is not None:
+            _ptgw_lean = "OVER" if _ptgw_p_over >= 0.5 else "UNDER"
+            result["lean"] = _ptgw_lean            # authoritative for _resolve_lean
+            _p_side = _ptgw_p_over if _ptgw_lean == "OVER" else (1.0 - _ptgw_p_over)
+            confidence = 100.0 * _p_side
+            _ptgw_prob_base = True
+            _pw = result.get("ptgw_p_win_match")
+            _ptgw_p_win = _pw if isinstance(_pw, (int, float)) else (
+                (result.get("p1_win_prob") or 50.0) / 100.0)
+            _ptgw_knife_edge = 0.45 <= _ptgw_p_over <= 0.55
+            # Required output field: the implied MATCH claim behind the pick.
+            _loses = _ptgw_lean == "UNDER"
+            _straight = (result.get("ptgw_scenario_probs") or {})
+            _who = req.player_name or "player"
+            if _loses:
+                _ptgw_implied_claim = (
+                    "%s U%.1f ⇒ %s loses, likely in straight sets"
+                    % (_who, req.prop_line or 0, _who))
+            else:
+                _ptgw_implied_claim = (
+                    "%s O%.1f ⇒ %s wins, or loses a competitive 3-setter"
+                    % (_who, req.prop_line or 0, _who))
+            logger.info("PTGW_PROB_BASE | %s line=%.1f p_over=%.3f p_win=%.3f "
+                        "lean=%s base_conf=%.1f knife_edge=%s | %s",
+                        _who, req.prop_line or 0, _ptgw_p_over, _ptgw_p_win,
+                        _ptgw_lean, confidence, _ptgw_knife_edge, _ptgw_implied_claim)
         # Consistency tier for display comes straight from the confidence
         # breakdown — consistency is now scored ONCE, in confidence.py. There is
         # no separate main.py consistency penalty.
@@ -2161,7 +2202,8 @@ async def prop_calculate(req: PropRequest):
             _w1, _w2 = result.get("p1_win_prob"), result.get("p2_win_prob")
             _wp_gap = ((_w1 - _w2) if isinstance(_w1, (int, float)) and isinstance(_w2, (int, float))
                        else 0)
-        if (isinstance(proj_val, (int, float)) and req.prop_line
+        if (not _ptgw_prob_base
+                and isinstance(proj_val, (int, float)) and req.prop_line
                 and proj_val > req.prop_line * 1.75 and _wp_gap > 30 and _p1_surf_n >= 15):
             confidence += 8
             logger.info("DOMINANT_BONUS | +8 | proj=%.1f > 1.75x line=%.1f | wp_gap=%.0f | n=%d",
@@ -2242,6 +2284,7 @@ async def prop_calculate(req: PropRequest):
         _aff_gap = result.get("affinity_gap")
         _p1wp = result.get("p1_win_prob")
         if (req.prop_type == "Player Total Games Won"
+                and not _ptgw_prob_base                # replaced by the mixture + guards
                 and lean == "UNDER"
                 and isinstance(_aff_gap, (int, float))
                 and isinstance(_p1wp, (int, float))
@@ -2260,8 +2303,43 @@ async def prop_calculate(req: PropRequest):
 
         # Edge-based ceiling — a SEPARATE rule (caps confidence when the
         # projection barely clears the line), not the floor/cap. Applied before
-        # the single finalize step below.
-        confidence = _edge_cap(confidence, proj_val, req.prop_line)
+        # the single finalize step below. SKIPPED for PTGW: |proj − line| / line is
+        # the same bimodal-mean-vs-line fallacy the rebuild removed — a high-P(over)
+        # PTGW pick can have a tiny mean edge, and edge_cap would wrongly gut it.
+        if not _ptgw_prob_base:
+            confidence = _edge_cap(confidence, proj_val, req.prop_line)
+
+        # ══ PART 3 — HARD STRUCTURAL GUARDS (cheap invariants, model-independent) ══
+        # These hold even if the mixture has a bug. Applied after all modifiers,
+        # before the single finalize/clamp.
+        _ptgw_guard_note = None
+        if _ptgw_prob_base:
+            _is_bo5 = result.get("is_bo5") or (match_fmt == "best_of_5")
+            _line = req.prop_line or 0
+            _p_lose = 1.0 - (_ptgw_p_win if isinstance(_ptgw_p_win, (int, float)) else 0.5)
+            # Guard 1 — an UNDER on a game-total line at/above the winner's floor+ can
+            # only win when the player LOSES: cap UNDER confidence at 100·P(lose).
+            #   BO3 line ≥ 11.5  ·  BO5 line ≥ 17.5
+            _guard_line = 17.5 if _is_bo5 else 11.5
+            if lean == "UNDER" and _line >= _guard_line:
+                _cap = 100.0 * _p_lose
+                if confidence > _cap:
+                    _ptgw_guard_note = (
+                        "UNDER capped at 100·P(lose)=%.0f (line %.1f ≥ %.1f: this "
+                        "wins only if the player loses)" % (_cap, _line, _guard_line))
+                    logger.info("PTGW_GUARD_1 | conf %.1f -> %.1f | %s",
+                                confidence, _cap, _ptgw_guard_note)
+                    confidence = min(confidence, _cap)
+            # Guard 2 — block ANY PTGW UNDER when the model's own win prob for the
+            # player exceeds 40%. Such a player clears the winner's-floor line the
+            # majority of the time; an UNDER is structurally a bad bet.
+            if lean == "UNDER" and isinstance(_ptgw_p_win, (int, float)) and _ptgw_p_win > 0.40:
+                _ptgw_guard_note = (
+                    "UNDER BLOCKED — model win prob %.0f%% > 40%%; player clears the "
+                    "line more often than not" % (_ptgw_p_win * 100))
+                logger.info("PTGW_GUARD_2 | conf %.1f -> 25 (blocked) | %s",
+                            confidence, _ptgw_guard_note)
+                confidence = min(confidence, 25)   # below every qualification bar
 
         # ── SINGLE floor/cap — the final confidence step, in one place ────────
         # floor 25 / cap 95 (minus any per-prop ceiling, minus the data-quality /
@@ -2438,6 +2516,14 @@ async def prop_calculate(req: PropRequest):
             "confidence":           confidence,
             "confidence_cap_reason": confidence_cap_reason,
             "confidence_breakdown": conf_result["breakdown"],
+            # ── PTGW scenario-mixture surface (None for other props) ──────────────
+            "ptgw_p_over":          _ptgw_p_over,
+            "ptgw_p_win_match":     (round(_ptgw_p_win, 4)
+                                     if isinstance(_ptgw_p_win, (int, float)) else None),
+            "ptgw_scenario_probs":  result.get("ptgw_scenario_probs"),
+            "ptgw_implied_claim":   _ptgw_implied_claim,
+            "ptgw_knife_edge":      _ptgw_knife_edge,
+            "ptgw_guard_note":      _ptgw_guard_note,
             # Feature 3 — data freshness / injury flag (advisory)
             "freshness_level":      _freshness.get("level", ""),
             "freshness_message":    _freshness.get("message", ""),

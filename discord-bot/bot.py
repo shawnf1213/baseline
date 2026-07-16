@@ -597,6 +597,12 @@ def prop_embed(player, opponent, prop_type, surface, court_display, line, data) 
         comp = (f"\n🎾 **{player}'s** games won  ·  {_num(gh)} held on serve + "
                 f"{_num(gb)} by breaking") if gh is not None else f"\n🎾 **{player}'s** games won"
         g_proj += comp
+        # Required output: the implied MATCH claim + the scenario-mixture P(over).
+        _claim = data.get("ptgw_implied_claim")
+        _pov = data.get("ptgw_p_over")
+        if _claim:
+            _pov_txt = (f"  ·  P(over) **{_pov:.0%}**" if isinstance(_pov, (int, float)) else "")
+            g_proj += f"\n📐 {_claim}{_pov_txt}"
     verdict = "\n\n".join(x for x in (g_context, court_line, g_proj) if x)
 
     e = discord.Embed(
@@ -937,6 +943,16 @@ async def prop(
         return
     log.info("CMD /prop | user=%s | %s vs %s | %s | %s | court=%s | line=%s",
              interaction.user.id, player, opponent, prop_type.value, surface.value, court, line)
+    # PTGW is under a structural rebuild (scenario-mixture model). Until it is
+    # verified and re-enabled, /prop does not serve it. The new chain still runs
+    # in the daily board's shadow log; it just isn't offered on demand here.
+    if prop_type.value == "Player Total Games Won" and not pick_of_day.PTGW_ENABLED:
+        log.info("CMD /prop | PTGW requested while disabled — returning rebuild notice")
+        await _send_error(interaction,
+            "**Player Total Games Won is under rebuild.** The projection method for "
+            "this prop is being reworked (bimodal scenario model) and is temporarily "
+            "unavailable. Other props are unaffected.")
+        return
     try:
         surface_val = surface.value
         court = (court or "None").strip()
@@ -1734,7 +1750,12 @@ def _ranked_line(pick: dict, rank: int) -> str:
         bits.append(f"Proj {proj:.1f}")
     if isinstance(conf, (int, float)):
         bits.append(f"{conf:.0f}%")
-    return l1 + "\n" + " · ".join(bits)
+    out = l1 + "\n" + " · ".join(bits)
+    # PTGW carries its implied match claim on the ranked line too (required field).
+    if pick.get("prop_type") == "Player Total Games Won" and pick.get("ptgw_implied_claim"):
+        _corr = "  ⚠️ correlated" if pick.get("ptgw_correlated") else ""
+        out += f"\n📐 _{pick['ptgw_implied_claim']}_{_corr}"
+    return out
 
 
 def potd_embed(pick: dict) -> discord.Embed:

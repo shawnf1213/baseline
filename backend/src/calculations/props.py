@@ -1,4 +1,5 @@
 import logging
+import math
 
 from src.constants import (
     COURT_CPR, CPR_NEUTRAL, ATP_TOUR_AVERAGES, WTA_TOUR_AVERAGES,
@@ -1565,6 +1566,113 @@ def _expected_sets(tour: str, court: str, p1_wr: float = 50.0, p2_wr: float = 50
     return exp_sets
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# PTGW SCENARIO-MIXTURE MODEL  (FREEZE exception — see FREEZE_LOG.md)
+# ──────────────────────────────────────────────────────────────────────────────
+# The old PTGW chain projected a single MEAN and graded it vs the line with EVR.
+# PTGW is BIMODAL — a straight-set loss lands ~6-9 games, ANY other outcome lands
+# ~12-17 — so the mean sits in a valley the distribution rarely occupies, and a
+# "fat edge on the mean" is a disguised moneyline bet. We now model the four match
+# scenarios explicitly and compute P(over the line) as a probability mixture.
+#
+# Constants below are EMPIRICAL, fit from 2,028 real Sofascore matches (ATP n=995
+# BO3, WTA n=941 BO3) — the same per-match source the games_per_set fit used, and
+# the fit method is recorded in scratchpad/fit_ptgw_scenarios.py. Sackmann (the
+# spec's stated source) is dead (repos 404 / loader disabled) so this is the
+# forced substitute, approved by Shawn. Each entry: per-tour BO3 3-set base rates
+# and per-scenario (player games-won) mean & sd.
+#   S1 win-in-straights · S2 win-in-decider · S3 lose-in-decider · S4 lose-straights
+_PTGW_SCEN_FIT = {
+    "ATP": {"p3_win": 0.429, "p3_lose": 0.379,
+            "scen": {"S1": (12.36, 1.03), "S2": (16.88, 2.10),
+                     "S3": (13.24, 2.80), "S4": (7.37, 2.24)}},
+    "WTA": {"p3_win": 0.316, "p3_lose": 0.393,
+            "scen": {"S1": (12.28, 0.69), "S2": (15.85, 1.71),
+                     "S3": (13.01, 2.31), "S4": (6.29, 2.26)}},
+}
+# BO5 SANE FALLBACK (spec-sanctioned): tour-level slates are ~all BO3, and the GS
+# BO5 sample (ATP n=92, WTA n=0) is too thin to fit. Winner minimum is 18 games
+# (3 sets × 6), not 12 — the whole distribution shifts up. Values are the BO3
+# shape scaled to the BO5 set structure; flagged as fallback, not fit.
+_PTGW_SCEN_BO5 = {
+    "p3_win": 0.55, "p3_lose": 0.45,   # "3 sets" here means "went past the minimum"
+    "scen": {"S1": (18.6, 1.4), "S2": (26.0, 3.2),
+             "S3": (20.5, 3.6), "S4": (11.2, 3.0)},
+}
+# Win-prob modulation of the 3-set split: a more dominant favourite wins in
+# straights more often (lower P(3|win)) and, on the rare loss, loses closer
+# (higher P(3|lose)). Light linear overlay on the empirical base, clamped. This is
+# the only MODELLED (non-fit) layer; the base rates and games distributions are data.
+_PTGW_GAP_K = 0.60
+_PTGW_P3_MIN, _PTGW_P3_MAX = 0.12, 0.62
+
+
+def _norm_sf(x, mu, sd):
+    """P(value > x) for a Normal(mu, sd), via the erf survival function. Games are
+    integers and the line is always X.5, so no continuity correction is needed."""
+    if sd is None or sd <= 0:
+        return 1.0 if mu > x else 0.0
+    return 0.5 * math.erfc((x - mu) / (sd * _SQRT2))
+
+
+_SQRT2 = 2.0 ** 0.5
+
+
+def ptgw_scenario_mixture(p_sel, prop_line, tour="ATP", match_format="best_of_3"):
+    """Return the PTGW scenario mixture for the SELECTED player.
+
+    p_sel      the selected player's match-win probability (0-1)
+    prop_line  the PTGW line (e.g. 11.5)
+    Returns dict: p_over, mixture_mean, scenario probabilities, and the per-scenario
+    contribution to P(over) — everything the confidence step and trace need.
+    """
+    p_sel = max(0.02, min(0.98, float(p_sel)))
+    is_bo5 = match_format == "best_of_5"
+    fit = _PTGW_SCEN_BO5 if is_bo5 else _PTGW_SCEN_FIT.get(tour, _PTGW_SCEN_FIT["ATP"])
+    gap = p_sel - 0.5
+    p3_win = max(_PTGW_P3_MIN, min(_PTGW_P3_MAX, fit["p3_win"] - _PTGW_GAP_K * gap))
+    p3_lose = max(_PTGW_P3_MIN, min(_PTGW_P3_MAX, fit["p3_lose"] + _PTGW_GAP_K * gap))
+
+    # Scenario probabilities from the selected player's perspective.
+    p = {
+        "S1": p_sel * (1.0 - p3_win),        # win in straights
+        "S2": p_sel * p3_win,                # win in a decider
+        "S3": (1.0 - p_sel) * p3_lose,       # lose in a decider
+        "S4": (1.0 - p_sel) * (1.0 - p3_lose),  # lose in straights
+    }
+    scen = fit["scen"]
+    # HARD STRUCTURAL FLOOR: a match WINNER always wins at least (sets-to-win × 6)
+    # games — 18 in BO5, 12 in BO3 — because every set won needs ≥6 games. So for
+    # the two win scenarios, P(games > line) is EXACTLY 1.0 whenever the line sits
+    # below that floor. This is the identity the audit rests on: P(over 11.5) can
+    # never be less than P(win). The normal tail would wrongly shave it to ~0.87;
+    # this enforces the physics instead.
+    winner_floor = 18 if is_bo5 else 12
+    p_over = 0.0
+    mix_mean = 0.0
+    contrib = {}
+    for s in ("S1", "S2", "S3", "S4"):
+        mu, sd = scen[s]
+        if s in ("S1", "S2") and prop_line < winner_floor:
+            po_s = 1.0                       # winner always clears a sub-floor line
+        else:
+            po_s = _norm_sf(prop_line, mu, sd)   # P(games > line | scenario)
+        contrib[s] = round(p[s] * po_s, 4)
+        p_over += p[s] * po_s
+        mix_mean += p[s] * mu
+    p_over = max(0.0, min(1.0, p_over))
+    return {
+        "p_over": p_over,
+        "p_under": 1.0 - p_over,
+        "mixture_mean": mix_mean,
+        "scenario_probs": {k: round(v, 4) for k, v in p.items()},
+        "over_contrib": contrib,
+        "p3_win": round(p3_win, 3),
+        "p3_lose": round(p3_lose, 3),
+        "p_win_match": round(p_sel, 4),
+    }
+
+
 def project_player_games_won(
     player_stats: dict,
     opponent_stats: dict,
@@ -1577,6 +1685,7 @@ def project_player_games_won(
     expected_sets: float,
     tour: str = "ATP",
     match_format: str = "best_of_3",
+    prop_line: float = None,
     trace: list = None,
 ) -> dict:
     """Project how many INDIVIDUAL games the SELECTED player wins in the match
@@ -1637,6 +1746,30 @@ def project_player_games_won(
     projection = fav_games if sel_is_fav else opp_games
     _pre_floor = projection
     projection = max(4.5, projection)                   # floor — even a swept loser wins a few
+
+    # ── Scenario-mixture P(over) — the STRUCTURAL replacement for mean-vs-line ──
+    # The point estimate above (`projection`) is retained only as a display value
+    # and for backward compatibility. Grading no longer compares it to the line;
+    # instead we compute P(games > line) from the four-scenario mixture, which is
+    # the correct instrument for a bimodal distribution. Confidence (confidence.py)
+    # and the lean (main.py) now read `p_over` from here — NOT projection vs line.
+    mix = None
+    if isinstance(prop_line, (int, float)) and prop_line > 0:
+        mix = ptgw_scenario_mixture(p_sel, prop_line, tour=tour, match_format=match_format)
+        # The mixture mean is the physically-honest central tendency (it integrates
+        # the same set structure); use it as the displayed projection so the number
+        # the user sees is consistent with the probability that grades it.
+        projection = max(4.5, mix["mixture_mean"])
+        _trace(trace, "PTGW_scenario_mixture",
+               {"line": prop_line,
+                "p_win_match": mix["p_win_match"],
+                "scenario_probs": mix["scenario_probs"],
+                "p3_win": mix["p3_win"], "p3_lose": mix["p3_lose"],
+                "over_contrib": mix["over_contrib"]},
+               round(mix["p_over"], 4), round(projection, 2),
+               "P(over %.1f) = Σ P(scenario)·P(games>line|scenario) = %.3f; "
+               "mixture mean %.2f is the displayed projection (NOT graded vs line)"
+               % (prop_line, mix["p_over"], mix["mixture_mean"]))
 
     # ── Component trace ──────────────────────────────────────────────────────
     # PTGW had NO trace coverage: its projection comes from here, but only aces
@@ -1714,6 +1847,13 @@ def project_player_games_won(
         "p2_win_prob":    p2_win_prob,
         "is_bo5":         match_format == "best_of_5",
         "lean":           "",
+        # Scenario-mixture outputs (None when no line was supplied — e.g. a bare
+        # projection request). p_over is the sole grading input for PTGW.
+        "ptgw_p_over":       (round(mix["p_over"], 4) if mix else None),
+        "ptgw_p_under":      (round(mix["p_under"], 4) if mix else None),
+        "ptgw_p_win_match":  (mix["p_win_match"] if mix else None),
+        "ptgw_scenario_probs": (mix["scenario_probs"] if mix else None),
+        "ptgw_mixture_mean": (round(mix["mixture_mean"], 2) if mix else None),
     }
 
 
