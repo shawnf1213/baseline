@@ -141,17 +141,47 @@ PTGW_MAX_PER_BOARD = 2
 # Gated on candidates actually SCORED (post 24h-window, post-resolution) — that is
 # the real "props to analyse" count, not the raw listing.
 THIN_SLATE_SCORED_MAX = 25   # fewer scored candidates than this => thin slate
-THIN_SLATE_MIN_CONF   = 70   # every gate drops to this when thin
+THIN_SLATE_MIN_CONF   = 70   # (v1) every gate dropped to this when thin — moot under v2's 65 floor
 THIN_SLATE_NOTE = "⚠️ Play lightly — slate not very full today."
 
 
+# ══ BOARD QUALIFICATION POLICY v2 (2026-07-16) ═══════════════════════════════
+# Selection policy ONLY — no projection, confidence, or guard math changes here.
+#   • Board + 3x eligibility: ANY prop qualifies at confidence >= 65. This single
+#     floor replaces every v1 per-prop bar (standard 70/75, Total Games 85,
+#     PTGW 80, and the PTGW blowout-UNDER 75 exception — now moot).
+#   • 3x slip legs must be >= 70 (one notch above the floor — don't build slips
+#     from floor picks).
+#   • Pick of the Day: a uniform 80 across ALL prop types. Double Faults is the
+#     ONLY prop permanently blocked from the ⭐ slot (it still populates the board
+#     and 3x normally). See _star_eligible.
+# What is deliberately UNCHANGED: all confidence computation, knife-edge checks,
+# the PTGW structural guards, depth ceilings (they gate via confidence.py exactly
+# as before), and the ranking rule (confidence DESC, edge magnitude tiebreaker).
+BOARD_MIN_CONF = 65   # uniform board + 3x-pool floor
+SLIP_MIN_CONF  = 70   # a 3x leg must clear this (above the board floor)
+POTD_THRESHOLD = 80   # uniform Pick-of-the-Day bar, every eligible prop
+# The one and only ⭐ exclusion: Double Faults may never be the Pick of the Day.
+POD_STAR_EXCLUDE_PROPS = {"Double Faults"}
+# One week from the v2 cutover, log picks that qualify under v2 but would have been
+# excluded under v1 (so we can see exactly what the looser floor lets in).
+V2_CUTOVER_DATE   = "2026-07-16"
+V2_DIFF_LOG_UNTIL = "2026-07-23"
+
+
 def _min_conf_for(prop_type: str, thin: bool = False) -> int:
-    """The minimum confidence a candidate of this prop type must clear to qualify.
-    Normal board: Total Games → 85, Player Total Games Won → 80 (subject to the
-    bespoke blowout paths), everything else (Aces / Break Points) → 75.
-    THIN SLATE: every prop drops to 70 — see the block comment above."""
-    if thin:
-        return THIN_SLATE_MIN_CONF
+    """v2: the board qualification floor is a UNIFORM 65 for every prop type. The
+    old per-prop bars and the thin-slate drop are gone — 65 is already below the
+    old thin floor of 70, so a thin slate no longer needs its own (lower-would-be)
+    bar. ``thin`` is accepted for signature stability but no longer changes the
+    floor. Confidence itself is untouched; this is purely which picks make the list."""
+    return BOARD_MIN_CONF
+
+
+def _v1_min_conf_for(prop_type: str) -> int:
+    """v1 bar for a prop, for the one-week v2-vs-v1 delta log ONLY. Not used for
+    selection. Mirrors the retired per-prop bars (Total Games 85→ its 80 ceiling,
+    PTGW 80, else 75)."""
     return PROP_MIN_CONF.get(prop_type, STANDARD_MIN_CONF)
 
 SEARCH_TIMEOUT = 10
@@ -175,10 +205,11 @@ _env_excl = os.getenv("POD_EXCLUDE", "")
 if _env_excl.strip():
     _POD_EXCLUDE |= {_norm(x) for x in _env_excl.split(",") if x.strip()}
 
-# Prop types never used for Pick of the Day (excluded by request).
-# Player Total Games Won was excluded on 2026-07-13 and re-included on 2026-07-14
-# by request, gated at 80 via its bespoke blowout paths (see _ptgw_qualify).
-_POD_EXCLUDE_PROPS = {"Double Faults"}
+# Prop types excluded from the BOARD entirely. v2: this is now EMPTY. Double
+# Faults used to be board-excluded; under v2 it populates the ranked board and 3x
+# normally and is blocked ONLY from the ⭐ slot (POD_STAR_EXCLUDE_PROPS). No prop
+# is barred from the board itself.
+_POD_EXCLUDE_PROPS = set()
 
 
 def _is_excluded(name: str) -> bool:
@@ -615,12 +646,11 @@ def _rank_key(pk: dict) -> tuple:
 
 
 def _passes_quality(pk: dict) -> bool:
-    """Quality gate. Player Total Games Won uses the bespoke path logic above (75
-    blowout-under / strict blowout-over / 80 standard); every other prop clears a
-    flat bar (75 standard, 80 Total Games)."""
-    if pk.get("prop_type") == "Player Total Games Won":
-        return _ptgw_qualify(pk)[0]
-    return (pk.get("confidence") or 0) >= _min_conf_for(pk.get("prop_type"))
+    """v2 board quality gate — a single uniform floor for EVERY prop type. The
+    PTGW bespoke bar logic is retired; PTGW's depth ceiling and structural guards
+    still shape its confidence upstream (in confidence.py / main.py), and here it
+    clears the same 65 floor as everything else."""
+    return (pk.get("confidence") or 0) >= BOARD_MIN_CONF
 
 
 # Per-match stat field per prop, for the recent-form-vs-line check.
@@ -729,46 +759,44 @@ async def _rank_board():
             continue
         ptype = r.get("prop_type")
         by_type_eval[ptype] = by_type_eval.get(ptype, 0) + 1
-        # Player Total Games Won: apply the knife-edge penalty (mutates conf +
-        # coin_flip) FIRST, then resolve its bespoke qualification path.
-        path = ""
+        # PTGW: apply the knife-edge penalty (mutates conf + coin_flip) FIRST — a
+        # confidence adjustment, UNCHANGED by v2 — then, while the rebuild is
+        # disabled, record its shadow projection and exclude it from the board.
         if ptype == "Player Total Games Won":
             _apply_ptgw_knife_edge(r)
-            ok, bar, path = _ptgw_qualify(r, thin=thin_slate)
             if not PTGW_ENABLED:
-                # SHADOW MODE: the rebuilt chain has run (the backend logged its
-                # P(over) and the confidence here IS the new probability base); we
-                # record what it WOULD have done, then exclude it from the board.
                 log.info("POD_PTGW_SHADOW | %-22s conf=%-3.0f p_over=%-5s line=%-5s lean=%-5s "
-                         "would=%s bar=%d claim=%s — EXCLUDED (PTGW_ENABLED=false, rebuild)",
+                         "claim=%s — EXCLUDED (PTGW_ENABLED=false, rebuild)",
                          (r.get("player") or "")[:22], r.get("confidence") or 0,
                          r.get("ptgw_p_over"), r.get("line"), _lean_dir(r),
-                         "QUALIFY" if ok else "below", bar,
                          r.get("ptgw_implied_claim") or "?")
                 continue
-            log.info("POD_PTGW | %-22s conf=%-3.0f proj=%-6.2f line=%-5s lean=%-5s gap=%-3.0f "
-                     "coin_flip=%-5s -> path=%s bar=%d -> %s",
-                     (r.get("player") or "")[:22], r.get("confidence") or 0,
-                     r.get("projection") or 0.0, r.get("line"), _lean_dir(r),
-                     _win_prob_gap(r) or 0.0, bool(r.get("coin_flip")), path, bar,
-                     "QUALIFIES" if ok else "below")
-        else:
-            bar = _min_conf_for(ptype, thin=thin_slate)
-            ok = (r.get("confidence") or 0) >= bar
+        # v2: ONE uniform floor for every prop type.
+        bar = _min_conf_for(ptype)
         conf = r.get("confidence") or 0
+        ok = conf >= bar
         log.info("POD_CAND | %-22s %-18s line=%-5s conf=%-3.0f proj=%-6.2f edge=%+5.2f "
-                 "recent_ok=%-5s bar=%d%s -> %s",
+                 "recent_ok=%-5s bar=%d -> %s",
                  (r.get("player") or "")[:22], (ptype or "")[:18],
                  r.get("line"), conf, r.get("projection") or 0.0, r.get("edge") or 0.0,
-                 _recent_supports_lean(r), bar, (" [%s]" % path) if path else "",
-                 "QUALIFIES" if ok else ("below %s bar %d" % (ptype, bar)))
+                 _recent_supports_lean(r), bar,
+                 "QUALIFIES" if ok else ("below v2 floor %d" % bar))
         if ok:
             picks.append(r)
             by_type_qual[ptype] = by_type_qual.get(ptype, 0) + 1
-    log.info("POD: evaluated=%d eligible=%d (bars: standard=%d, Total Games=%d, "
-             "Player TGW=%d)",
-             len(uniq), len(picks), STANDARD_MIN_CONF, TOTAL_GAMES_MIN_CONF,
-             PLAYER_TGW_MIN_CONF)
+            # One-week v2-vs-v1 delta: would this pick have been EXCLUDED under v1?
+            if datetime.now(_ET).strftime("%Y-%m-%d") <= V2_DIFF_LOG_UNTIL:
+                _v1_excluded_df = ptype == "Double Faults"   # v1 barred DF from the board
+                _v1_ok = (not _v1_excluded_df) and conf >= _v1_min_conf_for(ptype)
+                if not _v1_ok:
+                    log.info("POD_V2_DIFF | %-22s %-18s conf=%-3.0f line=%-5s -> ADDED by v2 "
+                             "(v1 %s) | new since the uniform-65 floor",
+                             (r.get("player") or "")[:22], (ptype or "")[:18], conf,
+                             r.get("line"),
+                             "excluded DF from board" if _v1_excluded_df
+                             else "bar was %d" % _v1_min_conf_for(ptype))
+    log.info("POD: evaluated=%d eligible=%d (v2 uniform board floor=%d, POTD bar=%d)",
+             len(uniq), len(picks), BOARD_MIN_CONF, POTD_THRESHOLD)
 
     # ── BOARD COMPOSITION ────────────────────────────────────────────────────
     # One line per prop type: how many were scored vs how many qualified, and what
@@ -861,8 +889,9 @@ def _select_slip(ordered: list, potd: list) -> list:
             two legs must come from two DIFFERENT matches) and a prop-diversity
             preference (within SLIP_DIVERSITY_WINDOW confidence points, prefer
             two different prop types).
-    STEP 3: only return a slip if TWO candidates clear their standard quality
-            bar. Never force a weak second leg — return [] and log a thin pool.
+    STEP 3: only return a slip if TWO candidates clear the 3x leg bar (v2:
+            SLIP_MIN_CONF = 70, one notch above the board floor — don't build
+            slips from floor picks). Never force a weak second leg — return [].
     """
     if not ordered:
         return []
@@ -872,12 +901,12 @@ def _select_slip(ordered: list, potd: list) -> list:
     # undercuts the "distinct value from each post" goal, so exclude those whole
     # matches — not just the exact (player, prop_type) already picked.
     potd_matches = {_match_key(p) for p in (potd or [])}
-    # ``ordered`` already contains only qualifying picks (past the prop-type bar
-    # and past its prop-type bar); re-check _passes_quality defensively.
+    # ``ordered`` already contains board-qualifying picks (>= 65). 3x legs must
+    # additionally clear the higher SLIP_MIN_CONF (70) bar.
     pool = [c for c in ordered
             if (_norm(c["player"]), c["prop_type"]) not in potd_keys
             and _match_key(c) not in potd_matches
-            and _passes_quality(c)]
+            and (c.get("confidence") or 0) >= SLIP_MIN_CONF]
     if len(pool) < 2:
         log.info("3x: pool too thin after POTD exclusion (%d qualifying) — no slip today",
                  len(pool))
@@ -965,36 +994,21 @@ STAR_PTGW_MIN_RATE_GAMES = 40    # service games behind the player's hold rate
 
 
 def _star_eligible(pk: dict) -> bool:
-    """True if this play may occupy the ⭐ Pick-of-the-Day slot.
+    """v2: a play may hold the ⭐ Pick-of-the-Day slot iff it clears the uniform
+    80 threshold AND its prop is not permanently star-blocked.
 
-      • Aces / Break Points Won — always eligible.
-      • Total Games            — needs a 90%+ favourite.
-      • Player Total Games Won — UNDER needs an overwhelmingly dominant opponent
-        (>=85% win prob) AND a hold rate built on >=40 service games. OVER is not
-        eligible: a games-won OVER leading the card has no structural story.
-    """
-    prop = pk.get("prop_type")
-    d = pk.get("data") or {}
+    ONE exclusion mechanism, ONE entry: Double Faults may never be the Pick of the
+    Day, however high it scores (it still populates the board and 3x). Every other
+    prop — Aces, Break Points Won, Total Games, Player Total Games Won — is
+    star-eligible at >= 80. The old TG-90%-favourite bar and the PTGW-UNDER
+    structural requirement are RETIRED; those confidence-shaping stories now live
+    entirely inside the projection/guard chain, not in a second selection gate.
 
-    if prop == "Player Total Games Won":
-        if _lean_dir(pk) != "UNDER":
-            return False
-        p1wp = d.get("p1_win_prob")
-        if not isinstance(p1wp, (int, float)):
-            return False
-        opp_wp = 100.0 - p1wp
-        if opp_wp < STAR_PTGW_MIN_OPP_WP:
-            return False
-        # Thin-sample guard: the rates that justify a games-won read must exist.
-        ps = d.get("player_stats") or {}
-        sg_n = ps.get("service_games_n")
-        return isinstance(sg_n, (int, float)) and sg_n >= STAR_PTGW_MIN_RATE_GAMES
-
-    if prop != "Total Games":
-        return True
-    wps = [w for w in (d.get("p1_win_prob"), d.get("p2_win_prob"))
-           if isinstance(w, (int, float))]
-    return bool(wps) and max(wps) >= STAR_TOTAL_GAMES_MIN_WP
+    (PTGW is theoretical here until PTGW_ENABLED flips: its confidence ceiling is
+    80/76, so it can only ever star at exactly its ceiling — no special handling.)"""
+    if pk.get("prop_type") in POD_STAR_EXCLUDE_PROPS:
+        return False
+    return (pk.get("confidence") or 0) >= POTD_THRESHOLD
 
 
 def _promote_star(ordered: list):

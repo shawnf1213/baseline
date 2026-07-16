@@ -1329,9 +1329,13 @@ MSG_NO_PICK = (
     "confidence threshold (or the board is unavailable). Try again later."
 )
 MSG_NO_PICK_DAILY = (
-    "No qualifying plays today — nothing on the board cleared our quality bar "
-    "(Aces / Break Points at 75%+ confidence, Total Games Won at 80%+, Total "
-    "Games at 90%+). We'd rather sit out than force a weak play. Check back tomorrow. 🎾"
+    "No qualifying plays today — nothing on the board cleared our 65% board "
+    "floor. We'd rather sit out than force a weak play. Check back tomorrow. 🎾"
+)
+# v2 no-POTD fallback: the board HAS plays, but none cleared the 80% Pick-of-the-
+# Day bar. The ranked board still posts; this rides in place of the ⭐ embed.
+MSG_NO_POTD_HAS_BOARD = (
+    "**No Pick of the Day today — no play met the 80% bar. Board below.**"
 )
 
 
@@ -1851,7 +1855,22 @@ def ranked_embeds(ranked: list, start_rank: int = 1, total: int = None,
     if not ranked:
         return []
 
-    blocks = [_ranked_line(p, i) for i, p in enumerate(ranked, start_rank)]
+    # v2 tier break: a "— Volume plays —" divider between the conviction tier
+    # (>= 80, Pick-of-the-Day-grade) and the volume tier (65–79). Inserted once, at
+    # the first sub-80 play, and only when this embed set actually spans both tiers
+    # (the ranking is confidence-desc, so all sub-80 plays are contiguous at the
+    # bottom). Lets members read conviction vs coverage at a glance.
+    _thresh = pick_of_day.POTD_THRESHOLD
+    _has_conviction = any(isinstance(p.get("confidence"), (int, float))
+                          and p["confidence"] >= _thresh for p in ranked)
+    blocks, _divider_placed = [], False
+    for i, p in enumerate(ranked, start_rank):
+        c = p.get("confidence")
+        if (_has_conviction and not _divider_placed
+                and isinstance(c, (int, float)) and c < _thresh):
+            blocks.append("**— Volume plays (65–79%) —**")
+            _divider_placed = True
+        blocks.append(_ranked_line(p, i))
 
     pages, cur = [], []
     for b in blocks:
@@ -1945,17 +1964,32 @@ async def _post_daily_picks(channel, track: bool = True) -> str:
     # No ⭐ when nothing on the board can carry it (see _promote_star): post the
     # ranked board alone rather than badge a play that failed the eligibility
     # rules. A Pick of the Day is a claim; some boards don't support one.
+    # v2 no-POTD fallback: the slot NEVER silently vanishes. When nothing clears
+    # the 80% bar we still post the full ranked board, with a standard message in
+    # place of the ⭐ embed, and log the miss (date + how close the best star-
+    # eligible play came).
+    _no_potd_line = None
     if has_star:
         post = [potd_embed(ranked[0])] + ranked_embeds(ranked[1:], start_rank=2,
                                                        total=len(ranked))
     else:
         post = ranked_embeds(ranked, start_rank=1, total=len(ranked))
-        log.info("daily picks: NO ⭐ — no play on the board is star-eligible; "
-                 "posting the ranked board alone")
-    # Thin-slate note — ONE line, and ONLY when the gates actually dropped to 70.
-    # It rides the message content (not an embed) so it's the first thing read,
-    # before the plays it qualifies. Silent on a normal board.
+        _no_potd_line = MSG_NO_POTD_HAS_BOARD
+        # "Highest star-eligible confidence" = best non-DF play (DF can't star).
+        _star_confs = [p.get("confidence") for p in ranked
+                       if p.get("prop_type") not in pick_of_day.POD_STAR_EXCLUDE_PROPS
+                       and isinstance(p.get("confidence"), (int, float))]
+        _hi = max(_star_confs) if _star_confs else None
+        log.info("POD_NO_POTD | %s | no play met the %d%% bar | highest star-eligible "
+                 "confidence=%s | board still posted (%d plays)",
+                 datetime.datetime.now(POD_TZINFO).strftime("%Y-%m-%d"),
+                 pick_of_day.POTD_THRESHOLD,
+                 ("%.0f" % _hi) if _hi is not None else "n/a", len(ranked))
+    # Message content: @everyone (when tracking), the no-POTD line, and the thin-
+    # slate note — each on its own line, in the order read.
     _content = "@everyone" if track else None
+    if _no_potd_line:
+        _content = ((_content + "\n") if _content else "") + _no_potd_line
     if thin_slate:
         _content = ((_content + "\n") if _content else "") + pick_of_day.THIN_SLATE_NOTE
     await channel.send(

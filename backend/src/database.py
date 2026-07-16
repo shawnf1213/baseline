@@ -64,6 +64,13 @@ try:
         # trustworthy calibration inputs. The pick RECORD stands as posted and is
         # never altered; this flag only excludes it from calibration maths.
         pre_guard = Column(Integer, default=0)
+        # Board qualification policy in force when this pick was selected:
+        #   v1 = per-prop bars (standard 70/75, Total Games 85, PTGW 80, blowout
+        #        exception; DF board-excluded; TG-90 / PTGW star gates)
+        #   v2 = uniform 65 board floor, uniform 80 POTD bar, DF star-blocked only
+        # Existing rows are backfilled to v1; new picks default to v2. Calibration
+        # can report per-prop hit rates split by policy version without a reset.
+        board_policy_version = Column(String, default="v2")
 
         def to_dict(self) -> dict:
             return {
@@ -84,6 +91,7 @@ try:
                 "pick_group": (self.pick_group or "potd"),
                 "confidence_breakdown": self.confidence_breakdown,
                 "pre_guard": int(self.pre_guard or 0),
+                "board_policy_version": (self.board_policy_version or "v1"),
             }
 
     class CacheEntry(Base):
@@ -154,6 +162,22 @@ def init_db() -> None:
                                 _bf.rowcount)
                 conn.execute(text(
                     "ALTER TABLE picks ALTER COLUMN pre_guard SET DEFAULT 0"))
+                # board_policy_version: every row existing when this column is
+                # first added predates the v2 policy, so backfill NULL -> 'v1'
+                # exactly once, then set the column default to 'v2' so new picks
+                # are v2 automatically. log_pick also passes 'v2' explicitly.
+                conn.execute(text(
+                    "ALTER TABLE picks ADD COLUMN IF NOT EXISTS "
+                    "board_policy_version VARCHAR"))
+                _bfp = conn.execute(text(
+                    "UPDATE picks SET board_policy_version = 'v1' "
+                    "WHERE board_policy_version IS NULL"))
+                if getattr(_bfp, "rowcount", 0):
+                    logger.info("picks board_policy_version backfill: %d existing "
+                                "rows marked v1", _bfp.rowcount)
+                conn.execute(text(
+                    "ALTER TABLE picks ALTER COLUMN board_policy_version "
+                    "SET DEFAULT 'v2'"))
         except Exception as mexc:  # noqa: BLE001 — non-fatal; column may already exist
             logger.warning("picks pick_group migration skipped: %s", mexc)
         _READY = True
@@ -201,6 +225,7 @@ def log_pick(rec: dict) -> dict:
                 surface=rec.get("surface", ""),
                 pick_group=(rec.get("pick_group") or "potd"),
                 confidence_breakdown=rec.get("confidence_breakdown"),
+                board_policy_version=(rec.get("board_policy_version") or "v2"),
             )
             s.add(row)
             s.flush()

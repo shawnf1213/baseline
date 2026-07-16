@@ -462,3 +462,42 @@ below the bar. The empirical fit and this backtest are reproducible in
 analysis/fit_ptgw_scenarios.py (data analysis/ptgw_rows.json) and
 analysis/ptgw_backtest.py. PTGW_ENABLED stays FALSE until Shawn reviews live
 shadow output and flips it.
+
+---
+
+## Entry 4 — Board qualification policy v2 (2026-07-16)
+
+Board qualification policy v2 — uniform 65 board floor, uniform 80 POTD threshold,
+DF permanently excluded from POTD, no-POTD fallback message added. SELECTION policy
+change; projection math untouched.
+
+**What changed (selection only).**
+- Board + 3x eligibility: any prop qualifies at confidence >= 65. Replaces every
+  v1 per-prop bar (standard 70/75, Total Games 80, PTGW 80, blowout-UNDER 75).
+- 3x slip legs must be >= 70 (one notch above the board floor).
+- Pick of the Day: uniform 80 across all prop types. Double Faults is the ONLY
+  prop permanently blocked from the ⭐ slot (it now populates the board + 3x
+  normally — v1 excluded it from the board entirely). The old TG-90%-favourite
+  star bar and the PTGW-UNDER star gate are retired: one exclusion, one entry (DF).
+- No-POTD fallback: when nothing star-eligible clears 80, the ranked board still
+  posts with "No Pick of the Day today — no play met the 80% bar. Board below." in
+  place of the ⭐ embed. Logged as POD_NO_POTD (date + highest star-eligible conf).
+- Display: a "— Volume plays (65–79%) —" divider separates the conviction tier
+  (>=80) from the volume tier in the ranked board embed.
+- Records: picks carry board_policy_version (existing rows backfilled v1, new v2);
+  POD_V2_DIFF logs picks that qualify under v2 but were excluded under v1 for one
+  week (until 2026-07-23).
+
+**What did NOT change (verified).** All confidence computation — EVR grading,
+variance caps, data-level ceilings, bonus/penalty caps, floor 25 / cap 95, cap
+reasons — is byte-for-byte untouched; no file under src/calculations was modified.
+Knife-edge checks, the PTGW structural guards, depth ceilings, PTGW_ENABLED (still
+false), and the ranking rule (confidence DESC, edge tiebreak) all stand.
+
+**Verification.** A representative slate run through v1 and v2 side by side:
+picks ADDED by v2 (a 68 Ace, a 72 BP, a 90 DF), NONE removed, and zero confidence
+values changed (confidence is an input to selection, never mutated). Star pick
+moved from the 91%-fav Total Games (v1's only TG-eligible) to the highest-
+confidence non-DF play (v2). The no-POTD path yielded has_star=False with the
+board intact and the highest star-eligible confidence logged (DF correctly
+ignored). Harness: scratchpad verify_v2_policy.py.
