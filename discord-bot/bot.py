@@ -1250,6 +1250,7 @@ ONEOFF_SCHED_DATE = os.getenv("ONEOFF_SCHED_DATE", "2026-07-15")
 ONEOFF_RECAP_HM   = (18, 15)    # recap  — 6:15 PM ET
 ONEOFF_POTD_HM    = (20, 20)    # POTD   — 8:20 PM ET
 ONEOFF_PREWARM_HM = (19, 50)    # cache pre-warm — 30 min before the one-off POTD
+ONEOFF_EXT_HM     = (22, 15)    # EXTENSION scan — 10:15 PM ET, additions only
 
 # ── Cache pre-warm ───────────────────────────────────────────────────────────
 # Runs 30 minutes before the POTD generation and throws its results away. The
@@ -1809,7 +1810,8 @@ def potd_embed(pick: dict) -> discord.Embed:
 _DESC_LIMIT = 3800        # Discord's description cap is 4096 — leave headroom
 
 
-def ranked_embeds(ranked: list, start_rank: int = 1, total: int = None) -> list:
+def ranked_embeds(ranked: list, start_rank: int = 1, total: int = None,
+                  title_override: str = None) -> list:
     """The RANKED BOARD — every qualifying play from ``start_rank`` on, two lines
     each, blank line between. The ⭐ is NOT here; it gets its own embed via
     potd_embed() posted above this one.
@@ -1846,7 +1848,7 @@ def ranked_embeds(ranked: list, start_rank: int = 1, total: int = None) -> list:
     for idx, page in enumerate(pages):
         first, last = rank_cursor, rank_cursor + len(page) - 1
         rank_cursor = last + 1
-        title = f"🎾 Ranked Board — {slate.month}/{slate.day}"
+        title = title_override or f"🎾 Ranked Board — {slate.month}/{slate.day}"
         if idx:
             title += " (cont.)"
         e = discord.Embed(title=title, color=COLOR_NEUTRAL)
@@ -2044,6 +2046,72 @@ async def daily_cache_prewarm():
 
 @daily_cache_prewarm.before_loop
 async def _before_cache_prewarm():
+    await client.wait_until_ready()
+
+
+@tasks.loop(time=[datetime.time(hour=ONEOFF_EXT_HM[0], minute=ONEOFF_EXT_HM[1],
+                                tzinfo=POD_TZINFO)])
+async def extension_pod_run():
+    """EXTENSION scan — re-walk the board and post ONLY plays that were not in
+    the earlier post. Additions, not a replacement.
+
+    PrizePicks keeps posting props through the evening, so a board scanned at
+    8:20 misses lines that appear at 9. This continues the SAME list rather than
+    reposting it: numbering picks up where the earlier post stopped, and anything
+    already published is filtered out by (player, prop) against the last 18h of
+    logged picks — the same key _log_picks_pending de-dupes on, so a play cannot
+    be posted twice or logged twice.
+
+    No ⭐ and no 3x: both were settled by the earlier post, and re-crowning a
+    headline or re-cutting a slip would contradict what subscribers already have.
+    Date-gated to ONEOFF_SCHED_DATE; no-op on any other day. Never raises."""
+    if datetime.datetime.now(POD_TZINFO).strftime("%Y-%m-%d") != ONEOFF_SCHED_DATE:
+        return
+    if not POD_CHANNEL_ID:
+        return
+    try:
+        channel = client.get_channel(POD_CHANNEL_ID)
+        if channel is None:
+            log.warning("EXTENSION: channel %s not found", POD_CHANNEL_ID)
+            return
+        already = _recent_pick_keys(hours=18)
+        bundle = await pick_of_day.generate_ranked_and_slip()
+        ranked = bundle.get("ranked") or []
+        new = [p for p in ranked
+               if (pick_of_day._norm(p.get("player", "")), p.get("prop_type"))
+               not in already]
+        log.info("EXTENSION | board re-scanned: %d qualifying, %d already posted "
+                 "earlier, %d NEW", len(ranked), len(ranked) - len(new), len(new))
+        if not new:
+            log.info("EXTENSION | nothing new on the board — posting nothing "
+                     "(silence beats a message that says 'no change')")
+            return
+        offset = len(already)               # continue the earlier list's numbering
+        slate = _slate_date(new)
+        embeds = ranked_embeds(
+            new, start_rank=offset + 1, total=offset + len(new),
+            title_override="➕ Added Plays — %d/%d" % (slate.month, slate.day))
+        content = "@everyone"
+        if bundle.get("thin_slate"):
+            content += "\n" + pick_of_day.THIN_SLATE_NOTE
+        await channel.send(content=content, embeds=embeds[:10],
+                           allowed_mentions=EVERYONE_MENTION)
+        for i in range(10, len(embeds), 10):
+            await channel.send(embeds=embeds[i:i + 10])
+        # Log AFTER a successful send, same rule as the main post. Dedup inside
+        # _log_picks_pending is a second belt on top of the `already` filter.
+        await _log_picks_pending(new, group="potd")
+        # Restart the monitor over the FULL re-scanned board, not just the new
+        # plays: _start_line_monitor cancels the running task, so passing only the
+        # additions would silently stop watching the earlier 7. `ranked` still
+        # contains those (they re-qualified), so this covers old + new.
+        _start_line_monitor(channel, ranked)
+    except Exception:  # noqa: BLE001
+        log.exception("EXTENSION run failed")
+
+
+@extension_pod_run.before_loop
+async def _before_extension_pod_run():
     await client.wait_until_ready()
 
 
@@ -2978,6 +3046,16 @@ async def on_ready():
                      POD_EXTRA_RUN_HOUR, POD_EXTRA_RUN_MINUTE, POD_TZINFO, POD_EXTRA_RUN_DATE)
         except Exception:
             log.exception("failed to start extra POTD run loop")
+
+    # One-off extension scan: re-scan the board and post ONLY plays that were not
+    # already posted today. Date-gated; no-op on other days.
+    if POD_CHANNEL_ID and not extension_pod_run.is_running():
+        try:
+            extension_pod_run.start()
+            log.info("One-off extension scan scheduled %02d:%02d %s on %s",
+                     ONEOFF_EXT_HM[0], ONEOFF_EXT_HM[1], POD_TZINFO, ONEOFF_SCHED_DATE)
+        except Exception:
+            log.exception("failed to start extension scan loop")
 
     # Feature 1 — results auto-resolution (runs on startup + every few hours).
     if not daily_resolve_results.is_running():
