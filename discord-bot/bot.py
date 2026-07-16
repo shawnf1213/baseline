@@ -1773,6 +1773,9 @@ def _ranked_line(pick: dict, rank: int) -> str:
     if pick.get("prop_type") == "Player Total Games Won" and pick.get("ptgw_implied_claim"):
         _corr = "  ⚠️ correlated" if pick.get("ptgw_correlated") else ""
         out += f"\n📐 _{pick['ptgw_implied_claim']}_{_corr}"
+    # Fantasy Score shows its implied match lean, same transparency rule as PTGW.
+    if pick.get("prop_type") == "Fantasy Score" and pick.get("fs_implied_claim"):
+        out += f"\n📐 _{pick['fs_implied_claim']}_"
     return out
 
 

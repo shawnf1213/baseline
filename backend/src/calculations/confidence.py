@@ -68,6 +68,9 @@ PROP_CONFIDENCE_CEILING = {
     # the data cannot support, so the ceiling says so. Same treatment as PTGW —
     # both are derived, compounded stats, and both cap at 80.
     "Total Games": 80,
+    # Fantasy Score — a COMPOSITE of games, sets, aces, DF via the scenario mixture,
+    # the highest-variance prop we carry. Ceiling 80 until the ledger says otherwise.
+    "Fantasy Score": 80,
 }
 
 # PTGW only: ceiling when the depth test fails (either side under 15 stat-rich
@@ -461,8 +464,12 @@ def calculate_confidence(
     # moneyline bet). PTGW confidence is instead mapped from the scenario-mixture
     # P(over) in main.py. The data-level and PTGW 80/76 ceilings above STILL apply;
     # only the EVR ceiling is skipped here.
+    # Fantasy Score is excluded from EVR for the SAME reason as PTGW: it is bimodal
+    # (a straight-set win ~20+, a straight-set loss can be negative), so a
+    # mean-vs-line/σ grade is the wrong instrument. FS confidence maps from its
+    # scenario-mixture P(over) in main.py; the FS 80 ceiling above still applies.
     _sigma = std_dev if (std_dev is not None and std_dev > 0) else None
-    if (prop_type != "Player Total Games Won"
+    if (prop_type not in ("Player Total Games Won", "Fantasy Score")
             and _sigma is not None
             and isinstance(projection, (int, float)) and isinstance(prop_line, (int, float))):
         raw_evr = abs(projection - prop_line) / _sigma

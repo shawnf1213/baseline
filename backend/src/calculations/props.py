@@ -1673,6 +1673,142 @@ def ptgw_scenario_mixture(p_sel, prop_line, tour="ATP", match_format="best_of_3"
     }
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# FANTASY SCORE  (PrizePicks tennis)  — scenario-mixture, built on the PTGW machinery
+# ──────────────────────────────────────────────────────────────────────────────
+# FS = 10 (match played)
+#    + 1·games_won − 1·games_lost
+#    + 3·sets_won  − 3·sets_lost
+#    + 0.5·aces    − 0.5·double_faults
+# FS is MORE bimodal than PTGW (a straight-set win is ~20+, a straight-set loss can
+# go negative — the match outcome swings 15-20 points), so a point estimate would
+# repeat the exact PTGW error. We reuse the four-scenario machinery:
+#   • sets won/lost are EXACT per scenario (definitional).
+#   • games won come from the same per-tour/format Sofascore fit (_PTGW_SCEN_FIT);
+#     games LOST need no separate fit — by match symmetry the player's games-lost
+#     in scenario S equals the OPPONENT's games-won in the mirror scenario (a
+#     straight-set WIN pairs with the opponent's straight-set LOSS, etc.), so
+#     games_lost | S = games_won | mirror(S). Mirror: S1<->S4, S2<->S3.
+#   • aces / DF per scenario scale the match ace/DF projection by that scenario's
+#     set count relative to the match's expected sets (reuse, don't rebuild).
+#   • FS distribution per scenario = 10 + games_margin + 3·set_margin
+#       + 0.5·aces − 0.5·DF, variance = games-margin variance + 0.25·(ace+DF var).
+#     INDEPENDENCE of games / aces / DF is assumed (acceptable — they are weakly
+#     correlated and the mixture's between-scenario spread dominates).
+#   • P(over) = Σ P(scenario)·P(FS > line | scenario); confidence maps from P(over)
+#     exactly like the rebuilt PTGW.
+_FS_MIRROR = {"S1": "S4", "S2": "S3", "S3": "S2", "S4": "S1"}
+# Set margin (won − lost) per scenario. BO3: 2-0/2-1/1-2/0-2. BO5: 3-0/3-1.5/
+# 1.5-3/0-3 (win/lose-in-4-or-5 averaged).
+_FS_SET_MARGIN = {
+    "best_of_3": {"S1": 2.0, "S2": 1.0, "S3": -1.0, "S4": -2.0},
+    "best_of_5": {"S1": 3.0, "S2": 1.5, "S3": -1.5, "S4": -3.0},
+}
+# Sets played per scenario — used to scale the match ace/DF projection into a
+# per-scenario expectation (more sets → more serves → more aces/DF).
+_FS_SCEN_SETS = {
+    "best_of_3": {"S1": 2.0, "S2": 3.0, "S3": 3.0, "S4": 2.0},
+    "best_of_5": {"S1": 3.0, "S2": 4.5, "S3": 4.5, "S4": 3.0},
+}
+FS_CONF_CEILING = 80   # composite high-variance prop — ceiling until the ledger says more
+
+
+def fantasy_score_mixture(p_sel, ace_proj, df_proj, expected_sets, prop_line,
+                          tour="ATP", match_format="best_of_3"):
+    """Scenario mixture for a player's Fantasy Score. Returns P(over line), the
+    mixture mean, and the scenario breakdown. p_sel = the player's match-win
+    probability (0-1); ace_proj / df_proj = the player's MATCH ace / double-fault
+    projections (scaled per scenario by set count)."""
+    p_sel = max(0.02, min(0.98, float(p_sel)))
+    is_bo5 = match_format == "best_of_5"
+    fit = _PTGW_SCEN_BO5 if is_bo5 else _PTGW_SCEN_FIT.get(tour, _PTGW_SCEN_FIT["ATP"])
+    scen = fit["scen"]
+    set_margin = _FS_SET_MARGIN["best_of_5" if is_bo5 else "best_of_3"]
+    scen_sets = _FS_SCEN_SETS["best_of_5" if is_bo5 else "best_of_3"]
+    need = 3 if is_bo5 else 2
+    baseline_sets = max(_safe(expected_sets, need + 0.3), need + 0.15)
+
+    # Scenario probabilities — identical construction to the PTGW mixture.
+    gap = p_sel - 0.5
+    p3_win = max(_PTGW_P3_MIN, min(_PTGW_P3_MAX, fit["p3_win"] - _PTGW_GAP_K * gap))
+    p3_lose = max(_PTGW_P3_MIN, min(_PTGW_P3_MAX, fit["p3_lose"] + _PTGW_GAP_K * gap))
+    p = {"S1": p_sel * (1.0 - p3_win), "S2": p_sel * p3_win,
+         "S3": (1.0 - p_sel) * p3_lose, "S4": (1.0 - p_sel) * (1.0 - p3_lose)}
+
+    ace_proj = max(0.0, _safe(ace_proj, 0.0))
+    df_proj = max(0.0, _safe(df_proj, 0.0))
+    p_over = 0.0
+    fs_mean = 0.0
+    breakdown = {}
+    for s in ("S1", "S2", "S3", "S4"):
+        gw_mu, gw_sd = scen[s]
+        gl_mu, gl_sd = scen[_FS_MIRROR[s]]        # games lost = opp games won, mirror scenario
+        games_margin_mu = gw_mu - gl_mu
+        games_margin_var = gw_sd ** 2 + gl_sd ** 2
+        scale = (scen_sets[s] / baseline_sets) if baseline_sets > 0 else 1.0
+        a_mu, d_mu = ace_proj * scale, df_proj * scale
+        # Poisson-style variance approximation for counts (var ≈ mean, floored).
+        a_var, d_var = max(a_mu, 0.5), max(d_mu, 0.5)
+        fs_mu = (10.0 + games_margin_mu + 3.0 * set_margin[s] + 0.5 * (a_mu - d_mu))
+        fs_var = games_margin_var + 0.25 * (a_var + d_var)
+        fs_sd = fs_var ** 0.5
+        po_s = _norm_sf(prop_line, fs_mu, fs_sd)
+        p_over += p[s] * po_s
+        fs_mean += p[s] * fs_mu
+        breakdown[s] = {"p": round(p[s], 4), "fs_mu": round(fs_mu, 2),
+                        "fs_sd": round(fs_sd, 2), "p_over": round(po_s, 4)}
+    p_over = max(0.0, min(1.0, p_over))
+    return {
+        "p_over": p_over, "p_under": 1.0 - p_over,
+        "mixture_mean": fs_mean,
+        "p_win_match": round(p_sel, 4),
+        "scenario_probs": {k: round(v, 4) for k, v in p.items()},
+        "scenario_breakdown": breakdown,
+    }
+
+
+def project_fantasy_score(p_sel, ace_proj, df_proj, expected_sets, prop_line,
+                          tour="ATP", match_format="best_of_3", player_name="",
+                          trace: list = None) -> dict:
+    """Project a player's Fantasy Score via the scenario mixture. Returns the
+    displayed projection (mixture mean) plus p_over / p_under and the implied
+    match claim, mirroring the PTGW contract so main.py can grade it identically."""
+    mix = fantasy_score_mixture(p_sel, ace_proj, df_proj, expected_sets, prop_line,
+                                tour=tour, match_format=match_format)
+    projection = mix["mixture_mean"]
+    who = player_name or "player"
+    lean_over = mix["p_over"] >= 0.5
+    if lean_over:
+        claim = "%s O%.1f ⇒ needs %s competitive or winning" % (
+            who, prop_line or 0, who)
+    else:
+        claim = "%s U%.1f ⇒ needs %s to lose, likely in straights" % (
+            who, prop_line or 0, who)
+    _trace(trace, "FS_scenario_mixture",
+           {"line": prop_line, "p_win_match": mix["p_win_match"],
+            "ace_proj": round(ace_proj, 2) if isinstance(ace_proj, (int, float)) else ace_proj,
+            "df_proj": round(df_proj, 2) if isinstance(df_proj, (int, float)) else df_proj,
+            "scenario_probs": mix["scenario_probs"],
+            "scenario_breakdown": mix["scenario_breakdown"]},
+           round(mix["p_over"], 4), round(projection, 2),
+           "FS = 10 + games_margin + 3·set_margin + 0.5(aces−DF); P(over %.1f)=%.3f "
+           "= Σ P(scenario)·P(FS>line|scenario); mixture mean %.2f is the displayed "
+           "projection (NOT graded vs line)" % (prop_line or 0, mix["p_over"], projection))
+    _trace(trace, "projector_output", {"chain_result": round(projection, 3)},
+           projection, round(projection, 1),
+           "END OF THE PROJECTOR — main.py maps confidence from p_over")
+    return {
+        "projection": round(projection, 1),
+        "fs_p_over": round(mix["p_over"], 4),
+        "fs_p_under": round(mix["p_under"], 4),
+        "fs_p_win_match": mix["p_win_match"],
+        "fs_scenario_probs": mix["scenario_probs"],
+        "fs_mixture_mean": round(mix["mixture_mean"], 2),
+        "fs_implied_claim": claim,
+        "lean": "",
+    }
+
+
 def project_player_games_won(
     player_stats: dict,
     opponent_stats: dict,

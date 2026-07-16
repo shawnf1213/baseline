@@ -85,6 +85,7 @@ from src.calculations.props import (
     project_total_games,
     project_break_points,
     project_player_games_won,
+    project_fantasy_score,
     surface_affinity,
     generate_scouting_report,
     detect_environment,
@@ -1835,6 +1836,41 @@ async def prop_calculate(req: PropRequest):
                 match_format=match_fmt,
                 player_ta=player_ta_props, opponent_ta=opponent_ta_props,
             )
+        elif req.prop_type == "Fantasy Score":
+            # FS is a COMPOSITE: it needs the player's ace + DF projections and the
+            # match set structure (win prob + expected sets), then runs the
+            # scenario mixture. The component projectors are called here purely to
+            # feed FS — none of their own math changes.
+            _ace_r = project_aces(
+                p1_s, p2_s, court_for_calc, h2h_ace_avg, cpr_override=cpr,
+                player_ta=player_ta_props, opponent_ta=opponent_ta_props,
+                tour=req.tour, surface=req.surface, match_format=match_fmt,
+                h2h_stat_n=h2h_stat_n,
+            )
+            _df_r = project_double_faults(
+                p1_s, p2_s, h2h_df_avg, h2h_stat_n=h2h_stat_n,
+                player_ta=player_ta_props, opponent_ta=opponent_ta_props,
+                tour=req.tour, surface=req.surface, match_format=match_fmt,
+                court=court_for_calc,
+            )
+            _tg_r = project_total_games(
+                p1_s, p2_s, req.surface, h2h_games_avg, h2h_games_n=h2h_games_n,
+                tour=req.tour, court=court_for_calc, match_format=match_fmt,
+                player_ta=player_ta_props, opponent_ta=opponent_ta_props,
+            )
+            result = project_fantasy_score(
+                p_sel=(_tg_r.get("p1_win_prob") or 50.0) / 100.0,
+                ace_proj=_ace_r.get("projection"),
+                df_proj=_df_r.get("projection"),
+                expected_sets=_tg_r.get("expected_sets"),
+                prop_line=req.prop_line,
+                tour=req.tour, match_format=match_fmt,
+                player_name=req.player_name or "player",
+                trace=_ctrace,
+            )
+            # Carry win prob forward for the guard/display, like PTGW does.
+            for _k in ("p1_win_prob", "p2_win_prob"):
+                result.setdefault(_k, _tg_r.get(_k))
         else:  # Break Points Won  OR  Player Total Games Won (both use the BP model)
             # All-surface player stats for Step 9 sanity check
             _p1_all_at = p1_data.get("All_all_time_stats") or {}
@@ -2162,6 +2198,31 @@ async def prop_calculate(req: PropRequest):
                         "lean=%s base_conf=%.1f knife_edge=%s | %s",
                         _who, req.prop_line or 0, _ptgw_p_over, _ptgw_p_win,
                         _ptgw_lean, confidence, _ptgw_knife_edge, _ptgw_implied_claim)
+
+        # ══ FANTASY SCORE: same probability base as PTGW (its own FREEZE prop) ══
+        # FS confidence maps directly from the scenario-mixture P(over); the same
+        # mean-edge instruments (EVR, _edge_cap, dominant bonus) are skipped. FS
+        # does NOT get the PTGW structural guards — those are PTGW-specific — but it
+        # shares the probability base and the FS_CONF_CEILING (80) applied downstream.
+        _fs_prob_base = False
+        _fs_p_over = (result.get("fs_p_over")
+                      if req.prop_type == "Fantasy Score" else None)
+        _fs_implied_claim = None
+        _fs_knife_edge = False
+        if _fs_p_over is not None:
+            _fs_lean = "OVER" if _fs_p_over >= 0.5 else "UNDER"
+            result["lean"] = _fs_lean
+            _fs_side = _fs_p_over if _fs_lean == "OVER" else (1.0 - _fs_p_over)
+            confidence = 100.0 * _fs_side
+            _fs_prob_base = True
+            _fs_knife_edge = 0.45 <= _fs_p_over <= 0.55
+            _fs_implied_claim = result.get("fs_implied_claim")
+            logger.info("FS_PROB_BASE | %s line=%.1f p_over=%.3f lean=%s base_conf=%.1f "
+                        "knife_edge=%s | %s",
+                        req.player_name or "player", req.prop_line or 0, _fs_p_over,
+                        _fs_lean, confidence, _fs_knife_edge, _fs_implied_claim or "?")
+        # A single flag for the mean-edge skips below (both prob-base props).
+        _prob_base = _ptgw_prob_base or _fs_prob_base
         # Consistency tier for display comes straight from the confidence
         # breakdown — consistency is now scored ONCE, in confidence.py. There is
         # no separate main.py consistency penalty.
@@ -2204,7 +2265,7 @@ async def prop_calculate(req: PropRequest):
             _w1, _w2 = result.get("p1_win_prob"), result.get("p2_win_prob")
             _wp_gap = ((_w1 - _w2) if isinstance(_w1, (int, float)) and isinstance(_w2, (int, float))
                        else 0)
-        if (not _ptgw_prob_base
+        if (not _prob_base
                 and isinstance(proj_val, (int, float)) and req.prop_line
                 and proj_val > req.prop_line * 1.75 and _wp_gap > 30 and _p1_surf_n >= 15):
             confidence += 8
@@ -2280,6 +2341,8 @@ async def prop_calculate(req: PropRequest):
         # other prop, _resolve_lean is unchanged.
         if _ptgw_prob_base:
             lean = _ptgw_lean
+        elif _fs_prob_base:
+            lean = _fs_lean
         else:
             lean = _resolve_lean(proj_val, req.prop_line, result.get("lean", ""))
 
@@ -2315,7 +2378,7 @@ async def prop_calculate(req: PropRequest):
         # the single finalize step below. SKIPPED for PTGW: |proj − line| / line is
         # the same bimodal-mean-vs-line fallacy the rebuild removed — a high-P(over)
         # PTGW pick can have a tiny mean edge, and edge_cap would wrongly gut it.
-        if not _ptgw_prob_base:
+        if not _prob_base:
             confidence = _edge_cap(confidence, proj_val, req.prop_line)
 
         # ══ PART 3 — HARD STRUCTURAL GUARDS (cheap invariants, model-independent) ══
@@ -2533,6 +2596,11 @@ async def prop_calculate(req: PropRequest):
             "ptgw_implied_claim":   _ptgw_implied_claim,
             "ptgw_knife_edge":      _ptgw_knife_edge,
             "ptgw_guard_note":      _ptgw_guard_note,
+            # ── Fantasy Score scenario-mixture surface (None for other props) ─────
+            "fs_p_over":            _fs_p_over,
+            "fs_scenario_probs":    result.get("fs_scenario_probs"),
+            "fs_implied_claim":     _fs_implied_claim,
+            "fs_knife_edge":        _fs_knife_edge,
             # Feature 3 — data freshness / injury flag (advisory)
             "freshness_level":      _freshness.get("level", ""),
             "freshness_message":    _freshness.get("message", ""),

@@ -49,6 +49,7 @@ PROP_MAP = {
     "break points won": "Break Points Won",
     "total games":      "Total Games",              # match total
     "total games won":  "Player Total Games Won",   # a single player's games won
+    "fantasy score":    "Fantasy Score",            # composite (games/sets/aces/DF)
 }
 
 MAX_CONCURRENT  = 4       # parallelise backend calcs so the full board (100+ props)
@@ -113,6 +114,12 @@ PROP_MIN_CONF = {
 # mode (POD_PTGW_SHADOW), so it can be judged on live slates without posting.
 # DO NOT default this to true — it stays false until explicitly enabled.
 PTGW_ENABLED = os.getenv("PTGW_ENABLED", "false").strip().lower() in (
+    "1", "true", "yes", "on")
+# Fantasy Score verification gate — same pattern as PTGW. Default FALSE: FS is
+# excluded from the posted board / 3x / POTD and computed in SHADOW (its projection
+# logged on live slates, POD_FS_SHADOW) until Shawn reviews a week of shadow output
+# against actuals and flips it. FS reuses the PTGW scenario mixture.
+FS_ENABLED = os.getenv("FS_ENABLED", "false").strip().lower() in (
     "1", "true", "yes", "on")
 # Slate-correlation guard (Part 3): at most this many PTGW picks per board, and a
 # flag when multiple share the same implied direction. Only enforced once enabled.
@@ -482,6 +489,9 @@ async def _evaluate(prop: dict, sem: asyncio.Semaphore):
             "ptgw_p_win_match": data.get("ptgw_p_win_match"),
             "ptgw_implied_claim": data.get("ptgw_implied_claim"),
             "ptgw_knife_edge": data.get("ptgw_knife_edge"),
+            "fs_p_over": data.get("fs_p_over"),
+            "fs_implied_claim": data.get("fs_implied_claim"),
+            "fs_knife_edge": data.get("fs_knife_edge"),
             "explanation": data.get("plain_english_explanation"),
             # Legacy combined score — kept for logging/diagnostics ONLY. It is NOT
             # the ranking key; see _rank_key(), which orders confidence-first with
@@ -837,6 +847,23 @@ async def _rank_board():
                          (r.get("player") or "")[:22], r.get("confidence") or 0,
                          r.get("ptgw_p_over"), r.get("line"), _lean_dir(r),
                          r.get("ptgw_implied_claim") or "?")
+                continue
+        # Fantasy Score: shadow mode until FS_ENABLED flips. Log the projection so
+        # it can be judged on live slates, then exclude from the board. An FS demon
+        # is structurally impossible (FS ceiling 80 < DEMON_MIN_CONF 85) — log any
+        # that would otherwise qualify, per spec.
+        if ptype == "Fantasy Score":
+            if r.get("odds_type") == "demon":
+                log.info("POD_FS_DEMON | %-22s conf=%-3.0f line=%-5s — FS demon "
+                         "(impossible: FS ceiling 80 < demon bar %d), logged",
+                         (r.get("player") or "")[:22], r.get("confidence") or 0,
+                         r.get("line"), DEMON_MIN_CONF)
+            if not FS_ENABLED:
+                log.info("POD_FS_SHADOW | %-22s conf=%-3.0f p_over=%-5s line=%-5s lean=%-5s "
+                         "claim=%s — EXCLUDED (FS_ENABLED=false, shadow)",
+                         (r.get("player") or "")[:22], r.get("confidence") or 0,
+                         r.get("fs_p_over"), r.get("line"), _lean_dir(r),
+                         r.get("fs_implied_claim") or "?")
                 continue
         # Demons: elevated bars, over-only (see _demon_qualifies, which logs its
         # own accept/reject line). Standard props: the uniform v2 65 floor.
