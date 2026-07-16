@@ -2272,7 +2272,14 @@ async def prop_calculate(req: PropRequest):
             logger.warning("Sanity check failed for %s %s — confidence reduced",
                            req.prop_type, proj_val)
 
-        lean = _resolve_lean(proj_val, req.prop_line, result.get("lean", ""))
+        # PTGW takes its lean from the scenario-mixture P(over), NOT proj-vs-line:
+        # the bimodal mean routinely lands ON the line (e.g. mean 11.5 vs line 11.5),
+        # where _resolve_lean would tie to UNDER and flip a genuine OVER. For every
+        # other prop, _resolve_lean is unchanged.
+        if _ptgw_prob_base:
+            lean = _ptgw_lean
+        else:
+            lean = _resolve_lean(proj_val, req.prop_line, result.get("lean", ""))
 
         # ── Underdog games-won UNDER penalty (surface-affinity differential) ──
         # When the underdog is on their best surface against a favourite on their
