@@ -58,6 +58,16 @@ PROP_STAT_KEY = {
 # near-lock. Cap it well below the 95 default.
 PROP_CONFIDENCE_CEILING = {
     "Player Total Games Won": 80,
+    # Total Games added 2026-07-15 from the games_per_set fit (FREEZE_LOG entry 2).
+    # The fit measured, on 1,233 matches, that combined hold explains only
+    # R^2 = 0.09-0.16 of games-per-set variance — residual sd ~1.2 games/set, i.e.
+    # ~+/-2.8 games on a 2.3-set total. The model's Total Games projection is
+    # barely better than the tour mean, which is exactly why books price this prop
+    # -120/-120 on BOTH sides and why PrizePicks leans on it: it is intrinsically
+    # near-coin-flip. A 90+ confidence on a statistic we explain 15% of is a claim
+    # the data cannot support, so the ceiling says so. Same treatment as PTGW —
+    # both are derived, compounded stats, and both cap at 80.
+    "Total Games": 80,
 }
 
 # PTGW only: ceiling when the depth test fails (either side under 15 stat-rich

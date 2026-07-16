@@ -320,3 +320,35 @@ Accepted versus a curve that was simply wrong, but it is not free.
 **BASELINE BREAK.** This moves EVERY Total Games and Player Total Games Won
 projection up ~1-2 games. Calibration must not pool across 2026-07-15. Some
 existing UNDERs weaken or flip; that is the fix working.
+
+#### Entry 2a — Total Games confidence ceiling + calibration re-baseline (2026-07-15)
+
+Follows directly from entry 2's R^2, and is the honest consequence of it.
+
+**The finding forced this.** PROP_EVR_SCALE gave Total Games **1.9 — the HIGHEST
+amplification of any prop**. So the prop the model explains LEAST (R^2 0.09-0.16)
+was receiving the MOST generous confidence grading. Exactly backwards.
+
+**Ceiling.** Total Games now caps at 80, same as PTGW — both are derived,
+compounded stats. Residual sd ~1.2 games/set means ~+/-2.8 games on a 2.3-set
+total; a 90+ confidence on a statistic we explain 15% of is a claim the data
+cannot support. Books price this prop -120/-120 on BOTH sides and PrizePicks leans
+on it precisely because it is intrinsically near-coin-flip.
+
+**Bar 85 -> 80.** Forced: an 85 bar above an 80 ceiling makes the prop
+unqualifiable — the degenerate ceiling==bar trap already found on PTGW. 80/80
+means Total Games qualifies only when it maxes out its ceiling. Acceptable
+strictness for a prop the model demonstrably predicts poorly, and consistent with
+how PTGW is already treated.
+
+**Calibration re-baseline: CALIBRATION_BASELINE_UTC = 2026-07-16T00:00:00.**
+Two model breaks landed on 2026-07-15 — the data-integrity fixes (cache-poisoning
+guard, deterministic event selection, stat-rich standardisation) and the
+games_per_set per-tour fit plus this ceiling. A hit rate pooled across that
+boundary averages two different models together, which is worse than no number.
+The weekly log now counts only picks GENERATED on/after the baseline; pre_guard
+remains as the historical marker of the first break. Tonight's 8:20 PM ET run is
+00:20 UTC on 7/16 — the first run on the new model, and the first to count.
+
+The clean sample therefore restarts from tonight, and the weekly table stays
+suppressed until 40 post-baseline picks accumulate (~2 days at current volume).

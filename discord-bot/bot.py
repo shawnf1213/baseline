@@ -1222,6 +1222,21 @@ RESULTS_CHANNEL_ID = int(os.getenv("RESULTS_CHANNEL_ID", str(POD_CHANNEL_ID or 0
 # table stays suppressed until it rebuilds rather than reporting noise.
 CALIBRATION_MIN_SAMPLE = 40
 
+# ── Calibration baseline ─────────────────────────────────────────────────────
+# Picks generated BEFORE this instant were scored by a materially different model
+# and must never be pooled with what comes after. Two breaks landed on 2026-07-15:
+#   • the data-integrity fixes (cache-poisoning guard, deterministic event
+#     selection, stat-rich standardisation) — see picks.pre_guard; and
+#   • the games_per_set per-tour fit (FREEZE_LOG entry 2), which moves EVERY
+#     Total Games and Player Total Games Won projection by 1-2 games, plus the
+#     Total Games confidence ceiling that followed from it.
+# A hit rate computed across that boundary measures two different models averaged
+# together, which is worse than no number at all. This supersedes the pre_guard
+# flag as the cutoff — pre_guard stays as the historical marker of the first break.
+# Stored as a UTC instant: tonight's 8:20 PM ET run is 00:20 UTC on 7/16, so it is
+# the FIRST run on the new model and the first to count.
+CALIBRATION_BASELINE_UTC = os.getenv("CALIBRATION_BASELINE_UTC", "2026-07-16T00:00:00")
+
 RESULTS_POST_HOUR = int(os.getenv("RESULTS_POST_HOUR", "19") or "19")
 RESULTS_POST_MINUTE = int(os.getenv("RESULTS_POST_MINUTE", "45") or "45")
 
@@ -1233,8 +1248,8 @@ RESULTS_POST_MINUTE = int(os.getenv("RESULTS_POST_MINUTE", "45") or "45")
 # one-off slot no-ops and the normal 7:45 / 7:50 slots run as usual.
 ONEOFF_SCHED_DATE = os.getenv("ONEOFF_SCHED_DATE", "2026-07-15")
 ONEOFF_RECAP_HM   = (18, 15)    # recap  — 6:15 PM ET
-ONEOFF_POTD_HM    = (19, 30)    # POTD   — 7:30 PM ET
-ONEOFF_PREWARM_HM = (19, 0)     # cache pre-warm — 30 min before the one-off POTD
+ONEOFF_POTD_HM    = (20, 20)    # POTD   — 8:20 PM ET
+ONEOFF_PREWARM_HM = (19, 50)    # cache pre-warm — 30 min before the one-off POTD
 
 # ── Cache pre-warm ───────────────────────────────────────────────────────────
 # Runs 30 minutes before the POTD generation and throws its results away. The
@@ -2772,13 +2787,23 @@ async def weekly_calibration_log():
         # so every figure below — band hit rates, monotonicity, per-prop table —
         # computes exclusively from post-guard picks. The pick records themselves
         # are untouched and still count toward the public W/L record.
+        def _post_baseline(p):
+            """Generated on/after the calibration baseline — i.e. scored by the
+            CURRENT model. Anything earlier came from a different one."""
+            ga = p.get("generated_at") or ""
+            return bool(ga) and ga[:19] >= CALIBRATION_BASELINE_UTC
+
         _all_dec = [p for p in picks if p.get("result") in ("W", "L")
                     and isinstance(p.get("confidence"), (int, float)) and _recent(p)]
-        dec = [p for p in _all_dec if not int(p.get("pre_guard") or 0)]
+        dec = [p for p in _all_dec
+               if _post_baseline(p) and not int(p.get("pre_guard") or 0)]
         _excluded = len(_all_dec) - len(dec)
-        log.info("CALIBRATION | rolling 30d | %d decided post-guard picks "
-                 "(%d pre-guard excluded — confidence may be cache-contaminated)",
-                 len(dec), _excluded)
+        log.info("CALIBRATION | rolling 30d | %d decided picks on the CURRENT model "
+                 "(%d excluded: generated before the %s baseline, or flagged "
+                 "pre_guard). Two model breaks landed 2026-07-15 — data-integrity "
+                 "fixes and the games_per_set per-tour fit — and a hit rate pooled "
+                 "across them measures two models averaged together.",
+                 len(dec), _excluded, CALIBRATION_BASELINE_UTC)
         if len(dec) < CALIBRATION_MIN_SAMPLE:
             log.info("CALIBRATION | SAMPLE TOO SMALL — %d/%d post-guard picks. "
                      "Bands/monotonicity suppressed until the clean sample rebuilds; "

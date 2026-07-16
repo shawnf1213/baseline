@@ -89,7 +89,14 @@ STANDARD_MIN_CONF    = 75   # Aces / Break Points Won (Double Faults is excluded
 # QUALIFICATION layer rather than by touching any score: TG must now be genuinely
 # strong (85+) to make the list at all, and still needs a 90%+ favourite to take
 # the ⭐ (see _star_eligible). Nothing about how TG is scored changed.
-TOTAL_GAMES_MIN_CONF = 85   # Total Games (match total) — highest list bar
+# 85 -> 80 on 2026-07-15, forced by the games_per_set fit (FREEZE_LOG entry 2):
+# Total Games now carries an 80 CONFIDENCE CEILING, because the fit measured that
+# combined hold explains only R^2 0.09-0.16 of games-per-set variance. An 85 bar
+# above an 80 ceiling would make the prop unqualifiable — the exact degenerate
+# ceiling==bar trap already found on PTGW. 80/80 matches how PTGW is treated: a
+# derived, compounded stat qualifies only when it maxes out its ceiling. That is
+# acceptable strictness for a prop the model demonstrably predicts poorly.
+TOTAL_GAMES_MIN_CONF = 80   # Total Games (match total) — at its ceiling
 PLAYER_TGW_MIN_CONF  = 80   # Player Total Games Won — high bar (bespoke paths below)
 # Per-prop overrides; anything not listed uses STANDARD_MIN_CONF.
 PROP_MIN_CONF = {
