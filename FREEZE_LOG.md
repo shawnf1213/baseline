@@ -580,3 +580,39 @@ bug): the model's own win probs on these clay dogs are low (Feistel 7%), the sam
 input-quality signal flagged in the PTGW work — the mixture is correct given its
 inputs. The resolved-match FS backtest (actual FS vs shadow projection) is PENDING
 shadow accumulation — no FS shadow rows exist yet since this just deployed.
+
+---
+
+## Entry 7 — 7/16 recap scope correction (2026-07-16, data-only)
+
+One-time data correction; no selection logic changed. Scaffolding = the
+excluded_from_record column + /api/results/exclude endpoint (commit above).
+
+**What was found.** The 7/16 slate had multiple board generations, but 18h dedup
+meant the tracker held only ONE record per games-won bet — carrying the EARLIER
+generation's projection. The 15 candidate rows: 4 belonged to the 7/15 slate
+(left untouched, per Shawn), and 11 were the 7/16 slate. Of those 11, the four
+games-won ranks (Feistel/Sasnovich/Pellegrino/Basilashvili) existed only as the
+earlier 4-pick board (ids 174/175/176/177, proj 6.7/7.0/8.3/9.0); the canonical
+projections (9.6/8.3/8.9/9.1) were never logged distinctly.
+
+**Correction (Shawn's decision: exclude earlier + create canonical).**
+- Flagged ids 174/175/176/177 excluded_from_record=1 — RETAINED in the DB with
+  their earlier projections for the reproducibility audit, invisible to record/recaps.
+- Created 4 canonical records ids 189/190/191/192 (proj 9.6/8.3/9.1/8.9,
+  conf 80/77/75/75). The bot's normal auto-resolver graded them: Feistel L,
+  Sasnovich W, Basilashvili L, Pellegrino L — matching the verified finals
+  (Sasnovich W cross-checks the excluded id 175, also W).
+- The other 7 canonical (ids 180/181/182/185/186/187/188) stand as the canonical 11.
+
+**Overall correction size: ZERO.** Before 39W-38L-3P (50.6%) → after 39W-38L-3P
+(50.6%). The 4 excluded and 4 created records graded identically (1W+3L each), so
+swapping them left the public record unchanged; only the displayed projections and
+the audit trail were corrected.
+
+**Unresolved (reported, NOT guessed).** 5 of the 11 could not auto-resolve —
+"completed match not found": Riera Total Games O19.5 (180), Kovinić Games Won O8.5
+(181), Udvardy Total Games O21.5 (182), Riera BP O5.5 (186), Trevisan BP O4.5
+(187) — all OVER plays. Awaiting manual finals from Shawn before the recap posts.
+Resolved so far: 2W-4L (Shubladze W, Sasnovich W; Faria/Feistel/Basilashvili/
+Pellegrino L). No recap posted (it would be incomplete with 5 pending).
