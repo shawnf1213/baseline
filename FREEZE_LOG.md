@@ -537,3 +537,46 @@ discarded as demon_under_no_play; a demon is never star-eligible; standard props
 still clear the 65 floor. Because demons are graded by EVR on the boosted (higher)
 line, clearing BOTH the 0.9 edge and 85 confidence requires the projection to beat
 the boosted line by a real margin — most demons reject, as intended.
+
+---
+
+## Entry 6 — Fantasy Score prop (scenario mixture, 2026-07-16)
+
+Fantasy Score added as a scenario-mixture prop built on the PTGW machinery. New
+prop; no existing projection math changed.
+
+**Scoring.** FS = 10 + (games_won − games_lost) + 3·(sets_won − sets_lost)
++ 0.5·(aces − double_faults). Tiebreaks count as 1 game.
+
+**Structure (mandatory mixture).** FS is more bimodal than PTGW (a straight-set win
+~20+, a straight-set loss can be negative), so a point estimate would repeat the
+PTGW error. Four scenarios S1/S2/S3/S4:
+- Sets won/lost EXACT per scenario. Set margins BO3 +2/+1/−1/−2 (BO5 +3/+1.5/−1.5/−3).
+- Games won reuse the per-tour/format Sofascore fit (_PTGW_SCEN_FIT); games LOST
+  need no separate fit — by match symmetry the player's games-lost in scenario S
+  equals the OPPONENT's games-won in the mirror scenario (S1↔S4, S2↔S3), so no
+  re-fetch was needed. (The spec's "fit games-lost like games-won" is satisfied by
+  this exact identity rather than a redundant second fit.)
+- Aces/DF per scenario scale the match ace/DF projection by that scenario's set
+  count over the match's expected sets. Independence of games/aces/DF assumed
+  (noted in code) — acceptable, the between-scenario spread dominates.
+- FS_var per scenario = games-margin var + 0.25·(ace+DF var); ace/DF var ≈ mean.
+- P(over) = Σ P(scenario)·P(FS>line|scenario). Confidence maps from P(over) like
+  PTGW. FS excluded from EVR and the Aces/DF variance cap; its own ceiling
+  FS_CONF_CEILING = 80.
+
+**Gate.** FS_ENABLED default FALSE. Shadow mode: FS is computed on every board and
+logged (POD_FS_SHADOW / FS_PROB_BASE) but excluded from the posted board / 3x /
+POTD until Shawn reviews a week of shadow vs actuals. FS demons are structurally
+impossible (ceiling 80 < DEMON_MIN_CONF 85) and logged if one would qualify.
+Display shows the implied match lean, same transparency rule as PTGW.
+
+**Verification (live 7/16 dog spots, analysis/fs_sanity.py).** The FS distribution
+is bimodal in every spot — S1 (win-straights) FS ≈ 20-21 vs S4 (lose-straights)
+≈ −1 to −2, a ~22-point spread. The moneyline bound HOLDS everywhere: at a low
+line (every win clears FS) P(over) ≥ P(win) — Feistel 0.119 ≥ 0.072, Faria
+0.394 ≥ 0.279, Pellegrino 0.371 ≥ 0.256, Basilashvili 0.332 ≥ 0.224. Note (not a
+bug): the model's own win probs on these clay dogs are low (Feistel 7%), the same
+input-quality signal flagged in the PTGW work — the mixture is correct given its
+inputs. The resolved-match FS backtest (actual FS vs shadow projection) is PENDING
+shadow accumulation — no FS shadow rows exist yet since this just deployed.
