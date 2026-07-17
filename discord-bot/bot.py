@@ -1263,7 +1263,7 @@ RESULTS_POST_MINUTE = int(os.getenv("RESULTS_POST_MINUTE", "45") or "45")
 # and no new task loop had to be wired up. Auto-reverts: on any other date the
 # one-off slot no-ops and the normal 7:45 / 7:50 slots run as usual.
 ONEOFF_SCHED_DATE = os.getenv("ONEOFF_SCHED_DATE", "2026-07-17")
-ONEOFF_RECAP_HM   = (16, 45)    # recap — 4:45 PM ET (7/17)
+ONEOFF_RECAP_HM   = (17, 0)     # recap — 5:00 PM ET (7/17)
 # POTD + prewarm PARKED (past times) so ONLY the recap fires today — no board was
 # requested for tonight. Past time-of-day => next firing is tomorrow (not the
 # one-off date) => no-op.
@@ -2414,8 +2414,14 @@ def daily_recap_embed(rec: dict, target_date: str = None) -> discord.Embed:
             bits = [p["player"]]
             if p.get("prop_type"):
                 bits.append(str(p["prop_type"]))
-            if isinstance(p.get("line"), (int, float)):
-                bits.append(f"{p['line']:g}")
+            # Show the ORIGINAL posted line, not the live/bumped one — the play was
+            # graded at the line members actually played. A later PrizePicks line
+            # move must not change what the recap shows.
+            _ln = p.get("original_line")
+            if not isinstance(_ln, (int, float)):
+                _ln = p.get("line")
+            if isinstance(_ln, (int, float)):
+                bits.append(f"{_ln:g}")
             if p.get("lean"):
                 bits.append(str(p["lean"]).upper())
             row = f"{icon.get(p['result'], '⚪')} **{bits[0]}** {' '.join(bits[1:])}".rstrip()

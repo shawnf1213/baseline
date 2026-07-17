@@ -300,6 +300,27 @@ def set_excluded(ids: list, excluded: bool = True) -> int:
         return 0
 
 
+def set_line(pick_id: int, line=None, original_line=None) -> bool:
+    """Correct a pick's line / original_line (admin). Used when a PrizePicks line
+    moved between posting and logging, so the stored line no longer matches what
+    members played. Returns success."""
+    if not _READY:
+        return False
+    try:
+        with _session() as s:
+            row = s.get(Pick, int(pick_id))
+            if row is None:
+                return False
+            if isinstance(line, (int, float)):
+                row.line = line
+            if isinstance(original_line, (int, float)):
+                row.original_line = original_line
+            return True
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("set_line failed: %s", exc)
+        return False
+
+
 def delete_pick(pick_id: int) -> bool:
     """Delete one pick row (admin cleanup / removing a bad entry)."""
     if not _READY:

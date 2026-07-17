@@ -248,6 +248,19 @@ async def results_exclude(req: ExcludeRequest):
     return {"updated": database.set_excluded(req.ids, req.excluded)}
 
 
+class SetLineRequest(BaseModel):
+    id: int
+    line: float | None = None
+    original_line: float | None = None
+
+
+@app.post("/api/results/setline")
+async def results_setline(req: SetLineRequest):
+    """Correct a pick's line / original_line when it moved between post and log."""
+    from src import database
+    return {"ok": database.set_line(req.id, req.line, req.original_line)}
+
+
 class ResolveRequest(BaseModel):
     player: str
     opponent: str = ""
