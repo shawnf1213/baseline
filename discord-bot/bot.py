@@ -1263,7 +1263,7 @@ RESULTS_POST_MINUTE = int(os.getenv("RESULTS_POST_MINUTE", "45") or "45")
 # and no new task loop had to be wired up. Auto-reverts: on any other date the
 # one-off slot no-ops and the normal 7:45 / 7:50 slots run as usual.
 ONEOFF_SCHED_DATE = os.getenv("ONEOFF_SCHED_DATE", "2026-07-17")
-ONEOFF_RECAP_HM   = (17, 0)     # recap — 5:00 PM ET (7/17)
+ONEOFF_RECAP_HM   = (17, 10)    # recap — 5:10 PM ET (7/17; deploy+line-fix buffer)
 # POTD + prewarm PARKED (past times) so ONLY the recap fires today — no board was
 # requested for tonight. Past time-of-day => next firing is tomorrow (not the
 # one-off date) => no-op.
