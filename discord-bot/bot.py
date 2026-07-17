@@ -1262,10 +1262,13 @@ RESULTS_POST_MINUTE = int(os.getenv("RESULTS_POST_MINUTE", "45") or "45")
 # _slot_is_live() decides which firing actually runs, so a day never posts twice
 # and no new task loop had to be wired up. Auto-reverts: on any other date the
 # one-off slot no-ops and the normal 7:45 / 7:50 slots run as usual.
-ONEOFF_SCHED_DATE = os.getenv("ONEOFF_SCHED_DATE", "2026-07-16")
-ONEOFF_RECAP_HM   = (17, 0)     # recap  — 5:00 PM ET (already fired earlier today)
-ONEOFF_POTD_HM    = (21, 0)     # POTD   — 9:00 PM ET (re-run)
-ONEOFF_PREWARM_HM = (20, 30)    # cache pre-warm — 30 min before the one-off POTD
+ONEOFF_SCHED_DATE = os.getenv("ONEOFF_SCHED_DATE", "2026-07-17")
+ONEOFF_RECAP_HM   = (16, 35)    # recap  — 4:35 PM ET (7/17)
+# POTD + prewarm PARKED (past times) so ONLY the recap fires today — no board was
+# requested for tonight. Past time-of-day => next firing is tomorrow (not the
+# one-off date) => no-op.
+ONEOFF_POTD_HM    = (0, 30)     # parked
+ONEOFF_PREWARM_HM = (0, 15)     # parked
 # Extension scan PARKED for today: user asked only for the 5 PM recap + 7 PM POTD.
 # A past time-of-day means its next firing is tomorrow, which isn't the one-off
 # date, so the loop body no-ops — no unrequested 10:15 PM additions post.
