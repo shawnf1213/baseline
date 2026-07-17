@@ -39,7 +39,39 @@ PROP_FIELD = {
     # reason. The data was always present: total_games_won is on every match
     # record. A prop the model can PICK must be a prop the resolver can SCORE.
     "Player Total Games Won": "total_games_won",
+    # Fantasy Score is a COMPOSITE (games ± sets ± aces/DF), not a single stat, so
+    # it has no field here — resolve_pick computes it from the match record via
+    # _fantasy_score(). Same lesson as PTGW above: a prop the model can PICK must
+    # be a prop the resolver can SCORE, or it hangs in NEEDS REVIEW forever.
 }
+
+_GS_NAMES = ("australian open", "roland garros", "french open", "wimbledon", "us open")
+
+
+def _fantasy_score(m: dict):
+    """PrizePicks tennis Fantasy Score from a completed-match record:
+        FS = 10 + (games_won − games_lost) + 3·(sets_won − sets_lost)
+             + 0.5·aces − 0.5·double_faults
+    Sets are reconstructed from the result + sets_played: the match winner takes
+    `need` sets (3 at a Grand Slam / any 4-5 set match, else 2), the loser the rest.
+    Returns None if the core fields are missing (→ NEEDS REVIEW, never a guess)."""
+    gw = m.get("total_games_won")
+    tmg = m.get("total_match_games")
+    sp = m.get("sets_played")
+    if not isinstance(gw, (int, float)) or not isinstance(tmg, (int, float)) or not sp:
+        return None
+    games_lost = tmg - gw
+    tourney = (m.get("tournament") or "").lower()
+    is_bo5 = sp >= 4 or any(g in tourney for g in _GS_NAMES)
+    need = 3 if is_bo5 else 2
+    won = bool(m.get("won"))
+    sets_won = need if won else (sp - need)
+    sets_lost = sp - sets_won
+    aces = m.get("aces") or 0
+    df = m.get("double_faults") or 0
+    fs = (10.0 + (gw - games_lost) + 3.0 * (sets_won - sets_lost)
+          + 0.5 * aces - 0.5 * df)
+    return round(fs, 1)
 
 FRESH_AMBER_DAYS = 21
 FRESH_RED_DAYS   = 45
@@ -220,8 +252,9 @@ def resolve_pick(player: str, opponent: str, prop_type: str,
     """Find the player's most recent COMPLETED match vs ``opponent`` and decide
     whether ``lean`` over/under ``line`` for ``prop_type`` was correct.
     Returns {result: W/L/NEEDS REVIEW, value, opponent_matched, date}."""
+    is_fs = prop_type == "Fantasy Score"
     field = PROP_FIELD.get(prop_type)
-    if not field:
+    if not field and not is_fs:
         return {"result": "NEEDS REVIEW", "reason": "unsupported prop"}
     p = resolve_player(player)
     if not p:
@@ -255,7 +288,7 @@ def resolve_pick(player: str, opponent: str, prop_type: str,
                     "opponent_matched": opponent, "date": void.get("date")}
         return {"result": "NEEDS REVIEW", "reason": "completed match not found"}
 
-    value = _val(best, field)
+    value = _fantasy_score(best) if is_fs else _val(best, field)
     if value is None:
         return {"result": "NEEDS REVIEW", "reason": "stat unavailable",
                 "opponent_matched": best.get("opponent_name"), "date": best.get("date")}
