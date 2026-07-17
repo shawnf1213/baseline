@@ -1754,7 +1754,9 @@ def _ranked_line(pick: dict, rank: int) -> str:
     lean = _lean_of(pick)
     proj = pick.get("projection")
     conf = pick.get("confidence")
-    l1 = f"**{rank}. {pick['player']}** vs {_short_opp(pick.get('opponent'))}"
+    # No "vs opponent" — the player + prop is enough; the opponent is visible on
+    # PrizePicks when the prop is actually played, so it's redundant width here.
+    l1 = f"**{rank}. {pick['player']}**"
     # THE PLAY IS THE HEADLINE — bold AND uppercase so it outranks everything
     # beside it. Projection and confidence are supporting numbers and are left
     # in plain weight; if everything is bold, nothing is.
