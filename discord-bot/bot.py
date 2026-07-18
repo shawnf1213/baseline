@@ -1264,8 +1264,8 @@ RESULTS_POST_MINUTE = int(os.getenv("RESULTS_POST_MINUTE", "45") or "45")
 # one-off slot no-ops and the normal 7:45 / 7:50 slots run as usual.
 ONEOFF_SCHED_DATE = os.getenv("ONEOFF_SCHED_DATE", "2026-07-17")
 ONEOFF_RECAP_HM   = (17, 5)     # recap — 5:05 PM ET (already fired)
-ONEOFF_POTD_HM    = (20, 10)    # POTD — 8:10 PM ET (7/17)
-ONEOFF_PREWARM_HM = (20, 0)     # cache pre-warm — 10 min before (30 min not possible now)
+ONEOFF_POTD_HM    = (21, 45)    # POTD — 9:45 PM ET (7/17, demon-free re-post)
+ONEOFF_PREWARM_HM = (21, 15)    # cache pre-warm — 30 min before
 # Extension scan PARKED for today: user asked only for the 5 PM recap + 7 PM POTD.
 # A past time-of-day means its next firing is tomorrow, which isn't the one-off
 # date, so the loop body no-ops — no unrequested 10:15 PM additions post.

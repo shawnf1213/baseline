@@ -295,13 +295,14 @@ def _parse_board(board: dict) -> list:
         prop_type = PROP_MAP.get((attr.get("stat_type") or "").strip().lower())
         if not prop_type or prop_type in _POD_EXCLUDE_PROPS:
             continue
-        # PrizePicks lists "standard", "demon" (boosted, higher line, over-only,
-        # modified payout) and "goblin" (reduced, lower line) variants. v2+demon:
-        # standard and demon are BOTH evaluated (demons under stricter bars, see
-        # _demon_qualifies); goblins remain excluded entirely; any other exotic
-        # type is skipped. Never fabricate a line when none exists.
+        # ONLY standard lines are evaluated. PrizePicks also lists "demon" (boosted,
+        # higher line) and "goblin" (reduced, lower line) variants — BOTH are
+        # excluded entirely here, at the earliest point, so they can never enter the
+        # candidate pool, qualification, ranking, POTD, or the 3x. Demon evaluation
+        # was reverted: a demon has no placeable UNDER and must never reach POTD, and
+        # rather than special-case it downstream we simply never acknowledge it.
         _ot = (attr.get("odds_type") or "standard").lower()
-        if _ot not in ("standard", "demon"):
+        if _ot != "standard":
             continue
         line = attr.get("line_score")
         if line is None:
