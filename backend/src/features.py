@@ -260,7 +260,9 @@ def resolve_pick(player: str, opponent: str, prop_type: str,
     if not p:
         return {"result": "NEEDS REVIEW", "reason": "player not resolved"}
     try:
-        data = get_player_stats_by_surface(p["id"], p["tour"]) or {}
+        # force_fresh: resolution must NOT read the 6h stats cache — it can predate
+        # today's completed match and produce a false "completed match not found".
+        data = get_player_stats_by_surface(p["id"], p["tour"], force_fresh=True) or {}
     except Exception as exc:  # noqa: BLE001
         return {"result": "NEEDS REVIEW", "reason": f"stats error: {exc}"}
 

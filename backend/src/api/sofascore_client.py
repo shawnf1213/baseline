@@ -1327,7 +1327,8 @@ def _fetch_event_page(player_id: int, page: int) -> list:
 MAX_PAGES_DEFAULT = 50    # fetch up to 50 pages (~500 events) — covers full career history
 
 
-def _get_player_recent_events(player_id: int, max_pages: int = MAX_PAGES_DEFAULT) -> list:
+def _get_player_recent_events(player_id: int, max_pages: int = MAX_PAGES_DEFAULT,
+                              force_fresh: bool = False) -> list:
     """
     Fetch ALL available pages of a player's event history in parallel batches of 5.
 
@@ -1344,7 +1345,12 @@ def _get_player_recent_events(player_id: int, max_pages: int = MAX_PAGES_DEFAULT
     # so reusing it for 6h sharply cuts live proxy volume.
     _bucket = int(time.time()) // _CACHE_BUCKET_SECS
     cache_key = f"ss_events_v2_{player_id}_{_bucket}"
-    if cache_key in st.session_state:
+    # force_fresh (resolution path): drop any cached snapshot so a just-completed
+    # match that isn't in the 6h bucket yet is actually fetched. The fresh result
+    # is written back below, so it also refreshes the cache for later callers.
+    if force_fresh:
+        st.session_state.pop(cache_key, None)
+    elif cache_key in st.session_state:
         logger.info("EVENTS_CACHE_HIT | player_id=%s | bucket=%s", player_id, _bucket)
         record_cache_hit()
         return st.session_state[cache_key]
@@ -1948,34 +1954,42 @@ def get_player_surface_hold(player_id, surface: str, tour: str = "ATP"):
     return hold
 
 
-def get_player_stats_by_surface(player_id, tour: str = "ATP") -> dict:
+def get_player_stats_by_surface(player_id, tour: str = "ATP", force_fresh: bool = False) -> dict:
     pid = int(player_id)
     # v6: full-history pagination, SS aggregation tiers, ace-against extraction.
     # Cache key uses the same 6h bucket as the events cache (STEP 3) so surface
     # stats refresh together and live proxy volume stays low.
     _bucket = int(time.time()) // _CACHE_BUCKET_SECS
     cache_key = f"ss_surface_v6_{pid}_{_bucket}"
-    if cache_key in st.session_state:
-        logger.info("SURFACE_CACHE_HIT | pid=%s | bucket=%s", pid, _bucket)
-        record_cache_hit()
-        return st.session_state[cache_key]
+    # force_fresh (RESOLUTION path): the 6h cache — memory OR durable Postgres — can
+    # hold a snapshot taken before today's match finished, so the resolver reports
+    # "completed match not found". Bypass BOTH cache layers and re-fetch; the fresh
+    # result is written back below, refreshing the cache with today's matches for
+    # projection callers too.
+    if force_fresh:
+        st.session_state.pop(cache_key, None)
+    else:
+        if cache_key in st.session_state:
+            logger.info("SURFACE_CACHE_HIT | pid=%s | bucket=%s", pid, _bucket)
+            record_cache_hit()
+            return st.session_state[cache_key]
 
-    # Durable layer (scope 2/3): read ONCE on a memory miss, then hydrate memory
-    # so the rest of this bucket never touches the DB again. TTL is enforced
-    # inside cache_get, so a row that merely survived a restart cannot be served
-    # stale — an expired row is a miss and we refetch below.
-    _durable = _player_surface_from_db(pid)
-    if _durable:
-        logger.info("SURFACE_DB_HIT | pid=%s | hydrated from Postgres (survived "
-                    "restart) — no refetch", pid)
-        st.session_state[cache_key] = _durable
-        record_cache_hit()
-        return _durable
+        # Durable layer (scope 2/3): read ONCE on a memory miss, then hydrate memory
+        # so the rest of this bucket never touches the DB again. TTL is enforced
+        # inside cache_get, so a row that merely survived a restart cannot be served
+        # stale — an expired row is a miss and we refetch below.
+        _durable = _player_surface_from_db(pid)
+        if _durable:
+            logger.info("SURFACE_DB_HIT | pid=%s | hydrated from Postgres (survived "
+                        "restart) — no refetch", pid)
+            st.session_state[cache_key] = _durable
+            record_cache_hit()
+            return _durable
 
-    logger.info("[STATS_FLOW] START | player_id=%d tour=%s", pid, tour)
+    logger.info("[STATS_FLOW] START | player_id=%d tour=%s force_fresh=%s", pid, tour, force_fresh)
 
     now = time.time()
-    events = _get_player_recent_events(pid, max_pages=MAX_PAGES_DEFAULT)
+    events = _get_player_recent_events(pid, max_pages=MAX_PAGES_DEFAULT, force_fresh=force_fresh)
     logger.info("[STATS_FLOW] EVENTS_RAW | fetched=%d", len(events))
 
     # ── Stale-cache fallback when the live fetch comes back empty ─────────────
