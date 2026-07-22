@@ -2712,6 +2712,11 @@ async def prop_calculate(req: PropRequest):
             "ptgw_implied_claim":   _ptgw_implied_claim,
             "ptgw_knife_edge":      _ptgw_knife_edge,
             "ptgw_guard_note":      _ptgw_guard_note,
+            # Win-prob anchor (model / de-vigged market / blended) + anchored flag.
+            "ptgw_model_wp":        result.get("ptgw_model_wp"),
+            "ptgw_market_wp":       result.get("ptgw_market_wp"),
+            "ptgw_blended_wp":      result.get("ptgw_blended_wp"),
+            "ptgw_anchored":        result.get("ptgw_anchored"),
             # ── Fantasy Score scenario-mixture surface (None for other props) ─────
             "fs_p_over":            _fs_p_over,
             "fs_scenario_probs":    result.get("fs_scenario_probs"),
