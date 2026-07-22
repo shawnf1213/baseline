@@ -616,3 +616,32 @@ the audit trail were corrected.
 (187) — all OVER plays. Awaiting manual finals from Shawn before the recap posts.
 Resolved so far: 2W-4L (Shubladze W, Sasnovich W; Faria/Feistel/Basilashvili/
 Pellegrino L). No recap posted (it would be incomplete with 5 pending).
+
+---
+
+## Entry 8 — Total Games anchored to Sofascore total-games market (2026-07-22)
+
+**What.** The Total Games (match total) projection is now blended toward the
+sharp book number: `blended = 0.7·book_line + 0.3·model_proj`, where `book_line`
+is the de-vigged "Total games won" O/U from the match's Sofascore odds feed
+(new `get_match_total_games_line` in sofascore_client.py). Weight is env-tunable
+via `TG_MARKET_WEIGHT` (default 0.7). No book market -> model-only, `tg_anchored`
+false. Response surfaces tg_book_line / tg_model_proj / tg_blended_proj /
+tg_book_edge (blended − PrizePicks line) / tg_divergent (|model − book| > 3 games).
+
+**Why (Shawn's explicit call: "the sofascore sportsbook odds win").** The model
+systematically over/under-shoots match totals; the two-way total-games market is
+sharper. Anchoring tracks the market while still voicing a model edge + a
+divergence flag when the model disagrees materially.
+
+**Tension flagged.** This is the FIRST anchor that blends the FINAL projection
+toward the book, not a structural input. The PTGW/FS anchors blend the WIN
+PROBABILITY (a mixture input) — consistent with "fix structural bugs with market
+lines, don't fit the final number to the book." Total Games has no intermediate
+win-prob→games mapping to anchor, so the only market signal for a match total is
+the total line itself; hence the direct blend. Done per explicit instruction;
+weight is tunable to 1.0 (pure book) or lower if calibration argues for it.
+
+**Verified live.** Navone vs Halys (clay): book 22.5, model 23.1, blended 22.7
+(model_projection = 22.7 confirmed downstream), edge +0.18 OVER, not divergent,
+conf 50. De-vig sanity: over 0.485 / under 0.515, overround 7.9%.
