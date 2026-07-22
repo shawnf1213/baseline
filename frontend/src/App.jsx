@@ -200,16 +200,29 @@ function TabBar({ tabs, activeKey, onChange }) {
   )
 }
 
+// Desktop layout only when BOTH dimensions are roomy. A phone in landscape is
+// ~930px wide but only ~430px tall — the width alone would wrongly trip a
+// width-only breakpoint into the desktop layout, so require height too. No phone
+// (portrait or landscape) exceeds 500px on its short side; laptops/desktops do.
+function isDesktopViewport() {
+  if (typeof window === 'undefined') return true
+  return window.innerWidth > 900 && window.innerHeight > 500
+}
+
 export default function App() {
   const [tour, setTour] = useState('ATP')
   const [tab,  setTab]  = useState('surface')
   const prevTabIdx = useRef(0)
-  const [isDesktop, setIsDesktop] = useState(() => typeof window !== 'undefined' && window.innerWidth > 900)
+  const [isDesktop, setIsDesktop] = useState(isDesktopViewport)
 
   useEffect(() => {
-    const onResize = () => setIsDesktop(window.innerWidth > 900)
+    const onResize = () => setIsDesktop(isDesktopViewport())
     window.addEventListener('resize', onResize)
-    return () => window.removeEventListener('resize', onResize)
+    window.addEventListener('orientationchange', onResize)
+    return () => {
+      window.removeEventListener('resize', onResize)
+      window.removeEventListener('orientationchange', onResize)
+    }
   }, [])
 
   // Mobile (≤900px): the installable research app with its own bottom-tab shell.
