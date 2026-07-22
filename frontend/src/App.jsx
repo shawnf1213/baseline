@@ -6,6 +6,7 @@ import HeadToHead      from './pages/HeadToHead'
 import ValueBet        from './pages/ValueBet'
 import SplineAccent    from './components/SplineAccent'
 import ErrorBoundary   from './components/ErrorBoundary'
+import MobileShell     from './mobile/MobileShell'
 
 // Tab definitions with icons (inline SVG so no extra deps)
 const TABS = [
@@ -210,6 +211,16 @@ export default function App() {
     window.addEventListener('resize', onResize)
     return () => window.removeEventListener('resize', onResize)
   }, [])
+
+  // Mobile (≤900px): the installable research app with its own bottom-tab shell.
+  // Desktop (>900px): the existing optimizer layout below, unchanged.
+  if (!isDesktop) {
+    return (
+      <ErrorBoundary label="Mobile App">
+        <MobileShell />
+      </ErrorBoundary>
+    )
+  }
 
   const handleTabChange = (key) => {
     const newIdx = TABS.findIndex(t => t.key === key)
