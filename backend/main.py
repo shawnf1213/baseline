@@ -2051,17 +2051,39 @@ async def prop_calculate(req: PropRequest):
                     match_format=match_fmt,
                     player_ta=player_ta_props, opponent_ta=opponent_ta_props,
                 )
+                # ── MARKET WIN-PROB ANCHOR (same as FS) ───────────────────────
+                # De-vig the upcoming match moneyline and blend it into the model
+                # win prob so the scenario mixture keys off the market, not the
+                # model's underdog-skewed read. No moneyline -> model-only.
+                _ptgw_model_wp = (tg_result.get("p1_win_prob") or 50.0) / 100.0
+                _ptgw_ml = await asyncio.to_thread(
+                    get_match_moneyline_prob, req.player_id, req.opponent_id, req.tour)
+                _ptgw_mkt_wp = _ptgw_ml.get("market_p1") if isinstance(_ptgw_ml, dict) else None
+                _ptgw_anchored = isinstance(_ptgw_mkt_wp, (int, float))
+                if _ptgw_anchored:
+                    _ptgw_blended = (WINPROB_MARKET_WEIGHT * _ptgw_mkt_wp
+                                     + (1.0 - WINPROB_MARKET_WEIGHT) * _ptgw_model_wp)
+                else:
+                    _ptgw_blended = _ptgw_model_wp
+                logger.info("PTGW_WINPROB | %s | model=%.3f market=%s blended=%.3f anchored=%s",
+                            req.player_name or "player", _ptgw_model_wp,
+                            ("%.3f" % _ptgw_mkt_wp) if _ptgw_anchored else "None",
+                            _ptgw_blended, _ptgw_anchored)
                 result = project_player_games_won(
                     p1_s, p2_s, req.surface, cpr,
                     games_combined=tg_result.get("projection"),
                     bp_won=bp_result.get("projection"),
-                    p1_win_prob=tg_result.get("p1_win_prob"),
+                    p1_win_prob=max(2.0, min(98.0, _ptgw_blended * 100.0)),
                     p2_win_prob=tg_result.get("p2_win_prob"),
                     expected_sets=tg_result.get("expected_sets"),
                     tour=req.tour, match_format=match_fmt,
                     prop_line=req.prop_line,
                     trace=_ctrace,
                 )
+                result["ptgw_model_wp"] = round(_ptgw_model_wp, 4)
+                result["ptgw_market_wp"] = round(_ptgw_mkt_wp, 4) if _ptgw_anchored else None
+                result["ptgw_blended_wp"] = round(_ptgw_blended, 4)
+                result["ptgw_anchored"] = _ptgw_anchored
                 # Carry the affinity differential + win prob forward. PTGW's own
                 # projector doesn't compute them — it consumes the Total Games
                 # projection's — but the underdog games-won confidence penalty

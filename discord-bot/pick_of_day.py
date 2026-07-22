@@ -105,15 +105,14 @@ PROP_MIN_CONF = {
     "Player Total Games Won":  PLAYER_TGW_MIN_CONF,    # 80
 }
 
-# ── PTGW verification gate (structural rebuild — see FREEZE_LOG.md) ───────────
-# The PTGW chain was rebuilt from a mean-vs-line EVR grade to a scenario-mixture
-# P(over) model after every 7/16 PTGW pick lost. Until Shawn reviews the live
-# shadow output and flips this flag, PTGW is EXCLUDED from the posted board, the
-# 3x slip, and POTD eligibility, and /prop returns "PTGW under rebuild". The new
-# chain STILL runs on every board evaluation and logs its projection in shadow
-# mode (POD_PTGW_SHADOW), so it can be judged on live slates without posting.
-# DO NOT default this to true — it stays false until explicitly enabled.
-PTGW_ENABLED = os.getenv("PTGW_ENABLED", "false").strip().lower() in (
+# ── PTGW gate (structural rebuild — see FREEZE_LOG.md) ───────────────────────
+# PTGW was rebuilt from a mean-vs-EVR grade to a scenario-mixture P(over) model
+# after every 7/16 PTGW pick lost. ENABLED (2026-07-22) after the shadow review +
+# the market win-prob anchor (main.py PTGW branch): the mixture now keys off the
+# de-vigged moneyline, not the model's underdog-skewed win prob — the same footing
+# as FS. Set PTGW_ENABLED=false to return it to shadow (POD_PTGW_SHADOW logs the
+# projection without posting; /prop returns "under rebuild").
+PTGW_ENABLED = os.getenv("PTGW_ENABLED", "true").strip().lower() in (
     "1", "true", "yes", "on")
 # Fantasy Score gate. ENABLED (2026-07-16) after the shadow review + fixes: market
 # win-prob anchor, median "fair line" display, derived claim, and the divergence
