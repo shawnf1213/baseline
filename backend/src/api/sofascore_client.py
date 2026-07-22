@@ -2589,6 +2589,60 @@ def get_match_moneyline_prob(player_id, opponent_id=None, tour: str = "ATP") -> 
         return out
 
 
+def get_match_total_games_line(player_id, opponent_id=None, tour: str = "ATP") -> dict:
+    """The sportsbook TOTAL GAMES line for the player's upcoming Sofascore event —
+    the sharp market's expected match total (its "Total games won" O/U). Returns
+    {book_line, over_prob, under_prob, overround, event_id} (probs de-vigged), or
+    {book_line: None, reason: ...} when no total-games market is available. Cached
+    1h. Never raises. Used to anchor the Total Games projection to the market."""
+    pid = int(player_id)
+    ck = f"ss_tgline_{pid}_{int(time.time()) // 3600}"
+    if ck in st.session_state:
+        return st.session_state[ck]
+    out = {"book_line": None, "reason": "no total-games market"}
+    try:
+        ne = _get(f"{BASE_URL}/team/{pid}/near-events")
+        ev = (ne or {}).get("nextEvent") or {}
+        eid = ev.get("id")
+        if not eid:
+            out["reason"] = "no upcoming event"
+            st.session_state[ck] = out
+            return out
+        od = _get(f"{BASE_URL}/event/{eid}/odds/1/all")
+        m = next((x for x in (od or {}).get("markets", [])
+                  if (x.get("marketName") or "").strip().lower() == "total games won"), None)
+        if not m:
+            st.session_state[ck] = out
+            return out
+        try:
+            line = float(m.get("choiceGroup"))
+        except (TypeError, ValueError):
+            out["reason"] = "unparseable line"
+            st.session_state[ck] = out
+            return out
+        choices = m.get("choices") or []
+        over = next((c for c in choices if c.get("name") == "Over"), None)
+        under = next((c for c in choices if c.get("name") == "Under"), None)
+        do = _frac_to_decimal((over or {}).get("fractionalValue"))
+        du = _frac_to_decimal((under or {}).get("fractionalValue"))
+        po = pu = overround = None
+        if do and du:
+            io, iu = 1.0 / do, 1.0 / du
+            tot = io + iu
+            po, pu, overround = io / tot, iu / tot, tot - 1.0
+        out = {"book_line": line,
+               "over_prob": round(po, 4) if po is not None else None,
+               "under_prob": round(pu, 4) if pu is not None else None,
+               "overround": round(overround, 4) if overround is not None else None,
+               "event_id": eid, "reason": None}
+        st.session_state[ck] = out
+        return out
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("total-games line fetch failed pid=%s: %s", pid, exc)
+        out["reason"] = "fetch error"
+        return out
+
+
 # Sofascore tennis CATEGORY ids — the per-tour scheduled-events endpoints
 # (category/{id}/scheduled-events/{date}) still work where the sport-level one
 # now 404s. ATP main tour = 3, WTA main tour = 6.

@@ -13,6 +13,7 @@ Endpoints:
 
 import asyncio
 import datetime
+import os
 import sys
 import time
 import types
@@ -59,6 +60,7 @@ from src.api.sofascore_client import (
     peek_surface_hold,
     get_player_next_match,
     get_match_moneyline_prob,
+    get_match_total_games_line,
     get_h2h_summary,
     get_h2h_stat_avg,
     SofascoreBlockedError,
@@ -67,6 +69,12 @@ from src.api.sofascore_client import (
 # FS market anchor (1A): weight on the de-vigged market win prob when blending
 # with the model prob. blended = w·market + (1−w)·model.
 WINPROB_MARKET_WEIGHT = 0.7
+# Total Games market anchor: weight on the sportsbook's "Total games won" O/U line
+# when blending with the model's total-games projection.
+# blended = w·book_line + (1−w)·model_proj. |model − book| > this many games flags
+# a divergence (the model disagrees materially with the sharp market).
+TG_MARKET_WEIGHT = float(os.getenv("TG_MARKET_WEIGHT", "0.7") or "0.7")
+TG_DIVERGENCE_GAMES = 3.0
 from src.api.tennis_abstract import get_player_ta_stats, build_props_ta_view
 from src.api.sackmann import (
     load_player_sackmann_data,
@@ -1868,6 +1876,35 @@ async def prop_calculate(req: PropRequest):
                 match_format=match_fmt,
                 player_ta=player_ta_props, opponent_ta=opponent_ta_props,
             )
+            # ── SPORTSBOOK TOTAL-GAMES ANCHOR ────────────────────────────────
+            # Sofascore's "Total games won" O/U is the sharp market's expected
+            # match total. Blend the model projection toward the book line
+            # (blended = w·book + (1−w)·model) so the number tracks the market
+            # while still voicing a model edge. No book market -> model-only,
+            # flagged unanchored. A gap of > TG_DIVERGENCE_GAMES between model
+            # and book raises a divergence flag (surfaced, not auto-suppressed).
+            _tg_model_proj = float(result.get("projection") or 0.0)
+            _tg_line = await asyncio.to_thread(
+                get_match_total_games_line,
+                req.player_id, req.opponent_id, req.tour)
+            _tg_book = (_tg_line or {}).get("book_line")
+            if _tg_book is not None and _tg_model_proj > 0:
+                _tg_blended = (TG_MARKET_WEIGHT * float(_tg_book)
+                               + (1.0 - TG_MARKET_WEIGHT) * _tg_model_proj)
+                result["projection"] = round(_tg_blended, 1)
+                result["tg_book_line"] = float(_tg_book)
+                result["tg_model_proj"] = round(_tg_model_proj, 1)
+                result["tg_blended_proj"] = round(_tg_blended, 1)
+                result["tg_book_over_prob"] = _tg_line.get("over_prob")
+                result["tg_book_under_prob"] = _tg_line.get("under_prob")
+                result["tg_anchored"] = True
+                # Edge vs the PrizePicks line the user is actually betting.
+                if req.prop_line is not None:
+                    result["tg_book_edge"] = round(_tg_blended - float(req.prop_line), 2)
+                result["tg_divergent"] = abs(_tg_model_proj - float(_tg_book)) > TG_DIVERGENCE_GAMES
+            else:
+                result["tg_anchored"] = False
+                result["tg_divergent"] = False
         elif req.prop_type == "Fantasy Score":
             # FS is a COMPOSITE: it needs the player's ace + DF projections and the
             # match set structure (win prob + expected sets), then runs the
@@ -2733,6 +2770,17 @@ async def prop_calculate(req: PropRequest):
             "fs_market_wp":         result.get("fs_market_wp"),
             "fs_blended_wp":        result.get("fs_blended_wp"),
             "fs_anchored":          result.get("fs_anchored"),
+            # ── Total Games sportsbook anchor (None for other props) ──────────────
+            # model proj / de-vigged book O-U line / blended proj + edge vs the
+            # PrizePicks line and a divergence flag (|model − book| > 3 games).
+            "tg_book_line":         result.get("tg_book_line"),
+            "tg_model_proj":        result.get("tg_model_proj"),
+            "tg_blended_proj":      result.get("tg_blended_proj"),
+            "tg_book_over_prob":    result.get("tg_book_over_prob"),
+            "tg_book_under_prob":   result.get("tg_book_under_prob"),
+            "tg_book_edge":         result.get("tg_book_edge"),
+            "tg_anchored":          result.get("tg_anchored"),
+            "tg_divergent":         result.get("tg_divergent"),
             # Feature 3 — data freshness / injury flag (advisory)
             "freshness_level":      _freshness.get("level", ""),
             "freshness_message":    _freshness.get("message", ""),
