@@ -7,8 +7,8 @@ import SearchTab from './SearchTab'
 import ResearchTab from './ResearchTab'
 import PlayerDashboard from './PlayerDashboard'
 import InstallPrompt from '../components/InstallPrompt'
-import { fetchRecord, fetchSlate } from '../utils/api'
-import { deriveBoard } from './data'
+import { fetchPrizePicksBoard, fetchSlate } from '../utils/api'
+import { parsePrizePicksBoard } from './data'
 
 export default function MobileShell() {
   const [tab, setTab] = useState('board')
@@ -20,12 +20,13 @@ export default function MobileShell() {
   const load = useCallback(async () => {
     setLoading(true); setError(null)
     try {
-      // Record is the source of truth for props; slate only enriches start times.
-      const [record, slate] = await Promise.all([
-        fetchRecord(),
+      // LIVE PrizePicks market is the source of truth — independent of the bot.
+      // Slate only enriches tour / surface / start time where names match.
+      const [pp, slate] = await Promise.all([
+        fetchPrizePicksBoard(),
         fetchSlate().catch(() => null),
       ])
-      setBoard(deriveBoard(record, slate))
+      setBoard(parsePrizePicksBoard(pp, slate))
     } catch (e) {
       setError(e?.message || 'load failed')
     } finally {
@@ -61,7 +62,7 @@ export default function MobileShell() {
         {tab === 'board' && <BoardTab board={board} loading={loading} error={error} reload={load} onOpenPlayer={onOpenPlayer} />}
         {tab === 'players' && <PlayersTab board={board} loading={loading} onOpenPlayer={onOpenPlayer} />}
         {tab === 'search' && <SearchTab onOpenPlayer={onOpenPlayer} />}
-        {tab === 'research' && <ResearchTab board={board} onOpenPlayer={onOpenPlayer} />}
+        {tab === 'research' && <ResearchTab onOpenPlayer={onOpenPlayer} />}
       </main>
 
       <BottomNav active={tab} onChange={setTab} />

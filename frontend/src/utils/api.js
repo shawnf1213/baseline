@@ -1,15 +1,30 @@
 import axios from 'axios'
 
-// Strip BOM (﻿) that PowerShell can inject when piping env vars to Vercel CLI
 const RAW = (import.meta.env.VITE_API_URL || '').replace(/^﻿/, '').trim()
-// Deployed builds (Vercel — production AND branch previews) call the SAME-ORIGIN
-// `/api` proxy defined in vercel.json, which reverse-proxies to the backend.
-// This sidesteps cross-origin CORS entirely, so any *.vercel.app preview works
-// without the backend having to allowlist its URL. Local dev talks to the
-// backend directly via VITE_API_URL (localhost:5173 is CORS-allowlisted).
-const BASE = import.meta.env.PROD ? '' : (RAW || 'http://localhost:8000')
+
+// Where /api requests go:
+//  • Production host → straight to the backend (its origin is CORS-allowlisted).
+//    A DIRECT call avoids a proxy hop, so the slow prop-calculate endpoint
+//    (minutes for a cold player) never hits a Vercel edge timeout.
+//  • Preview (*.vercel.app hashes) → same-origin `/api` proxy (vercel.json), so a
+//    preview URL the backend hasn't allowlisted still works (no cross-origin CORS).
+//  • Local dev → same-origin `/api` → the Vite dev proxy → backend.
+function resolveBase() {
+  if (typeof window === 'undefined') return ''
+  const host = window.location.hostname
+  if (host === 'baseline-app-three.vercel.app') return 'https://backend-production-84ab.up.railway.app'
+  if (host === 'localhost' || host === '127.0.0.1') return ''      // Vite dev proxy
+  if (RAW && /^https?:\/\//.test(RAW)) return RAW                  // explicit override
+  return ''                                                        // preview: /api proxy
+}
+const BASE = resolveBase()
 
 export const api = axios.create({ baseURL: BASE, timeout: 60000 })
+
+// PrizePicks is CORS-locked to browsers, so it ALWAYS goes through the same-origin
+// `/pp` proxy (Vercel rewrite in prod, Vite proxy in dev) — never cross-origin.
+export const fetchPrizePicksBoard = (signal) =>
+  axios.get('/pp/projections?per_page=1000', { timeout: 20000, signal }).then(r => r.data)
 
 export const searchPlayers  = (query, tour, signal) =>
   api.get('/api/search', { params: { query, tour }, signal }).then(r => r.data)

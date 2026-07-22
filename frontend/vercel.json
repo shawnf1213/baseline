@@ -4,6 +4,7 @@
   "framework": "vite",
   "rewrites": [
     { "source": "/api/:path*", "destination": "https://backend-production-84ab.up.railway.app/api/:path*" },
+    { "source": "/pp/:path*", "destination": "https://partner-api.prizepicks.com/:path*" },
     { "source": "/(.*)", "destination": "/index.html" }
   ]
 }

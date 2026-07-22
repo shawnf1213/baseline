@@ -60,20 +60,76 @@ export function inferTour(tournament) {
   return 'ATP'
 }
 
-// Build name → {start-timestamp, tour} maps from the slate (best-effort join).
-// The slate's atp[]/wta[] arrays are a REAL tour signal — picks carry no tour
-// column, so this corrects the tournament-string inference where names match.
+// Build name → {start-timestamp, tour, surface} maps from the slate (best-effort
+// join). The slate's atp[]/wta[] arrays are a REAL tour + surface signal — the
+// PrizePicks board carries neither, so this enriches rows where names match.
 function mapsFromSlate(slate) {
-  const startMap = {}, tourMap = {}
-  const add = (name, ts, tour) => {
+  const startMap = {}, tourMap = {}, surfaceMap = {}
+  const add = (name, ts, tour, surf) => {
     if (!name) return
     const n = normName(name), ln = lastName(name)
     if (ts) { startMap[n] = ts; if (ln && !(ln in startMap)) startMap[ln] = ts }
     if (tour) { tourMap[n] = tour; if (ln && !(ln in tourMap)) tourMap[ln] = tour }
+    if (surf) { surfaceMap[n] = surf; if (ln && !(ln in surfaceMap)) surfaceMap[ln] = surf }
   }
-  for (const r of (slate?.atp || [])) { add(r.p1, r.start_timestamp, 'ATP'); add(r.p2, r.start_timestamp, 'ATP') }
-  for (const r of (slate?.wta || [])) { add(r.p1, r.start_timestamp, 'WTA'); add(r.p2, r.start_timestamp, 'WTA') }
-  return { startMap, tourMap }
+  for (const r of (slate?.atp || [])) { add(r.p1, r.start_timestamp, 'ATP', r.surface); add(r.p2, r.start_timestamp, 'ATP', r.surface) }
+  for (const r of (slate?.wta || [])) { add(r.p1, r.start_timestamp, 'WTA', r.surface); add(r.p2, r.start_timestamp, 'WTA', r.surface) }
+  return { startMap, tourMap, surfaceMap }
+}
+
+// PrizePicks stat_type (lowercased) → Baseline prop type (mirrors the bot's PROP_MAP).
+const PP_PROP_MAP = {
+  'aces': 'Aces',
+  'double faults': 'Double Faults', 'double fault': 'Double Faults',
+  'break points won': 'Break Points Won',
+  'total games': 'Total Games',
+  'total games won': 'Player Total Games Won',
+  'fantasy score': 'Fantasy Score',
+}
+
+// Parse the LIVE PrizePicks board (JSON:API) into neutral prop rows — the same
+// shape the Board renders, but sourced from the live market instead of logged
+// picks. Projections/edges start null and are computed client-side on demand.
+// Mirrors the bot's _parse_board: tennis league, standard lines, singles only,
+// opponent from `attributes.description`.
+export function parsePrizePicksBoard(json, slate) {
+  const empty = { date: etToday(), isToday: true, rows: [], source: 'prizepicks' }
+  if (!json || typeof json !== 'object') return empty
+  const inc = {}
+  for (const i of (json.included || [])) inc[`${i.type}:${i.id}`] = i
+  const { startMap, tourMap, surfaceMap } = mapsFromSlate(slate)
+  const seen = new Set()
+  const rows = []
+  for (const proj of (json.data || [])) {
+    const a = proj.attributes || {}
+    const rel = proj.relationships || {}
+    const lref = (rel.league || {}).data || {}
+    const lname = (((inc[`${lref.type}:${lref.id}`] || {}).attributes || {}).name || '').toLowerCase()
+    if (!lname.includes('tennis')) continue
+    const propType = PP_PROP_MAP[(a.stat_type || '').trim().toLowerCase()]
+    if (!propType) continue
+    if ((a.odds_type || 'standard').toLowerCase() !== 'standard') continue
+    if (a.line_score == null) continue
+    const pref = ((rel.new_player || rel.player) || {}).data || {}
+    const player = ((inc[`${pref.type}:${pref.id}`] || {}).attributes || {}).name || ''
+    const opponent = (a.description || '').trim()
+    if (!player || player.includes('/') || opponent.includes('/') || !opponent) continue
+    const line = Number(a.line_score)
+    if (isNaN(line)) continue
+    const key = `${player}|${propType}|${line}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    rows.push({
+      key, player, opponent, propType, line,
+      projection: null, edge: null, confidence: null,   // computed lazily via /api/prop/calculate
+      surface: lookup(surfaceMap, player) || '',
+      tour: lookup(tourMap, player) || '',               // may be '' until projection resolves it
+      tournament: '',
+      oddsType: 'standard',
+      startTs: lookup(startMap, player),
+    })
+  }
+  return { date: etToday(), isToday: true, rows, source: 'prizepicks' }
 }
 function lookup(map, player) {
   return map[normName(player)] ?? map[lastName(player)] ?? null

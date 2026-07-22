@@ -6,6 +6,7 @@ import ConfidenceGauge from '../components/ConfidenceGauge'
 import Last5Bars from '../components/Last5Bars'
 import { fetchForm, fetchStats, fetchNextMatch, fetchHistory, searchPlayers } from '../utils/api'
 import { normName, hitStrip, shortProp, fmt, prettyDate, startTimeLabel, PROP_TYPES } from './data'
+import { projectRow, cachedProjection } from './project'
 import { useBookmarks, playerBookmarkId } from './useBookmarks'
 
 const HISTORY_PROPS = PROP_TYPES.filter(p => p.history)
@@ -30,6 +31,7 @@ export default function PlayerDashboard({ player, board, onClose, onOpenPlayer }
   const [coreLoading, setCoreLoading] = useState(true)
   const [notFound, setNotFound] = useState(false)
   const [histories, setHistories] = useState({})
+  const [propProj, setPropProj] = useState({})
 
   const { has, toggle } = useBookmarks()
   const bmId = playerBookmarkId(player.name)
@@ -86,6 +88,18 @@ export default function PlayerDashboard({ player, board, onClose, onOpenPlayer }
     return () => { alive = false }
   }, [pid, primarySurface, tour])
 
+  // Project this player's live PrizePicks props (shared cache with the Board).
+  useEffect(() => {
+    let alive = true
+    boardRows.forEach(r => {
+      const c = cachedProjection(r.key)
+      if (c !== undefined) { setPropProj(m => (r.key in m ? m : { ...m, [r.key]: c || { failed: true } })); return }
+      setPropProj(m => (m[r.key]?.loading ? m : { ...m, [r.key]: { loading: true } }))
+      projectRow(r, tour).then(res => { if (alive) setPropProj(m => ({ ...m, [r.key]: res || { failed: true } })) })
+    })
+    return () => { alive = false }
+  }, [boardRows, tour])
+
   const hand = stats?.ta_stats?.handedness
   const handLabel = hand === 'R' ? 'Right-handed' : hand === 'L' ? 'Left-handed' : null
 
@@ -139,26 +153,32 @@ export default function PlayerDashboard({ player, board, onClose, onOpenPlayer }
               </Card>
             )}
 
-            {/* Today's props */}
+            {/* Live PrizePicks props for this player, projected on the fly */}
             {boardRows.length > 0 && (
               <section style={{ marginBottom: 22 }}>
-                <SectionLabel>Model Props · This Slate</SectionLabel>
-                {boardRows.map(r => (
-                  <Card key={r.key} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 14px', marginBottom: 10 }}>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 16, color: T.white, letterSpacing: 0.3 }}>{shortProp(r.propType)}</div>
-                      <div style={{ display: 'flex', gap: 14, marginTop: 8 }}>
-                        <Mini label="Line" value={fmt(r.line, r.line != null && Number.isInteger(r.line) ? 0 : 1)} />
-                        <Mini label="Proj" value={fmt(r.projection)} accent />
-                        <div style={{ textAlign: 'center' }}>
-                          <Delta value={r.edge} size={16} />
-                          <div style={{ fontFamily: T.cond, fontWeight: 700, fontSize: 9.5, letterSpacing: 1, textTransform: 'uppercase', color: T.muted2 }}>vs line</div>
+                <SectionLabel>Live Props · PrizePicks</SectionLabel>
+                {boardRows.map(r => {
+                  const p = propProj[r.key] || {}
+                  const done = !p.loading && !p.failed && p.projection != null
+                  return (
+                    <Card key={r.key} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 14px', marginBottom: 10 }}>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 16, color: T.white, letterSpacing: 0.3 }}>{shortProp(r.propType)}</div>
+                        <div style={{ display: 'flex', gap: 14, marginTop: 8, alignItems: 'center' }}>
+                          <Mini label="Line" value={fmt(r.line, Number.isInteger(r.line) ? 0 : 1)} />
+                          <Mini label="Proj" value={done ? fmt(p.projection) : '—'} accent={done} />
+                          <div style={{ textAlign: 'center' }}>
+                            {done ? <Delta value={p.edge} size={16} />
+                              : p.loading ? <Spinner size={14} />
+                              : <span style={{ color: T.muted2, fontSize: 13 }}>—</span>}
+                            <div style={{ fontFamily: T.cond, fontWeight: 700, fontSize: 9.5, letterSpacing: 1, textTransform: 'uppercase', color: T.muted2 }}>vs line</div>
+                          </div>
                         </div>
                       </div>
-                    </div>
-                    {r.confidence != null && <ConfidenceGauge confidence={Math.round(r.confidence)} size={78} />}
-                  </Card>
-                ))}
+                      {done && p.confidence != null && <ConfidenceGauge confidence={Math.round(p.confidence)} size={78} />}
+                    </Card>
+                  )
+                })}
               </section>
             )}
 

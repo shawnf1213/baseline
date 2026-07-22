@@ -75,5 +75,27 @@ export default defineConfig({
       },
     }),
   ],
-  server: { port: 5173 },
+  // Dev-server proxies mirror the vercel.json rewrites so local dev talks to the
+  // same live sources without cross-origin CORS: /pp → PrizePicks (browsers can't
+  // hit it directly), /api → the backend.
+  server: {
+    port: 5173,
+    proxy: {
+      '/pp': {
+        target: 'https://partner-api.prizepicks.com',
+        changeOrigin: true,
+        secure: true,
+        rewrite: (p) => p.replace(/^\/pp/, ''),
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.6367.207 Safari/537.36',
+          'Accept': 'application/json',
+        },
+      },
+      '/api': {
+        target: 'https://backend-production-84ab.up.railway.app',
+        changeOrigin: true,
+        secure: true,
+      },
+    },
+  },
 })
