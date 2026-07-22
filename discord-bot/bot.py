@@ -1253,8 +1253,11 @@ CALIBRATION_MIN_SAMPLE = 40
 # the FIRST run on the new model and the first to count.
 CALIBRATION_BASELINE_UTC = os.getenv("CALIBRATION_BASELINE_UTC", "2026-07-16T00:00:00")
 
-RESULTS_POST_HOUR = int(os.getenv("RESULTS_POST_HOUR", "19") or "19")
-RESULTS_POST_MINUTE = int(os.getenv("RESULTS_POST_MINUTE", "45") or "45")
+# Daily recap posts at 5:00 PM ET (recurring, every day). Env vars still override
+# the code default — if RESULTS_POST_HOUR/MINUTE are set in Railway they win, so
+# keep them unset (or set to 17 / 0) for this 5 PM schedule to take effect.
+RESULTS_POST_HOUR = int(os.getenv("RESULTS_POST_HOUR", "17") or "17")
+RESULTS_POST_MINUTE = int(os.getenv("RESULTS_POST_MINUTE", "0") or "0")
 
 # ── One-off schedule override (DISABLED by default) ─────────────────────────
 # The recurring schedule now governs, driven by the Railway env vars
@@ -2447,9 +2450,13 @@ def daily_recap_embed(rec: dict, target_date: str = None) -> discord.Embed:
     today_line = f"**Today:** {t_cash}/{t_total} cashed ({t_rate}%)"
     if t_p:
         today_line += f"  ·  incl. {t_p} push{'es' if t_p != 1 else ''}"
-    e.add_field(name="📋 Record",
-                value=f"{today_line}\n**Overall:** {o_cash}/{o_total} cashed ({o_rate}%)",
-                inline=False)
+    record_val = f"{today_line}\n**Overall:** {o_cash}/{o_total} cashed ({o_rate}%)"
+    # Rough-day note — included ONLY when the day's cashed rate is under 60% and at
+    # least one play actually resolved. Deliberately conditional so it never reads
+    # as canned: good days (>=60%) and empty days show nothing extra.
+    if t_total and t_rate < 60:
+        record_val += "\n\n**Bad beats today, but we move.**"
+    e.add_field(name="📋 Record", value=record_val, inline=False)
     return _stamped_footer(e, FOOTER_GENERIC)
 
 
@@ -2877,9 +2884,9 @@ async def _before_resolve():
     datetime.time(hour=RESULTS_POST_HOUR, minute=RESULTS_POST_MINUTE, tzinfo=POD_TZINFO),
 ])
 async def daily_results_post():
-    """The daily recap. Registered at BOTH the one-off slot (5:00 PM on
-    ONEOFF_SCHED_DATE) and the recurring slot (7:45 PM); _slot_is_live picks which
-    firing runs so the day never posts the recap twice."""
+    """The daily recap. Registered at BOTH the one-off slot (3:00 AM on
+    ONEOFF_SCHED_DATE, dormant) and the recurring slot (5:00 PM ET); _slot_is_live
+    picks which firing runs so the day never posts the recap twice."""
     if not _slot_is_live(ONEOFF_RECAP_HM):
         return
     chan_id = RESULTS_CHANNEL_ID or POD_CHANNEL_ID
