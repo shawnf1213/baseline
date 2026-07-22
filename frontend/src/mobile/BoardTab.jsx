@@ -33,7 +33,7 @@ export default function BoardTab({ board, loading, error, reload, onOpenPlayer }
           <div style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 26, color: T.white, letterSpacing: 0.5, lineHeight: 1 }}>Board</div>
           {board?.date && (
             <div style={{ color: T.muted, fontSize: 12.5, marginTop: 4 }}>
-              {board.isToday ? "Today's props" : `Latest board · ${prettyDate(board.date)}`}
+              {board.isToday ? 'Upcoming props' : `Upcoming · ${prettyDate(board.date)}`}
               {rows.length ? ` · ${rows.length}` : ''}
             </div>
           )}
@@ -58,10 +58,10 @@ export default function BoardTab({ board, loading, error, reload, onOpenPlayer }
 
       {!loading && !error && !rows.length && (
         <Empty icon="🎾"
-          title={board?.rows?.length ? 'No props match these filters' : 'No board available yet'}
+          title={board?.rows?.length ? 'No props match these filters' : 'No upcoming props right now'}
           hint={board?.rows?.length
             ? 'Try clearing a filter.'
-            : "Today's board is generated after the evening update. Check back later, or search a player to research them now."} />
+            : "The board only shows upcoming matches — it refreshes after the evening slate posts (~8 PM ET). Search a player to research them any time."} />
       )}
 
       {!loading && !error && rows.map(r => (

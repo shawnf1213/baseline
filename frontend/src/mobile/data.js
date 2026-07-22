@@ -79,10 +79,18 @@ function lookup(map, player) {
   return map[normName(player)] ?? map[lastName(player)] ?? null
 }
 
-// Derive the research Board from the pick log. Shows the MOST RECENT generated
-// slate (today if present) as neutral prop rows — NOT a picks feed.
+// Results that mean the match is already decided — NOT researchable. Only
+// undecided props (PENDING / not-yet-graded) are upcoming or in-play.
+const DECIDED = new Set(['W', 'L', 'PUSH', 'VOID', 'NEEDS REVIEW'])
+const isUpcoming = (p) => !DECIDED.has(String(p.result || '').toUpperCase().trim())
+
+// Derive the research Board from the pick log. Shows only UPCOMING/in-play props
+// (the most recent generated slate whose matches haven't resolved) as neutral
+// rows — never completed matches, and never a picks feed.
 export function deriveBoard(record, slate) {
-  const picks = (record?.picks || []).filter(p => !p.excluded_from_record)
+  const picks = (record?.picks || [])
+    .filter(p => !p.excluded_from_record)
+    .filter(isUpcoming)
   const withDate = picks.map(p => ({ p, d: etDate(p.generated_at) })).filter(x => x.d)
   if (!withDate.length) return { date: null, isToday: false, rows: [] }
   const maxDate = withDate.reduce((m, x) => (x.d > m ? x.d : m), '0000-00-00')
