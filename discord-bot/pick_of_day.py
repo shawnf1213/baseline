@@ -498,6 +498,15 @@ async def _evaluate(prop: dict, sem: asyncio.Semaphore):
             "fs_p_over": data.get("fs_p_over"),
             "fs_implied_claim": data.get("fs_implied_claim"),
             "fs_knife_edge": data.get("fs_knife_edge"),
+            # Total Games sportsbook anchor (None for other props). The projection
+            # above is already the book-blended number; these carry the book line,
+            # the edge vs the PrizePicks line, and the divergence flag for display
+            # + shadow logging.
+            "tg_book_line": data.get("tg_book_line"),
+            "tg_model_proj": data.get("tg_model_proj"),
+            "tg_book_edge": data.get("tg_book_edge"),
+            "tg_anchored": data.get("tg_anchored"),
+            "tg_divergent": data.get("tg_divergent"),
             "explanation": data.get("plain_english_explanation"),
             # Legacy combined score — kept for logging/diagnostics ONLY. It is NOT
             # the ranking key; see _rank_key(), which orders confidence-first with

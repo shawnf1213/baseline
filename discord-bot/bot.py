@@ -1788,6 +1788,15 @@ def _ranked_line(pick: dict, rank: int) -> str:
     if pick.get("prop_type") == "Player Total Games Won" and pick.get("ptgw_implied_claim"):
         _corr = "  ⚠️ correlated" if pick.get("ptgw_correlated") else ""
         out += f"\n📐 _{pick['ptgw_implied_claim']}_{_corr}"
+    # Total Games projection is anchored to the sharp Sofascore total, so its edge
+    # (proj − line) is already a clean "PrizePicks vs book" read — no extra line
+    # needed. Only flag the exception: the model materially disagrees with the book
+    # (|model − book| > 3 games), so the anchored number is masking a real gap.
+    if pick.get("prop_type") == "Total Games" and pick.get("tg_divergent"):
+        _bl = pick.get("tg_book_line")
+        _mp = pick.get("tg_model_proj")
+        if isinstance(_bl, (int, float)) and isinstance(_mp, (int, float)):
+            out += f"\n⚠️ _model {_mp:.1f} vs book {_bl:g} — anchored to book_"
     # Fantasy Score shows NO implied-claim line — it reads like any other prop.
     return out
 
