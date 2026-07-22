@@ -1195,8 +1195,8 @@ POD_MINUTE = int(os.getenv("POD_MINUTE", "50") or "50")
 # ranked list → 3x. (Env override PICKS_GEN_HOUR/MINUTE.)
 # POTD trigger — the board eval starts here and the ranked list + 3x post when it
 # finishes (~10 min later). Independent of the recap, which posts earlier.
-PICKS_GEN_HOUR = int(os.getenv("PICKS_GEN_HOUR", "19") or "19")
-PICKS_GEN_MINUTE = int(os.getenv("PICKS_GEN_MINUTE", "50") or "50")
+PICKS_GEN_HOUR = int(os.getenv("PICKS_GEN_HOUR", "20") or "20")     # 8:00 PM POTD
+PICKS_GEN_MINUTE = int(os.getenv("PICKS_GEN_MINUTE", "0") or "0")
 # Ranked plays are delivered in pages of this many, each its own @everyone message
 # (top-12 → two messages: 1-6 then 7-12).
 # NOTE: RANKED_PAGE_SIZE (6-plays-per-message paging) was retired when the ⭐ got
@@ -1256,17 +1256,19 @@ CALIBRATION_BASELINE_UTC = os.getenv("CALIBRATION_BASELINE_UTC", "2026-07-16T00:
 RESULTS_POST_HOUR = int(os.getenv("RESULTS_POST_HOUR", "19") or "19")
 RESULTS_POST_MINUTE = int(os.getenv("RESULTS_POST_MINUTE", "45") or "45")
 
-# ── One-off schedule override ────────────────────────────────────────────────
-# On ONEOFF_SCHED_DATE only, the recap and the POTD run at the times below
-# INSTEAD of their recurring slots. Each loop is registered at BOTH times and
-# _slot_is_live() decides which firing actually runs, so a day never posts twice
-# and no new task loop had to be wired up. Auto-reverts: on any other date the
-# one-off slot no-ops and the normal 7:45 / 7:50 slots run as usual.
-ONEOFF_SCHED_DATE = os.getenv("ONEOFF_SCHED_DATE", "2026-07-20")
-# Recap PARKED (past time) — only the POTD was requested (board didn't post).
-ONEOFF_RECAP_HM   = (0, 30)     # parked
-ONEOFF_POTD_HM    = (1, 12)     # POTD — 1:12 AM ET (7/20 manual re-post)
-ONEOFF_PREWARM_HM = (0, 45)     # parked (cold fetch — no time to pre-warm)
+# ── One-off schedule override (DISABLED by default) ─────────────────────────
+# The recurring schedule now governs, driven by the Railway env vars
+# (PICKS_GEN_HOUR/MINUTE, PREWARM_HOUR/MINUTE) — POTD 8:00 PM, pre-warm 7:30 PM.
+# The one-off override is OFF unless ONEOFF_SCHED_DATE is explicitly set in the
+# env to a real date; the empty default never matches today, so on every date
+# _slot_is_live() picks the recurring slot and the one-off times below are dormant
+# (they only fire on a date that equals ONEOFF_SCHED_DATE, which is never "").
+ONEOFF_SCHED_DATE = os.getenv("ONEOFF_SCHED_DATE", "")
+# Dormant one-off times (only used if ONEOFF_SCHED_DATE is set via env). Kept off
+# the recurring slots so registering them can't collide.
+ONEOFF_RECAP_HM   = (3, 0)      # dormant
+ONEOFF_POTD_HM    = (3, 5)      # dormant
+ONEOFF_PREWARM_HM = (2, 55)     # dormant
 # Extension scan PARKED for today: user asked only for the 5 PM recap + 7 PM POTD.
 # A past time-of-day means its next firing is tomorrow, which isn't the one-off
 # date, so the loop body no-ops — no unrequested 10:15 PM additions post.
@@ -1290,8 +1292,8 @@ ONEOFF_EXT_HM     = (12, 0)     # parked (no extension today)
 #
 # Proxy cost is ~neutral: these fetches already happened as background warming
 # during the generation run. They are moved earlier, not added.
-PREWARM_HOUR   = int(os.getenv("PREWARM_HOUR", "19") or "19")     # 30 min before
-PREWARM_MINUTE = int(os.getenv("PREWARM_MINUTE", "20") or "20")   # the 7:50 POTD
+PREWARM_HOUR   = int(os.getenv("PREWARM_HOUR", "19") or "19")     # 7:30 PM — 30 min
+PREWARM_MINUTE = int(os.getenv("PREWARM_MINUTE", "30") or "30")   # before the 8 PM POTD
 
 
 def _slot_is_live(oneoff_hm: tuple) -> bool:
