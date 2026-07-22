@@ -1,21 +1,29 @@
-import { useMemo } from 'react'
+import { useState, useEffect } from 'react'
 import { T } from './theme'
-import { Card, Heart, Delta, Empty, SectionLabel } from './bits'
+import { Card, Heart, Delta, Spinner, Empty, SectionLabel } from './bits'
 import PlayerPhoto from './PlayerPhoto'
 import { shortProp, fmt } from './data'
-import { useBookmarks, propBookmarkId } from './useBookmarks'
+import { projectRow, cachedProjection } from './project'
+import { useBookmarks } from './useBookmarks'
 
-export default function ResearchTab({ board, onOpenPlayer }) {
+export default function ResearchTab({ onOpenPlayer }) {
   const { list, toggle } = useBookmarks()
   const props = list.filter(b => b.kind === 'prop')
   const players = list.filter(b => b.kind === 'player')
 
-  // Live board lookup so a saved prop reflects the current projection/line.
-  const liveByKey = useMemo(() => {
-    const m = new Map()
-    for (const r of (board?.rows || [])) m.set(propBookmarkId(r), r)
-    return m
-  }, [board])
+  // Re-project saved props so they show the current projection vs line (shared
+  // cache with the Board, so this is usually instant).
+  const [proj, setProj] = useState({})
+  useEffect(() => {
+    let alive = true
+    props.forEach(b => {
+      const c = cachedProjection(b.key)
+      if (c !== undefined) { setProj(m => (b.key in m ? m : { ...m, [b.key]: c || { failed: true } })); return }
+      setProj(m => (m[b.key]?.loading ? m : { ...m, [b.key]: { loading: true } }))
+      projectRow(b, b.tour).then(res => { if (alive) setProj(m => ({ ...m, [b.key]: res || { failed: true } })) })
+    })
+    return () => { alive = false }
+  }, [list.length])
 
   if (!list.length) {
     return (
@@ -33,10 +41,9 @@ export default function ResearchTab({ board, onOpenPlayer }) {
 
       {props.length > 0 && <SectionLabel>Saved Props · {props.length}</SectionLabel>}
       {props.map(b => {
-        const live = liveByKey.get(b.id)
-        const projection = live?.projection ?? b.projection
-        const line = live?.line ?? b.line
-        const edge = live?.edge ?? b.edge
+        const p = proj[b.id] || proj[b.key] || {}
+        const done = !p.loading && !p.failed && p.projection != null
+        const line = b.line
         return (
           <Card key={b.id} onClick={() => onOpenPlayer({ name: b.player, tour: b.tour })}
             style={{ padding: '12px 8px 12px 14px', marginBottom: 10 }}>
@@ -44,12 +51,12 @@ export default function ResearchTab({ board, onOpenPlayer }) {
               <div style={{ minWidth: 0, flex: 1 }}>
                 <div style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 17, color: T.white, letterSpacing: 0.3 }}>{b.player}</div>
                 <div style={{ color: T.muted, fontSize: 12.5, marginTop: 2 }}>
-                  {b.opponent ? `vs ${b.opponent} · ` : ''}{b.tour}{live ? '' : ' · saved'}
+                  {b.opponent ? `vs ${b.opponent} · ` : ''}{b.tour}
                 </div>
               </div>
               <div style={{ display: 'flex', alignItems: 'center' }}>
-                <div style={{ textAlign: 'right' }}>
-                  <Delta value={edge} />
+                <div style={{ textAlign: 'right', minWidth: 40 }}>
+                  {done ? <Delta value={p.edge} /> : p.loading ? <Spinner size={14} /> : <span style={{ color: T.muted2, fontSize: 12 }}>—</span>}
                   <div style={{ color: T.muted2, fontSize: 10, letterSpacing: 1, textTransform: 'uppercase', fontFamily: T.cond, fontWeight: 700 }}>vs line</div>
                 </div>
                 <Heart active onClick={() => toggle(b)} />
@@ -59,7 +66,7 @@ export default function ResearchTab({ board, onOpenPlayer }) {
               <span style={{ fontFamily: T.cond, fontWeight: 700, fontSize: 12.5, letterSpacing: 0.6, textTransform: 'uppercase', color: T.green, background: 'rgba(0,230,118,0.08)', border: `1px solid ${T.border}`, padding: '4px 10px', borderRadius: 8 }}>{shortProp(b.propType)}</span>
               <div style={{ display: 'flex', gap: 14 }}>
                 <Mini label="Line" value={fmt(line, line != null && Number.isInteger(line) ? 0 : 1)} />
-                <Mini label="Proj" value={fmt(projection)} accent />
+                <Mini label="Proj" value={done ? fmt(p.projection) : '—'} accent={done} />
               </div>
             </div>
           </Card>
