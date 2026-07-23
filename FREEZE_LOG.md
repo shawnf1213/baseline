@@ -775,3 +775,41 @@ hold, depressing C1 opportunity).
 *Scope.* Aces/DF/Total Games projector chains are byte-identical (the mixture lives
 only in the BP `else` branch of `main.py` + two new functions in `props.py`;
 `git diff` confirms no edit to `project_aces`/`project_double_faults`).
+
+## Entry 10 — 7/23 audit board fixes B/C/D (2026-07-23, non-projection)
+
+Confidence-scoring, selection, and ledger fixes from the same audit as Entry 9. No
+projection MATH changes — outside the freeze proper, logged here for the audit trail.
+
+**B — EVR grade extends below ratio 0.5.** `confidence.py:_evr_grade` floored at 72
+for any edge/variance ratio ≤ 0.5, so a near-zero-edge Aces/DF/Total-Games pick
+graded identically to a half-σ one AND sat above the 65 bar on that floor. Anchors
+now extend below 0.5 (0.0→55, 0.25→64, 0.5→72), continuous. No compensating boost.
+*7/23 re-score (12 picks): 2 change, 0 disqualified* — Bejlek DF r=0.22 ceiling
+72→67 (lost); Hanfmann Aces r=0.30 ceiling 72→66 (won). The three 68s were three
+INDEPENDENT lattices, not a shared flat-72 artifact: Hanfmann = component sum 68
+(ceiling then non-binding, now binds at 66); Halys = component sum 68 (ceiling
+non-binding both ways, 0.41→69); Tagger = 100·P(over) from the FS mixture, no EVR.
+Only Hanfmann was EVR-adjacent.
+
+**C — selection.** C1: per-player dedupe is tier-aware (`_dedupe_preferred`) — the
+more reliably-modelled prop TYPE represents a player unless a lower-tier prop leads
+by ≥ `DEDUPE_TIER_OVERRIDE_MARGIN` (8). Tier1 BP/Aces · Tier2 Total Games/PTGW/FS ·
+Tier3 DF. SELECTION ONLY (displayed confidence + global order unchanged). **BP's
+Tier-1 rank is PROVISIONAL** given A3's base-level defect — flagged in-code for a
+one-line demotion. C2: `FS_MAX_PER_BOARD=2`. C3: FS not star-eligible until
+backtested (`POD_STAR_PROBATION_PROPS`).
+
+*FS calibration backtest* (`analysis/backtest_fs_calibration.py`, out-of-sample,
+realized FS from match components, disclosed train-win-rate proxy for the anchor):
+**NULL — FS not certified.** ATP Brier 0.244 (~no-skill 0.25), WTA 0.243;
+calibration NON-monotonic and overconfident — predicted-0.7–0.9 buckets realize
+only 0.33–0.40 over, the 0.9–1.0 bucket 0.68/0.72; the low end is well-calibrated
+(0.0–0.1 → 0.02/0.03). The model reads strong UNDERs but is overconfident on OVERs.
+The proxy is cruder than the live moneyline anchor, so this UNDERSTATES live
+calibration — "cannot certify," not "proven broken." **FS probation stands** (the
+backtest validates C3 rather than lifting it).
+
+**D — model_version ledger.** Every new pick stamped `MODEL_VERSION`
+("2026.07.23-bp-a2"); existing rows backfilled once to "pre-a2". Calibration can now
+split BP hit-rates across the A2 boundary instead of pooling incompatible models.
