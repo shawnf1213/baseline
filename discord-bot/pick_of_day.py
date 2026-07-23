@@ -1279,6 +1279,21 @@ def _promote_star(ordered: list):
     blocked = ordered[0]
     idx = next((i for i, p in enumerate(ordered) if _star_eligible(p)), None)
     if idx is None:
+        # Headline guard (2026-07-23): even with NO ⭐, Double Faults — Tier 3 and
+        # permanently star-blocked — must never visually LEAD the ranked board. If it
+        # would, float the best non-DF play into the top slot. Ordering only: still
+        # no ⭐, no confidence change. DF is the sole target (only prop this low in
+        # trust). When a ⭐ exists this can't arise — the ⭐ (never DF) already leads.
+        if ordered[0].get("prop_type") == "Double Faults":
+            j = next((i for i, p in enumerate(ordered)
+                      if p.get("prop_type") != "Double Faults"), None)
+            if j is not None:
+                head = ordered.pop(j)
+                ordered = [head] + ordered
+                log.info("POD_DF_HEADLINE | %s DF would lead the no-⭐ board — floated "
+                         "%s %s (conf %s) to the top slot (ordering only, still no ⭐)",
+                         blocked.get("player"), head.get("player"),
+                         head.get("prop_type"), head.get("confidence"))
         log.info("POD_NO_STAR | top play (%s %s) can't hold the ⭐ and NO play on "
                  "the board is ⭐-eligible — posting the ranked board with no Pick "
                  "of the Day rather than promoting an ineligible play",
