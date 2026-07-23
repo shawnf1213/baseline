@@ -780,14 +780,16 @@ chain had no scenario/outcome conditioning — C8 (`expected_sets` from the win-
 GAP) is direction-blind, and the only asymmetry was a pro-favorite deciding-set
 bonus. That is true by inspection of the code, not by any match outcome.
 
-*Separately-surfaced base-level defect (A2 does not address it).* `base_proj` — the
-C1–C7 matchup LEVEL — appears to **underestimate breaks vs weak/challenger
-opponents**: Rublev vs Skatov base 1.79 with 5+ realized; and a completed control,
-Spiteri vs Mazzola (7/20, final, she won with 6 breaks), base 2.99 → UNDER 4.5.
+*Separately-surfaced base-level HYPOTHESIS (one confirmed case; A2 does not address
+it).* `base_proj` — the C1–C7 matchup LEVEL — may **underestimate breaks vs weak/
+challenger opponents**: Rublev vs Skatov base 1.79 with 5+ realized. This is ONE
+confirmed observation, not yet a proven systematic defect — do not over-read it. (A
+would-be Spiteri/Mazzola control was discarded: the Sofascore record is internally
+inconsistent — `won=True` with `score "6-7 3-6"`, a loss — so it can't be graded.)
 A2 reshapes the level BY OUTCOME; it cannot correct a level that is itself too low.
-Likely the opponent-serve-data gap (challenger opponents default to a too-strong
-tour-average hold, depressing C1 opportunity). Top BP follow-up; NOT fixed here.
-A1 interim guard stays live throughout.
+Plausible cause: the opponent-serve-data gap (challenger opponents default to a
+too-strong tour-average hold, depressing C1 opportunity). Worth investigating as the
+top BP follow-up; NOT fixed here. A1 interim guard stays live throughout.
 
 *Scope.* Aces/DF/Total Games projector chains are byte-identical (the mixture lives
 only in the BP `else` branch of `main.py` + two new functions in `props.py`;
