@@ -468,8 +468,12 @@ def calculate_confidence(
     # (a straight-set win ~20+, a straight-set loss can be negative), so a
     # mean-vs-line/σ grade is the wrong instrument. FS confidence maps from its
     # scenario-mixture P(over) in main.py; the FS 80 ceiling above still applies.
+    # Break Points Won joins the skip list under the A2 rebuild (7/23 audit): breaks
+    # are outcome-conditioned (matchup-wide in a win, floor-compressed in a loss), so
+    # the same bimodality argument applies — a mean-vs-line/σ grade is the wrong
+    # instrument. BP confidence maps from the scenario-mixture P(over) in main.py.
     _sigma = std_dev if (std_dev is not None and std_dev > 0) else None
-    if (prop_type not in ("Player Total Games Won", "Fantasy Score")
+    if (prop_type not in ("Player Total Games Won", "Fantasy Score", "Break Points Won")
             and _sigma is not None
             and isinstance(projection, (int, float)) and isinstance(prop_line, (int, float))):
         raw_evr = abs(projection - prop_line) / _sigma

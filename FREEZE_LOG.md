@@ -675,9 +675,86 @@ Interim uses the MODEL win prob; **A2 replaces it with the market-anchored blend
 Removes the inversion zone (both Spiteri and Rublev suspend) while keeping
 mid-range (30–70% win) BP live. Aces/DF/other projector chains byte-identical.
 
-**A2 — scenario rebuild (next commit).** Extends the existing four-scenario
+**A2 — scenario rebuild (this commit).** Extends the existing four-scenario
 mixture (win-in-2 / win-in-3 / lose-in-3 / lose-in-2, currently PTGW+FS only) to
 Break Points Won, fitted per tour/format from Sofascore per-match records, anchored
 by the SAME FS win-prob market anchor (0.7 market / 0.3 model, `main.py:1944`).
 P(over)=Σ P(scenario)·P(breaks>line|scenario); confidence maps from P(over). C1–C7
 become within-scenario rate inputs; C8's role is superseded.
+
+*Empirical scenario fit* (`analysis/fit_bp_scenarios.py`, Sofascore per-match
+breaks, deduped, RET dropped, BO3) — realized breaks mean/sd by scenario, into
+`props.py:_BP_SCEN_FIT`:
+
+| tour | S1 win-in-2 | S2 win-in-3 | S3 lose-in-3 | S4 lose-in-2 | pop. mean |
+|------|-------------|-------------|--------------|--------------|-----------|
+| ATP (n=1013) | 2.76 / 1.36 | 3.31 / 1.71 | 1.66 / 1.42 | 0.64 / 0.97 | 2.24 |
+| WTA (n=1058) | 4.73 / 1.25 | 5.90 / 1.70 | 4.32 / 2.08 | 1.86 / 1.34 | 4.24 |
+
+The fit exposes the asymmetry directly: a WTA win-in-3 averages 5.9 breaks, a
+lose-in-2 only 1.86 — the SAME player, same matchup, ~3× the breaks depending
+purely on which side of the result they land. An outcome-blind level cannot
+represent that.
+
+*Parameterized winners-scale / losers-empirical hybrid.* The matchup LEVEL
+(`base_scale = clamp(base_proj / pop_mean, 0.5, 2.0)`) scales the scenario means.
+Win scenarios (S1,S2) take the FULL matchup scale. Loss scenarios (S3,S4) take a
+DAMPED scale: `loss_scale = 1 + (base_scale − 1)·BP_LOSS_MATCHUP_WEIGHT`.
+Justification (a property of the sport, not of the two audit cases): breaks-in-a-
+win are matchup-driven and wide — a strong returner against a weak server piles up
+breaks; breaks-in-a-loss are floor-compressed — you lost, so you broke rarely
+regardless of matchup, and opponent serve quality still matters (hence damped, not
+zeroed). `BP_LOSS_MATCHUP_WEIGHT` parameterizes the two candidate designs as
+endpoints: 0.0 = pure population in losses, 1.0 = uniform C1–C7 scaling. The
+backtest chooses; we do not tune to cases.
+
+*Out-of-sample backtest* (`analysis/backtest_bp_loss_weight.py`). The literal
+"sweep on resolved BP picks" is **not runnable** — the picks table persists only
+line/projection/lean/result, NOT the mixture inputs (base_proj, anchored win prob,
+tour), and match records carry no odds/ranks. Reported plainly rather than faked.
+Instead: every resolved MATCH is a labelled BP situation with the ground truth the
+picks lack. Conditioning on the REALIZED outcome removes the win-prob term (that
+mixing is PTGW machinery, already validated), isolating the scenario-scale test the
+weight governs. Per player, TRAIN half (by time) → level, TEST half → eval (no
+leakage). Metric: out-of-sample loss-subset MAE of predicted vs realized breaks +
+Brier/accuracy over a line grid. Win-subset is identical across w (control).
+
+| weight | ATP loss-MAE | ATP loss-acc | WTA loss-MAE | WTA loss-acc |
+|--------|--------------|--------------|--------------|--------------|
+| 0.00   | 0.901 | 0.877 | 1.332 | 0.829 |
+| 0.25   | 0.896 | 0.879 | 1.330 | 0.833 |
+| **0.35** | **0.895** | **0.881** | **1.330** | **0.828** |
+| 0.50   | 0.893 | 0.889 | 1.335 | 0.828 |
+| 1.00   | 0.896 | 0.889 | 1.366 | 0.829 |
+
+Reading (honest, weak discrimination): the sweep is **largely flat across
+0.0–0.5** (ATP spread 0.008 breaks = noise; WTA spread 0.005 across 0.0–0.5). The
+one **clear** signal: **uniform scaling w=1.0 is distinctly worst on WTA** (MAE
++0.036, Brier 0.120→0.123) — the data REJECTS "losses scale fully with matchup,"
+confirming the damped-hybrid over the old uniform behavior. ATP weakly favors
+higher w (0.50 best by 0.002); WTA favors 0.25–0.35. **Shipped `BP_LOSS_MATCHUP_
+WEIGHT = 0.35`** as the single global near-optimum for both tours (WTA optimum;
+ATP within 0.2% of optimum). Per-tour weights were considered and rejected — the
+ATP curve is flat within noise, so the added surface isn't earned. The backtest's
+role here is mainly a NEGATIVE gate (rule out uniform scaling), not a precise
+optimizer; stated as such.
+
+*Confidence + guards.* BP joins PTGW/FS on the probability base: `confidence =
+100·P(side)`, EVR/`_edge_cap`/dominant-bonus skipped (all mean-vs-line instruments,
+the fallacy the rebuild removes), unanchored (no market moneyline) capped at 70.
+BP added to the `confidence.py` EVR-skip list. The A1 suspension is re-keyed off the
+market-anchored blend (was model-only). Lean is taken from P(over), not the
+median-vs-line tie.
+
+*Illustrative (NON-certifying) — the two audit cases.* Re-run through the mixture:
+Spiteri (14% win, base 6.1) → P(over) 0.19–0.38 across lines 3.5–5.5 → **UNDER**
+(was OVER; actual 1). Rublev (85% win, base 2.9) → P(over) 0.66 at 2.5, 0.57 at
+3.0, 0.48 at 3.5 → **OVER at the lines ≤3.0** (was UNDER; actual 5). Both leans
+flip in the correct direction. Explicitly NOT certification — two cases prove
+nothing, and BOTH remain A1-suspended (lopsided win prob), so neither would post to
+a board regardless. The out-of-sample backtest above is the gate; these are a
+sanity check that the conditioning acts in the right direction.
+
+*Scope.* Aces/DF/Total Games projector chains are byte-identical (the mixture lives
+only in the BP `else` branch of `main.py` + two new functions in `props.py`;
+`git diff` confirms no edit to `project_aces`/`project_double_faults`).

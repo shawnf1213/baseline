@@ -97,6 +97,8 @@ from src.calculations.props import (
     project_double_faults,
     project_total_games,
     project_break_points,
+    bp_scenario_mixture,
+    bp_fair_line,
     project_player_games_won,
     project_fantasy_score,
     FS_DIVERGENCE_CONF_CAP,
@@ -2130,6 +2132,71 @@ async def prop_calculate(req: PropRequest):
                     result.setdefault(_k, tg_result.get(_k))
             else:
                 result = bp_result
+                # ── A2: BP FOUR-SCENARIO OUTCOME MIXTURE (7/23 audit) ─────────
+                # The C1–C7 chain yields an outcome-BLIND breaks LEVEL (base_proj).
+                # The SAME level implies very different P(over) by outcome: breaks-
+                # in-a-win are matchup-wide, breaks-in-a-loss are floor-compressed.
+                # Recondition base_proj on the market-anchored win prob via the same
+                # scenario mixture as PTGW/FS (winners full matchup scale, losers
+                # damped by BP_LOSS_MATCHUP_WEIGHT). Supersedes C8. Aces/DF live in a
+                # different branch entirely and are byte-for-byte untouched.
+                _bp_base = bp_result.get("base_proj")
+                if isinstance(_bp_base, (int, float)) and _bp_base > 0 and req.prop_line is not None:
+                    _bp_model_wp = (bp_result.get("p1_win_prob") or 50.0) / 100.0
+                    _bp_ml = await asyncio.to_thread(
+                        get_match_moneyline_prob, req.player_id, req.opponent_id, req.tour)
+                    _bp_mkt_wp = _bp_ml.get("market_p1") if isinstance(_bp_ml, dict) else None
+                    _bp_anchored = isinstance(_bp_mkt_wp, (int, float))
+                    if _bp_anchored:
+                        _bp_blended = (WINPROB_MARKET_WEIGHT * _bp_mkt_wp
+                                       + (1.0 - WINPROB_MARKET_WEIGHT) * _bp_model_wp)
+                    else:
+                        _bp_blended = _bp_model_wp
+                    _bp_pw = max(0.02, min(0.98, _bp_blended))
+                    _bp_mix = bp_scenario_mixture(
+                        _bp_pw, req.prop_line, _bp_base, req.tour, match_fmt)
+                    _bp_fair = bp_fair_line(_bp_pw, _bp_base, req.tour, match_fmt)
+                    result["projection"] = round(_bp_fair, 1)
+                    result["bp_p_over"] = round(_bp_mix["p_over"], 4)
+                    result["bp_scenario_probs"] = _bp_mix["scenario_probs"]
+                    result["bp_scaled_means"] = _bp_mix["scaled_scenario_means"]
+                    result["bp_mixture_mean"] = round(_bp_mix["mixture_mean"], 3)
+                    result["bp_fair_line"] = round(_bp_fair, 2)
+                    result["bp_base_proj"] = round(_bp_base, 3)
+                    result["bp_model_wp"] = round(_bp_model_wp, 4)
+                    result["bp_market_wp"] = round(_bp_mkt_wp, 4) if _bp_anchored else None
+                    result["bp_blended_wp"] = round(_bp_blended, 4)
+                    result["bp_anchored"] = _bp_anchored
+                    # A2 upgrade of the A1 guard: re-key the lopsided/contradiction
+                    # suspension off the MARKET-ANCHORED win prob (props.py set it off
+                    # the model prob). Non-anchored -> blended==model -> unchanged.
+                    _bp_wp_pct = _bp_blended * 100.0
+                    _bp_lop = _bp_wp_pct < 30.0 or _bp_wp_pct > 70.0
+                    _bp_contra = _bp_fair >= 4.0 and _bp_wp_pct < 35.0
+                    result["bp_suspended"] = bool(_bp_lop or _bp_contra)
+                    result["bp_suspend_reason"] = (
+                        "lopsided win prob %.0f%% (outside 30-70)" % _bp_wp_pct if _bp_lop
+                        else "contradiction: %.1f breaks at win prob %.0f%%" % (_bp_fair, _bp_wp_pct)
+                        if _bp_contra else None)
+                    logger.info("BP_WINPROB | %s | model=%.3f market=%s blended=%.3f "
+                                "anchored=%s | base=%.2f fair=%.2f p_over=%.3f susp=%s",
+                                req.player_name or "player", _bp_model_wp,
+                                ("%.3f" % _bp_mkt_wp) if _bp_anchored else "None",
+                                _bp_blended, _bp_anchored, _bp_base, _bp_fair,
+                                _bp_mix["p_over"], result["bp_suspended"])
+                    if _ctrace is not None:
+                        _ctrace.append({
+                            "step": len(_ctrace) + 1, "name": "bp_scenario_mixture",
+                            "inputs": {"base_proj": round(_bp_base, 3),
+                                       "p_win_anchored": round(_bp_blended, 4),
+                                       "scenario_probs": _bp_mix["scenario_probs"],
+                                       "scaled_means": _bp_mix["scaled_scenario_means"]},
+                            "value": round(_bp_fair, 2), "running": round(_bp_fair, 2),
+                            "note": ("A2 outcome conditioning: base_proj %.2f (C1–C7 blind "
+                                     "level) reshaped by win/lose scenario mixture at "
+                                     "p_win=%.3f -> P(over %.1f)=%.3f, fair line %.2f. "
+                                     "Supersedes C8." % (_bp_base, _bp_blended,
+                                     req.prop_line, _bp_mix["p_over"], _bp_fair))})
 
         proj_val = result.get("projection")
         if proj_val is None:
@@ -2374,8 +2441,40 @@ async def prop_calculate(req: PropRequest):
                         req.player_name or "player", req.prop_line or 0, _fs_p_over,
                         _fs_lean, confidence, _fs_knife_edge, _fs_divergent,
                         _fs_line_position or "?", _fs_implied_claim or "?")
-        # A single flag for the mean-edge skips below (both prob-base props).
-        _prob_base = _ptgw_prob_base or _fs_prob_base
+        # ══ BREAK POINTS WON: same probability base (A2 outcome mixture) ═════
+        # BP confidence maps from the scenario-mixture P(over) exactly like PTGW/FS.
+        # The mean-edge instruments (EVR, _edge_cap, dominant bonus) are skipped —
+        # each compares the outcome-BLIND mean to the line, the fallacy A2 removed.
+        # Unanchored (no market moneyline) caps at 70, same ceiling as FS.
+        _bp_prob_base = False
+        _bp_p_over = (result.get("bp_p_over")
+                      if req.prop_type == "Break Points Won" else None)
+        _bp_implied_claim = None
+        _bp_knife_edge = False
+        if _bp_p_over is not None:
+            _bp_lean = "OVER" if _bp_p_over >= 0.5 else "UNDER"
+            result["lean"] = _bp_lean
+            _bp_side = _bp_p_over if _bp_lean == "OVER" else (1.0 - _bp_p_over)
+            confidence = 100.0 * _bp_side
+            _bp_prob_base = True
+            _bp_knife_edge = 0.45 <= _bp_p_over <= 0.55
+            _who = req.player_name or "player"
+            _bp_implied_claim = (
+                "%s O%.1f BP ⇒ %s breaks repeatedly / wins comfortably"
+                % (_who, req.prop_line or 0, _who) if _bp_lean == "OVER" else
+                "%s U%.1f BP ⇒ %s rarely breaks / loses without converting"
+                % (_who, req.prop_line or 0, _who))
+            result["bp_implied_claim"] = _bp_implied_claim
+            if not result.get("bp_anchored", True) and confidence > FS_DIVERGENCE_CONF_CAP:
+                confidence = FS_DIVERGENCE_CONF_CAP
+                logger.info("BP_UNANCHORED | %s line=%.1f -> cap %d (no market moneyline)",
+                            _who, req.prop_line or 0, FS_DIVERGENCE_CONF_CAP)
+            logger.info("BP_PROB_BASE | %s line=%.1f p_over=%.3f lean=%s conf=%.1f "
+                        "knife_edge=%s anchored=%s | %s",
+                        _who, req.prop_line or 0, _bp_p_over, _bp_lean, confidence,
+                        _bp_knife_edge, result.get("bp_anchored"), _bp_implied_claim)
+        # A single flag for the mean-edge skips below (all prob-base props).
+        _prob_base = _ptgw_prob_base or _fs_prob_base or _bp_prob_base
         # Consistency tier for display comes straight from the confidence
         # breakdown — consistency is now scored ONCE, in confidence.py. There is
         # no separate main.py consistency penalty.
@@ -2496,6 +2595,8 @@ async def prop_calculate(req: PropRequest):
             lean = _ptgw_lean
         elif _fs_prob_base:
             lean = _fs_lean
+        elif _bp_prob_base:
+            lean = _bp_lean            # from P(over), not the median-vs-line tie
         else:
             lean = _resolve_lean(proj_val, req.prop_line, result.get("lean", ""))
 
@@ -2775,6 +2876,20 @@ async def prop_calculate(req: PropRequest):
             "fs_market_wp":         result.get("fs_market_wp"),
             "fs_blended_wp":        result.get("fs_blended_wp"),
             "fs_anchored":          result.get("fs_anchored"),
+            # ── Break Points Won scenario-mixture surface (A2; None for others) ───
+            "bp_p_over":            _bp_p_over,
+            "bp_scenario_probs":    result.get("bp_scenario_probs"),
+            "bp_scaled_means":      result.get("bp_scaled_means"),
+            "bp_fair_line":         result.get("bp_fair_line"),
+            "bp_base_proj":         result.get("bp_base_proj"),
+            "bp_mixture_mean":      result.get("bp_mixture_mean"),
+            "bp_implied_claim":     _bp_implied_claim,
+            "bp_knife_edge":        _bp_knife_edge,
+            # Win-prob anchor (model / de-vigged market / blended) + anchored flag.
+            "bp_model_wp":          result.get("bp_model_wp"),
+            "bp_market_wp":         result.get("bp_market_wp"),
+            "bp_blended_wp":        result.get("bp_blended_wp"),
+            "bp_anchored":          result.get("bp_anchored"),
             # ── Total Games sportsbook anchor (None for other props) ──────────────
             # model proj / de-vigged book O-U line / blended proj + edge vs the
             # PrizePicks line and a divergence flag (|model − book| > 3 games).

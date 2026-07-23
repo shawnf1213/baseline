@@ -1694,6 +1694,111 @@ def ptgw_fair_line(p_sel, tour="ATP", match_format="best_of_3"):
         0.0, 30.0)
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# BREAK POINTS WON — four-scenario mixture (A2, 7/23 audit). Same machinery as
+# PTGW/FS: scenario PROBABILITIES reuse the PTGW match-structure fit (p3_win/
+# p3_lose — a property of the MATCH, not the prop). The per-scenario BREAK
+# distributions are the empirical Sofascore fit below (analysis/fit_bp_scenarios.py,
+# ~2,000 BO3 matches/tour). NO winner-floor (breaks have no games-like ≥12 identity).
+#
+# C1–C7 (base_proj) is the matchup LEVEL — it scales the population scenario means
+# ASYMMETRICALLY:
+#   • win scenarios (S1,S2): FULL matchup scale. Breaks-in-a-win are matchup-driven
+#     and wide (6-1 6-2 = 5 breaks vs 7-6 7-6 = 0), so the specific matchup carries.
+#   • loss scenarios (S3,S4): DAMPED scale (BP_LOSS_MATCHUP_WEIGHT). Breaks-in-a-loss
+#     are floor-compressed — you usually lost BECAUSE you failed to convert, so
+#     matchup return strength has low leverage; but opponent serve quality still
+#     matters, so the weight is damped, not zero.
+# BP_LOSS_MATCHUP_WEIGHT parameterizes the two candidate designs as ENDPOINTS:
+# 0.0 = pure empirical (loss scenarios unscaled), 1.0 = uniform C1–C7 scaling. The
+# backtest (analysis/backtest_bp_scenarios.py) sweeps it and chooses — this is why
+# the asymmetry is a sport property, NOT a fit to the Spiteri/Rublev cases.
+_BP_SCEN_FIT = {
+    "ATP": {"scen": {"S1": (2.76, 1.36), "S2": (3.31, 1.71),
+                     "S3": (1.66, 1.42), "S4": (0.64, 0.97)}},
+    "WTA": {"scen": {"S1": (4.73, 1.25), "S2": (5.90, 1.70),
+                     "S3": (4.32, 2.08), "S4": (1.86, 1.34)}},
+}
+# BO5 fallback (tour slates ~all BO3; GS BO5 too sparse) — BO3 shape lifted to the
+# longer format. Flagged fallback, not fit.
+_BP_SCEN_BO5 = {"scen": {"S1": (4.2, 1.8), "S2": (5.2, 2.3),
+                         "S3": (2.6, 2.0), "S4": (1.0, 1.3)}}
+# Population outcome-blind mean breaks/match (probability-weighted over the fit
+# buckets) — the neutral baseline for the matchup scale (base_proj / base_pop).
+_BP_BASE_POP = {"ATP": 2.24, "WTA": 4.24}
+_BP_BASE_POP_BO5 = 3.2
+# Backtest-tunable matchup leverage in LOSS scenarios (win scenarios always 1.0).
+# Initial 0.35; the backtest sweep picks the final value. The bp_scenario_mixture
+# `loss_weight` arg overrides it (the sweep passes 0.0 / 0.25 / 0.35 / 0.5 / 1.0).
+BP_LOSS_MATCHUP_WEIGHT = 0.35
+_BP_SCALE_LO, _BP_SCALE_HI = 0.5, 2.0   # sanity clamp on the matchup scale
+
+
+def bp_scenario_mixture(p_sel, prop_line, base_proj, tour="ATP",
+                        match_format="best_of_3", loss_weight=None):
+    """Break Points Won scenario mixture for the SELECTED player.
+
+    p_sel      market-anchored match-win probability (0-1)
+    prop_line  the BP line
+    base_proj  the C1–C7 outcome-blind breaks/match (the matchup LEVEL)
+    loss_weight override for BP_LOSS_MATCHUP_WEIGHT (backtest sweep); None = default.
+    Returns p_over, mixture_mean, scenario probabilities + per-scenario scaled means.
+    """
+    p_sel = max(0.02, min(0.98, float(p_sel)))
+    is_bo5 = match_format == "best_of_5"
+    pfit = _PTGW_SCEN_BO5 if is_bo5 else _PTGW_SCEN_FIT.get(tour, _PTGW_SCEN_FIT["ATP"])
+    gap = p_sel - 0.5
+    p3_win = max(_PTGW_P3_MIN, min(_PTGW_P3_MAX, pfit["p3_win"] - _PTGW_GAP_K * gap))
+    p3_lose = max(_PTGW_P3_MIN, min(_PTGW_P3_MAX, pfit["p3_lose"] + _PTGW_GAP_K * gap))
+    p = {
+        "S1": p_sel * (1.0 - p3_win),          # win in 2
+        "S2": p_sel * p3_win,                  # win in 3
+        "S3": (1.0 - p_sel) * p3_lose,         # lose in 3
+        "S4": (1.0 - p_sel) * (1.0 - p3_lose),  # lose in 2
+    }
+    bfit = (_BP_SCEN_BO5 if is_bo5 else _BP_SCEN_FIT.get(tour, _BP_SCEN_FIT["ATP"]))["scen"]
+    base_pop = _BP_BASE_POP_BO5 if is_bo5 else _BP_BASE_POP.get(tour, _BP_BASE_POP["ATP"])
+    base_scale = (base_proj / base_pop) if (base_pop and base_proj) else 1.0
+    base_scale = max(_BP_SCALE_LO, min(_BP_SCALE_HI, base_scale))
+    lw = BP_LOSS_MATCHUP_WEIGHT if loss_weight is None else float(loss_weight)
+    win_scale = base_scale
+    loss_scale = 1.0 + (base_scale - 1.0) * lw
+    p_over = 0.0
+    mix_mean = 0.0
+    contrib = {}
+    scaled_mu = {}
+    for s in ("S1", "S2", "S3", "S4"):
+        mu, sd = bfit[s]
+        f = win_scale if s in ("S1", "S2") else loss_scale
+        mu_s, sd_s = mu * f, sd * f
+        scaled_mu[s] = round(mu_s, 2)
+        po_s = _norm_sf(prop_line, mu_s, sd_s)
+        contrib[s] = round(p[s] * po_s, 4)
+        p_over += p[s] * po_s
+        mix_mean += p[s] * mu_s
+    p_over = max(0.0, min(1.0, p_over))
+    return {
+        "p_over": p_over,
+        "p_under": 1.0 - p_over,
+        "mixture_mean": mix_mean,
+        "scenario_probs": {k: round(v, 4) for k, v in p.items()},
+        "over_contrib": contrib,
+        "scaled_scenario_means": scaled_mu,
+        "base_scale": round(base_scale, 3),
+        "loss_scale": round(loss_scale, 3),
+        "p3_win": round(p3_win, 3),
+        "p3_lose": round(p3_lose, 3),
+        "p_win_match": round(p_sel, 4),
+    }
+
+
+def bp_fair_line(p_sel, base_proj, tour="ATP", match_format="best_of_3", loss_weight=None):
+    """Median (fair line) of the BP scenario mixture — the displayed projection."""
+    return _mixture_median(
+        lambda x: bp_scenario_mixture(p_sel, x, base_proj, tour, match_format, loss_weight)["p_over"],
+        0.0, 15.0)
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # FANTASY SCORE  (PrizePicks tennis)  — scenario-mixture, built on the PTGW machinery
 # ──────────────────────────────────────────────────────────────────────────────
