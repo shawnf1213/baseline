@@ -133,6 +133,10 @@ TOTAL_GAMES_MAX_PER_BOARD = 3
 # C2/C3): enabled and board-eligible, but NOT star-eligible until backtested, and
 # capped so it can't crowd the board while uncertified.
 FS_MAX_PER_BOARD = 2
+# Double Faults is the highest-variance prop we carry (Tier 3, never ⭐). Cap it per
+# board (matching FS) so the least-reliable prop can't dominate the list, and bar it
+# from 3x slip legs entirely (see _select_slip). 7/23 audit follow-up.
+DF_MAX_PER_BOARD = 2
 
 
 # ── Thin-slate mode ──────────────────────────────────────────────────────────
@@ -508,6 +512,14 @@ async def _evaluate(prop: dict, sem: asyncio.Semaphore):
             "fs_p_over": data.get("fs_p_over"),
             "fs_implied_claim": data.get("fs_implied_claim"),
             "fs_knife_edge": data.get("fs_knife_edge"),
+            # BP A2 scenario-mixture display (parity with PTGW/FS): P(over), the
+            # market-anchor status/blend, the implied match claim, and the scenario
+            # probabilities — so a posted BP pick shows its A2 context.
+            "bp_p_over": data.get("bp_p_over"),
+            "bp_anchored": data.get("bp_anchored"),
+            "bp_implied_claim": data.get("bp_implied_claim"),
+            "bp_blended_wp": data.get("bp_blended_wp"),
+            "bp_scenario_probs": data.get("bp_scenario_probs"),
             # Total Games sportsbook anchor (None for other props). The projection
             # above is already the book-blended number; these carry the book line,
             # the edge vs the PrizePicks line, and the divergence flag for display
@@ -1057,6 +1069,16 @@ async def _rank_board():
         log.info("POD_FS_CAP | %d Fantasy Score picks > cap %d — dropping %d lowest-ranked",
                  len(_fs), FS_MAX_PER_BOARD, len(_drop))
         ordered = [pk for pk in ordered if id(pk) not in _drop]
+
+    # ── Double Faults board cap (7/23 audit follow-up) ────────────────────────
+    # Highest-variance prop (Tier 3); cap it like FS so the least-reliable prop
+    # can't dominate the board. Excess DF picks are logged, not posted.
+    _df = [pk for pk in ordered if pk.get("prop_type") == "Double Faults"]
+    if len(_df) > DF_MAX_PER_BOARD:
+        _drop = set(id(pk) for pk in _df[DF_MAX_PER_BOARD:])
+        log.info("POD_DF_CAP | %d Double Faults picks > cap %d — dropping %d lowest-ranked",
+                 len(_df), DF_MAX_PER_BOARD, len(_drop))
+        ordered = [pk for pk in ordered if id(pk) not in _drop]
     return ordered, thin_slate
 
 
@@ -1104,7 +1126,9 @@ def _select_slip(ordered: list, potd: list) -> list:
             two different prop types).
     STEP 3: only return a slip if TWO candidates clear the 3x leg bar (v2:
             SLIP_MIN_CONF = 70, one notch above the board floor — don't build
-            slips from floor picks). Never force a weak second leg — return [].
+            slips from floor picks) AND are Tier 1 or Tier 2 props. Double Faults
+            (Tier 3, highest variance) is never slip-eligible (7/23 audit). Fewer
+            than two qualifying Tier 1/2 legs → NO slip, never a Tier 3 filler.
     """
     if not ordered:
         return []
@@ -1115,14 +1139,17 @@ def _select_slip(ordered: list, potd: list) -> list:
     # matches — not just the exact (player, prop_type) already picked.
     potd_matches = {_match_key(p) for p in (potd or [])}
     # ``ordered`` already contains board-qualifying picks (>= 65). 3x legs must
-    # additionally clear the higher SLIP_MIN_CONF (70) bar.
+    # additionally clear the higher SLIP_MIN_CONF (70) bar AND be Tier 1/2 (DF is
+    # Tier 3 → excluded from slips entirely).
     pool = [c for c in ordered
             if (_norm(c["player"]), c["prop_type"]) not in potd_keys
             and _match_key(c) not in potd_matches
-            and (c.get("confidence") or 0) >= SLIP_MIN_CONF]
+            and (c.get("confidence") or 0) >= SLIP_MIN_CONF
+            and _prop_tier(c.get("prop_type")) <= 2]
     if len(pool) < 2:
-        log.info("3x: pool too thin after POTD exclusion (%d qualifying) — no slip today",
-                 len(pool))
+        log.info("3x: fewer than 2 Tier 1/2 legs >= %d after POTD exclusion "
+                 "(%d qualifying; DF is not slip-eligible) — no slip today",
+                 SLIP_MIN_CONF, len(pool))
         return []
 
     leg1 = pool[0]
