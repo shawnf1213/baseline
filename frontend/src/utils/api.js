@@ -1,21 +1,20 @@
 import axios from 'axios'
 
-const RAW = (import.meta.env.VITE_API_URL || '').replace(/^﻿/, '').trim()
-
 // Where /api requests go:
 //  • Production host → straight to the backend (its origin is CORS-allowlisted).
 //    A DIRECT call avoids a proxy hop, so the slow prop-calculate endpoint
 //    (minutes for a cold player) never hits a Vercel edge timeout.
-//  • Preview (*.vercel.app hashes) → same-origin `/api` proxy (vercel.json), so a
-//    preview URL the backend hasn't allowlisted still works (no cross-origin CORS).
-//  • Local dev → same-origin `/api` → the Vite dev proxy → backend.
+//  • Everything else — preview (*.vercel.app hashes) AND local dev — uses the
+//    SAME-ORIGIN `/api` proxy (vercel.json rewrite in prod, Vite dev proxy
+//    locally). Critically we do NOT fall back to VITE_API_URL here: Vercel sets
+//    it to the backend origin, and calling that cross-origin from a preview URL
+//    the backend hasn't CORS-allowlisted fails every request.
 function resolveBase() {
   if (typeof window === 'undefined') return ''
-  const host = window.location.hostname
-  if (host === 'baseline-app-three.vercel.app') return 'https://backend-production-84ab.up.railway.app'
-  if (host === 'localhost' || host === '127.0.0.1') return ''      // Vite dev proxy
-  if (RAW && /^https?:\/\//.test(RAW)) return RAW                  // explicit override
-  return ''                                                        // preview: /api proxy
+  if (window.location.hostname === 'baseline-app-three.vercel.app') {
+    return 'https://backend-production-84ab.up.railway.app'
+  }
+  return ''
 }
 const BASE = resolveBase()
 
