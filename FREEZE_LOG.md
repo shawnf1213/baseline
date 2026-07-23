@@ -746,14 +746,31 @@ BP added to the `confidence.py` EVR-skip list. The A1 suspension is re-keyed off
 market-anchored blend (was model-only). Lean is taken from P(over), not the
 median-vs-line tie.
 
-*Illustrative (NON-certifying) — the two audit cases.* Re-run through the mixture:
-Spiteri (14% win, base 6.1) → P(over) 0.19–0.38 across lines 3.5–5.5 → **UNDER**
-(was OVER; actual 1). Rublev (85% win, base 2.9) → P(over) 0.66 at 2.5, 0.57 at
-3.0, 0.48 at 3.5 → **OVER at the lines ≤3.0** (was UNDER; actual 5). Both leans
-flip in the correct direction. Explicitly NOT certification — two cases prove
-nothing, and BOTH remain A1-suspended (lopsided win prob), so neither would post to
-a board regardless. The out-of-sample backtest above is the gate; these are a
-sanity check that the conditioning acts in the right direction.
+*A3 — the two audit cases, re-run LIVE through the deployed chain. NULL RESULT,
+reported not tuned.* An earlier OFFLINE calc using guessed base levels (2.9 / 6.1)
+suggested both flip; the LIVE chain (which computes the real C1–C7 base level)
+contradicts it:
+- **Spiteri as heavy underdog** (6% win vs a dominant server): base 0.89, P(over
+  4.5)=0.040 → UNDER, loss-in-2 mass 0.81. The conditioning MECHANISM works — a
+  heavy underdog is pulled onto the floor-compressed loss scenario (base 0.89 ≈ the
+  realized 1 break). This class is corrected.
+- **Rublev vs his real 7/23 opponent (Skatov)**: base_proj **1.79**, P(over
+  3.5)=0.13 → **UNDER — same as the original wrong pick** (actual 6). Does NOT flip.
+- **Spiteri vs the opponent she actually beat 6-breaks (Mazzola)**: base 2.99 →
+  UNDER 4.5, actual 6. Also wrong.
+
+Root cause of the null (a SEPARATE defect A2 does not address): `base_proj` — the
+C1–C7 matchup LEVEL — systematically **underestimates break counts against weak /
+challenger opponents** (1.79 and 2.99 vs realized 6). A2 reshapes the level BY
+OUTCOME; it cannot correct a level that is itself too low. So A2 fixes the
+"high projection on a likely LOSER" class (Spiteri-type) but not the "low base
+level on a WINNER vs a weak server" class (Rublev-type). Both audit cases also
+remain A1-suspended (lopsided win prob) so neither posts regardless. **Not tuned to
+force a flip** (per the audit mandate). The out-of-sample backtest above — which
+rejects uniform scaling — is A2's gate; A3 is explicitly non-certifying and here
+records a null plus a newly-surfaced base-level defect for follow-up (likely the
+opponent-serve-data gap: challenger opponents default to a too-strong tour-average
+hold, depressing C1 opportunity).
 
 *Scope.* Aces/DF/Total Games projector chains are byte-identical (the mixture lives
 only in the BP `else` branch of `main.py` + two new functions in `props.py`;
