@@ -103,7 +103,7 @@ export default function PlayerDashboard({ player, board, onClose, onOpenPlayer }
   const handLabel = hand === 'R' ? 'Right-handed' : hand === 'L' ? 'Left-handed' : null
 
   return (
-    <div style={{ position: 'fixed', inset: 0, zIndex: 1500, background: T.bg, overflowY: 'auto', animation: 'fade-in 160ms ease' }} className="no-scrollbar">
+    <div style={{ position: 'fixed', inset: 0, zIndex: 1500, background: T.bg, overflowY: 'auto', overflowX: 'hidden', animation: 'fade-in 160ms ease' }} className="no-scrollbar">
       {/* Top bar */}
       <div style={{
         position: 'sticky', top: 0, zIndex: 5, background: 'rgba(10,10,10,0.96)',
