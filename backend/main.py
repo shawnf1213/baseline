@@ -230,6 +230,28 @@ async def results_pending():
     return {"pending": database.pending_picks()}
 
 
+@app.get("/api/results/audit")
+async def results_audit():
+    """Read-only record-integrity forensic: EVERY pick row INCLUDING those
+    excluded_from_record (which record_summary hides), with compact status fields.
+    Lets an auditor reconcile excluded vs graded vs needs-review and detect any
+    ID gaps that correspond to DELETED (vanished) rows rather than excluded ones.
+    No writes."""
+    from src import database
+    picks = database.all_picks()
+    return {
+        "total": len(picks),
+        "picks": [{
+            "id": p.get("id"), "player": p.get("player"),
+            "opponent": p.get("opponent"), "prop_type": p.get("prop_type"),
+            "result": p.get("result"),
+            "excluded": int(p.get("excluded_from_record") or 0),
+            "group": p.get("pick_group"),
+            "generated_at": p.get("generated_at"), "resolved_at": p.get("resolved_at"),
+        } for p in picks],
+    }
+
+
 @app.post("/api/results/update")
 async def results_update(req: ResultUpdateRequest):
     """Set a pick's result (manual admin override or the auto-resolver)."""
