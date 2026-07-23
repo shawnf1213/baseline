@@ -4,9 +4,9 @@ import { Card, Heart, Spinner, Empty, SectionLabel, Delta } from './bits'
 import PlayerPhoto from './PlayerPhoto'
 import ConfidenceGauge from '../components/ConfidenceGauge'
 import Last5Bars from '../components/Last5Bars'
-import { fetchForm, fetchStats, fetchNextMatch, fetchHistory, searchPlayers } from '../utils/api'
+import { fetchForm, fetchStats, fetchNextMatch, fetchHistory } from '../utils/api'
 import { normName, hitStrip, shortProp, fmt, prettyDate, startTimeLabel, PROP_TYPES } from './data'
-import { projectRow, cachedProjection } from './project'
+import { projectRow, cachedProjection, resolvePlayer } from './project'
 import { useBookmarks, playerBookmarkId } from './useBookmarks'
 
 const HISTORY_PROPS = PROP_TYPES.filter(p => p.history)
@@ -22,8 +22,9 @@ function mostPlayedSurface(stats) {
 }
 
 export default function PlayerDashboard({ player, board, onClose, onOpenPlayer }) {
-  const tour = player.tour || 'ATP'
-  const [pid, setPid] = useState(player.id || null)
+  // The tour is authoritative only once resolved (a board tap carries no tour).
+  const [resolvedTour, setResolvedTour] = useState(player.tour || 'ATP')
+  const [pid, setPid] = useState(player.id ? String(player.id) : null)
   const [rank, setRank] = useState(player.currentRank ?? null)
   const [form, setForm] = useState(null)
   const [stats, setStats] = useState(null)
@@ -45,32 +46,30 @@ export default function PlayerDashboard({ player, board, onClose, onOpenPlayer }
     return m
   }, [boardRows])
 
-  // Resolve id (via search) then load core data.
+  // Resolve id + CORRECT tour, then load core data. From search/bookmarks we
+  // already have an id (its tour is gender-derived, reliable); from a board tap
+  // we have only a name, so resolve across both tours by exact name — otherwise
+  // a WTA name can lock onto a fuzzy male ATP match.
   useEffect(() => {
     let alive = true
     setCoreLoading(true); setNotFound(false)
     ;(async () => {
-      let id = player.id, cr = player.currentRank ?? null
-      if (!id) {
-        try {
-          const res = await searchPlayers(player.name, tour)
-          const m = (res || []).find(x => normName(x.name) === normName(player.name)) || res?.[0]
-          if (m) { id = m.id; cr = m.currentRank ?? cr }
-        } catch { /* ignore */ }
-      }
+      const p = player.id
+        ? { id: String(player.id), tour: player.tour || 'ATP', rank: player.currentRank ?? null }
+        : await resolvePlayer(player.name, player.tour)
       if (!alive) return
-      setPid(id || null); setRank(cr)
-      if (!id) { setNotFound(true); setCoreLoading(false); return }
+      if (!p || !p.id) { setNotFound(true); setCoreLoading(false); return }
+      setPid(p.id); setRank(p.rank ?? player.currentRank ?? null); setResolvedTour(p.tour)
       const [f, s, n] = await Promise.all([
-        fetchForm(id, tour).catch(() => null),
-        fetchStats(id, tour, player.name).catch(() => null),
-        fetchNextMatch(id, tour).catch(() => null),
+        fetchForm(p.id, p.tour).catch(() => null),
+        fetchStats(p.id, p.tour, player.name).catch(() => null),
+        fetchNextMatch(p.id, p.tour).catch(() => null),
       ])
       if (!alive) return
       setForm(f); setStats(s); setNext(n); setCoreLoading(false)
     })()
     return () => { alive = false }
-  }, [player.name, player.id, tour])
+  }, [player.name, player.id, player.tour])
 
   const primarySurface = next?.surface || boardRows[0]?.surface || mostPlayedSurface(stats) || 'Hard'
 
@@ -81,12 +80,12 @@ export default function PlayerDashboard({ player, board, onClose, onOpenPlayer }
     HISTORY_PROPS.forEach(async (p) => {
       setHistories(h => ({ ...h, [p.key]: { loading: true } }))
       try {
-        const data = await fetchHistory(pid, tour, p.key, primarySurface, 0)
+        const data = await fetchHistory(pid, resolvedTour, p.key, primarySurface, 0)
         if (alive) setHistories(h => ({ ...h, [p.key]: { loading: false, data } }))
       } catch { if (alive) setHistories(h => ({ ...h, [p.key]: { loading: false, err: true } })) }
     })
     return () => { alive = false }
-  }, [pid, primarySurface, tour])
+  }, [pid, primarySurface, resolvedTour])
 
   // Project this player's live PrizePicks props (shared cache with the Board).
   useEffect(() => {
@@ -95,10 +94,10 @@ export default function PlayerDashboard({ player, board, onClose, onOpenPlayer }
       const c = cachedProjection(r.key)
       if (c !== undefined) { setPropProj(m => (r.key in m ? m : { ...m, [r.key]: c || { failed: true } })); return }
       setPropProj(m => (m[r.key]?.loading ? m : { ...m, [r.key]: { loading: true } }))
-      projectRow(r, tour).then(res => { if (alive) setPropProj(m => ({ ...m, [r.key]: res || { failed: true } })) })
+      projectRow(r, resolvedTour).then(res => { if (alive) setPropProj(m => ({ ...m, [r.key]: res || { failed: true } })) })
     })
     return () => { alive = false }
-  }, [boardRows, tour])
+  }, [boardRows, resolvedTour])
 
   const hand = stats?.ta_stats?.handedness
   const handLabel = hand === 'R' ? 'Right-handed' : hand === 'L' ? 'Left-handed' : null
@@ -115,7 +114,7 @@ export default function PlayerDashboard({ player, board, onClose, onOpenPlayer }
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={T.green} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 6l-6 6 6 6" /></svg>
           Back
         </button>
-        <Heart active={has(bmId)} onClick={() => toggle({ id: bmId, kind: 'player', player: player.name, playerId: pid, tour, currentRank: rank })} />
+        <Heart active={has(bmId)} onClick={() => toggle({ id: bmId, kind: 'player', player: player.name, playerId: pid, tour: resolvedTour, currentRank: rank })} />
       </div>
 
       <div style={{ padding: '16px 16px 96px', maxWidth: 640, margin: '0 auto' }}>
@@ -125,7 +124,7 @@ export default function PlayerDashboard({ player, board, onClose, onOpenPlayer }
           <div style={{ minWidth: 0 }}>
             <div style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 25, color: T.white, letterSpacing: 0.3, lineHeight: 1.05 }}>{player.name}</div>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
-              <Badge>{tour}</Badge>
+              <Badge>{resolvedTour}</Badge>
               {rank != null && <Badge>#{rank}</Badge>}
               {handLabel && <Badge>{handLabel}</Badge>}
             </div>
