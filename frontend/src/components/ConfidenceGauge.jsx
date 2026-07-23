@@ -94,13 +94,15 @@ export default function ConfidenceGauge({ confidence = 0, size = 160, showLabel 
           }}>
             <NumberFlow value={confidence} /><span style={{ fontSize: size * 0.18 }}>%</span>
           </div>
-          <div style={{
-            fontSize: 9, color: 'var(--muted)',
-            fontFamily: '"Barlow Condensed", sans-serif',
-            fontWeight: 700, letterSpacing: 2,
-            textTransform: 'uppercase',
-            marginTop: 4,
-          }}>Confidence</div>
+          {showLabel && (
+            <div style={{
+              fontSize: 9, color: 'var(--muted)',
+              fontFamily: '"Barlow Condensed", sans-serif',
+              fontWeight: 700, letterSpacing: 2,
+              textTransform: 'uppercase',
+              marginTop: 4,
+            }}>Confidence</div>
+          )}
         </div>
       </div>
       {showLabel && (
