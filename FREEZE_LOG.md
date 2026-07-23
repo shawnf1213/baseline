@@ -859,3 +859,29 @@ occupy the visual #1 slot despite being Tier 3 and permanently star-blocked. The
 ledger has no VALIDATED Aces/DF sample above 80, so a >80 score on these props is
 unearned precision. The cap is a ceiling only — it never raises a pick, and picks
 already ≤80 (the vast majority) are unaffected.
+
+## Entry 12 — σ de-duplication: consistency variance score removed (2026-07-23)
+
+**Scoped confidence-value change from the calibration review.** The review's
+redundancy audit confirmed the ONE double-count that survived scrutiny (the anchor
+double-count hypothesis was REFUTED — book P(over) ≈ EVR confidence for anchored
+Total Games; they agree there is no edge). `std_dev` (last-20 σ of the prop stat)
+was charged in TWO places: the consistency component (+8 low / −12 high) AND the EVR
+ratio `|proj − line| / std_dev`. Same input, two penalties.
+
+Fix: drop the consistency ±score (keep the tier LABEL for display). EVR is the
+rigorous σ handler, so σ is now charged once. Affects only EVR-graded props
+(Aces / Double Faults / Total Games); the P(over) props (BP/PTGW/FS) overwrite the
+base total downstream, so the component never reached their displayed number.
+
+NOT a blanket uplift: it removes the −12 high-variance over-penalty (raising erratic
+picks toward their single-charge value) AND the +8 low-variance double-reward
+(lowering metronomic picks). Net effect is a flattening to one σ charge, not a lift.
+On the 7/23 board the two reversible fixes it sits beside (EVR-curve extension,
+Aces/DF cap) moved totals by −2 / 0; this change's board effect is reported live.
+
+Everything else in the review was left ALONE for lack of evidence: EVR low-end
+anchors NOT re-fitted (n=32, all bands <40 — insufficient); no uplift/floor-raise;
+scale-mismatch units noted but no slot-loss demonstrated (P-based and EVR-based
+distributions overlap). Current config still has 0 resolved picks, so none of this
+is calibration-validated — it is a correctness fix, per the review's mandate.

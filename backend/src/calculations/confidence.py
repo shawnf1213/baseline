@@ -212,26 +212,28 @@ def calculate_confidence(
     if len(vals_20) >= 3:
         std_dev = statistics.stdev(vals_20)
         low_t, high_t = VARIANCE_THRESHOLDS.get(stat_key, (2.0, 4.0))
-        # Consolidated consistency score (was double-counted with main.py's
-        # _consistency). Single application here on the designed range:
-        # low variance +8, high variance −12.
         if std_dev < low_t:
-            consistency_score = 8
             consistency_tier = "Consistent"
             consistency_label = f"Low variance (σ={std_dev:.1f}) — consistent output"
         elif std_dev < high_t:
-            consistency_score = 0
             consistency_tier = "Moderate Variance"
             consistency_label = f"Medium variance (σ={std_dev:.1f})"
         else:
-            consistency_score = -12
             consistency_tier = "High Variance"
             consistency_label = f"High variance (σ={std_dev:.1f}) — unpredictable"
             high_variance = True
     else:
-        consistency_score = 0
         consistency_label = "Too few matches for variance analysis"
-    breakdown["consistency"] = {"score": consistency_score, "max": 8,
+    # σ DE-DUPLICATION (2026-07-23 calibration review). The variance PENALTY/bonus is
+    # removed from the score: the SAME std_dev is already charged, more rigorously, in
+    # the EVR edge/variance ratio (|proj − line| / std_dev, below). Charging it here
+    # too double-counted variance for the EVR-graded props (Aces/DF/Total Games); for
+    # the P(over) props (BP/PTGW/FS) the base total is overwritten downstream, so this
+    # component never reached the displayed number anyway. Evidence: confidence.py used
+    # std_dev in both places (confirmed in the review's redundancy audit). The tier
+    # LABEL is retained for display; only the ±score contribution is dropped.
+    consistency_score = 0
+    breakdown["consistency"] = {"score": consistency_score, "max": 0,
                                 "label": consistency_label, "tier": consistency_tier}
     total += consistency_score
 
