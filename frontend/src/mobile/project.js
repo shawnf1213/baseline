@@ -14,7 +14,9 @@ const ctxCache = new Map()      // id -> {opponent_id, surface} | null
 const projCache = new Map()     // row.key -> result | null
 
 // ── concurrency limiter ──────────────────────────────────────────────────────
-const LIMIT = 5
+// Gentle on the backend / Sofascore (which rate-limits): too many parallel
+// projections cause failures, not speed. 3 in flight is the reliable sweet spot.
+const LIMIT = 3
 let active = 0
 const q = []
 function pump() { while (active < LIMIT && q.length) { active++; (q.shift())() } }
@@ -81,12 +83,21 @@ export async function projectRow(row, tourHint) {
       opponentId = opp?.id
     }
     if (!opponentId) return null
-    const data = await calcProp({
-      player_id: p.id, opponent_id: opponentId,
-      player_name: row.player, opponent_name: row.opponent,
-      tour: p.tour, surface, prop_type: row.propType, prop_line: row.line,
-    })
-    const proj = typeof data?.model_projection === 'number' ? data.model_projection : null
+    // Retry once on a transient failure (rate-limit / timeout) — a short pause
+    // usually clears it, and the first attempt often warms the backend cache.
+    let data = null
+    for (let attempt = 0; attempt < 2 && data == null; attempt++) {
+      if (attempt > 0) await new Promise(r => setTimeout(r, 3500))
+      try {
+        data = await calcProp({
+          player_id: p.id, opponent_id: opponentId,
+          player_name: row.player, opponent_name: row.opponent,
+          tour: p.tour, surface, prop_type: row.propType, prop_line: row.line,
+        })
+      } catch { data = null }
+    }
+    if (!data) return null
+    const proj = typeof data.model_projection === 'number' ? data.model_projection : null
     return {
       projection: proj,
       confidence: typeof data?.confidence === 'number' ? data.confidence : null,
