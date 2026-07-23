@@ -28,21 +28,28 @@ function schedule(fn) {
   })
 }
 
-async function resolvePlayer(name, tourHint) {
+// Resolve a name to {id, tour, rank}. Searches BOTH tours and prefers an EXACT
+// name match, with the tour taken from the matched player's gender — so a WTA
+// name (e.g. "Lucia Bronzetti") never locks onto a fuzzy male ATP match just
+// because ATP was searched first. Only falls back to a fuzzy result when no
+// exact name exists in either tour.
+export async function resolvePlayer(name, tourHint) {
   const nk = normName(name)
   if (playerCache.has(nk)) return playerCache.get(nk)
-  const tries = tourHint === 'WTA' ? ['WTA', 'ATP'] : tourHint === 'ATP' ? ['ATP', 'WTA'] : ['ATP', 'WTA']
-  let found = null
-  for (const t of tries) {
+  const order = tourHint === 'WTA' ? ['WTA', 'ATP'] : ['ATP', 'WTA']
+  const all = []
+  for (const t of order) {
     try {
       const res = await searchPlayers(name, t)
-      if (Array.isArray(res) && res.length) {
-        const m = res.find(r => normName(r.name) === nk) || res[0]
-        const tour = m.gender === 'F' ? 'WTA' : m.gender === 'M' ? 'ATP' : t
-        found = { id: String(m.id), tour, rank: m.currentRank ?? null }
-        break
-      }
+      if (Array.isArray(res)) all.push(...res)
     } catch { /* try next tour */ }
+    if (all.some(r => normName(r.name) === nk)) break   // exact match found — stop
+  }
+  const m = all.find(r => normName(r.name) === nk) || all[0] || null
+  let found = null
+  if (m) {
+    const tour = m.gender === 'F' ? 'WTA' : m.gender === 'M' ? 'ATP' : (tourHint || 'ATP')
+    found = { id: String(m.id), tour, rank: m.currentRank ?? null }
   }
   playerCache.set(nk, found)
   return found
