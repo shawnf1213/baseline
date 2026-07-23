@@ -2740,6 +2740,11 @@ async def prop_calculate(req: PropRequest):
             "lean":                 lean,
             "confidence":           confidence,
             "confidence_cap_reason": confidence_cap_reason,
+            # A1 interim BP outcome-inversion guard (Break Points Won only; None
+            # for other props). Projection/confidence are unchanged — the bot
+            # excludes suspended BP picks from the board.
+            "bp_suspended":         result.get("bp_suspended"),
+            "bp_suspend_reason":    result.get("bp_suspend_reason"),
             "confidence_breakdown": conf_result["breakdown"],
             # ── PTGW scenario-mixture surface (None for other props) ──────────────
             "ptgw_p_over":          _ptgw_p_over,

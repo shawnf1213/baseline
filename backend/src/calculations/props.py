@@ -3034,8 +3034,7 @@ def project_break_points(
     # ─────────────────────────────────────────────────────────────────────────
     # Reality check — high-projection flag (warning only, not a cap).
     # If the projection blows past realistic ranges flag it so the UI can
-    # surface "verify data quality" without suppressing the value. The user
-    # decides whether to trust it.
+    # surface "verify data quality" without suppressing the value.
     # ─────────────────────────────────────────────────────────────────────────
     _high_threshold = 9.0 if is_bo5 else 7.0
     bp_high_projection = proj > _high_threshold
@@ -3044,6 +3043,37 @@ def project_break_points(
             "BP_HIGH | %s | proj=%.2f exceeds %.1f (BO%s) — review components",
             player_name, proj, _high_threshold, "5" if is_bo5 else "3",
         )
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # A1 INTERIM STRUCTURAL GUARDS (7/23 audit). The BP chain has NO outcome /
+    # scenario conditioning (A2 rebuilds that), so it can project many breaks for
+    # a player who will almost certainly lose — an internal contradiction that
+    # inverts the lean. Until A2 lands, SUSPEND (block — never cap the number)
+    # BP picks in the inversion zone:
+    #   • lopsided     — win prob outside 30–70% (a break count is ill-defined
+    #                    when the match is a near-certain win or loss for one side);
+    #   • contradiction — ≥4 projected breaks at <35% win prob (≥4 breaks implies
+    #                    the player WINS, incompatible with a heavy underdog).
+    # p_prob is the MODEL win prob; A2 replaces it with the market-anchored blend.
+    # The projection VALUE is unchanged — main.py exposes bp_suspended and the bot
+    # excludes suspended BP picks from the board (block, not cap).
+    # ─────────────────────────────────────────────────────────────────────────
+    bp_lopsided = p_prob < 30.0 or p_prob > 70.0
+    bp_contradiction = proj >= 4.0 and p_prob < 35.0
+    bp_suspended = bool(bp_lopsided or bp_contradiction)
+    bp_suspend_reason = None
+    if bp_lopsided:
+        bp_suspend_reason = "lopsided win prob %.0f%% (outside 30-70)" % p_prob
+        logger.warning(
+            "BP_LOPSIDED_SUSPENDED | %s | win_prob=%.0f%% proj=%.2f — blocked "
+            "(outcome-inversion zone, no scenario conditioning)",
+            player_name, p_prob, proj)
+    elif bp_contradiction:
+        bp_suspend_reason = "contradiction: %.1f breaks at win prob %.0f%% (>=4 & <35)" % (proj, p_prob)
+        logger.warning(
+            "BP_CONTRADICTION_SUSPENDED | %s | proj=%.2f at win_prob=%.0f%% — blocked "
+            "(>=4 breaks implies a win; internally contradictory)",
+            player_name, proj, p_prob)
 
     # ─────────────────────────────────────────────────────────────────────────
     # GS DIAGNOSTIC — individual component log for Sinner-style matchups
@@ -3257,6 +3287,9 @@ def project_break_points(
         # ── Reality-check flag (warning only, not a cap) ─────────────────────
         "bp_high_projection":    bp_high_projection,
         "bp_high_threshold":     _high_threshold,
+        # ── A1 interim outcome-inversion guard (block, not cap) ──────────────
+        "bp_suspended":          bp_suspended,
+        "bp_suspend_reason":     bp_suspend_reason,
         "bp_momentum_capped":    momentum_capped,
         "bp_momentum_cap":       momentum_cap,
         "bp_momentum_raw":       round(momentum_bonus_raw, 3),

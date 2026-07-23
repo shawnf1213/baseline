@@ -645,3 +645,39 @@ weight is tunable to 1.0 (pure book) or lower if calibration argues for it.
 **Verified live.** Navone vs Halys (clay): book 22.5, model 23.1, blended 22.7
 (model_projection = 22.7 confirmed downstream), edge +0.18 OVER, not divergent,
 conf 50. De-vig sanity: over 0.485 / under 0.515, overround 7.9%.
+
+---
+
+## Entry 9 — Break Points Won outcome conditioning (2026-07-23)
+
+**Scoped freeze exception — structural math error, same class as the PTGW rebuild
+(Entry 3).** The 7/23 audit confirmed the BP chain has NO outcome/scenario
+conditioning: C8 (`expected_sets` from win-prob GAP) is direction-blind — a 14%
+underdog and an 86% favorite in the same match get the identical multiplier — and
+the only asymmetry is a pro-favorite deciding-set bonus. Result: the model
+projected Spiteri (14% win) for 6.1 breaks → OVER 2.5 (POTD, conf 81; actual 1),
+and Rublev (heavy favorite) for 2.9 → UNDER 3.5 (actual 5). **Both leans
+inverted** — the signature of missing outcome conditioning.
+
+Shipped in two commits.
+
+**A1 — interim guard (this commit).** No projection number changes; a SUPPRESSION
+guard only. The projector (`props.py`, ex-`BP_HIGH` block) now sets `bp_suspended`
+when a BP projection sits in the outcome-inversion zone:
+- **lopsided** — model win prob outside 30–70% (break count ill-defined when the
+  match is a near-certain win/loss for one side); or
+- **contradiction** — ≥4 projected breaks at <35% win prob (≥4 breaks implies the
+  player wins; internally contradictory).
+`main.py` exposes `bp_suspended`; the bot (`pick_of_day.py:_rank_board`) excludes
+suspended BP picks from the board (`POD_BP_SUSPENDED`), logging the reason. The
+projection VALUE is untouched (block, not cap) — it still shows for research.
+Interim uses the MODEL win prob; **A2 replaces it with the market-anchored blend.**
+Removes the inversion zone (both Spiteri and Rublev suspend) while keeping
+mid-range (30–70% win) BP live. Aces/DF/other projector chains byte-identical.
+
+**A2 — scenario rebuild (next commit).** Extends the existing four-scenario
+mixture (win-in-2 / win-in-3 / lose-in-3 / lose-in-2, currently PTGW+FS only) to
+Break Points Won, fitted per tour/format from Sofascore per-match records, anchored
+by the SAME FS win-prob market anchor (0.7 market / 0.3 model, `main.py:1944`).
+P(over)=Σ P(scenario)·P(breaks>line|scenario); confidence maps from P(over). C1–C7
+become within-scenario rate inputs; C8's role is superseded.

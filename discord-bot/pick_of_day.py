@@ -507,6 +507,9 @@ async def _evaluate(prop: dict, sem: asyncio.Semaphore):
             "tg_book_edge": data.get("tg_book_edge"),
             "tg_anchored": data.get("tg_anchored"),
             "tg_divergent": data.get("tg_divergent"),
+            # A1 interim: BP outcome-inversion guard (block from the board).
+            "bp_suspended": data.get("bp_suspended"),
+            "bp_suspend_reason": data.get("bp_suspend_reason"),
             "explanation": data.get("plain_english_explanation"),
             # Legacy combined score — kept for logging/diagnostics ONLY. It is NOT
             # the ranking key; see _rank_key(), which orders confidence-first with
@@ -880,6 +883,16 @@ async def _rank_board():
                          r.get("fs_p_over"), r.get("line"), _lean_dir(r),
                          r.get("fs_implied_claim") or "?")
                 continue
+        # A1 interim (7/23 audit): the projector suspends Break Points Won picks in
+        # the outcome-inversion zone (lopsided win prob / >=4 breaks at <35% win).
+        # Block them from the board entirely — the projection is real but the lean
+        # can invert until the A2 scenario rebuild lands.
+        if r.get("bp_suspended"):
+            log.info("POD_BP_SUSPENDED | %-22s conf=%-3.0f proj=%-6s line=%-5s — %s",
+                     (r.get("player") or "")[:22], r.get("confidence") or 0,
+                     r.get("projection"), r.get("line"),
+                     r.get("bp_suspend_reason") or "outcome-inversion guard")
+            continue
         # Demons: elevated bars, over-only (see _demon_qualifies, which logs its
         # own accept/reject line). Standard props: the uniform v2 65 floor.
         conf = r.get("confidence") or 0
