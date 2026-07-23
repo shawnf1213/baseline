@@ -129,6 +129,10 @@ PTGW_MAX_PER_BOARD = 2
 # at 80. Left uncapped it crowds out the props the model is actually built around.
 # Keep only the highest-ranked few per board.
 TOTAL_GAMES_MAX_PER_BOARD = 3
+# Fantasy Score is a composite scenario-mixture prop still on probation (7/23 audit
+# C2/C3): enabled and board-eligible, but NOT star-eligible until backtested, and
+# capped so it can't crowd the board while uncertified.
+FS_MAX_PER_BOARD = 2
 
 
 # ── Thin-slate mode ──────────────────────────────────────────────────────────
@@ -176,6 +180,12 @@ POTD_THRESHOLD = 80   # uniform Pick-of-the-Day bar, every eligible prop
 # The ⭐ exclusions: Double Faults never leads the card, and neither does any DEMON
 # (its boosted payout structure is not part of the standard public POTD record).
 POD_STAR_EXCLUDE_PROPS = {"Double Faults"}
+# PROBATION (Fix C3, 2026-07-23): Fantasy Score is a composite scenario-mixture prop
+# that has NOT been out-of-sample backtested. It stays enabled and board/3x eligible,
+# but cannot hold the ⭐ until a calibration backtest certifies it (projected P(over)
+# vs realized). Distinct from the PERMANENT DF block above — remove this set entry
+# once FS passes analysis/backtest_fs_calibration.py.
+POD_STAR_PROBATION_PROPS = {"Fantasy Score"}
 
 # ── Demon props (boosted alternate lines, over-only) ─────────────────────────
 # Demons are evaluated through the normal projection chain but held to ELEVATED
@@ -697,6 +707,48 @@ def _rank_key(pk: dict) -> tuple:
     return (pk.get("confidence") or 0, pk.get("edge_mag") or abs(pk.get("edge") or 0))
 
 
+# ── Prop-reliability tiers for the per-player dedupe (7/23 audit, Fix C1) ─────
+# When a player has several qualifying props, which one REPRESENTS them on the
+# board should weight how reliably the model handles that PROP TYPE, not raw
+# confidence alone — otherwise a fragile prop's noisy 70 displaces a robust prop's
+# 69. Lower tier number = more reliable = preferred. SELECTION ONLY: this changes
+# which prop is kept per player, never the displayed confidence, and never the
+# global board ORDER (that stays _rank_key / confidence).
+#   Tier 1  Break Points Won, Aces        (discrete, directly-counted)
+#   Tier 2  Total Games, Player Total Games Won, Fantasy Score  (scenario/derived)
+#   Tier 3  Double Faults                 (rare event, highest relative variance)
+# PROVISIONAL (A3, 2026-07-23): Break Points Won was just rebuilt (A2) and A3
+# surfaced a base_proj underestimation vs weak/challenger opponents — its Tier-1
+# rank is NOT yet certified. If the board shows BP displacing stronger props,
+# demote it to 2 here (one-line change); the mechanism is independent of the map.
+DEDUPE_TIER_OVERRIDE_MARGIN = 8   # a lower-tier prop must LEAD by >= this to win
+_PROP_TIER = {
+    "Break Points Won": 1, "Aces": 1,
+    "Total Games": 2, "Player Total Games Won": 2, "Fantasy Score": 2,
+    "Double Faults": 3,
+}
+
+
+def _prop_tier(ptype: str) -> int:
+    return _PROP_TIER.get(ptype, 2)          # unknown/demon -> middle tier
+
+
+def _dedupe_preferred(cand: dict, cur: dict) -> bool:
+    """True if cand should REPLACE cur as a player's single board entry.
+
+    Higher reliability tier (lower number) wins UNLESS the lower-tier pick leads by
+    >= DEDUPE_TIER_OVERRIDE_MARGIN in displayed confidence. Within one tier: higher
+    _rank_key (confidence, then edge). Symmetric in the arguments; confidences are
+    never modified — this is selection only."""
+    tc, tu = _prop_tier(cand.get("prop_type")), _prop_tier(cur.get("prop_type"))
+    if tc != tu:
+        hi, lo = (cand, cur) if tc < tu else (cur, cand)     # hi = better (lower) tier
+        lead = (lo.get("confidence") or 0) - (hi.get("confidence") or 0)
+        winner = lo if lead >= DEDUPE_TIER_OVERRIDE_MARGIN else hi
+        return winner is cand
+    return _rank_key(cand) > _rank_key(cur)                  # same tier: confidence-first
+
+
 def _passes_quality(pk: dict) -> bool:
     """v2 board quality gate — a single uniform floor for EVERY prop type. The
     PTGW bespoke bar logic is retired; PTGW's depth ceiling and structural guards
@@ -945,15 +997,24 @@ async def _rank_board():
     log.info("POD_COMPOSITION | TOTAL qualifying=%d | by type: %s",
              _total_q, dict(by_type_qual) or "none")
     picks.sort(key=_rank_key, reverse=True)
-    # Keep only each player's single best-scoring play so the ranking has one
-    # entry per player (no same player twice for different props).
-    best_per_player, ordered = set(), []
+    # Keep only each player's single best play (one entry per player). Selection is
+    # tier-aware (Fix C1): the more reliably-modelled prop TYPE represents the player
+    # unless a lower-tier prop leads by >= DEDUPE_TIER_OVERRIDE_MARGIN. SELECTION
+    # ONLY — displayed confidence is untouched and the global ORDER below stays
+    # _rank_key (confidence). See _dedupe_preferred.
+    _best_by_player: dict = {}
     for pk in picks:
         key = _norm(pk["player"])
-        if key in best_per_player:
-            continue
-        best_per_player.add(key)
-        ordered.append(pk)
+        cur = _best_by_player.get(key)
+        if cur is None:
+            _best_by_player[key] = pk
+        elif _dedupe_preferred(pk, cur):
+            log.info("POD_DEDUPE_TIER | %-22s kept %s(t%d,%.0f) over %s(t%d,%.0f)",
+                     (pk.get("player") or "")[:22],
+                     pk.get("prop_type"), _prop_tier(pk.get("prop_type")), pk.get("confidence") or 0,
+                     cur.get("prop_type"), _prop_tier(cur.get("prop_type")), cur.get("confidence") or 0)
+            _best_by_player[key] = pk
+    ordered = sorted(_best_by_player.values(), key=_rank_key, reverse=True)
 
     # ── Part 3 slate-correlation guard (only meaningful once PTGW_ENABLED) ────
     # Cap PTGW at PTGW_MAX_PER_BOARD (keep the highest-ranked), and flag when the
@@ -984,6 +1045,17 @@ async def _rank_board():
         _drop = set(id(pk) for pk in _tg[TOTAL_GAMES_MAX_PER_BOARD:])
         log.info("POD_TG_CAP | %d Total Games picks > cap %d — dropping %d lowest-ranked",
                  len(_tg), TOTAL_GAMES_MAX_PER_BOARD, len(_drop))
+        ordered = [pk for pk in ordered if id(pk) not in _drop]
+
+    # ── Fantasy Score board cap (Fix C2) ──────────────────────────────────────
+    # FS is a composite scenario-mixture prop still on probation (not star-eligible
+    # until backtested — see _select_potd). Cap it so it can't crowd the board while
+    # uncertified; keep the highest-ranked FS_MAX_PER_BOARD.
+    _fs = [pk for pk in ordered if pk.get("prop_type") == "Fantasy Score"]
+    if len(_fs) > FS_MAX_PER_BOARD:
+        _drop = set(id(pk) for pk in _fs[FS_MAX_PER_BOARD:])
+        log.info("POD_FS_CAP | %d Fantasy Score picks > cap %d — dropping %d lowest-ranked",
+                 len(_fs), FS_MAX_PER_BOARD, len(_drop))
         ordered = [pk for pk in ordered if id(pk) not in _drop]
     return ordered, thin_slate
 
@@ -1138,10 +1210,11 @@ def _star_eligible(pk: dict) -> bool:
     """v2: a play may hold the ⭐ Pick-of-the-Day slot iff it clears the uniform
     80 threshold AND its prop is not permanently star-blocked.
 
-    ONE exclusion mechanism, ONE entry: Double Faults may never be the Pick of the
-    Day, however high it scores (it still populates the board and 3x). Every other
-    prop — Aces, Break Points Won, Total Games, Player Total Games Won — is
-    star-eligible at >= 80. The old TG-90%-favourite bar and the PTGW-UNDER
+    Two prop-level exclusions: Double Faults may NEVER be the Pick of the Day
+    (permanent), and Fantasy Score may not until an out-of-sample calibration
+    backtest certifies it (PROBATION, Fix C3) — both still populate the board and
+    3x. Every other prop — Aces, Break Points Won, Total Games, Player Total Games
+    Won — is star-eligible at >= 80. The old TG-90%-favourite bar and the PTGW-UNDER
     structural requirement are RETIRED; those confidence-shaping stories now live
     entirely inside the projection/guard chain, not in a second selection gate.
 
@@ -1153,6 +1226,8 @@ def _star_eligible(pk: dict) -> bool:
     if pk.get("odds_type") == "demon":
         return False
     if pk.get("prop_type") in POD_STAR_EXCLUDE_PROPS:
+        return False
+    if pk.get("prop_type") in POD_STAR_PROBATION_PROPS:   # Fix C3: FS not star-eligible until backtested
         return False
     return (pk.get("confidence") or 0) >= POTD_THRESHOLD
 
