@@ -24,6 +24,14 @@ if _RAW_URL.startswith("postgres://"):
     _RAW_URL = _RAW_URL.replace("postgres://", "postgresql://", 1)
 DATABASE_URL = _RAW_URL
 
+# Model-generation marker stamped on every new pick (Fix D, 2026-07-23). Bump this
+# whenever a material projection-model change ships so calibration can segment
+# results by generation instead of pooling incompatible models. Current value marks
+# the BP four-scenario outcome-conditioning rebuild (A2): BP picks BEFORE this
+# (old C1–C8 chain) carry the backfilled "pre-a2" and must not be pooled with
+# post-fix BP results. Same pattern as board_policy_version.
+MODEL_VERSION = "2026.07.23-bp-a2"
+
 _engine = None
 _Session = None
 _READY = False
@@ -79,6 +87,11 @@ try:
         # must NOT count toward the public record or appear in recaps. Kept in the
         # DB for the reproducibility audit, never deleted. Default 0 = counts.
         excluded_from_record = Column(Integer, default=0)
+        # Projection-model generation in force when this pick was made (Fix D).
+        # Existing rows are backfilled to "pre-a2" (old BP C1–C8 chain); new picks
+        # default to MODEL_VERSION. Lets calibration split BP hit-rates by the A2
+        # outcome-conditioning boundary instead of pooling incompatible models.
+        model_version = Column(String, default=MODEL_VERSION)
 
         def to_dict(self) -> dict:
             return {
@@ -102,6 +115,7 @@ try:
                 "board_policy_version": (self.board_policy_version or "v1"),
                 "odds_type": (self.odds_type or "standard"),
                 "excluded_from_record": int(self.excluded_from_record or 0),
+                "model_version": (self.model_version or "pre-a2"),
             }
 
     class CacheEntry(Base):
@@ -205,6 +219,21 @@ def init_db() -> None:
                     "WHERE excluded_from_record IS NULL"))
                 conn.execute(text(
                     "ALTER TABLE picks ALTER COLUMN excluded_from_record SET DEFAULT 0"))
+                # model_version (Fix D): every row existing when this column is first
+                # added predates the BP A2 outcome-conditioning rebuild, so backfill
+                # NULL -> 'pre-a2' exactly once, then set the column default to the
+                # current MODEL_VERSION so new picks are stamped automatically.
+                conn.execute(text(
+                    "ALTER TABLE picks ADD COLUMN IF NOT EXISTS model_version VARCHAR"))
+                _bmv = conn.execute(text(
+                    "UPDATE picks SET model_version = 'pre-a2' "
+                    "WHERE model_version IS NULL"))
+                if getattr(_bmv, "rowcount", 0):
+                    logger.info("picks model_version backfill: %d existing rows marked "
+                                "pre-a2 (old BP C1-C8 chain)", _bmv.rowcount)
+                conn.execute(text(
+                    "ALTER TABLE picks ALTER COLUMN model_version SET DEFAULT '%s'"
+                    % MODEL_VERSION))
         except Exception as mexc:  # noqa: BLE001 — non-fatal; column may already exist
             logger.warning("picks pick_group migration skipped: %s", mexc)
         _READY = True
@@ -254,6 +283,7 @@ def log_pick(rec: dict) -> dict:
                 confidence_breakdown=rec.get("confidence_breakdown"),
                 board_policy_version=(rec.get("board_policy_version") or "v2"),
                 odds_type=(rec.get("odds_type") or "standard"),
+                model_version=(rec.get("model_version") or MODEL_VERSION),
             )
             s.add(row)
             s.flush()
