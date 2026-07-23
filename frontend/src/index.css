@@ -63,6 +63,9 @@ body {
 
 #root { min-height: 100vh; position: relative; }
 
+/* Never allow horizontal scrolling on mobile — content must fit the viewport. */
+html, body { max-width: 100%; overflow-x: hidden; }
+
 /* ─── Scrollbar — thin green ───────────────────────────────── */
 ::-webkit-scrollbar { width: 4px; height: 4px; }
 ::-webkit-scrollbar-track { background: rgba(5, 10, 5, 0.6); }

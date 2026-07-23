@@ -14,7 +14,7 @@ const ctxCache = new Map()      // id -> {opponent_id, surface} | null
 const projCache = new Map()     // row.key -> result | null
 
 // ── concurrency limiter ──────────────────────────────────────────────────────
-const LIMIT = 3
+const LIMIT = 5
 let active = 0
 const q = []
 function pump() { while (active < LIMIT && q.length) { active++; (q.shift())() } }

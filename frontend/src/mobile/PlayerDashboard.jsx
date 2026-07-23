@@ -175,7 +175,11 @@ export default function PlayerDashboard({ player, board, onClose, onOpenPlayer }
                           </div>
                         </div>
                       </div>
-                      {done && p.confidence != null && <ConfidenceGauge confidence={Math.round(p.confidence)} size={78} />}
+                      {done && p.confidence != null && (
+                        <div style={{ flex: '0 0 auto' }}>
+                          <ConfidenceGauge confidence={Math.round(p.confidence)} size={76} showLabel={false} />
+                        </div>
+                      )}
                     </Card>
                   )
                 })}
