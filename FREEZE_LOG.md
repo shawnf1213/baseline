@@ -746,31 +746,48 @@ BP added to the `confidence.py` EVR-skip list. The A1 suspension is re-keyed off
 market-anchored blend (was model-only). Lean is taken from P(over), not the
 median-vs-line tie.
 
-*A3 — the two audit cases, re-run LIVE through the deployed chain. NULL RESULT,
-reported not tuned.* An earlier OFFLINE calc using guessed base levels (2.9 / 6.1)
-suggested both flip; the LIVE chain (which computes the real C1–C7 base level)
-contradicts it:
-- **Spiteri as heavy underdog** (6% win vs a dominant server): base 0.89, P(over
-  4.5)=0.040 → UNDER, loss-in-2 mass 0.81. The conditioning MECHANISM works — a
-  heavy underdog is pulled onto the floor-compressed loss scenario (base 0.89 ≈ the
-  realized 1 break). This class is corrected.
-- **Rublev vs his real 7/23 opponent (Skatov)**: base_proj **1.79**, P(over
-  3.5)=0.13 → **UNDER — same as the original wrong pick** (actual 6). Does NOT flip.
-- **Spiteri vs the opponent she actually beat 6-breaks (Mazzola)**: base 2.99 →
-  UNDER 4.5, actual 6. Also wrong.
+*A3 — illustrative only, ONE confirmed case (non-certifying). Certification rests
+ENTIRELY on the out-of-sample backtest sweep above; A3 is not a gate.*
 
-Root cause of the null (a SEPARATE defect A2 does not address): `base_proj` — the
-C1–C7 matchup LEVEL — systematically **underestimates break counts against weak /
-challenger opponents** (1.79 and 2.99 vs realized 6). A2 reshapes the level BY
-OUTCOME; it cannot correct a level that is itself too low. So A2 fixes the
-"high projection on a likely LOSER" class (Spiteri-type) but not the "low base
-level on a WINNER vs a weak server" class (Rublev-type). Both audit cases also
-remain A1-suspended (lopsided win prob) so neither posts regardless. **Not tuned to
-force a flip** (per the audit mandate). The out-of-sample backtest above — which
-rejects uniform scaling — is A2's gate; A3 is explicitly non-certifying and here
-records a null plus a newly-surfaced base-level defect for follow-up (likely the
-opponent-serve-data gap: challenger opponents default to a too-strong tour-average
-hold, depressing C1 opportunity).
+Grading discipline correction (2026-07-23): the first A3 write treated Spiteri's
+IN-PROGRESS numbers as final — an error. Live numbers are not results; match status
+must be checked before grading. Corrected below.
+
+- **Rublev vs Skatov — CONFIRMED inverted lean.** Original pick UNDER 3.5; he has
+  5+ breaks. Breaks are MONOTONIC (can only rise), so the UNDER is settled dead
+  regardless of live/final status. The pre-A2 lean was inverted — the signature of
+  missing outcome conditioning. This is the single confirmed illustrative case.
+  (Separately, the live A2 chain STILL reads UNDER here — base_proj 1.79, P(over
+  3.5)=0.13 — so A2 does NOT correct this case either; see the base-level defect
+  below. A2's value is not proven by Rublev; it rests on the sweep.)
+- **Spiteri — LEAN UNDETERMINED, do not use as validation.** Her match was LIVE
+  when first (wrongly) graded "actual 1"; she currently has 2 BP won vs line 2.5
+  with the OVER still open. If the A2 hybrid flips her to UNDER and she CASHES the
+  OVER, that is evidence AGAINST the damped-loss design, not for it. The lean is
+  held open until the match is final. TWO separate critiques must not be conflated:
+    · MAGNITUDE — proj 6.1 at 14% win prob, conf 81 — is **indefensible regardless
+      of outcome**: ≥4 breaks implies the player is winning, which contradicts a 14%
+      win prob. This internal contradiction is exactly what the A1 guard now blocks
+      (`bp_contradiction`), and it stands independent of any result.
+    · LEAN direction — undetermined until final.
+  If Spiteri finishes with **3+ breaks in a LOSS**, report it: that directly tests
+  (and would challenge) the floor-compression premise the damped-loss hybrid rests
+  on. HOLD the final `BP_LOSS_MATCHUP_WEIGHT` value and the BP dedupe-tier decision
+  until she is final AND the sweep is reviewed. Do NOT tune toward flipping Spiteri.
+
+*The structural finding is a CODE FACT, unaffected by any result:* the pre-A2 BP
+chain had no scenario/outcome conditioning — C8 (`expected_sets` from the win-prob
+GAP) is direction-blind, and the only asymmetry was a pro-favorite deciding-set
+bonus. That is true by inspection of the code, not by any match outcome.
+
+*Separately-surfaced base-level defect (A2 does not address it).* `base_proj` — the
+C1–C7 matchup LEVEL — appears to **underestimate breaks vs weak/challenger
+opponents**: Rublev vs Skatov base 1.79 with 5+ realized; and a completed control,
+Spiteri vs Mazzola (7/20, final, she won with 6 breaks), base 2.99 → UNDER 4.5.
+A2 reshapes the level BY OUTCOME; it cannot correct a level that is itself too low.
+Likely the opponent-serve-data gap (challenger opponents default to a too-strong
+tour-average hold, depressing C1 opportunity). Top BP follow-up; NOT fixed here.
+A1 interim guard stays live throughout.
 
 *Scope.* Aces/DF/Total Games projector chains are byte-identical (the mixture lives
 only in the BP `else` branch of `main.py` + two new functions in `props.py`;
