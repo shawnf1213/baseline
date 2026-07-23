@@ -7,7 +7,7 @@ import { projectRow, cachedProjection } from './project'
 import { useBookmarks, propBookmarkId } from './useBookmarks'
 
 const DEFAULT_FILTERS = { prop: 'All', tour: 'All', surface: 'All', sort: 'start' }
-const PROJECT_CAP = 30   // auto-project the top N of the current view; the rest project on tap
+const PROJECT_CAP = 120  // auto-project the whole current view (throttled in project.js)
 
 // Lazily project a set of rows (cached + concurrency-limited in project.js).
 function useBoardProjections(rows) {
