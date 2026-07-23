@@ -493,6 +493,18 @@ def calculate_confidence(
             _cap_tag = None
             _cap_reason = f"edge/variance grade (ratio {raw_evr:.2f})"
 
+    # ── Aces / Double Faults HARD variance ceiling (restored 2026-07-23) ──────
+    # High-variance serve props are capped at 80 REGARDLESS of edge. Restores the
+    # documented intent of the flat cap that commit 143596e (2026-07-13) replaced
+    # with the EVR grade — a replacement that was by design but left these two props
+    # unbounded at 80 (the EVR grade tops out at 89). The ledger has NO validated
+    # Aces/DF sample above 80, and because ranked order is confidence-first an
+    # uncapped DF can occupy the visual #1 slot despite being Tier 3 and permanently
+    # star-blocked. Applied AFTER the EVR grade so it is the final, tightest ceiling
+    # for these two props; surfaced as "variance-capped" in the breakdown.
+    if prop_type in ("Aces", "Double Faults") and data_ceiling > 80:
+        data_ceiling, _cap_reason, _cap_tag = 80, "Aces/DF high-variance prop", "variance-capped"
+
     if data_ceiling < 95:
         breakdown["data_cap"] = {
             "score": 0, "max": 0, "tag": _cap_tag,

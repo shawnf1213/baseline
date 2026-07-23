@@ -832,3 +832,30 @@ backtest validates C3 rather than lifting it).
 **D — model_version ledger.** Every new pick stamped `MODEL_VERSION`
 ("2026.07.23-bp-a2"); existing rows backfilled once to "pre-a2". Calibration can now
 split BP hit-rates across the A2 boundary instead of pooling incompatible models.
+
+## Entry 11 — Aces/DF hard 80 variance ceiling RESTORED (2026-07-23)
+
+**Scoped confidence-value change — restoring documented intent, not new philosophy.**
+
+*Regression or by-design?* BY DESIGN, not a silent regression. Commit `143596e`
+(2026-07-13) explicitly "Edge-to-variance ratio confidence ceiling (replaces flat
+ace cap)" — the flat 80 cap for Aces/DF was deliberately swapped for the graduated
+edge/variance grade. But that replacement left the two props unbounded at 80 (the
+EVR grade tops out at 89), which the commit message did not flag as a consequence.
+*Posted-pick impact: NONE.* The ledger shows 0 Aces/DF picks posted above 80 since
+7/13; the real distribution tops at 78. The EVR grade kept posted picks ≤78 in
+practice, so no public record or calibration input was corrupted. Today's live
+board is the FIRST to surface an Aces/DF above 80 (Snigur DF 81) — caught before it
+posts.
+
+*Restoration.* A hard 80 ceiling on `Aces` and `Double Faults`, applied AFTER the
+EVR grade as the final/tightest ceiling (`confidence.py`, via the `data_ceiling`
+path so `finalize_confidence` enforces it on both the standalone and API paths).
+Surfaced in the breakdown as `variance-capped` — "Data-quality ceiling 80 — Aces/DF
+high-variance prop".
+
+*Rationale (recorded).* Ranked order is confidence-first, so an uncapped DF can
+occupy the visual #1 slot despite being Tier 3 and permanently star-blocked. The
+ledger has no VALIDATED Aces/DF sample above 80, so a >80 score on these props is
+unearned precision. The cap is a ceiling only — it never raises a pick, and picks
+already ≤80 (the vast majority) are unaffected.
