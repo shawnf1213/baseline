@@ -28,7 +28,13 @@ PROP_EVR_SCALE = {
 # Interpolated between anchors so the grade is continuous, not stepped. Raw ratio
 # >= 2.5 bypasses this (absolute 90-95 override); 89 is the graded top so 90-95 is
 # reserved for genuine multi-σ blowouts.
-_EVR_ANCHORS = [(0.5, 72), (1.0, 80), (1.5, 85), (2.0, 88), (2.5, 89)]
+# 7/23 audit (Fix B): the grade used to FLOOR at 72 for any ratio ≤ 0.5 — a thin-
+# edge pick (|proj − line| < half a prop-scaled σ) graded identically to a solid
+# one, and the flat 72 sat above the 65 qualification bar, so structurally weak
+# picks qualified on a floor. Anchors now extend BELOW 0.5 (0.0→55, 0.25→64) so a
+# near-zero edge grades toward 55 and can fall under the bar on its own merit. No
+# compensating boost elsewhere — picks that drop below 65 are meant to.
+_EVR_ANCHORS = [(0.0, 55), (0.25, 64), (0.5, 72), (1.0, 80), (1.5, 85), (2.0, 88), (2.5, 89)]
 
 
 def _evr_grade(x: float) -> int:
