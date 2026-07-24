@@ -1176,6 +1176,13 @@ async def help_cmd(interaction: discord.Interaction):
 # ── Pick of the Day ─────────────────────────────────────────────────────────────
 MEMBER_ROLE_NAME = os.getenv("BASELINE_MEMBER_ROLE", "Baseline Member")
 POD_CHANNEL_ID = int(os.getenv("POD_CHANNEL_ID", "0") or "0")
+# MASTER SWITCH for automated posting to the picks channel — user requested OFF on
+# 2026-07-24, until further notice. When off: NO automated Pick of the Day board and
+# NO daily recap post. Internal jobs keep running (result resolution / grading,
+# calibration log, line monitor). Re-enable by flipping this to True (or setting
+# AUTOPOST_ENABLED=true in the env) when the user says so.
+AUTOPOST_ENABLED = os.getenv("AUTOPOST_ENABLED", "false").strip().lower() in (
+    "1", "true", "yes", "on")
 # Daily auto-post local time. Defaults to midnight (00:00) US Eastern, which
 # auto-handles EST/EDT via the zoneinfo database (no manual DST adjustment).
 # Override POD_TZ (IANA name) and POD_HOUR/POD_MINUTE if needed.
@@ -1561,6 +1568,55 @@ def _start_line_monitor(channel, picks: list):
         log.info("POD: line monitor started for %d picks", len(picks))
     except Exception:  # noqa: BLE001
         log.exception("failed to start line monitor")
+
+
+async def _resume_line_monitor_on_startup():
+    """Rebuild the in-memory line monitor after a bot restart.
+
+    The monitor is an in-process task: a redeploy (or a crash/reconnect that
+    restarts the process) kills it, and it otherwise only (re)starts when a NEW
+    board is posted — so a restart in the hours between the daily post and the
+    matches silently ends line-movement alerts for the day. On startup, re-arm it
+    from TODAY's still-PENDING picks. The picks DB carries no PrizePicks name or
+    match start time, so the monitor key falls back to the resolved player name
+    (matches the board for all but trailing-patronymic names) and the match-started
+    drop relies on the 20h safety cap. No-op when nothing is pending. Never raises."""
+    global _line_monitor_task
+    try:
+        if not POD_CHANNEL_ID:
+            return
+        if _line_monitor_task and not _line_monitor_task.done():
+            return   # a monitor is already running (plain reconnect) — leave it be
+        channel = client.get_channel(POD_CHANNEL_ID)
+        if channel is None:
+            return
+        pending = await asyncio.to_thread(results_tracker.get_pending) or []
+        today = datetime.datetime.now(POD_TZINFO).strftime("%Y-%m-%d")
+        picks = []
+        for p in pending:
+            if not str(p.get("generated_at") or "").startswith(today):
+                continue   # only today's board — don't resurrect stale picks
+            orig = p.get("original_line")
+            orig = orig if orig is not None else p.get("line")
+            if orig is None:
+                continue
+            picks.append({
+                "player": p.get("player"),
+                "pp_player": p.get("player"),      # DB has no PP name; resolved name usually matches
+                "prop_type": p.get("prop_type"),
+                "original_line": orig,
+                "projection": p.get("model_projection"),
+                "lean": p.get("lean"),
+                "start_timestamp": None,           # unknown post-restart -> runs to the safety cap
+            })
+        if picks:
+            _start_line_monitor(channel, picks)
+            log.info("Line monitor RESUMED after restart for %d of today's pending picks",
+                     len(picks))
+        else:
+            log.info("Line monitor resume: no pending picks for today — nothing to re-arm")
+    except Exception:  # noqa: BLE001
+        log.exception("line monitor resume-on-startup failed")
 
 
 # ── Baseline 3x — two-pick slip (posts alongside the Pick of the Day) ────────
@@ -1983,6 +2039,12 @@ async def _post_daily_picks(channel, track: bool = True) -> str:
     like a live optimisation, and it implied a pre-generation step that did not
     exist. Cache warmth is now handled honestly by daily_cache_prewarm 30 minutes
     ahead; the board is evaluated exactly ONCE here, against that warm cache."""
+    if not AUTOPOST_ENABLED:
+        # MASTER SWITCH backstop — covers every board-posting caller (daily trigger,
+        # extra run, on-start post). No board is generated or posted while off.
+        log.info("_post_daily_picks: automated posting DISABLED (AUTOPOST_ENABLED off) "
+                 "— not posting the board")
+        return "autopost disabled"
     bundle = await pick_of_day.generate_ranked_and_slip()
     ranked = bundle.get("ranked") or []
     slip = bundle.get("slip") or []
@@ -2230,6 +2292,10 @@ async def daily_picks_generate():
     if not _slot_is_live(ONEOFF_POTD_HM):
         return
     if not POD_CHANNEL_ID:
+        return
+    if not AUTOPOST_ENABLED:
+        log.info("POTD trigger: automated posting DISABLED (AUTOPOST_ENABLED off) — "
+                 "not generating or posting the board")
         return
     try:
         channel = client.get_channel(POD_CHANNEL_ID)
@@ -2912,7 +2978,12 @@ async def daily_results_post():
         except Exception:  # noqa: BLE001
             log.exception("pre-recap resolve failed (posting with current data)")
         rec = await asyncio.to_thread(results_tracker.get_record)
-        if rec and rec.get("total"):
+        if not AUTOPOST_ENABLED:
+            # Resolution above still ran (grading stays current); only the POST is
+            # suppressed while automated posting is off.
+            log.info("daily results: recap posting DISABLED (AUTOPOST_ENABLED off) — "
+                     "resolved pending, not posting the recap")
+        elif rec and rec.get("total"):
             await channel.send(content="@everyone", embed=daily_recap_embed(rec),
                                allowed_mentions=EVERYONE_MENTION)
             log.info("daily results: posted recap (overall %s-%s)",
@@ -3210,6 +3281,11 @@ async def on_ready():
             log.info("Weekly calibration log scheduled Mon 09:30 %s", POD_TZINFO)
         except Exception:
             log.exception("failed to start weekly calibration log loop")
+
+    # Feature 2 — resume the line-movement monitor after a restart. A redeploy kills
+    # the in-memory monitor task; without this it stays dead until the next board
+    # post, silently ending line alerts for the day. No-op when nothing is pending.
+    await _resume_line_monitor_on_startup()
 
     # TEMPORARY: one-shot post on startup to verify the autonomous path end-to-end
     # without waiting for midnight. Remove once confirmed (set POD_POST_ON_START off).
