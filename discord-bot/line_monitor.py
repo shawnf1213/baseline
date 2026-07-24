@@ -70,8 +70,17 @@ async def monitor(picks: list, get_lines, post_alert, interval: int = INTERVAL_S
         started_at = time.time()
         log.info("Line monitor started for %d picks", len(active))
 
+        # First pass runs IMMEDIATELY (no 30-min blind window at the start). This
+        # matters most on a RESUME after a bot restart: the monitor re-reads each
+        # pick's ORIGINAL line and checks the current board right away, so a move
+        # that happened while the bot was redeploying is caught at once instead of
+        # up to 30 minutes later. At a fresh board post current == original, so the
+        # immediate pass simply finds no move.
+        first = True
         while active:
-            await asyncio.sleep(interval)
+            if not first:
+                await asyncio.sleep(interval)
+            first = False
             now = time.time()
 
             # Drop picks whose match has started (or the safety cap elapsed).
