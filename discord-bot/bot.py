@@ -1551,7 +1551,10 @@ def _start_line_monitor(channel, picks: list):
             _line_monitor_task.cancel()
 
         async def _post_alert(text):
-            await channel.send(f"@everyone\n{text}", allowed_mentions=EVERYONE_MENTION)
+            # Line-change alerts are informational and can fire repeatedly — post
+            # WITHOUT an @everyone ping to avoid spamming the channel. Mentions are
+            # suppressed entirely so a stray @everyone in the text can't ping either.
+            await channel.send(text, allowed_mentions=discord.AllowedMentions.none())
 
         _line_monitor_task = asyncio.create_task(
             line_monitor.monitor(picks, pick_of_day.current_board_lines, _post_alert))
