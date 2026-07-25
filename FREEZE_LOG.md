@@ -913,3 +913,30 @@ makes the new expected match margin equal the player's actual margin. Missing in
 → `player_games_margin=None` → prior generic-fit behaviour (safe fallback). Verified
 offline: margin +4 raises FS mean 13.6→16.3, −2 drops it to 10.3, all scenarios shift
 in the correct direction. Aces/DF/sets/scenario-probabilities unchanged.
+
+## Entry 14 — Breakability overlay on the shared 3-set split (2026-07-25)
+
+**Scoped scenario-math change across ALL THREE mixture props (PTGW shadow, FS
+probation, BP LIVE).** The 3-set probability `p3` was a function of the win-prob GAP
+only, so two good-serve/BAD-return players — who can't break each other, grind every
+set to a tiebreak, and split into deciders — were scored as *more likely straight
+sets*, mis-weighting the exact scenarios these props live on and under-counting long
+matches. Match length is a property of the MATCH, not the prop, so the fix is one
+shared helper `_scenario_p3(p_sel, fit, mean_hold, tour)` that PTGW / FS / BP all call
+— they cannot disagree on how long the same match runs (the user's consistency
+requirement).
+
+`mean_hold` = average service-hold fraction of the two players. Above the tour
+reference (`ATP 0.80 / WTA 0.68`) → LIFT p3 (both hold → tiebreaks → more deciders);
+below → trim it. Coefficient `_P3_HOLD_K=1.0`, bounded `±0.12`, then the existing
+`[0.12, 0.62]` clamp. CENTRED so an average-hold match is byte-identical to the prior
+gap-only behaviour — prior calibration preserved for the bulk of matchups; only the
+serve/return extremes move. Uncalibrated (no resolved-pick sample ties hold strength
+to 3-set rate) → treated as a structural correction, bounded, not fitted — same
+posture as the rest of the mixture.
+
+Verified offline: avg-hold == gap-only exactly; mean_hold 0.90 (two big servers)
+lifts p3 0.40→0.50 (S1→S2, more win-in-3); 0.68 (two breakers) trims it to 0.28. BP
+(live) shifts only slightly and direction-correct for extreme-hold matchups, unchanged
+for average ones. Inputs wired in main.py (FS + BP branches read both hold%s;
+project_player_games_won computes it from its stats for PTGW).

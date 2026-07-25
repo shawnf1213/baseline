@@ -1967,6 +1967,10 @@ async def prop_calculate(req: PropRequest):
             _fs_hp = p1_s.get("service_games_won_pct")
             _fs_ho = p2_s.get("service_games_won_pct")
             _fs_bp_won = _fs_bp_r.get("projection")
+            # Breakability (shared 3-set overlay): mean service-hold fraction.
+            _fs_mean_hold = (((_fs_hp + _fs_ho) / 2.0) / 100.0
+                             if isinstance(_fs_hp, (int, float)) and isinstance(_fs_ho, (int, float))
+                             else None)
             _fs_games_margin = None
             if all(isinstance(x, (int, float)) for x in (_fs_total, _fs_hp, _fs_ho, _fs_bp_won)) and _fs_total > 0:
                 _fs_S = _fs_total / 2.0                     # each player serves ~half the games
@@ -2009,6 +2013,7 @@ async def prop_calculate(req: PropRequest):
                 tour=req.tour, match_format=match_fmt,
                 player_name=req.player_name or "player",
                 player_games_margin=_fs_games_margin,
+                mean_hold=_fs_mean_hold,
                 trace=_ctrace,
             )
             # Carry win prob forward for the guard/display, like PTGW does.
@@ -2202,9 +2207,17 @@ async def prop_calculate(req: PropRequest):
                     else:
                         _bp_blended = _bp_model_wp
                     _bp_pw = max(0.02, min(0.98, _bp_blended))
+                    # Breakability (shared 3-set overlay): mean service-hold fraction.
+                    _bp_hp = bp_result.get("player_service_games_won_pct")
+                    _bp_ho = bp_result.get("opp_service_games_won_pct")
+                    _bp_mean_hold = (((_bp_hp + _bp_ho) / 2.0) / 100.0
+                                     if isinstance(_bp_hp, (int, float)) and isinstance(_bp_ho, (int, float))
+                                     else None)
                     _bp_mix = bp_scenario_mixture(
-                        _bp_pw, req.prop_line, _bp_base, req.tour, match_fmt)
-                    _bp_fair = bp_fair_line(_bp_pw, _bp_base, req.tour, match_fmt)
+                        _bp_pw, req.prop_line, _bp_base, req.tour, match_fmt,
+                        mean_hold=_bp_mean_hold)
+                    _bp_fair = bp_fair_line(_bp_pw, _bp_base, req.tour, match_fmt,
+                                            mean_hold=_bp_mean_hold)
                     result["projection"] = round(_bp_fair, 1)
                     result["bp_p_over"] = round(_bp_mix["p_over"], 4)
                     result["bp_scenario_probs"] = _bp_mix["scenario_probs"]

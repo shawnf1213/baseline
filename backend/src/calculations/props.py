@@ -1605,6 +1605,38 @@ _PTGW_SCEN_BO5 = {
 # the only MODELLED (non-fit) layer; the base rates and games distributions are data.
 _PTGW_GAP_K = 0.60
 _PTGW_P3_MIN, _PTGW_P3_MAX = 0.12, 0.62
+# Breakability overlay on the 3-set split (2026-07-25). The win-prob gap is NOT the
+# only driver of match length: two good-serve/BAD-return players can't break each
+# other, so sets grind to tiebreaks that SPLIT — the match goes long / to a decider
+# far more than the gap implies; two free BREAKERS end sets decisively. `mean_hold`
+# (average service-hold fraction of the two players) captures it — above the tour
+# reference LIFTS p3 (more deciders), below TRIMS it. Bounded, clamped, and centred
+# so an average-hold match is UNCHANGED (prior calibration preserved for the bulk of
+# matchups; only the serve/return extremes move). Match length is a MATCH property,
+# so this lives in ONE place and PTGW / FS / BP all draw from it — they cannot
+# disagree on how long the same match runs.
+_P3_HOLD_REF = {"ATP": 0.80, "WTA": 0.68}   # tour-average service-hold fraction
+_P3_HOLD_K = 1.0                            # p3 sensitivity to hold dominance
+_P3_HOLD_ADJ_MAX = 0.12                     # bound on the breakability shift
+
+
+def _scenario_p3(p_sel, fit, mean_hold=None, tour="ATP"):
+    """Shared 3-set-probability construction for ALL scenario mixtures (PTGW/FS/BP).
+    Returns (p3_win, p3_lose) = P(match reaches a decider | win / | lose). p3 falls
+    as the win-prob gap grows; when `mean_hold` is supplied it is lifted for low-
+    breakability matches (both hold → long tiebreak sets → more deciders) and trimmed
+    for high-breakability ones. Both stay inside the [p3_min, p3_max] clamp."""
+    gap = p_sel - 0.5
+    p3_win = fit["p3_win"] - _PTGW_GAP_K * gap
+    p3_lose = fit["p3_lose"] + _PTGW_GAP_K * gap
+    if isinstance(mean_hold, (int, float)):
+        dom = mean_hold - _P3_HOLD_REF.get(tour, 0.75)
+        adj = max(-_P3_HOLD_ADJ_MAX, min(_P3_HOLD_ADJ_MAX, _P3_HOLD_K * dom))
+        p3_win += adj
+        p3_lose += adj
+    p3_win = max(_PTGW_P3_MIN, min(_PTGW_P3_MAX, p3_win))
+    p3_lose = max(_PTGW_P3_MIN, min(_PTGW_P3_MAX, p3_lose))
+    return p3_win, p3_lose
 
 
 def _norm_sf(x, mu, sd):
@@ -1618,20 +1650,21 @@ def _norm_sf(x, mu, sd):
 _SQRT2 = 2.0 ** 0.5
 
 
-def ptgw_scenario_mixture(p_sel, prop_line, tour="ATP", match_format="best_of_3"):
+def ptgw_scenario_mixture(p_sel, prop_line, tour="ATP", match_format="best_of_3",
+                          mean_hold=None):
     """Return the PTGW scenario mixture for the SELECTED player.
 
     p_sel      the selected player's match-win probability (0-1)
     prop_line  the PTGW line (e.g. 11.5)
+    mean_hold  average service-hold fraction of the two players (breakability, shared
+               3-set overlay — see _scenario_p3). None -> gap-only.
     Returns dict: p_over, mixture_mean, scenario probabilities, and the per-scenario
     contribution to P(over) — everything the confidence step and trace need.
     """
     p_sel = max(0.02, min(0.98, float(p_sel)))
     is_bo5 = match_format == "best_of_5"
     fit = _PTGW_SCEN_BO5 if is_bo5 else _PTGW_SCEN_FIT.get(tour, _PTGW_SCEN_FIT["ATP"])
-    gap = p_sel - 0.5
-    p3_win = max(_PTGW_P3_MIN, min(_PTGW_P3_MAX, fit["p3_win"] - _PTGW_GAP_K * gap))
-    p3_lose = max(_PTGW_P3_MIN, min(_PTGW_P3_MAX, fit["p3_lose"] + _PTGW_GAP_K * gap))
+    p3_win, p3_lose = _scenario_p3(p_sel, fit, mean_hold=mean_hold, tour=tour)
 
     # Scenario probabilities from the selected player's perspective.
     p = {
@@ -1687,10 +1720,11 @@ def _mixture_median(p_over_at, lo, hi, iters=30):
     return round(0.5 * (lo + hi), 1)
 
 
-def ptgw_fair_line(p_sel, tour="ATP", match_format="best_of_3"):
+def ptgw_fair_line(p_sel, tour="ATP", match_format="best_of_3", mean_hold=None):
     """Median (fair line) of the PTGW scenario mixture — the displayed projection."""
     return _mixture_median(
-        lambda x: ptgw_scenario_mixture(p_sel, x, tour, match_format)["p_over"],
+        lambda x: ptgw_scenario_mixture(p_sel, x, tour, match_format,
+                                        mean_hold=mean_hold)["p_over"],
         0.0, 30.0)
 
 
@@ -1735,21 +1769,20 @@ _BP_SCALE_LO, _BP_SCALE_HI = 0.5, 2.0   # sanity clamp on the matchup scale
 
 
 def bp_scenario_mixture(p_sel, prop_line, base_proj, tour="ATP",
-                        match_format="best_of_3", loss_weight=None):
+                        match_format="best_of_3", loss_weight=None, mean_hold=None):
     """Break Points Won scenario mixture for the SELECTED player.
 
     p_sel      market-anchored match-win probability (0-1)
     prop_line  the BP line
     base_proj  the C1–C7 outcome-blind breaks/match (the matchup LEVEL)
     loss_weight override for BP_LOSS_MATCHUP_WEIGHT (backtest sweep); None = default.
+    mean_hold  average service-hold fraction (breakability 3-set overlay, shared).
     Returns p_over, mixture_mean, scenario probabilities + per-scenario scaled means.
     """
     p_sel = max(0.02, min(0.98, float(p_sel)))
     is_bo5 = match_format == "best_of_5"
     pfit = _PTGW_SCEN_BO5 if is_bo5 else _PTGW_SCEN_FIT.get(tour, _PTGW_SCEN_FIT["ATP"])
-    gap = p_sel - 0.5
-    p3_win = max(_PTGW_P3_MIN, min(_PTGW_P3_MAX, pfit["p3_win"] - _PTGW_GAP_K * gap))
-    p3_lose = max(_PTGW_P3_MIN, min(_PTGW_P3_MAX, pfit["p3_lose"] + _PTGW_GAP_K * gap))
+    p3_win, p3_lose = _scenario_p3(p_sel, pfit, mean_hold=mean_hold, tour=tour)
     p = {
         "S1": p_sel * (1.0 - p3_win),          # win in 2
         "S2": p_sel * p3_win,                  # win in 3
@@ -1792,10 +1825,12 @@ def bp_scenario_mixture(p_sel, prop_line, base_proj, tour="ATP",
     }
 
 
-def bp_fair_line(p_sel, base_proj, tour="ATP", match_format="best_of_3", loss_weight=None):
+def bp_fair_line(p_sel, base_proj, tour="ATP", match_format="best_of_3", loss_weight=None,
+                 mean_hold=None):
     """Median (fair line) of the BP scenario mixture — the displayed projection."""
     return _mixture_median(
-        lambda x: bp_scenario_mixture(p_sel, x, base_proj, tour, match_format, loss_weight)["p_over"],
+        lambda x: bp_scenario_mixture(p_sel, x, base_proj, tour, match_format,
+                                      loss_weight, mean_hold=mean_hold)["p_over"],
         0.0, 15.0)
 
 
@@ -1900,7 +1935,7 @@ def _fs_describe(lean, line, projection, breakdown, who):
 
 def fantasy_score_mixture(p_sel, ace_proj, df_proj, expected_sets, prop_line,
                           tour="ATP", match_format="best_of_3",
-                          player_games_margin=None):
+                          player_games_margin=None, mean_hold=None):
     """Scenario mixture for a player's Fantasy Score. Returns P(over line), the
     mixture mean, and the scenario breakdown. p_sel = the player's match-win
     probability (0-1); ace_proj / df_proj = the player's MATCH ace / double-fault
@@ -1923,10 +1958,8 @@ def fantasy_score_mixture(p_sel, ace_proj, df_proj, expected_sets, prop_line,
     need = 3 if is_bo5 else 2
     baseline_sets = max(_safe(expected_sets, need + 0.3), need + 0.15)
 
-    # Scenario probabilities — identical construction to the PTGW mixture.
-    gap = p_sel - 0.5
-    p3_win = max(_PTGW_P3_MIN, min(_PTGW_P3_MAX, fit["p3_win"] - _PTGW_GAP_K * gap))
-    p3_lose = max(_PTGW_P3_MIN, min(_PTGW_P3_MAX, fit["p3_lose"] + _PTGW_GAP_K * gap))
+    # Scenario probabilities — shared construction (gap + breakability overlay).
+    p3_win, p3_lose = _scenario_p3(p_sel, fit, mean_hold=mean_hold, tour=tour)
     p = {"S1": p_sel * (1.0 - p3_win), "S2": p_sel * p3_win,
          "S3": (1.0 - p_sel) * p3_lose, "S4": (1.0 - p_sel) * (1.0 - p3_lose)}
 
@@ -1978,18 +2011,19 @@ def fantasy_score_mixture(p_sel, ace_proj, df_proj, expected_sets, prop_line,
 
 
 def fs_fair_line(p_sel, ace_proj, df_proj, expected_sets, tour="ATP",
-                 match_format="best_of_3", player_games_margin=None):
+                 match_format="best_of_3", player_games_margin=None, mean_hold=None):
     """Median (fair line) of the FS scenario mixture — the displayed projection."""
     return _mixture_median(
         lambda x: fantasy_score_mixture(p_sel, ace_proj, df_proj, expected_sets, x,
                                         tour, match_format,
-                                        player_games_margin=player_games_margin)["p_over"],
+                                        player_games_margin=player_games_margin,
+                                        mean_hold=mean_hold)["p_over"],
         -10.0, 45.0)
 
 
 def project_fantasy_score(p_sel, ace_proj, df_proj, expected_sets, prop_line,
                           tour="ATP", match_format="best_of_3", player_name="",
-                          player_games_margin=None, trace: list = None) -> dict:
+                          player_games_margin=None, mean_hold=None, trace: list = None) -> dict:
     """Project a player's Fantasy Score via the scenario mixture. Returns the
     displayed projection (mixture mean) plus p_over / p_under and the implied
     match claim, mirroring the PTGW contract so main.py can grade it identically.
@@ -1999,13 +2033,14 @@ def project_fantasy_score(p_sel, ace_proj, df_proj, expected_sets, prop_line,
     fantasy_score_mixture)."""
     mix = fantasy_score_mixture(p_sel, ace_proj, df_proj, expected_sets, prop_line,
                                 tour=tour, match_format=match_format,
-                                player_games_margin=player_games_margin)
+                                player_games_margin=player_games_margin,
+                                mean_hold=mean_hold)
     # DISPLAYED projection = the MEDIAN (fair line), not the mean: FS is bimodal
     # and the mean lands in the empty valley between the win and loss bands — a
     # score that almost never occurs. The median IS a real, 50/50 value. The mean
     # is retained internally as fs_mixture_mean.
     fair_line = fs_fair_line(p_sel, ace_proj, df_proj, expected_sets, tour, match_format,
-                             player_games_margin=player_games_margin)
+                             player_games_margin=player_games_margin, mean_hold=mean_hold)
     projection = fair_line
     who = player_name or "player"
     lean = "OVER" if mix["p_over"] >= 0.5 else "UNDER"
@@ -2130,12 +2165,20 @@ def project_player_games_won(
     # the correct instrument for a bimodal distribution. Confidence (confidence.py)
     # and the lean (main.py) now read `p_over` from here — NOT projection vs line.
     mix = None
+    # Breakability (shared 3-set overlay): mean service-hold fraction of the two.
+    _pg_hp = player_stats.get("service_games_won_pct")
+    _pg_ho = opponent_stats.get("service_games_won_pct")
+    _pg_mean_hold = (((_pg_hp + _pg_ho) / 2.0) / 100.0
+                     if isinstance(_pg_hp, (int, float)) and isinstance(_pg_ho, (int, float))
+                     else None)
     if isinstance(prop_line, (int, float)) and prop_line > 0:
-        mix = ptgw_scenario_mixture(p_sel, prop_line, tour=tour, match_format=match_format)
+        mix = ptgw_scenario_mixture(p_sel, prop_line, tour=tour, match_format=match_format,
+                                    mean_hold=_pg_mean_hold)
         # DISPLAYED projection = the MEDIAN (fair line), not the mean: PTGW is
         # bimodal, so the mean sits in the valley between the win and loss bands.
         # The median is a real 50/50 value. The mean is retained as ptgw_mixture_mean.
-        fair_line = max(4.5, ptgw_fair_line(p_sel, tour=tour, match_format=match_format))
+        fair_line = max(4.5, ptgw_fair_line(p_sel, tour=tour, match_format=match_format,
+                                            mean_hold=_pg_mean_hold))
         projection = fair_line
         _trace(trace, "PTGW_scenario_mixture",
                {"line": prop_line,
