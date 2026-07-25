@@ -1951,6 +1951,32 @@ async def prop_calculate(req: PropRequest):
                 tour=req.tour, court=court_for_calc, match_format=match_fmt,
                 player_ta=player_ta_props, opponent_ta=opponent_ta_props,
             )
+            # ── FS GAMES-MARGIN from HOLDS + BREAK-POINTS-WON (capper method) ──
+            # The FS games swing is who holds and who breaks — not a tour average.
+            # games_won  = service_games·player_hold% + BP_won (the BP projection)
+            # games_lost = service_games·opp_hold%    + service games lost (opp
+            #              break points = player's non-holds). service_games ≈ half
+            #              the match total. The margin shifts every FS scenario in
+            #              props.fantasy_score_mixture. None (missing inputs) -> the
+            #              prior generic-fit behaviour.
+            _fs_bp_r = project_break_points(
+                p1_s, p2_s, cpr_override=cpr, tour=req.tour, surface=req.surface,
+                match_format=match_fmt, court=court_for_calc,
+                player_ta=player_ta_props, opponent_ta=opponent_ta_props)
+            _fs_total = _tg_r.get("projection")
+            _fs_hp = p1_s.get("service_games_won_pct")
+            _fs_ho = p2_s.get("service_games_won_pct")
+            _fs_bp_won = _fs_bp_r.get("projection")
+            _fs_games_margin = None
+            if all(isinstance(x, (int, float)) for x in (_fs_total, _fs_hp, _fs_ho, _fs_bp_won)) and _fs_total > 0:
+                _fs_S = _fs_total / 2.0                     # each player serves ~half the games
+                _fs_hp_f, _fs_ho_f = _fs_hp / 100.0, _fs_ho / 100.0
+                _fs_gw = _fs_S * _fs_hp_f + _fs_bp_won                    # holds + breaks
+                _fs_gl = _fs_S * _fs_ho_f + _fs_S * (1.0 - _fs_hp_f)      # opp holds + player's service losses
+                _fs_games_margin = _fs_gw - _fs_gl
+                logger.info("FS_GAMES_MARGIN | %s | total=%.1f hold=%.0f%%/%.0f%% BP_won=%.2f "
+                            "-> games %.1f-%.1f margin=%+.2f", req.player_name or "player",
+                            _fs_total, _fs_hp, _fs_ho, _fs_bp_won, _fs_gw, _fs_gl, _fs_games_margin)
             # ── MARKET WIN-PROB ANCHOR (1A) ──────────────────────────────────
             # The model systematically underrates favourites. De-vig the two-way
             # moneyline of the upcoming Sofascore event into a market win prob and
@@ -1982,6 +2008,7 @@ async def prop_calculate(req: PropRequest):
                 prop_line=req.prop_line,
                 tour=req.tour, match_format=match_fmt,
                 player_name=req.player_name or "player",
+                player_games_margin=_fs_games_margin,
                 trace=_ctrace,
             )
             # Carry win prob forward for the guard/display, like PTGW does.

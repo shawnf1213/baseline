@@ -885,3 +885,31 @@ anchors NOT re-fitted (n=32, all bands <40 — insufficient); no uplift/floor-ra
 scale-mismatch units noted but no slot-loss demonstrated (P-based and EVR-based
 distributions overlap). Current config still has 0 resolved picks, so none of this
 is calibration-validated — it is a correctness fix, per the review's mandate.
+
+## Entry 13 — Fantasy Score games margin from holds + break points (2026-07-25)
+
+**Scoped model change — FS on probation (not star-eligible, not posting), so safe to
+iterate.** User (the capper) confirmed the PrizePicks FS SCORING formula in the code
+is correct — `10 + (games won − lost) + 3·(sets won − lost) + 0.5·(aces − DF)` — and
+that break points are NOT a direct term: they enter through the games won/lost
+MARGIN. The defect: that margin was pulled from generic tour/scenario averages
+(`_PTGW_SCEN_FIT`), so every "ATP win-in-2" got the same games figure regardless of
+whether the player is a big server who bagels people or a grinder — the player's own
+holds/breaks never reached FS. Aces/DF/set-outcome were already player-specific.
+
+Fix: build the player's MATCH games margin the way a capper does —
+`games_won = service_games·hold% + BP_won` (the Break-Points-Won projection for the
+return half, per the user's choice), `games_lost = service_games·opp_hold% + service
+games lost`; service_games ≈ half the match total. `main.py` computes it in the FS
+branch (calls `project_break_points` for BP_won, reads both hold%s, total from the TG
+projection) and passes `player_games_margin` into `project_fantasy_score`.
+`fantasy_score_mixture` shifts every scenario's margin by the player's edge over the
+win-prob-implied tour average (`fitted_margin[S] + (player_margin − Σp·fitted)`).
+
+ADDITIVE shift, not the literal multiply the option previewed: a multiply would
+amplify losses too (dominant player would *lose by more*). Additive is direction-
+correct — wins by more AND loses by less — and robust near a zero margin; it also
+makes the new expected match margin equal the player's actual margin. Missing inputs
+→ `player_games_margin=None` → prior generic-fit behaviour (safe fallback). Verified
+offline: margin +4 raises FS mean 13.6→16.3, −2 drops it to 10.3, all scenarios shift
+in the correct direction. Aces/DF/sets/scenario-probabilities unchanged.

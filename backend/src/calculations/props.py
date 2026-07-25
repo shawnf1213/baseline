@@ -1899,11 +1899,21 @@ def _fs_describe(lean, line, projection, breakdown, who):
 
 
 def fantasy_score_mixture(p_sel, ace_proj, df_proj, expected_sets, prop_line,
-                          tour="ATP", match_format="best_of_3"):
+                          tour="ATP", match_format="best_of_3",
+                          player_games_margin=None):
     """Scenario mixture for a player's Fantasy Score. Returns P(over line), the
     mixture mean, and the scenario breakdown. p_sel = the player's match-win
     probability (0-1); ace_proj / df_proj = the player's MATCH ace / double-fault
-    projections (scaled per scenario by set count)."""
+    projections (scaled per scenario by set count).
+
+    player_games_margin (optional): the player's MATCH expected games won − lost,
+    built by the caller from their HOLDS + BREAK-POINTS-WON projection (games_won =
+    service_games·hold% + BP_won; games_lost = service_games·opp_hold% + service
+    games lost). That is how a capper reads Fantasy Score — the games swing comes
+    from who holds and who breaks, not a tour average. When supplied, every
+    scenario's games margin is SHIFTED by the player's edge over the win-prob-
+    implied tour average, so FS reflects this player's serve/return profile while
+    keeping the fitted per-scenario SHAPE. None -> prior behaviour (generic fit)."""
     p_sel = max(0.02, min(0.98, float(p_sel)))
     is_bo5 = match_format == "best_of_5"
     fit = _PTGW_SCEN_BO5 if is_bo5 else _PTGW_SCEN_FIT.get(tour, _PTGW_SCEN_FIT["ATP"])
@@ -1922,20 +1932,35 @@ def fantasy_score_mixture(p_sel, ace_proj, df_proj, expected_sets, prop_line,
 
     ace_proj = max(0.0, _safe(ace_proj, 0.0))
     df_proj = max(0.0, _safe(df_proj, 0.0))
+
+    # Fitted per-scenario games margin (gw − gl, mirror for games lost) + variance.
+    fitted_margin, games_var = {}, {}
+    for s in ("S1", "S2", "S3", "S4"):
+        gw_mu, gw_sd = scen[s]
+        gl_mu, gl_sd = scen[_FS_MIRROR[s]]        # games lost = opp games won, mirror scenario
+        fitted_margin[s] = gw_mu - gl_mu
+        games_var[s] = gw_sd ** 2 + gl_sd ** 2
+    # Player-specific games-margin edge (holds + break-points-won). The tour model
+    # already expects Σ p·fitted_margin games; shift each scenario by how far this
+    # player's holds/breaks put them ABOVE (or below) that — wins by more / loses by
+    # less for a dominant server-returner. Additive so the shift is direction-correct
+    # (a multiply would wrongly amplify losses too) and robust near a zero margin.
+    edge = 0.0
+    if player_games_margin is not None:
+        m_tour = sum(p[s] * fitted_margin[s] for s in ("S1", "S2", "S3", "S4"))
+        edge = float(player_games_margin) - m_tour
+
     p_over = 0.0
     fs_mean = 0.0
     breakdown = {}
     for s in ("S1", "S2", "S3", "S4"):
-        gw_mu, gw_sd = scen[s]
-        gl_mu, gl_sd = scen[_FS_MIRROR[s]]        # games lost = opp games won, mirror scenario
-        games_margin_mu = gw_mu - gl_mu
-        games_margin_var = gw_sd ** 2 + gl_sd ** 2
+        games_margin_mu = fitted_margin[s] + edge
         scale = (scen_sets[s] / baseline_sets) if baseline_sets > 0 else 1.0
         a_mu, d_mu = ace_proj * scale, df_proj * scale
         # Poisson-style variance approximation for counts (var ≈ mean, floored).
         a_var, d_var = max(a_mu, 0.5), max(d_mu, 0.5)
         fs_mu = (10.0 + games_margin_mu + 3.0 * set_margin[s] + 0.5 * (a_mu - d_mu))
-        fs_var = games_margin_var + 0.25 * (a_var + d_var)
+        fs_var = games_var[s] + 0.25 * (a_var + d_var)
         fs_sd = fs_var ** 0.5
         po_s = _norm_sf(prop_line, fs_mu, fs_sd)
         p_over += p[s] * po_s
@@ -1952,27 +1977,35 @@ def fantasy_score_mixture(p_sel, ace_proj, df_proj, expected_sets, prop_line,
     }
 
 
-def fs_fair_line(p_sel, ace_proj, df_proj, expected_sets, tour="ATP", match_format="best_of_3"):
+def fs_fair_line(p_sel, ace_proj, df_proj, expected_sets, tour="ATP",
+                 match_format="best_of_3", player_games_margin=None):
     """Median (fair line) of the FS scenario mixture — the displayed projection."""
     return _mixture_median(
         lambda x: fantasy_score_mixture(p_sel, ace_proj, df_proj, expected_sets, x,
-                                        tour, match_format)["p_over"],
+                                        tour, match_format,
+                                        player_games_margin=player_games_margin)["p_over"],
         -10.0, 45.0)
 
 
 def project_fantasy_score(p_sel, ace_proj, df_proj, expected_sets, prop_line,
                           tour="ATP", match_format="best_of_3", player_name="",
-                          trace: list = None) -> dict:
+                          player_games_margin=None, trace: list = None) -> dict:
     """Project a player's Fantasy Score via the scenario mixture. Returns the
     displayed projection (mixture mean) plus p_over / p_under and the implied
-    match claim, mirroring the PTGW contract so main.py can grade it identically."""
+    match claim, mirroring the PTGW contract so main.py can grade it identically.
+
+    player_games_margin (optional): the player's match games won − lost from holds +
+    break-points-won — makes the games component player-specific (see
+    fantasy_score_mixture)."""
     mix = fantasy_score_mixture(p_sel, ace_proj, df_proj, expected_sets, prop_line,
-                                tour=tour, match_format=match_format)
+                                tour=tour, match_format=match_format,
+                                player_games_margin=player_games_margin)
     # DISPLAYED projection = the MEDIAN (fair line), not the mean: FS is bimodal
     # and the mean lands in the empty valley between the win and loss bands — a
     # score that almost never occurs. The median IS a real, 50/50 value. The mean
     # is retained internally as fs_mixture_mean.
-    fair_line = fs_fair_line(p_sel, ace_proj, df_proj, expected_sets, tour, match_format)
+    fair_line = fs_fair_line(p_sel, ace_proj, df_proj, expected_sets, tour, match_format,
+                             player_games_margin=player_games_margin)
     projection = fair_line
     who = player_name or "player"
     lean = "OVER" if mix["p_over"] >= 0.5 else "UNDER"
