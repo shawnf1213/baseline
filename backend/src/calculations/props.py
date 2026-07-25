@@ -310,6 +310,48 @@ def _confidence(p_matches: int, o_matches: int, has_h2h: bool) -> int:
     return min(93, score)
 
 
+# Ace / DF GAME-SPREAD (service-volume) factor. Aces and double faults are SERVE events,
+# so they scale with the number of SERVICE GAMES the player plays — which is total games
+# ÷ 2. expected_sets already captures the 2-vs-3-set axis; this captures games-PER-set,
+# driven by breakability: a match with few breaks grinds to 7-6 (11-13 games/set → more
+# serves → more aces), one with many breaks ends 6-2/6-3 (8-9 games/set → fewer).
+#
+# Breaks need a RETURNER who can actually break, not just a weak holder: a big server
+# with a poor return game does NOT break a weak holder, so that match stays long. So the
+# signal is the EFFECTIVE hold — each player's own hold adjusted by how well the OTHER
+# player returns vs tour average — not the raw hold. Centred on the tour reference so an
+# average match is unchanged, bounded ±15%. Missing hold data → factor 1.0 (no-op).
+_ACE_SPREAD_K = 1.0          # games/set fractional sensitivity to effective-hold dominance
+_ACE_SPREAD_MAX = 0.15       # bound on the volume factor (±15%)
+
+
+def _game_spread_factor(player_stats, opponent_stats, tour):
+    """Service-volume multiplier from match breakability, using EFFECTIVE holds. A
+    server only shortens the match (fewer service games → fewer aces/DF) when the
+    RETURNER can actually break: a big server with a poor return game does NOT break a
+    weak holder, so the match stays long. effective hold = own hold − (opponent's
+    return-games-won − tour-average return). Returns (factor, mean_effective_hold), or
+    (1.0, None) when hold data is missing."""
+    p_hold = player_stats.get("service_games_won_pct")
+    o_hold = opponent_stats.get("service_games_won_pct")
+    if not (isinstance(p_hold, (int, float)) and isinstance(o_hold, (int, float))):
+        return 1.0, None
+    hold_ref = _P3_HOLD_REF.get(tour, 0.75)
+    ret_ref = (1.0 - hold_ref) * 100.0      # tour-average return-games-won %, percent scale
+    # Missing return → tour average, which zeroes the adjustment (falls back to raw hold).
+    p_ret = _safe(player_stats.get("return_games_won_pct"), ret_ref)
+    o_ret = _safe(opponent_stats.get("return_games_won_pct"), ret_ref)
+    # Effective hold vs THIS opponent: hold MORE against a weak returner, LESS against a
+    # strong one. This is what stops a big server with a bad return game from "breaking"
+    # a weak holder — the opponent's effective hold barely drops, so the match stays long.
+    p_eff = p_hold - (o_ret - ret_ref)      # player's hold, adjusted by opponent's return
+    o_eff = o_hold - (p_ret - ret_ref)      # opponent's hold, adjusted by player's return
+    mean_eff = ((p_eff + o_eff) / 2.0) / 100.0
+    factor = max(1.0 - _ACE_SPREAD_MAX, min(1.0 + _ACE_SPREAD_MAX,
+                 1.0 + _ACE_SPREAD_K * (mean_eff - hold_ref)))
+    return factor, mean_eff
+
+
 def project_aces(
     player_stats: dict,
     opponent_stats: dict,
@@ -576,7 +618,9 @@ def project_aces(
         # The opponent's return ability moves aces, but a player only serves
         # aces on their OWN serve — so the opponent effect has a modest
         # ceiling. Damp 70% toward neutral and clamp to ±22%: a 2x
-        # ace-conceder yields ~1.22x, a stingy returner ~0.80x.
+        # ace-conceder yields ~1.22x, a stingy returner ~0.80x. (The cap stays —
+        # it keeps the ACE PROJECTION honest; "no cap" applies to how aces WEIGH
+        # into FS, not to the projection itself.)
         _undamped = 1.0 + (raw_opp_factor - 1.0) * 0.30
         opp_factor = max(0.78, min(1.22, _undamped))
         blended = base * opp_factor
@@ -652,6 +696,25 @@ def project_aces(
                "H2H contributes NOTHING — only %s stat-rich meeting(s), below the "
                "%d minimum. One meeting says almost nothing about ace counts."
                % (h2h_stat_n, H2H_MIN_MEETINGS))
+    # ── Game-spread (service-volume) factor ──────────────────────────────────
+    # expected_sets (above) sized the number of SETS; this sizes games-PER-set. A
+    # breakable match (low holds — e.g. this player returns well, breaks + consolidates)
+    # ends sets in fewer games → fewer service games → fewer ace chances; two big holders
+    # grind to 7-6 → more. Centred on the tour hold reference so an average match is
+    # unchanged, bounded ±15%. Missing holds → 1.0.
+    spread_factor, _spread_mh = _game_spread_factor(player_stats, opponent_stats, tour)
+    if spread_factor != 1.0:
+        _pre_spread = proj
+        proj = proj * spread_factor
+        _trace(trace, "game_spread_service_volume",
+               {"mean_effective_hold": round(_spread_mh, 3) if _spread_mh is not None else None,
+                "hold_ref": _P3_HOLD_REF.get(tour, 0.75), "proj_in": round(_pre_spread, 3)},
+               round(spread_factor, 3), proj,
+               "aces track SERVICE GAMES. EFFECTIVE hold = own hold − opp return vs tour "
+               "avg, so a big server with a bad return game does NOT shorten the match "
+               "vs a weak holder. Low eff-hold → fewer games → fewer aces; grind → more. "
+               "Centred on tour ref, bounded ±15%.")
+
     _trace(trace, "projector_output", {"chain_result": round(proj, 3)},
            proj, round(proj, 1),
            "END OF THE PROJECTOR — NOT the final number. main.py may still apply "
@@ -840,6 +903,11 @@ def project_double_faults(
                     "(<%d) — H2H contributes nothing",
                     h2h_df_avg, h2h_stat_n, H2H_MIN_MEETINGS)
 
+    # Game-spread (service-volume) factor — DF is a serve event too, so it scales with
+    # service games the same way aces do (fewer games in a breakable match → fewer DF).
+    _df_spread, _ = _game_spread_factor(player_stats, opponent_stats, tour)
+    proj = proj * _df_spread
+
     conf = _confidence(p_matches, o_matches, h2h_df_avg is not None)
 
     # ── Confidence adjustment for TA sample size ──────────────────────────────
@@ -1024,6 +1092,85 @@ def _server_quality_tier_sgw(sgw_pct, tour: str = "ATP", tiebreak_rate=None) -> 
     if sgw_pct >= t["average"]:
         return "Average Server"
     return "Weak Server"
+
+
+# ── Serve / return archetype classifier (tour-relative) ──────────────────────
+# Classification is TOUR-APPROPRIATE, because the tours' serves differ in kind:
+#   ATP — "Big Server" is EARNED by high HOLDING and high ACE rate together (ATP aces
+#         are a real weapon); "Weak Server" by low holds.
+#   WTA — aces are too low/noisy to define a big server, so WTA servers are classified
+#         by HOLD TIER: Elite / Strong / Weak.
+#   BOTH — "Return Specialist" (high break rate), "All-Court" (a complete player: serve
+#         at/above average AND return clearly above average — e.g. Alcaraz), "Balanced".
+# Everything is measured against the tour's OWN baseline. aces = per-match; hold/break =
+# service/return games won %.
+_ARCHETYPE_TOUR_REF = {
+    "ATP": {"hold": 80.0, "ace": 6.2, "brk": 20.0},
+    "WTA": {"hold": 68.0, "ace": 2.1, "brk": 32.0},
+}
+_ARCH_BIG_HOLD, _ARCH_BIG_ACE = 0.04, 0.20     # ATP big server: hold ≥ +4% AND ace ≥ +20%
+_ARCH_WEAK_HOLD = -0.08                          # ATP weak server: hold ≤ −8%
+# WTA hold tiers (avg ~68): Elite ≥74 · Strong ≥69 · Average ≥61 · Weak <61.
+_WTA_SERVE_ELITE, _WTA_SERVE_STRONG, _WTA_SERVE_AVERAGE = 74.0, 69.0, 61.0
+_ARCH_SERVE_ABOVE = 0.02                         # hold at/above tour average (for All-Court)
+_ARCH_RET_ABOVE = 0.15                           # return above average (for All-Court)
+_ARCH_RET_SPECIALIST = 0.25                      # return clearly the weapon
+
+
+def classify_serve_return_archetype(stats: dict, tour: str = "ATP") -> dict:
+    """Tour-relative serve/return archetype (see block comment above). Returns
+    {archetype, hold_dev, ace_dev, brk_dev} — deviations are relative to the tour
+    average, exposed so the label is auditable. None-safe."""
+    ref = _ARCHETYPE_TOUR_REF.get((tour or "ATP").upper(), _ARCHETYPE_TOUR_REF["ATP"])
+    is_atp = (tour or "ATP").upper() == "ATP"
+    hold, brk, aces = (stats.get("service_games_won_pct"),
+                       stats.get("return_games_won_pct"), stats.get("aces"))
+
+    def _dev(v, r):
+        return (v - r) / r if isinstance(v, (int, float)) and r else None
+    hold_dev, ace_dev, brk_dev = _dev(hold, ref["hold"]), _dev(aces, ref["ace"]), _dev(brk, ref["brk"])
+
+    serve_above = hold_dev is not None and hold_dev >= _ARCH_SERVE_ABOVE
+    return_above = brk_dev is not None and brk_dev >= _ARCH_RET_ABOVE
+    return_specialist = brk_dev is not None and brk_dev >= _ARCH_RET_SPECIALIST
+
+    # Tour-specific serve label (a strong-serve tag, or the weak flag).
+    serve_label, serve_weak = None, False
+    if is_atp:
+        if hold_dev is not None and ace_dev is not None \
+                and hold_dev >= _ARCH_BIG_HOLD and ace_dev >= _ARCH_BIG_ACE:
+            serve_label = "Big Server"
+        elif hold_dev is not None and hold_dev <= _ARCH_WEAK_HOLD:
+            serve_weak = True
+    elif isinstance(hold, (int, float)):        # WTA hold tiers: Elite / Strong / Average / Weak
+        if hold >= _WTA_SERVE_ELITE:
+            serve_label = "Elite Server"
+        elif hold >= _WTA_SERVE_STRONG:
+            serve_label = "Strong Server"
+        elif hold >= _WTA_SERVE_AVERAGE:
+            serve_label = "Average Server"
+        else:
+            serve_weak = True
+
+    # Priority: a complete two-way player is All-Court; a below-average server whose
+    # weapon is the return is a Return Specialist (it must win over the WTA "Strong"
+    # tier); then the serve label; then weak; else balanced.
+    if serve_above and return_above:
+        primary = "All-Court"
+    elif return_specialist and not serve_above:
+        primary = "Return Specialist"
+    elif serve_label:
+        primary = serve_label
+    elif serve_weak:
+        primary = "Weak Server"
+    else:
+        primary = "Balanced"
+    return {
+        "archetype": primary,
+        "hold_dev": round(hold_dev, 3) if hold_dev is not None else None,
+        "ace_dev":  round(ace_dev, 3) if ace_dev is not None else None,
+        "brk_dev":  round(brk_dev, 3) if brk_dev is not None else None,
+    }
 
 
 def detect_environment(p1_stats: dict, p2_stats: dict,
@@ -1865,11 +2012,13 @@ _FS_SET_MARGIN = {
     "best_of_3": {"S1": 2.0, "S2": 1.0, "S3": -1.0, "S4": -2.0},
     "best_of_5": {"S1": 3.0, "S2": 1.5, "S3": -1.5, "S4": -3.0},
 }
-# Sets played per scenario — used to scale the match ace/DF projection into a
-# per-scenario expectation (more sets → more serves → more aces/DF).
-_FS_SCEN_SETS = {
-    "best_of_3": {"S1": 2.0, "S2": 3.0, "S3": 3.0, "S4": 2.0},
-    "best_of_5": {"S1": 3.0, "S2": 4.5, "S3": 4.5, "S4": 3.0},
+# Physically possible games-margin range per scenario (a set is 6-0..7-6, so a WON set
+# is +1..+6 games and a LOST set is −1..−6). For w won / l lost sets the margin lives
+# in [w − 6l, 6w − l]. Hard-clamps the modelled margin so no scenario can imply an
+# impossible scoreline (e.g. a straight-set win by more than +12 = two 6-0 sets).
+_FS_MARGIN_BOUNDS = {
+    "best_of_3": {"S1": (2.0, 12.0), "S2": (-4.0, 11.0), "S3": (-11.0, 4.0), "S4": (-12.0, -2.0)},
+    "best_of_5": {"S1": (3.0, 18.0), "S2": (-6.0, 16.5), "S3": (-16.5, 6.0), "S4": (-18.0, -3.0)},
 }
 FS_CONF_CEILING = 80   # composite high-variance prop — ceiling until the ledger says more
 FS_DIVERGENCE_CONF_CAP = 70   # cap when model & book disagree on the OUTCOME (point 4)
@@ -1939,24 +2088,30 @@ def fantasy_score_mixture(p_sel, ace_proj, df_proj, expected_sets, prop_line,
     """Scenario mixture for a player's Fantasy Score. Returns P(over line), the
     mixture mean, and the scenario breakdown. p_sel = the player's match-win
     probability (0-1); ace_proj / df_proj = the player's MATCH ace / double-fault
-    projections (scaled per scenario by set count).
+    projections, entered at FACE VALUE (0.5 each) in every scenario — 8 aces = +4.0 FS.
 
     player_games_margin (optional): the player's MATCH expected games won − lost,
     built by the caller from their HOLDS + BREAK-POINTS-WON projection (games_won =
     service_games·hold% + BP_won; games_lost = service_games·opp_hold% + service
     games lost). That is how a capper reads Fantasy Score — the games swing comes
-    from who holds and who breaks, not a tour average. When supplied, every
-    scenario's games margin is SHIFTED by the player's edge over the win-prob-
-    implied tour average, so FS reflects this player's serve/return profile while
-    keeping the fitted per-scenario SHAPE. None -> prior behaviour (generic fit)."""
+    from who holds and who breaks, not a tour average. It is the CENTER (mean) of the
+    games-margin distribution, and it already nets out break-backs: a break only
+    sticks if consolidated, and games_lost carries the player's own service losses, so
+    a break-then-broken-back nets ~0.
+
+    mean_hold (optional): the two players' average service-hold fraction. It sizes the
+    SPREAD of the per-scenario margins — how breakable the match is. A straight-set win
+    margin scales as ~10·(sets)·(1 − mean_hold): high holds (0.90) → +2 (7-6 7-6,
+    tiebreak-tight), average (0.80) → +4 (6-4 6-4, one break a set), low holds (0.60)
+    → +8 (6-2 6-2, free breaks). The same signal lengthens matches in _scenario_p3, so
+    the model can't disagree with itself on breakability. None -> fitted shape."""
     p_sel = max(0.02, min(0.98, float(p_sel)))
     is_bo5 = match_format == "best_of_5"
     fit = _PTGW_SCEN_BO5 if is_bo5 else _PTGW_SCEN_FIT.get(tour, _PTGW_SCEN_FIT["ATP"])
     scen = fit["scen"]
     set_margin = _FS_SET_MARGIN["best_of_5" if is_bo5 else "best_of_3"]
-    scen_sets = _FS_SCEN_SETS["best_of_5" if is_bo5 else "best_of_3"]
+    margin_bounds = _FS_MARGIN_BOUNDS["best_of_5" if is_bo5 else "best_of_3"]
     need = 3 if is_bo5 else 2
-    baseline_sets = max(_safe(expected_sets, need + 0.3), need + 0.15)
 
     # Scenario probabilities — shared construction (gap + breakability overlay).
     p3_win, p3_lose = _scenario_p3(p_sel, fit, mean_hold=mean_hold, tour=tour)
@@ -1973,23 +2128,36 @@ def fantasy_score_mixture(p_sel, ace_proj, df_proj, expected_sets, prop_line,
         gl_mu, gl_sd = scen[_FS_MIRROR[s]]        # games lost = opp games won, mirror scenario
         fitted_margin[s] = gw_mu - gl_mu
         games_var[s] = gw_sd ** 2 + gl_sd ** 2
-    # Player-specific games-margin edge (holds + break-points-won). The tour model
-    # already expects Σ p·fitted_margin games; shift each scenario by how far this
-    # player's holds/breaks put them ABOVE (or below) that — wins by more / loses by
-    # less for a dominant server-returner. Additive so the shift is direction-correct
-    # (a multiply would wrongly amplify losses too) and robust near a zero margin.
-    edge = 0.0
-    if player_games_margin is not None:
-        m_tour = sum(p[s] * fitted_margin[s] for s in ("S1", "S2", "S3", "S4"))
-        edge = float(player_games_margin) - m_tour
+    # Games margin per scenario = CENTER + breakability-scaled SHAPE.
+    #   CENTER = the player's own holds+breaks games edge (unconditional mean) when
+    #     supplied, else the tour mean. It already nets out break-backs.
+    #   SHAPE  = how far each scenario sits from the center. The fitted margins bake in
+    #     the tour-average straight-set win (~+5 ATP = ~1.25 breaks/set), which is too
+    #     WIDE for a tiebreak grinder (7-6 7-6 = +2) and too NARROW for a blowout
+    #     (6-2 6-2 = +8). A break only widens the margin if it STICKS, so the SPREAD
+    #     has to track how breakable THIS match is. bk_scale sizes the fitted shape so a
+    #     straight-set win margin lands at ~10·sets·(1 − mean_hold): 0.90→+2, 0.80→+4,
+    #     0.60→+8. Scaling the shape (not the center) leaves the mean = player edge for
+    #     any bk_scale, so breakability moves the SPREAD only. bk_scale=1 when unknown.
+    m_tour = sum(p[s] * fitted_margin[s] for s in ("S1", "S2", "S3", "S4"))
+    center = float(player_games_margin) if player_games_margin is not None else m_tour
+    bk_scale = 1.0
+    if isinstance(mean_hold, (int, float)) and fitted_margin["S1"] > 1e-6:
+        tgt = max(float(need), min(5.0 * need, 10.0 * need * (1.0 - float(mean_hold))))
+        bk_scale = max(0.30, min(2.0, tgt / fitted_margin["S1"]))
 
     p_over = 0.0
     fs_mean = 0.0
     breakdown = {}
     for s in ("S1", "S2", "S3", "S4"):
-        games_margin_mu = fitted_margin[s] + edge
-        scale = (scen_sets[s] / baseline_sets) if baseline_sets > 0 else 1.0
-        a_mu, d_mu = ace_proj * scale, df_proj * scale
+        _lo, _hi = margin_bounds[s]
+        games_margin_mu = max(_lo, min(_hi, center + bk_scale * (fitted_margin[s] - m_tour)))
+        # Aces / DF enter at FACE VALUE: PrizePicks scores each ace +0.5 and each
+        # double fault −0.5, and the projection IS the match expectation, so 8 aces =
+        # +4.0 FS in every scenario. (Was scaled by scenario set-count, which damped
+        # the ace weight in the common 2-set scenario — 8 aces became ~+2.5. The user
+        # reads FS as "projection in, 0.5 each out"; no scaling, no cap on ace weight.)
+        a_mu, d_mu = ace_proj, df_proj
         # Poisson-style variance approximation for counts (var ≈ mean, floored).
         a_var, d_var = max(a_mu, 0.5), max(d_mu, 0.5)
         fs_mu = (10.0 + games_margin_mu + 3.0 * set_margin[s] + 0.5 * (a_mu - d_mu))

@@ -940,3 +940,89 @@ lifts p3 0.40→0.50 (S1→S2, more win-in-3); 0.68 (two breakers) trims it to 0
 (live) shifts only slightly and direction-correct for extreme-hold matchups, unchanged
 for average ones. Inputs wired in main.py (FS + BP branches read both hold%s;
 project_player_games_won computes it from its stats for PTGW).
+
+## Entry 15 — FS games margin: breakability-scaled SPREAD (2026-07-25)
+
+**FS-only change (probation).** The user's ground truth: a 6-4 6-4 straight-set win is
+20 FS (games margin +4), a 7-6 7-6 is 18 (margin +2) — the whole gap is *one break*,
+and a break is only worth +2 **if it's consolidated** (held after). A break that gets
+broken back is null. The fitted per-scenario margins bake in the tour-AVERAGE straight
+win (~+5 ATP = ~1.25 breaks/set, blowouts pull the mean up), and Entry 13's edge shift
+ADDED the player's games margin on top — so a genuine non-breaker's straight-set win
+was scored ~+4 to +5 (FS ~20-21) when it should be +2 (FS 18). Measured: a zero-break
+profile gave S1 = 20.1 (should be 18); the model credited phantom breaks.
+
+Fix: decompose the per-scenario games margin into **CENTER + breakability-scaled
+SHAPE**. The center is the player's own holds+breaks games edge (the Entry-13
+`player_games_margin`, unchanged) — it already nets out break-backs, because
+`games_lost` carries the player's service losses, so a break-then-broken-back nets ~0.
+The SHAPE (each scenario's distance from the center) is sized by `bk_scale` so the
+straight-set win margin lands at `~10·sets·(1 − mean_hold)`: high holds → +2 (7-6 7-6,
+tiebreak-tight), average → +4 (6-4 6-4, one break a set), low holds → +8 (6-2 6-2, free
+breaks). `bk_scale = clamp(target / fitted_margin[S1], 0.30, 2.0)`, `target = clamp(
+10·need·(1−mean_hold), need, 5·need)`. Scaling the SHAPE (not the center) keeps the
+mixture-mean margin exactly equal to the player's edge for any bk_scale — breakability
+moves only the SPREAD. Same `mean_hold` signal as Entry 14, so match length and margin
+width agree (grinders play long AND tight; breakers play short AND wide).
+
+Reuses the fitted per-scenario shape and antisymmetry (S1↔S4), so S2/S3/S4 scale in
+proportion; `mean_hold=None` → bk_scale 1.0 → Entry-13 behaviour (safe fallback).
+Verified offline: EXACT anchors at an even match (mean_hold 0.90→S1 18.0, 0.80→20.0,
+0.60→24.1). Realistic: a big-server grinder's straight-win S1 drops 23.5→20.5 (the
+20.5 is 18 games/sets + 2.5 from 8 aces — a grinder's FS is the serve, not the margin);
+a dominant breaker barely moves (−0.4, correct — real breakers win wide); a non-breaking
+favourite's fair line −1.8; a breakable WTA match WIDENS (+1.3, correct direction).
+Uncalibrated against resolved picks (FS has none) → bounded structural correction, not
+a fit — same posture as the rest of the mixture; FS stays on probation.
+
+**Same entry — aces/DF now enter at FACE VALUE.** The per-scenario ace/DF term was
+scaled by set count (`ace_proj · scen_sets[s]/expected_sets`), so in the common 2-set
+scenario 8 aces became ~6.7 → +2.5 net instead of the +4.0 PrizePicks actually scores
+(0.5 per ace, −0.5 per double fault). That damped the ace weight in exactly the
+scenario that carries the most probability, and contradicted the user's rule that the
+ace projection feeds FS uncapped. Removed the scaling: `a_mu = ace_proj`, `d_mu =
+df_proj` flat across all four scenarios. The mixture mean is unchanged (Σp·scale = 1
+when baseline = expected_sets, so scaling only redistributed the same mean across
+scenarios), but each scenario now scores aces/DF at face value — 8 aces = +4.0
+everywhere. Dropped the now-dead `_FS_SCEN_SETS` table, `scen_sets`/`baseline_sets`
+locals, and the ace-scaling clause; `expected_sets` stays in the signature (callers
+pass it) but no longer affects FS. Verified: 8 aces → +4.0 (was +2.5), grinder S1 =
+21.0 (18 games/sets + 4 aces − 1 DF), anchors unmoved.
+
+**Same entry — physical games-margin clamp.** A set runs 6-0..7-6, so a won set is
++1..+6 games and a lost set −1..−6; for w won / l lost sets the margin must lie in
+[w−6l, 6w−l]. `_FS_MARGIN_BOUNDS` hard-clamps each scenario's margin to that range
+(BO3 straight-set win capped at +12 = two 6-0 sets, etc.). It never bites realistic
+inputs (worst real case pgm≈8 → +10.3) but stops an absurd `player_games_margin` from
+implying an impossible scoreline (pgm 12 → +13.8 now → +12.0). Belt-and-suspenders on
+the user's "13 games max per set" constraint; anchors and the grinder case unmoved.
+
+## Entry 16 — Ace/DF game-spread factor + serve/return archetype badge (2026-07-25)
+
+**(a) Ace/DF service-volume factor (LIVE Aces + DF).** Aces/DF are serve events, so they
+scale with how many SERVICE GAMES a player gets = total games ÷ 2. `project_aces`/
+`project_double_faults` already scaled by expected_sets (2-vs-3-set axis) but never by
+games-PER-set, so a 7-6 7-6 grind (26 games) and a 6-2 6-2 blowout (16 games) got the
+same ace volume. `_game_spread_factor` fixes it, keyed on EFFECTIVE holds — each
+player's hold adjusted by the OTHER's return-games-won vs tour average. That captures
+the user's correction: a big server with a POOR return game does NOT break a weak
+holder, so the match stays long (more aces); only a genuine returner shortens it. `eff
+= own_hold − (opp_return − tour_avg_return)`, factor `1 + 1.0·(mean_eff − hold_ref)`,
+centred on the tour reference (avg match unchanged), bounded ±15%, missing holds → 1.0.
+Verified: two big servers w/ weak returns +15% (tiebreak-fest), return-specialist vs
+weak holder −13%, average match 0%.
+
+**(b) Serve/Return Profile classifier + badge (display only).** New
+`classify_serve_return_archetype` — tour-relative. ATP: Big Server (hold AND ace above
+avg), Weak Server. WTA: Elite/Strong/Average/Weak by HOLD tier (aces too noisy to
+define a big server). Both: Return Specialist (high break), All-Court (serve at/above
+avg AND return clearly above avg — complete players like Alcaraz), Balanced. Kept
+DELIBERATELY SEPARATE from the existing playing-style `classify_archetype` (which drives
+value-bet surface modifiers) — surfaced as a distinct `player_serve_profile` /
+`opponent_serve_profile` field and a 🎾 badge in the bot + a colour-coded chip on the
+website. No model/value impact. Verified on Isner/Bublik/Alcaraz/Schwartzman (ATP) and
+Sabalenka/Pegula/returner/weak (WTA); frontend builds clean.
+
+FS face-value aces (Entry 15) + this volume factor compose correctly: the ace
+PROJECTION now reflects real serve volume (match length × games-per-set), and FS scores
+that honest number at 0.5 each with no further scaling.
