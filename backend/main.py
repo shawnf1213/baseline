@@ -106,6 +106,7 @@ from src.calculations.props import (
     generate_scouting_report,
     detect_environment,
     _server_quality_tier_sgw,
+    classify_serve_return_archetype,
     ENVIRONMENT_LABELS,
     GRAND_SLAMS,
 )
@@ -2743,9 +2744,15 @@ async def prop_calculate(req: PropRequest):
             else None
         )
 
-        # Archetypes
+        # Archetypes (playing style — also drives value-bet surface modifiers)
         p1_arch = classify_archetype(p1_all, req.tour)
         p2_arch = classify_archetype(p2_all, req.tour)
+        # Serve/Return Profile — a distinct serve+return badge (Big Server / Weak
+        # Server / Return Specialist / All-Court / WTA Elite-Strong-Average-Weak),
+        # earned from hold + ace + break vs tour average. Kept separate from the
+        # playing-style archetype above so it never disturbs the value model.
+        p1_serve_profile = classify_serve_return_archetype(p1_s, req.tour)["archetype"]
+        p2_serve_profile = classify_serve_return_archetype(p2_s, req.tour)["archetype"]
 
         # Resolve handedness from TA (may be None if TA unavailable)
         player_hand   = player_ta.get("handedness")   if player_ta   else None
@@ -2976,6 +2983,9 @@ async def prop_calculate(req: PropRequest):
             "opponent_tour_avg_stats": p2_gw_est,
             "player_archetype":     p1_arch,
             "opponent_archetype":   p2_arch,
+            # Serve/Return Profile badge (distinct from playing-style archetype)
+            "player_serve_profile":   p1_serve_profile,
+            "opponent_serve_profile": p2_serve_profile,
             # Handedness
             "player_handedness":    player_hand,
             "opponent_handedness":  opponent_hand,

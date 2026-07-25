@@ -451,8 +451,10 @@ def _prop_stat_blocks(prop_type, data, surface=None):
     # figures the projection actually used, not an all-surface average.
     _sfx = f" ({surface})" if surface and surface != "All" else ""
 
-    def block(lines, hand, arch):
+    def block(lines, hand, arch, serve_profile=None):
         rows = [f"{lbl}: **{val}**" for lbl, val in lines]
+        if serve_profile:
+            rows.append(f"🎾 {serve_profile}")
         if arch:
             rows.append(f"_{arch}_")
         if hand:
@@ -534,8 +536,10 @@ def _prop_stat_blocks(prop_type, data, surface=None):
     if data.get("opponent_tiebreak_rate") is not None:
         o_lines.append(("Tiebreak Rate", _tb_cell(data.get("opponent_tiebreak_rate"))))
 
-    p_block = block(p_lines, _hand_label(data.get("player_handedness")), data.get("player_archetype"))
-    o_block = block(o_lines, _hand_label(data.get("opponent_handedness")), data.get("opponent_archetype"))
+    p_block = block(p_lines, _hand_label(data.get("player_handedness")), data.get("player_archetype"),
+                    data.get("player_serve_profile"))
+    o_block = block(o_lines, _hand_label(data.get("opponent_handedness")), data.get("opponent_archetype"),
+                    data.get("opponent_serve_profile"))
     return p_block, o_block
 
 

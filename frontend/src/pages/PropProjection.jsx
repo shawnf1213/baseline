@@ -1055,6 +1055,7 @@ export default function PropProjection({ tour }) {
                     { s: p1SurfaceStats, name: p1?.name, hand: result?.player_handedness,
                       taM: result?.player_ta_matches, ssM: result?.player_ss_matches,
                       fallback: result?.player_surface_fallback, aceAgainst: null,
+                      serveProfile:  result?.player_serve_profile,
                       recentTier:    result?.player_ta_recent_tier,
                       recentMatches: result?.player_ta_recent_matches,
                       recentAllN:    result?.player_ta_recent_all_n,
@@ -1062,11 +1063,12 @@ export default function PropProjection({ tour }) {
                     { s: p2SurfaceStats, name: p2?.name, hand: result?.opponent_handedness,
                       taM: result?.opponent_ta_matches, ssM: result?.opponent_ss_matches,
                       fallback: result?.opponent_surface_fallback, aceAgainst: result?.opponent_ace_against,
+                      serveProfile:  result?.opponent_serve_profile,
                       recentTier:    result?.opponent_ta_recent_tier,
                       recentMatches: result?.opponent_ta_recent_matches,
                       recentAllN:    result?.opponent_ta_recent_all_n,
                       penaltyKind:   result?.opponent_ta_penalty_kind },
-                  ].map(({ s, name, hand, taM, ssM, fallback, aceAgainst,
+                  ].map(({ s, name, hand, taM, ssM, fallback, aceAgainst, serveProfile,
                           recentTier, recentMatches, recentAllN, penaltyKind }, idx) => {
                     const d = s || {}
                     const isBPProp = propType === 'Break Points Won'
@@ -1197,6 +1199,19 @@ export default function PropProjection({ tour }) {
                           {name}<HandBadge hand={hand} />
                         </div>
                         <div style={{ display: 'flex', gap: 8, marginBottom: 14, flexWrap: 'wrap' }}>
+                          {/* Serve/Return Profile badge (hold + ace + break vs tour avg) */}
+                          {serveProfile && (() => {
+                            const c = /Big Server|Elite/.test(serveProfile) ? 'var(--red-bright)'
+                                    : /Weak/.test(serveProfile) ? 'var(--green-bright)'
+                                    : /Return Specialist/.test(serveProfile) ? 'var(--blue-bright, #29B6F6)'
+                                    : /All-Court/.test(serveProfile) ? '#AA66FF'
+                                    : 'var(--amber)'
+                            return (
+                              <span title="Serve/Return profile vs tour average" style={{ fontSize: 9, fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 800, letterSpacing: 1.5, padding: '3px 8px', borderRadius: 999, background: 'rgba(255,255,255,0.05)', color: c, border: `1px solid ${c}`, opacity: 0.9 }}>
+                                🎾 {serveProfile.toUpperCase()}
+                              </span>
+                            )
+                          })()}
                           {/* Recent-window chip — replaces TA CAREER */}
                           {recentTier === '52w' && recentMatches > 0 && (
                             <span style={{ fontSize: 9, fontFamily: '"Barlow Condensed", sans-serif', fontWeight: 800, letterSpacing: 1.5, padding: '3px 8px', borderRadius: 999, background: 'rgba(0, 230, 118, 0.08)', color: 'var(--green-mid)', border: '1px solid rgba(0, 230, 118, 0.2)' }}>
