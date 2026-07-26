@@ -601,12 +601,10 @@ def prop_embed(player, opponent, prop_type, surface, court_display, line, data) 
         comp = (f"\n🎾 **{player}'s** games won  ·  {_num(gh)} held on serve + "
                 f"{_num(gb)} by breaking") if gh is not None else f"\n🎾 **{player}'s** games won"
         g_proj += comp
-        # Required output: the implied MATCH claim + the scenario-mixture P(over).
-        _claim = data.get("ptgw_implied_claim")
-        _pov = data.get("ptgw_p_over")
-        if _claim:
-            _pov_txt = (f"  ·  P(over) **{_pov:.0%}**" if isinstance(_pov, (int, float)) else "")
-            g_proj += f"\n📐 {_claim}{_pov_txt}"
+        # Implied match-outcome claim removed 2026-07-26 (user): a games-won total is
+        # not a win/lose scenario, so "wins, or loses a competitive 3-setter" doesn't
+        # belong here. It now reads like any other prop; P(over) is already the
+        # confidence bar.
     verdict = "\n\n".join(x for x in (g_context, court_line, g_proj) if x)
 
     e = discord.Embed(
@@ -820,6 +818,7 @@ PROP_CHOICES = [
     app_commands.Choice(name="Break Points Won", value="Break Points Won"),
     app_commands.Choice(name="Total Games", value="Total Games"),
     app_commands.Choice(name="Player Total Games Won", value="Player Total Games Won"),
+    app_commands.Choice(name="Fantasy Score", value="Fantasy Score"),
 ]
 SURFACE_CHOICES = [
     app_commands.Choice(name="Hard", value="Hard"),
@@ -1858,10 +1857,10 @@ def _ranked_line(pick: dict, rank: int) -> str:
         _std = pick.get("standard_line")
         _ctx = (f" (standard {_std:g})" if isinstance(_std, (int, float)) else "")
         out += f"\n😈 _Boosted demon line {pick['line']:g}{_ctx} — over-only_"
-    # PTGW carries its implied match claim on the ranked line too (required field).
-    if pick.get("prop_type") == "Player Total Games Won" and pick.get("ptgw_implied_claim"):
-        _corr = "  ⚠️ correlated" if pick.get("ptgw_correlated") else ""
-        out += f"\n📐 _{pick['ptgw_implied_claim']}_{_corr}"
+    # PTGW: implied match-outcome claim removed 2026-07-26 (user) — a games-won total
+    # isn't a win/lose scenario. Keep only the correlation flag when it applies.
+    if pick.get("prop_type") == "Player Total Games Won" and pick.get("ptgw_correlated"):
+        out += "\n⚠️ _correlated with another play on the board_"
     # Total Games projection is anchored to the sharp Sofascore total, so its edge
     # (proj − line) is already a clean "PrizePicks vs book" read — no extra line
     # needed. Only flag the exception: the model materially disagrees with the book
