@@ -2031,6 +2031,7 @@ async def prop_calculate(req: PropRequest):
             result["fs_ace_proj"] = _ace_r.get("projection")
             result["fs_df_proj"] = _df_r.get("projection")
             result.setdefault("expected_sets", _tg_r.get("expected_sets"))
+            result.setdefault("competitiveness", _tg_r.get("competitiveness"))
         else:  # Break Points Won  OR  Player Total Games Won (both use the BP model)
             # All-surface player stats for Step 9 sanity check
             _p1_all_at = p1_data.get("All_all_time_stats") or {}
