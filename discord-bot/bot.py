@@ -580,7 +580,9 @@ def prop_embed(player, opponent, prop_type, surface, court_display, line, data) 
             win_line = f"{pn} {p1wp:.0f}%  —  ⭐ **{on} {p2wp:.0f}%**"
     exp_sets = data.get("expected_sets")
     sets_line = ""
-    if isinstance(exp_sets, (int, float)):
+    # Fantasy Score folds expected sets into its own drivers line (alongside aces + DFs)
+    # below, so skip the standalone sets line for FS to avoid showing the count twice.
+    if isinstance(exp_sets, (int, float)) and prop_type != "Fantasy Score":
         comp = data.get("competitiveness")
         sets_line = (f"Expected Sets **{exp_sets:.1f}** · {fmt_label}"
                      + (f" · {comp}" if comp else ""))
@@ -594,6 +596,22 @@ def prop_embed(player, opponent, prop_type, surface, court_display, line, data) 
         f"{dot} **{lean} {line:g}**  ·  Projection **{_num(proj)}**  ·  Edge **{edge_txt}**{star}\n"
         f"Confidence  {_conf_bar(conf)}{_cap_txt}"
     )
+    # Fantasy Score is a COMPOSITE — surface the drivers that compose the number so the
+    # projection is legible: the player's projected aces + double faults (each scored
+    # ±0.5) and the match's expected set count (each set won/lost swings FS by 3). Order
+    # follows the user's ask: aces, then double faults, then expected sets.
+    if prop_type == "Fantasy Score":
+        _fa, _fd = data.get("fs_ace_proj"), data.get("fs_df_proj")
+        _fs_sets, _fs_comp = data.get("expected_sets"), data.get("competitiveness")
+        _drv = []
+        if _fa is not None:
+            _drv.append(f"**{_num(_fa)}** aces")
+        if _fd is not None:
+            _drv.append(f"**{_num(_fd)}** double faults")
+        if isinstance(_fs_sets, (int, float)):
+            _drv.append(f"**{_fs_sets:.1f}** sets" + (f" ({_fs_comp})" if _fs_comp else ""))
+        if _drv:
+            g_proj += "\n🎾 Projected  ·  " + "  ·  ".join(_drv)
     # Player Total Games Won renders like any other prop (2026-07-26, user): both the
     # games-won breakdown (held on serve + by breaking) and the implied match-outcome
     # claim were removed. A games-won total isn't a win/lose scenario, and P(over) is

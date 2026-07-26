@@ -2024,6 +2024,13 @@ async def prop_calculate(req: PropRequest):
             result["fs_market_wp"] = round(_mkt_wp, 4) if _anchored else None
             result["fs_blended_wp"] = round(_blended_wp, 4)
             result["fs_anchored"] = _anchored
+            # Surface the FS drivers so the display can show what composed the number:
+            # the player's projected aces, projected double faults, and the match's
+            # expected set count. (FS = 10 + games_margin + 3·set_margin + 0.5·(aces−DF),
+            # so these three are exactly the visible levers.)
+            result["fs_ace_proj"] = _ace_r.get("projection")
+            result["fs_df_proj"] = _df_r.get("projection")
+            result.setdefault("expected_sets", _tg_r.get("expected_sets"))
         else:  # Break Points Won  OR  Player Total Games Won (both use the BP model)
             # All-surface player stats for Step 9 sanity check
             _p1_all_at = p1_data.get("All_all_time_stats") or {}
@@ -2957,6 +2964,9 @@ async def prop_calculate(req: PropRequest):
             "fs_market_wp":         result.get("fs_market_wp"),
             "fs_blended_wp":        result.get("fs_blended_wp"),
             "fs_anchored":          result.get("fs_anchored"),
+            # FS drivers surfaced for the display (aces / DFs / sets compose the number).
+            "fs_ace_proj":          result.get("fs_ace_proj"),
+            "fs_df_proj":           result.get("fs_df_proj"),
             # ── Break Points Won scenario-mixture surface (A2; None for others) ───
             "bp_p_over":            _bp_p_over,
             "bp_scenario_probs":    result.get("bp_scenario_probs"),
