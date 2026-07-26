@@ -501,13 +501,13 @@ def _prop_stat_blocks(prop_type, data, surface=None):
             ("2nd Srv Won", _pct(os_.get("second_serve_pts_won"))),
         ]
     elif prop_type == "Player Total Games Won":
-        # Core drivers: player hold rate, opponent hold rate, player break rate,
-        # and the held-vs-broken composition of the projection.
+        # Core drivers: player hold rate vs opponent hold rate, plus player break rate.
+        # The held-vs-broken decomposition was removed from the display 2026-07-26
+        # (user): a games-won total isn't a holds/breaks scenario, so the breakdown was
+        # dropped from BOTH the stat table and the summary line below.
         p_lines = [
             ("Hold Rate", _pct(data.get("player_hold_rate"))),
             ("Break Rate vs Opp", _pct(data.get("player_break_rate"))),
-            ("Games Held", _num(data.get("games_held"))),
-            ("Games by Break", _num(data.get("games_broken"))),
         ]
         o_lines = [
             ("Hold Rate", _pct(data.get("opp_hold_rate_g"))),
@@ -594,17 +594,10 @@ def prop_embed(player, opponent, prop_type, surface, court_display, line, data) 
         f"{dot} **{lean} {line:g}**  ·  Projection **{_num(proj)}**  ·  Edge **{edge_txt}**{star}\n"
         f"Confidence  {_conf_bar(conf)}{_cap_txt}"
     )
-    # Player Total Games Won is player-specific — say whose games, and how the
-    # projection breaks down into holds vs breaks.
-    if prop_type == "Player Total Games Won":
-        gh, gb = data.get("games_held"), data.get("games_broken")
-        comp = (f"\n🎾 **{player}'s** games won  ·  {_num(gh)} held on serve + "
-                f"{_num(gb)} by breaking") if gh is not None else f"\n🎾 **{player}'s** games won"
-        g_proj += comp
-        # Implied match-outcome claim removed 2026-07-26 (user): a games-won total is
-        # not a win/lose scenario, so "wins, or loses a competitive 3-setter" doesn't
-        # belong here. It now reads like any other prop; P(over) is already the
-        # confidence bar.
+    # Player Total Games Won renders like any other prop (2026-07-26, user): both the
+    # games-won breakdown (held on serve + by breaking) and the implied match-outcome
+    # claim were removed. A games-won total isn't a win/lose scenario, and P(over) is
+    # already the confidence bar.
     verdict = "\n\n".join(x for x in (g_context, court_line, g_proj) if x)
 
     e = discord.Embed(
