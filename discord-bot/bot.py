@@ -1210,6 +1210,12 @@ POD_MINUTE = int(os.getenv("POD_MINUTE", "50") or "50")
 # finishes (~10 min later). Independent of the recap, which posts earlier.
 PICKS_GEN_HOUR = int(os.getenv("PICKS_GEN_HOUR", "20") or "20")     # 8:00 PM POTD
 PICKS_GEN_MINUTE = int(os.getenv("PICKS_GEN_MINUTE", "0") or "0")
+# Second-wave "additional plays" — a later top-up scan at 11:00 PM ET that posts up to
+# SECOND_WAVE_MAX plays NOT already on the 8 PM board (excluded by player+prop_type).
+# Re-evaluates the board at 11 PM, so it also catches plays from matches added after 8.
+SECOND_WAVE_HOUR   = int(os.getenv("SECOND_WAVE_HOUR", "23") or "23")   # 11:00 PM ET
+SECOND_WAVE_MINUTE = int(os.getenv("SECOND_WAVE_MINUTE", "0") or "0")
+SECOND_WAVE_MAX    = int(os.getenv("SECOND_WAVE_MAX", "4") or "4")      # cap on additional plays
 # Ranked plays are delivered in pages of this many, each its own @everyone message
 # (top-12 → two messages: 1-6 then 7-12).
 # NOTE: RANKED_PAGE_SIZE (6-plays-per-message paging) was retired when the ⭐ got
@@ -2140,6 +2146,84 @@ async def _post_daily_picks(channel, track: bool = True) -> str:
     return f"posted {len(ranked)} ranked, ⭐ {ranked[0]['player']} {ranked[0]['prop_type']}{slip_note}"
 
 
+async def _todays_posted_keys() -> set:
+    """(_norm(player), prop_type) for every pick logged in the last ~18h — the 8 PM
+    board + 3x slip — so the second wave never repeats a play already on the list.
+    Reads the durable record (survives a bot restart between 8 PM and 11 PM)."""
+    keys = set()
+    try:
+        rec = await asyncio.to_thread(results_tracker.get_record)
+        cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=18)
+        for q in (rec or {}).get("picks", []):
+            try:
+                dt = datetime.datetime.fromisoformat((q.get("generated_at") or "").replace("Z", "+00:00"))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=datetime.timezone.utc)
+            except Exception:  # noqa: BLE001
+                continue
+            if dt >= cutoff:
+                keys.add((pick_of_day._norm(q.get("player", "")), q.get("prop_type")))
+    except Exception:  # noqa: BLE001
+        log.exception("second wave: failed to read today's posted keys")
+    return keys
+
+
+async def _post_second_wave(channel, track: bool = True) -> str:
+    """Post up to SECOND_WAVE_MAX ADDITIONAL plays not already on tonight's 8 PM board
+    (excluded by player+prop_type). Posted WITHOUT @everyone — it's a quieter, lower-
+    conviction top-up; the 8 PM board keeps the ping. Never raises."""
+    if not AUTOPOST_ENABLED:
+        log.info("second wave: automated posting DISABLED (AUTOPOST_ENABLED off)")
+        return "autopost disabled"
+    exclude = await _todays_posted_keys()
+    ordered, _thin = await pick_of_day._rank_board()
+    if not ordered:
+        log.info("second wave: no qualifying board — nothing to add")
+        return "no board"
+    adds = [p for p in ordered
+            if (pick_of_day._norm(p.get("player", "")), p.get("prop_type")) not in exclude
+            ][:SECOND_WAVE_MAX]
+    if not adds:
+        log.info("second wave: no additional plays beyond the %d already posted", len(exclude))
+        return "no additional plays"
+
+    await _annotate_form_alerts(adds)
+    header = discord.Embed(
+        description=("Up to %d extra plays that weren't on the 8 PM board — a later "
+                     "second look at tonight's slate." % SECOND_WAVE_MAX),
+        color=COLOR_NEUTRAL)
+    header.set_author(name="🎾 Baseline — Second Wave")
+    embeds = [header] + ranked_embeds(adds, start_rank=1, total=len(adds))
+    # No @everyone — quieter supplementary post (avoids a second nightly ping).
+    await channel.send(embeds=embeds[:10], allowed_mentions=discord.AllowedMentions.none())
+
+    if track:
+        await _log_picks_pending(adds, group="second-wave")
+        # _start_line_monitor REPLACES the running monitor, so re-arm over ALL of today's
+        # pending picks (8 PM board + 3x + these adds) — never drop the 8 PM set.
+        try:
+            pending = await asyncio.to_thread(results_tracker.get_pending) or []
+            today = datetime.datetime.now(POD_TZINFO).strftime("%Y-%m-%d")
+            mon = []
+            for p in pending:
+                if not str(p.get("generated_at") or "").startswith(today):
+                    continue
+                orig = p.get("original_line")
+                orig = orig if orig is not None else p.get("line")
+                if orig is None:
+                    continue
+                mon.append({"player": p.get("player"), "pp_player": p.get("player"),
+                            "prop_type": p.get("prop_type"), "original_line": orig,
+                            "projection": p.get("model_projection"), "lean": p.get("lean"),
+                            "start_timestamp": None})
+            if mon:
+                _start_line_monitor(channel, mon)
+        except Exception:  # noqa: BLE001
+            log.exception("second wave: monitor re-arm failed")
+    return "posted %d additional plays: %s" % (
+        len(adds), ", ".join("%s %s" % (p.get("player"), p.get("prop_type")) for p in adds))
+
+
 # The EXACT plays posted at 9:18 PM on 7/13 (from that post; surfaces/courts
 # confirmed against the logged rows). Hardcoded because the DB holds many duplicate
 # runs from today's schedule changes and isn't a clean source. Re-scored with the
@@ -2323,6 +2407,35 @@ async def daily_picks_generate():
 
 @daily_picks_generate.before_loop
 async def _before_picks_generate():
+    await client.wait_until_ready()
+
+
+@tasks.loop(time=[
+    datetime.time(hour=SECOND_WAVE_HOUR, minute=SECOND_WAVE_MINUTE, tzinfo=POD_TZINFO),
+])
+async def daily_second_wave():
+    """11 PM ET top-up: up to SECOND_WAVE_MAX plays not already on the 8 PM board."""
+    if not POD_CHANNEL_ID:
+        return
+    if not AUTOPOST_ENABLED:
+        log.info("second wave: DISABLED (AUTOPOST_ENABLED off)")
+        return
+    try:
+        channel = client.get_channel(POD_CHANNEL_ID)
+        if channel is None:
+            log.warning("second wave: channel %s not found", POD_CHANNEL_ID)
+            return
+        if POD_SKIP_DATE and datetime.datetime.now(POD_TZINFO).strftime("%Y-%m-%d") == POD_SKIP_DATE:
+            log.info("second wave: skip-date %s — not posting", POD_SKIP_DATE)
+            return
+        status = await _post_second_wave(channel, track=True)
+        log.info("second wave: %s", status)
+    except Exception:  # noqa: BLE001
+        log.exception("second wave failed")
+
+
+@daily_second_wave.before_loop
+async def _before_second_wave():
     await client.wait_until_ready()
 
 
@@ -3215,6 +3328,15 @@ async def on_ready():
                      POD_CHANNEL_ID)
         except Exception:
             log.exception("failed to start daily picks generation loop")
+    # Second-wave top-up — up to SECOND_WAVE_MAX extra plays at 11 PM ET, excluding the
+    # 8 PM board. Started separately so a failure here can't affect the main POTD post.
+    if POD_CHANNEL_ID and not daily_second_wave.is_running():
+        try:
+            daily_second_wave.start()
+            log.info("Second-wave scheduled at %02d:%02d %s (max %d) -> channel %s",
+                     SECOND_WAVE_HOUR, SECOND_WAVE_MINUTE, POD_TZINFO, SECOND_WAVE_MAX, POD_CHANNEL_ID)
+        except Exception:
+            log.exception("failed to start second-wave loop")
     # Cache pre-warm — 30 min before generation. Started SEPARATELY from the POTD
     # trigger so a pre-warm failure can never stop the picks from being posted.
     if not daily_cache_prewarm.is_running():
