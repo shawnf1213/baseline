@@ -2887,6 +2887,18 @@ async def prop_calculate(req: PropRequest):
                         ),
                     )
 
+        # Snap the DISPLAY projection to the prop's real outcome grid. Fantasy Score can
+        # ONLY land on 0.5 increments (games/sets are integers; aces & DF contribute
+        # ±0.5 each), and Player Total Games Won is ALWAYS a whole number (you can't win
+        # half a game). This runs AFTER all lean/confidence logic and both props take
+        # their lean from P(over), not this value — so it is strictly display, never
+        # moves a lean.
+        if isinstance(proj_val, (int, float)):
+            if req.prop_type == "Fantasy Score":
+                proj_val = round(proj_val * 2.0) / 2.0
+            elif req.prop_type == "Player Total Games Won":
+                proj_val = float(round(proj_val))
+
         # Serialise H2H DataFrames
         def _df_records(key):
             df = h2h_summary.get(key)
