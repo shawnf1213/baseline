@@ -1182,10 +1182,12 @@ MEMBER_ROLE_NAME = os.getenv("BASELINE_MEMBER_ROLE", "Baseline Member")
 POD_CHANNEL_ID = int(os.getenv("POD_CHANNEL_ID", "0") or "0")
 # MASTER SWITCH for automated posting to the picks channel — user requested OFF on
 # 2026-07-24, until further notice. When off: NO automated Pick of the Day board and
-# NO daily recap post. Internal jobs keep running (result resolution / grading,
-# calibration log, line monitor). Re-enable by flipping this to True (or setting
-# AUTOPOST_ENABLED=true in the env) when the user says so.
-AUTOPOST_ENABLED = os.getenv("AUTOPOST_ENABLED", "false").strip().lower() in (
+# AUTO-POST RE-ENABLED 2026-07-26 (explicit user go-ahead). Daily POTD board warms at
+# 19:30 ET (PREWARM_HOUR/MINUTE) and posts at 20:00 ET (PICKS_GEN_HOUR/MINUTE). NOTE:
+# this same master switch also gates the daily results RECAP post. Default flipped to
+# "true"; set AUTOPOST_ENABLED=false in the Railway env to force it back off with no
+# code change.
+AUTOPOST_ENABLED = os.getenv("AUTOPOST_ENABLED", "true").strip().lower() in (
     "1", "true", "yes", "on")
 # Daily auto-post local time. Defaults to midnight (00:00) US Eastern, which
 # auto-handles EST/EDT via the zoneinfo database (no manual DST adjustment).
