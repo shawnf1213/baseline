@@ -1284,11 +1284,14 @@ CALIBRATION_MIN_SAMPLE = 40
 # the FIRST run on the new model and the first to count.
 CALIBRATION_BASELINE_UTC = os.getenv("CALIBRATION_BASELINE_UTC", "2026-07-16T00:00:00")
 
-# Daily recap posts at 5:00 PM ET (recurring, every day). Env vars still override
-# the code default — if RESULTS_POST_HOUR/MINUTE are set in Railway they win, so
-# keep them unset (or set to 17 / 0) for this 5 PM schedule to take effect.
-RESULTS_POST_HOUR = int(os.getenv("RESULTS_POST_HOUR", "17") or "17")
-RESULTS_POST_MINUTE = int(os.getenv("RESULTS_POST_MINUTE", "0") or "0")
+# Daily recap posts at 12:05 AM ET (recurring) — the day's matches are all finished
+# by then, so it recaps the JUST-COMPLETED day complete (2026-07-27, user; was 5 PM,
+# which posted before evening matches resolved). Matches that slid to the next day
+# grade the next day and land in that day's recap (resolution-date scoped). Env vars
+# still override — if RESULTS_POST_HOUR/MINUTE are set in Railway they win, so keep
+# them unset (or set to 0 / 5) for this 12:05 AM schedule to take effect.
+RESULTS_POST_HOUR = int(os.getenv("RESULTS_POST_HOUR", "0") or "0")
+RESULTS_POST_MINUTE = int(os.getenv("RESULTS_POST_MINUTE", "5") or "5")
 
 # ── One-off schedule override (DISABLED by default) ─────────────────────────
 # The recurring schedule now governs, driven by the Railway env vars
@@ -2565,14 +2568,20 @@ def _is_admin(interaction: discord.Interaction) -> bool:
 # ════════════════════════════════════════════════════════════════════════════
 # Feature 1 — /results (public) and /results update (admin)
 # ════════════════════════════════════════════════════════════════════════════
-def _et_date_of(generated_at: str):
-    """The ET calendar date ('YYYY-MM-DD') a pick was generated on."""
+def _et_date_of(generated_at: str, shift_hours: float = 0):
+    """The ET calendar date ('YYYY-MM-DD') a timestamp falls on. ``shift_hours``
+    offsets the timestamp before taking the date — the midnight recap uses -6 so a
+    match graded just after midnight still counts for the day it was PLAYED (the recap
+    "day" runs 6 AM→6 AM). The earliest next-day match starts ~7 AM, so this never
+    pulls a genuinely-next-day match into the prior day's recap."""
     if not generated_at:
         return None
     try:
         dt = datetime.datetime.fromisoformat(generated_at.replace("Z", "+00:00"))
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=datetime.timezone.utc)
+        if shift_hours:
+            dt = dt + datetime.timedelta(hours=shift_hours)
         return dt.astimezone(POD_TZINFO).strftime("%Y-%m-%d")
     except Exception:  # noqa: BLE001
         return None
@@ -2591,13 +2600,14 @@ def daily_recap_embed(rec: dict, target_date: str = None) -> discord.Embed:
     except Exception:  # noqa: BLE001
         header = "Recap"
 
-    # Date-scoped by RESOLUTION date — the recap shows the picks whose results
-    # came in on this date (only graded picks have a resolved_at), regardless of
-    # when they were generated.
+    # Date-scoped by RESOLUTION date, on a 6 AM→6 AM "day" (shift_hours=-6) so a
+    # match that finished late and graded just after midnight still counts for the
+    # day it was played — while genuinely-next-day matches (earliest ~7 AM) stay out.
+    # Only graded picks have a resolved_at; generation date is irrelevant here.
     picks = rec.get("picks", []) if rec else []
     graded = [p for p in picks
               if p.get("result") in ("W", "L", "PUSH", "VOID")
-              and _et_date_of(p.get("resolved_at")) == target_date]
+              and _et_date_of(p.get("resolved_at"), shift_hours=-6) == target_date]
     today = graded
 
     # CASHED = W + PUSH — a push didn't miss, so it counts as cashed. The
@@ -3104,9 +3114,13 @@ async def daily_results_post():
             log.warning("daily results: channel %s not found", chan_id)
             return
         today = datetime.datetime.now(POD_TZINFO).strftime("%Y-%m-%d")
+        # Runs just after midnight → recap the JUST-COMPLETED day (yesterday in ET).
+        # daily_recap_embed's 6 AM→6 AM window keeps late finishers on the right day.
+        _recap_date = (datetime.datetime.now(POD_TZINFO)
+                       - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
 
-        # 1) RECAP — resolve today's pending picks first (so the recap reflects
-        #    final results), then post the previous day's date-based recap.
+        # 1) RECAP — resolve pending picks first (so the recap reflects final
+        #    results), then post the just-completed day's date-based recap.
         try:
             await _resolve_all_pending()
         except Exception:  # noqa: BLE001
@@ -3118,10 +3132,11 @@ async def daily_results_post():
             log.info("daily results: recap posting DISABLED (AUTOPOST_ENABLED off) — "
                      "resolved pending, not posting the recap")
         elif rec and rec.get("total"):
-            await channel.send(content="@everyone", embed=daily_recap_embed(rec),
+            await channel.send(content="@everyone",
+                               embed=daily_recap_embed(rec, target_date=_recap_date),
                                allowed_mentions=EVERYONE_MENTION)
-            log.info("daily results: posted recap (overall %s-%s)",
-                     rec.get("wins"), rec.get("losses"))
+            log.info("daily results: posted %s recap (overall %s-%s)",
+                     _recap_date, rec.get("wins"), rec.get("losses"))
         else:
             log.info("daily results: no graded record yet — skipping recap")
 
