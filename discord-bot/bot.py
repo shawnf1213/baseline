@@ -1850,17 +1850,17 @@ def _ranked_line(pick: dict, rank: int) -> str:
     play = f"{lean} {pick['line']:g} {_short_prop(pick['prop_type'])}".upper()
     _demon = "😈 DEMON " if pick.get("odds_type") == "demon" else ""
     bits = [f"{LEAN_DOT.get(lean, '⚪')} {_demon}**{play}**"]
-    # PTGW displays its MEDIAN as a "Fair line" vs the book line (its mean is a
-    # valley score that never occurs). Fantasy Score displays like every other
-    # prop — plain Proj · conf% — by request. (Its projection is still the median
-    # internally; only the label is plain.)
-    _bimodal = pick.get("prop_type") == "Player Total Games Won"
+    # Every prop — including Player Total Games Won and Fantasy Score — renders the
+    # same plain "Proj X · NN%" on the list (2026-07-27, user). PTGW previously got a
+    # "Fair line X vs book Y · P(over) Z%" treatment, but that repeated the book line
+    # (already shown in the "OVER 5.5 …" headline) and read differently from every
+    # other play. The projection is still the median internally; only the label is
+    # plain. PTGW projections are whole numbers, so drop the trailing ".0".
     if isinstance(proj, (int, float)):
-        bits.append(f"Fair line {proj:.1f} vs book {pick['line']:g}" if _bimodal
-                    else f"Proj {proj:.1f}")
+        _is_ptgw = pick.get("prop_type") == "Player Total Games Won"
+        bits.append(f"Proj {proj:g}" if _is_ptgw else f"Proj {proj:.1f}")
     if isinstance(conf, (int, float)):
-        bits.append(f"P({'under' if lean == 'UNDER' else 'over'}) {conf:.0f}%"
-                    if _bimodal else f"{conf:.0f}%")
+        bits.append(f"{conf:.0f}%")
     out = l1 + "\n" + " · ".join(bits)
     # Demon: show the boosted line against its standard-line context so nobody
     # mistakes a demon for a normal prop.
