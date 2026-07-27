@@ -91,7 +91,19 @@ COURT_CPR = {
     "Tokyo Japan Open":                  38,    # [ST estimate]
     "Shanghai Masters":                  36,    # [ST estimate]
     "Stockholm Open":                    39,    # [ST estimate]
-    "Antwerp European Open":             39,    # [ST estimate]
+    "Antwerp European Open":             39,    # [ST estimate] (event moved to Brussels for 2026)
+    # ── 2026 fall Asian + indoor swing (calendar coverage; live ST overrides once played) ──
+    # Sofascore names these "City, Country", so keys are CITY-FIRST to match resolve_court_name.
+    "Chengdu Open":                      36,    # [ST estimate — outdoor hard, China (250, Sept)]
+    "Hangzhou Open":                     36,    # [ST estimate — outdoor hard, China (250, Sept)]
+    "Beijing":                           37,    # [ST estimate — China Open ATP 500, outdoor hard]
+    "Beijing Open":                      37,    # alt
+    "Tokyo":                             38,    # [ST estimate — Japan Open ATP 500] city alias of "Tokyo Japan Open"
+    "Almaty Open":                       38,    # [ST estimate — indoor hard, Kazakhstan (250, Oct)]
+    "Almaty":                            38,    # city alias
+    "Brussels":                          39,    # [ST estimate — European Open, indoor hard (250, Oct; moved from Antwerp)]
+    "Brussels European Open":            39,    # alt
+    "Memphis Open":                      36,    # [ST estimate — hard, US (Challenger/125)]
     "Challenger Hard (Generic)":         36,    # [ST estimate — user specified]
 
     # ── ATP Clay ─────────────────────────────────────────────────────────────
@@ -188,6 +200,22 @@ COURT_CPR = {
     "WTA 125 Hard (Generic)":            36,    # [ST estimate — user specified 36]
     "Austin WTA 125":                    36,
     "Jiangxi Open WTA 125":              36,
+    # ── 2026 fall Asian swing (calendar coverage; live ST overrides once played) ──
+    # City-first keys to match Sofascore's "City, Country" tournament names.
+    "Seoul WTA":                         37,    # Korea Open, WTA 250 hard (Sept)
+    "Korea Open WTA":                    37,    # alt
+    "Beijing WTA":                       36,    # China Open, WTA 1000 outdoor hard (city match)
+    "Tokyo WTA":                         37,    # Toray Pan Pacific, WTA 500 hard (city match)
+    "Ningbo WTA":                        36,    # Ningbo Open, WTA 500 hard (Oct)
+    "Ningbo Open WTA":                   36,    # alt
+    "Guangzhou WTA":                     36,    # Guangzhou Open, WTA 250 hard (Oct)
+    "Guangzhou Open WTA":                36,    # alt
+    "Chennai WTA":                       36,    # Chennai Open, WTA 250 hard (Nov, new event)
+    "Chennai Open WTA":                  36,    # alt
+    "Hong Kong WTA":                     36,    # Prudential Hong Kong, WTA 250 hard (Nov)
+    "Hong Kong Open WTA":                36,    # alt
+    "Jiujiang WTA":                      36,    # Jiangxi Open (Jiujiang), WTA hard
+    "Vancouver WTA":                     36,    # WTA 125 hard (on the live 2026 board)
 
     # ── WTA Clay ─────────────────────────────────────────────────────────────
     "Roland Garros WTA":                 37.7,  # [ST confirmed, 2026 — same court as ATP]
@@ -208,6 +236,8 @@ COURT_CPR = {
     "Catalonia Open WTA 125":            23,
     "Huzhou Open WTA 125 Clay":          23,
     "Emilia-Romagna WTA 125 Clay":       23,
+    "Targu Mures WTA 125":               26,    # WTA 125 clay, Romania (on the live 2026 board)
+    "Iasi Open WTA":                     24,    # [ST estimate — clay, Romania (WTA 250, late July)]
     "WTA 125 Clay (Generic)":            26,    # [ST estimate — user specified 26]
 
     # ── WTA Grass (ST Pace Index — same venues as ATP) ─────────────────────────
@@ -267,6 +297,8 @@ INDOOR_TOURNAMENTS = (
     # "finals" — match on "finals" (year-end finals are indoor) not "atp finals".
     "australian open", "paris", "finals", "vienna", "basel", "rotterdam",
     "dallas", "doha", "dubai", "antwerp", "sofia", "montpellier",
+    # 2026 fall indoor-hard events (Stockholm was previously missing here):
+    "stockholm", "almaty", "brussels",
 )
 
 
