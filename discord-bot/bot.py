@@ -1831,7 +1831,7 @@ def _play_statline(pick: dict) -> str:
     return " · ".join(bits)
 
 
-def _ranked_line(pick: dict, rank: int) -> str:
+def _ranked_line(pick: dict, rank: int, suppress_correlation_note: bool = False) -> str:
     """One ranked play in the LIST view — two SHORT lines that don't wrap on a
     phone. Carries exactly what a subscriber needs to act: the play, the lean,
     the projection, the confidence.
@@ -1871,8 +1871,10 @@ def _ranked_line(pick: dict, rank: int) -> str:
         _ctx = (f" (standard {_std:g})" if isinstance(_std, (int, float)) else "")
         out += f"\n😈 _Boosted demon line {pick['line']:g}{_ctx} — over-only_"
     # PTGW: implied match-outcome claim removed 2026-07-26 (user) — a games-won total
-    # isn't a win/lose scenario. Keep only the correlation flag when it applies.
-    if pick.get("prop_type") == "Player Total Games Won" and pick.get("ptgw_correlated"):
+    # isn't a win/lose scenario. The slate-correlation caution still shows on the main
+    # board, but is suppressed on the Additional Plays post (2026-07-27, user).
+    if (pick.get("prop_type") == "Player Total Games Won" and pick.get("ptgw_correlated")
+            and not suppress_correlation_note):
         out += "\n⚠️ _correlated with another play on the board_"
     # Total Games projection is anchored to the sharp Sofascore total, so its edge
     # (proj − line) is already a clean "PrizePicks vs book" read — no extra line
@@ -1961,7 +1963,7 @@ _DESC_LIMIT = 3800        # Discord's description cap is 4096 — leave headroom
 
 
 def ranked_embeds(ranked: list, start_rank: int = 1, total: int = None,
-                  title_override: str = None) -> list:
+                  title_override: str = None, suppress_correlation_note: bool = False) -> list:
     """The RANKED BOARD — every qualifying play from ``start_rank`` on, two lines
     each, blank line between. The ⭐ is NOT here; it gets its own embed via
     potd_embed() posted above this one.
@@ -1995,7 +1997,7 @@ def ranked_embeds(ranked: list, start_rank: int = 1, total: int = None,
                 and isinstance(c, (int, float)) and c < _thresh):
             blocks.append("**— Volume plays (65–79%) —**")
             _divider_placed = True
-        blocks.append(_ranked_line(p, i))
+        blocks.append(_ranked_line(p, i, suppress_correlation_note))
 
     pages, cur = [], []
     for b in blocks:
@@ -2200,12 +2202,12 @@ async def _post_second_wave(channel, track: bool = True) -> str:
         return "no additional plays"
 
     await _annotate_form_alerts(adds)
-    header = discord.Embed(
-        description=("Up to %d plays that weren't on last night's 8 PM board — a fresh "
-                     "morning scan of today's slate." % SECOND_WAVE_MAX),
-        color=COLOR_NEUTRAL)
-    header.set_author(name="🎾 Baseline — Second Wave")
-    embeds = [header] + ranked_embeds(adds, start_rank=1, total=len(adds))
+    # One embed titled "Additional Plays" — no separate header/description blurb
+    # (2026-07-27, user: far too much wording); the slate date rides the board footer.
+    # Correlation caution suppressed here (kept on the main board).
+    embeds = ranked_embeds(adds, start_rank=1, total=len(adds),
+                           title_override="🎾 Additional Plays",
+                           suppress_correlation_note=True)
     # @everyone — a real second daily drop (2026-07-27, user), matching the 8 PM board's ping.
     _content = "@everyone" if track else None
     await channel.send(content=_content, embeds=embeds[:10], allowed_mentions=EVERYONE_MENTION)
