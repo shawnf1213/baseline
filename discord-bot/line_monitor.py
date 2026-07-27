@@ -70,17 +70,19 @@ async def monitor(picks: list, get_lines, post_alert, interval: int = INTERVAL_S
         started_at = time.time()
         log.info("Line monitor started for %d picks", len(active))
 
-        # First pass runs IMMEDIATELY (no 30-min blind window at the start). This
-        # matters most on a RESUME after a bot restart: the monitor re-reads each
-        # pick's ORIGINAL line and checks the current board right away, so a move
-        # that happened while the bot was redeploying is caught at once instead of
-        # up to 30 minutes later. At a fresh board post current == original, so the
-        # immediate pass simply finds no move.
+        # First pass runs IMMEDIATELY (no 30-min blind window at the start), but it
+        # only ADOPTS whatever departures already exist — it does NOT announce them.
+        # The monitor is rebuilt from scratch on every bot restart (redeploy/reconnect)
+        # and on every board re-arm (8 PM board, 8 AM second wave), each time with a
+        # fresh alerted=False. Announcing on the first pass therefore re-posted moves a
+        # prior instance had already announced — the SAME alert firing repeatedly within
+        # minutes of a redeploy or re-arm. Now the first pass seeds state silently and
+        # only departures that first appear on a LATER pass are announced. At a fresh
+        # board post current == original, so nothing is seeded either.
         first = True
         while active:
             if not first:
                 await asyncio.sleep(interval)
-            first = False
             now = time.time()
 
             # Drop picks whose match has started (or the safety cap elapsed).
@@ -111,6 +113,15 @@ async def monitor(picks: list, get_lines, post_alert, interval: int = INTERVAL_S
                 if a["alerted"]:
                     continue                 # already alerted for this departure
                 a["alerted"] = True
+                # First-pass departures are adopted silently (see the block comment
+                # above): a rebuilt/re-armed monitor must not re-announce a move a prior
+                # instance already posted.
+                if first:
+                    log.info("Line monitor: adopted existing departure %s %s %g->%g "
+                             "(first pass — no alert)",
+                             a["pick"].get("player"), a["pick"].get("prop_type"),
+                             a["original"], cur)
+                    continue
 
                 # ── Alert copy: two lines, no narration ──────────────────────
                 # Was four sentences explaining what a line move is and that the
@@ -159,6 +170,8 @@ async def monitor(picks: list, get_lines, post_alert, interval: int = INTERVAL_S
                              p.get("player"), p.get("prop_type"), a["original"], cur)
                 except Exception:  # noqa: BLE001
                     log.exception("post_alert failed")
+
+            first = False   # later passes announce genuinely-new departures
 
         log.info("Line monitor finished — all matches started.")
     except asyncio.CancelledError:
