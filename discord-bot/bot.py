@@ -1356,7 +1356,7 @@ def _slot_is_live(oneoff_hm: tuple) -> bool:
     return live
 # One-off skip: don't post the daily recap on this ET date (it already posted
 # earlier that day). Set to "" to disable. Resumes normally the next day.
-RESULTS_SKIP_DATE = os.getenv("RESULTS_SKIP_DATE", "2026-06-30")
+RESULTS_SKIP_DATE = os.getenv("RESULTS_SKIP_DATE", "2026-07-28")
 # One-off Pick of the Day skip: on this ET date the scans DON'T generate picks —
 # the 4:50 scan posts a "no value, waiting for new tournaments" @everyone notice
 # and the evening scan stays silent. Set to "" to disable. Resumes next day.
@@ -2670,6 +2670,29 @@ def daily_recap_embed(rec: dict, target_date: str = None) -> discord.Embed:
     if t_total and t_rate < 60:
         record_val += "\n\n**Bad beats today, but we move.**"
     e.add_field(name="📋 Record", value=record_val, inline=False)
+    # "Some props play tomorrow" — when plays from this cycle haven't resolved yet
+    # (a match moved or started late). Names the next calendar date so members know
+    # those carry over to the next recap. Only shown when there ARE such plays.
+    try:
+        # Scope to THIS recap's own lists: the batches (minute-precision generated_at)
+        # that produced the graded picks above. This ties "playing tomorrow" to the
+        # 7/27 board + additional scan only — NOT the fresh 8 PM board for the NEXT
+        # day (a separate list, same 00:05 UTC minute but a later date).
+        _recap_batches = {(p.get("generated_at") or "")[:16] for p in graded}
+        _pending = [p for p in picks
+                    if p.get("result") not in ("W", "L", "PUSH", "VOID")
+                    and not p.get("excluded_from_record")
+                    and (p.get("generated_at") or "")[:16] in _recap_batches]
+        if _pending:
+            _nd = datetime.datetime.strptime(target_date, "%Y-%m-%d") + datetime.timedelta(days=1)
+            _names = ", ".join(sorted({(p.get("player") or "").split()[-1] for p in _pending}))
+            e.add_field(
+                name=f"🗓️ Some props play tomorrow · {_nd.month}/{_nd.day}",
+                value=f"{len(_pending)} play{'s' if len(_pending) != 1 else ''} didn't finish today — "
+                      f"recapped {_nd.month}/{_nd.day}: {_names}",
+                inline=False)
+    except Exception:  # noqa: BLE001
+        pass
     return _stamped_footer(e, FOOTER_GENERIC)
 
 
