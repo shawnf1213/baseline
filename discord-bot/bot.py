@@ -1225,8 +1225,8 @@ PICKS_GEN_MINUTE = int(os.getenv("PICKS_GEN_MINUTE", "0") or "0")
 # Moved from 11 PM to 8 AM (2026-07-27, user): at 11 PM the board is just the tail of the
 # finished slate, but PrizePicks posts the next day's lines overnight — so an 8 AM re-rank
 # draws from a full, fresh board. Posted WITH @everyone (a real second daily drop).
-SECOND_WAVE_HOUR   = int(os.getenv("SECOND_WAVE_HOUR", "8") or "8")     # 8:00 AM ET
-SECOND_WAVE_MINUTE = int(os.getenv("SECOND_WAVE_MINUTE", "0") or "0")
+SECOND_WAVE_HOUR   = int(os.getenv("SECOND_WAVE_HOUR", "8") or "8")     # 8:30 AM ET
+SECOND_WAVE_MINUTE = int(os.getenv("SECOND_WAVE_MINUTE", "30") or "30")  # (was :00 — moved to :30, 2026-07-28 user)
 SECOND_WAVE_MAX    = int(os.getenv("SECOND_WAVE_MAX", "6") or "6")      # cap on additional plays
 # Ranked plays are delivered in pages of this many, each its own @everyone message
 # (top-12 → two messages: 1-6 then 7-12).
