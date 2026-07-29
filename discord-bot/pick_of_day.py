@@ -435,14 +435,22 @@ async def _evaluate(prop: dict, sem: asyncio.Semaphore):
             # don't guess the surface or show a stale completed event).
             nm = await _next_match(p_id, tour)
 
-            # Only consider matches that actually play within the next 24h. A
-            # prop sitting on the board for a match 2-3 days out isn't a "play of
-            # the day". Requires a known scheduled start time within the window.
+            # Each list targets exactly ONE ET calendar date (2026-07-28, user): the
+            # evening board (>= noon ET) is TOMORROW's slate, a morning scan (second
+            # wave) is TODAY's. The old rolling [now-6h, now+24h] window spilled
+            # tonight's in-progress matches (e.g. a 9 PM start) onto the next-day
+            # board, and double-logged next-day matches across two consecutive boards.
+            # Filtering strictly by the match's ET date fixes both.
             start = nm.get("start_timestamp")
-            now = datetime.now(timezone.utc).timestamp()
-            if not start or start > now + MAX_LOOKAHEAD_HOURS * 3600 or start < now - 6 * 3600:
-                log.info("POD skip (match not within %dh): %r vs %r start=%s",
-                         MAX_LOOKAHEAD_HOURS, p_name, o_name, start)
+            if not start:
+                log.info("POD skip (no scheduled start): %r vs %r", p_name, o_name)
+                return None
+            _now_et = datetime.now(_ET)
+            _target_date = (_now_et + timedelta(days=1)).date() if _now_et.hour >= 12 else _now_et.date()
+            _start_et_date = datetime.fromtimestamp(start, timezone.utc).astimezone(_ET).date()
+            if _start_et_date != _target_date:
+                log.info("POD skip (match plays %s, target slate %s): %r vs %r",
+                         _start_et_date, _target_date, p_name, o_name)
                 return None
 
             surface = nm.get("surface") or _season_surface()
