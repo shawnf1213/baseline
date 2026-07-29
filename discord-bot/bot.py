@@ -1263,6 +1263,10 @@ SLATE_MINUTE = int(os.getenv("SLATE_MINUTE", "0") or "0")
 # 11:45 PM ET by default — just before the Pick of the Day, after the day's
 # picks have been graded by the resolver. Defaults to the POD channel.
 RESULTS_CHANNEL_ID = int(os.getenv("RESULTS_CHANNEL_ID", str(POD_CHANNEL_ID or 0)) or "0")
+# Public track-record channel — the daily RECAP posts here (SILENT, no @everyone),
+# separate from the premium POTD channel where the board/3x keep their @everyone.
+# Hardcoded by request (2026-07-29): prospect-facing, no env override.
+TRACK_RECORD_CHANNEL_ID = 1532142615435284721
 # Minimum post-guard decided picks before the weekly calibration table means
 # anything. All history up to 2026-07-14 is pre-guard (confidence possibly scored
 # on a cache-poisoned snapshot), so the clean sample restarts from zero and the
@@ -3125,7 +3129,10 @@ async def daily_results_post():
     picks which firing runs so the day never posts the recap twice."""
     if not _slot_is_live(ONEOFF_RECAP_HM):
         return
-    chan_id = RESULTS_CHANNEL_ID or POD_CHANNEL_ID
+    # Recap posts to the PUBLIC track-record channel ONLY (2026-07-29) — never the
+    # premium POTD channel. The board / ⭐ / 3x stay in POTD via daily_picks_generate
+    # (untouched). channel-not-found below skips safely if the bot can't see this id.
+    chan_id = TRACK_RECORD_CHANNEL_ID
     if not chan_id:
         return
     if RESULTS_SKIP_DATE and datetime.datetime.now(POD_TZINFO).strftime("%Y-%m-%d") == RESULTS_SKIP_DATE:
@@ -3155,11 +3162,13 @@ async def daily_results_post():
             log.info("daily results: recap posting DISABLED (AUTOPOST_ENABLED off) — "
                      "resolved pending, not posting the recap")
         elif rec and rec.get("total"):
-            await channel.send(content="@everyone",
-                               embed=daily_recap_embed(rec, target_date=_recap_date),
-                               allowed_mentions=EVERYONE_MENTION)
-            log.info("daily results: posted %s recap (overall %s-%s)",
-                     _recap_date, rec.get("wins"), rec.get("losses"))
+            # SILENT in the public track-record channel — NO @everyone/@here. A daily
+            # mass-ping drives prospects out; embed only, allowed_mentions=none.
+            await channel.send(
+                embed=daily_recap_embed(rec, target_date=_recap_date),
+                allowed_mentions=discord.AllowedMentions.none())
+            log.info("daily results: posted %s recap SILENT -> track-record %s (overall %s-%s)",
+                     _recap_date, chan_id, rec.get("wins"), rec.get("losses"))
         else:
             log.info("daily results: no graded record yet — skipping recap")
 
