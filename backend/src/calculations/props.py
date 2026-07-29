@@ -2527,6 +2527,20 @@ def project_total_games(
         is_bo5, p1_wr, p2_wr, win_prob_gap, exp_sets, comp_label, games_per_set,
     )
 
+    # ── Lopsidedness (win-prob gap) games adjustment (2026-07-29, user) ──────────
+    # The hold-based games/set fit is a weak conditional mean (R^2 ~0.1) that ignores
+    # HOW lopsided the match is. A heavy favorite blows out — 6-1/6-2 sets are ~7
+    # games, not the ~9 tour average — so the projection ran 2-4 games high and leaned
+    # OVER, which lost (exposed on unanchored lower-tier matches with no market total
+    # to correct it, e.g. Sara Sorribes Tormo at Targu Mures). expected_sets already
+    # trims SETS for lopsided matches; this trims GAMES-PER-SET too. Floor 6.5 (a set
+    # is first to 6). win_prob_gap is in percentage points (gap >40 = big favorite).
+    _lopsided_gps = -min(1.8, max(0.0, win_prob_gap - 22.0) * 0.05)
+    if _lopsided_gps < 0:
+        games_per_set = max(6.5, games_per_set + _lopsided_gps)
+        logger.info("TG_LOPSIDED | gap=%.1fpp | gps %+.2f (blowout = fewer games) -> %.2f",
+                    win_prob_gap, _lopsided_gps, games_per_set)
+
     # ── Raw total games ───────────────────────────────────────────────────────
     proj = games_per_set * exp_sets
 

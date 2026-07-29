@@ -75,6 +75,11 @@ WINPROB_MARKET_WEIGHT = 0.7
 # a divergence (the model disagrees materially with the sharp market).
 TG_MARKET_WEIGHT = float(os.getenv("TG_MARKET_WEIGHT", "0.7") or "0.7")
 TG_DIVERGENCE_GAMES = 3.0
+# Unanchored Total Games (no Sofascore market total — common on lower-tier events
+# like WTA 125s / Challengers) runs model-only, with no market line to correct the
+# projection. That's where the TG over-projection bit (2026-07-29, user). Cut
+# confidence so marginal unanchored TG props drop off the 65 board bar.
+TG_UNANCHORED_CONF_PENALTY = float(os.getenv("TG_UNANCHORED_CONF_PENALTY", "12") or "12")
 from src.api.tennis_abstract import get_player_ta_stats, build_props_ta_view
 from src.api.sackmann import (
     load_player_sackmann_data,
@@ -1930,6 +1935,14 @@ async def prop_calculate(req: PropRequest):
             else:
                 result["tg_anchored"] = False
                 result["tg_divergent"] = False
+                # Unanchored guard: no market total to correct the model, so the
+                # projection stands alone — riskier. Cut confidence so marginal
+                # unanchored TG drops off the board (this is where TG lost most).
+                if isinstance(result.get("confidence"), (int, float)):
+                    result["confidence"] = max(0.0, result["confidence"] - TG_UNANCHORED_CONF_PENALTY)
+                    logger.info("TG_UNANCHORED | %s | no market total — conf -%.0f -> %s",
+                                req.player_name or "player", TG_UNANCHORED_CONF_PENALTY,
+                                result["confidence"])
         elif req.prop_type == "Fantasy Score":
             # FS is a COMPOSITE: it needs the player's ace + DF projections and the
             # match set structure (win prob + expected sets), then runs the
