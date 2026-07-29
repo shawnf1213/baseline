@@ -1325,6 +1325,11 @@ def _fetch_event_page(player_id: int, page: int) -> list:
 
 
 MAX_PAGES_DEFAULT = 50    # fetch up to 50 pages (~500 events) — covers full career history
+# H2H prop projections fetch the FULL career (2026-07-28, user): old meetings (5+
+# years back) were being dropped by the shallow caps, so a real matchup signal (e.g.
+# Kalinskaya double-faults ~5 vs Kasatkina) never reached the projection. The batched
+# fetch stops at end-of-history anyway, so this is effectively "all available meetings".
+H2H_DEEP_PAGES = 150
 
 
 def _get_player_recent_events(player_id: int, max_pages: int = MAX_PAGES_DEFAULT,
@@ -1344,7 +1349,7 @@ def _get_player_recent_events(player_id: int, max_pages: int = MAX_PAGES_DEFAULT
     # 6-hour cache bucket (STEP 3): match history doesn't change minute-to-minute,
     # so reusing it for 6h sharply cuts live proxy volume.
     _bucket = int(time.time()) // _CACHE_BUCKET_SECS
-    cache_key = f"ss_events_v2_{player_id}_{_bucket}"
+    cache_key = f"ss_events_v2_{player_id}_p{max_pages}_{_bucket}"
     # force_fresh (resolution path): drop any cached snapshot so a just-completed
     # match that isn't in the 6h bucket yet is actually fetched. The fresh result
     # is written back below, so it also refreshes the cache for later callers.
@@ -2801,9 +2806,10 @@ def get_h2h_summary(tour: str, p1: str, p2: str,
     p1_id = int(p1)
     p2_id = int(p2)
 
-    # Fetch both players' event histories and cross-reference for matches
-    p1_events = _get_player_events_paged(p1_id, max_pages=10)
-    p2_events = _get_player_events_paged(p2_id, max_pages=10)
+    # Fetch both players' FULL histories (batched, deep) and cross-reference — old
+    # meetings must not be dropped by a shallow cap (see H2H_DEEP_PAGES).
+    p1_events = _get_player_recent_events(p1_id, max_pages=H2H_DEEP_PAGES)
+    p2_events = _get_player_recent_events(p2_id, max_pages=H2H_DEEP_PAGES)
 
     # Build a set of event IDs from p2's history for fast lookup
     p2_event_ids = {e.get("id") for e in p2_events if e.get("id")}
@@ -2921,13 +2927,25 @@ def get_h2h_stat_avg(tour: str, p1: str, p2: str,
     p1_id = int(p1)
     p2_id = int(p2)
 
-    events = _get_player_recent_events(p1_id)
-    h2h = [
-        e for e in events
-        if {e.get("homeTeam", {}).get("id"), e.get("awayTeam", {}).get("id")} == {p1_id, p2_id}
-        and e.get("status", {}).get("type", "") in ("finished", "ended")
-        and (not surface or _infer_surface(e.get("tournament", {}).get("name", "")) == surface)
-    ]
+    # Full-career H2H: union BOTH players' deep histories (a meeting truncated/missing
+    # from one side is caught in the other), deduped by event id, so old meetings are
+    # never dropped by a shallow page cap.
+    events = (_get_player_recent_events(p1_id, max_pages=H2H_DEEP_PAGES)
+              + _get_player_recent_events(p2_id, max_pages=H2H_DEEP_PAGES))
+    _seen_h2h: set = set()
+    h2h = []
+    for e in events:
+        eid = e.get("id")
+        if not eid or eid in _seen_h2h:
+            continue
+        if {e.get("homeTeam", {}).get("id"), e.get("awayTeam", {}).get("id")} != {p1_id, p2_id}:
+            continue
+        if e.get("status", {}).get("type", "") not in ("finished", "ended"):
+            continue
+        if surface and _infer_surface(e.get("tournament", {}).get("name", "")) != surface:
+            continue
+        _seen_h2h.add(eid)
+        h2h.append(e)
 
     if not h2h:
         return empty
