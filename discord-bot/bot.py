@@ -1263,9 +1263,9 @@ SLATE_MINUTE = int(os.getenv("SLATE_MINUTE", "0") or "0")
 # 11:45 PM ET by default — just before the Pick of the Day, after the day's
 # picks have been graded by the resolver. Defaults to the POD channel.
 RESULTS_CHANNEL_ID = int(os.getenv("RESULTS_CHANNEL_ID", str(POD_CHANNEL_ID or 0)) or "0")
-# Public track-record channel — the daily RECAP posts here (SILENT, no @everyone),
-# separate from the premium POTD channel where the board/3x keep their @everyone.
-# Hardcoded by request (2026-07-29): prospect-facing, no env override.
+# Public track-record channel — the daily RECAP posts here with @everyone (once a
+# day, so the ping is fine), separate from the premium POTD channel where the
+# board/3x keep their own @everyone. Hardcoded by request (2026-07-29): no env override.
 TRACK_RECORD_CHANNEL_ID = 1532142615435284721
 # Minimum post-guard decided picks before the weekly calibration table means
 # anything. All history up to 2026-07-14 is pre-guard (confidence possibly scored
@@ -3162,12 +3162,12 @@ async def daily_results_post():
             log.info("daily results: recap posting DISABLED (AUTOPOST_ENABLED off) — "
                      "resolved pending, not posting the recap")
         elif rec and rec.get("total"):
-            # SILENT in the public track-record channel — NO @everyone/@here. A daily
-            # mass-ping drives prospects out; embed only, allowed_mentions=none.
-            await channel.send(
-                embed=daily_recap_embed(rec, target_date=_recap_date),
-                allowed_mentions=discord.AllowedMentions.none())
-            log.info("daily results: posted %s recap SILENT -> track-record %s (overall %s-%s)",
+            # @everyone on the recap (2026-07-29, user): it posts once a day, so the
+            # ping is acceptable even in the public track-record channel.
+            await channel.send(content="@everyone",
+                               embed=daily_recap_embed(rec, target_date=_recap_date),
+                               allowed_mentions=EVERYONE_MENTION)
+            log.info("daily results: posted %s recap -> track-record %s (@everyone, overall %s-%s)",
                      _recap_date, chan_id, rec.get("wins"), rec.get("losses"))
         else:
             log.info("daily results: no graded record yet — skipping recap")
