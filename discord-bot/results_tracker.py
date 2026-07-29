@@ -56,10 +56,13 @@ def get_pending() -> list:
         return []
 
 
-def update_result(pick_id: int, result: str) -> bool:
+def update_result(pick_id: int, result: str, value: float = None) -> bool:
     try:
+        payload = {"id": int(pick_id), "result": result}
+        if value is not None:
+            payload["value"] = value
         r = requests.post(f"{API_BASE}/api/results/update",
-                          json={"id": int(pick_id), "result": result}, timeout=LOG_TIMEOUT)
+                          json=payload, timeout=LOG_TIMEOUT)
         r.raise_for_status()
         return bool((r.json() or {}).get("ok"))
     except Exception as exc:  # noqa: BLE001

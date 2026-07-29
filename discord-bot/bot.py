@@ -2592,17 +2592,17 @@ def _et_date_of(generated_at: str, shift_hours: float = 0):
 
 
 def daily_recap_embed(rec: dict, target_date: str = None) -> discord.Embed:
-    """Date-based daily recap (the auto-posted format). Header 'M/D Recap', that
-    date's Pick-of-the-Day picks with W/L/PUSH indicators, a Today record + hit
+    """Date-based daily recap (the auto-posted format). Header 'M/D Premium List',
+    that date's Pick-of-the-Day picks with W/L/PUSH indicators, a Today record + hit
     rate line, and the cumulative Overall line. ``target_date`` is an ET
     'YYYY-MM-DD'; defaults to today in ET. Emoji/colour/PUSH handling unchanged."""
     if target_date is None:
         target_date = datetime.datetime.now(POD_TZINFO).strftime("%Y-%m-%d")
     try:
         _d = datetime.datetime.strptime(target_date, "%Y-%m-%d")
-        header = f"{_d.month}/{_d.day} Recap"
+        header = f"{_d.month}/{_d.day} Premium List"
     except Exception:  # noqa: BLE001
-        header = "Recap"
+        header = "Premium List"
 
     # Date-scoped by RESOLUTION date, on a 6 AM→6 AM "day" (shift_hours=-6) so a
     # match that finished late and graded just after midnight still counts for the
@@ -2656,6 +2656,12 @@ def daily_recap_embed(rec: dict, target_date: str = None) -> discord.Embed:
             row = f"{icon.get(p['result'], '⚪')} **{bits[0]}** {' '.join(bits[1:])}".rstrip()
             if p["result"] == "VOID":
                 row += " — **DNP** (cancelled)"
+            else:
+                # Actual stat the player recorded — shown next to the line so the
+                # result is verifiable at a glance (e.g. "Aces 13.5 OVER  →  18").
+                _rv = p.get("result_value")
+                if isinstance(_rv, (int, float)):
+                    row += f"  →  **{_rv:g}**"
             rows.append(row)
         _add_lines_field(e, "Today's Picks", rows)
     else:
@@ -3093,7 +3099,8 @@ async def _resolve_all_pending() -> int:
         res = await asyncio.to_thread(results_tracker.resolve_pick, pk)
         outcome = (res.get("result") or "").upper()
         if outcome in ("W", "L", "PUSH", "VOID"):   # VOID = cancelled / DNP
-            ok = await asyncio.to_thread(results_tracker.update_result, pk["id"], outcome)
+            ok = await asyncio.to_thread(results_tracker.update_result, pk["id"],
+                                         outcome, res.get("value"))
             graded += 1 if ok else 0
             log.info("POD resolve: pick #%s %s %s -> %s (val=%s)",
                      pk.get("id"), pk.get("player"), pk.get("prop_type"),

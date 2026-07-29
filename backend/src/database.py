@@ -92,6 +92,11 @@ try:
         # default to MODEL_VERSION. Lets calibration split BP hit-rates by the A2
         # outcome-conditioning boundary instead of pooling incompatible models.
         model_version = Column(String, default=MODEL_VERSION)
+        # Actual stat the player recorded when the pick resolved (e.g. 18 aces,
+        # 21 total games). Captured by the resolver at grade time so the recap can
+        # show the final number next to each prop. NULL = not recorded (older rows
+        # or manual grades from matches the resolver couldn't fetch).
+        result_value = Column(Float, nullable=True)
 
         def to_dict(self) -> dict:
             return {
@@ -116,6 +121,7 @@ try:
                 "odds_type": (self.odds_type or "standard"),
                 "excluded_from_record": int(self.excluded_from_record or 0),
                 "model_version": (self.model_version or "pre-a2"),
+                "result_value": self.result_value,
             }
 
     class CacheEntry(Base):
@@ -234,6 +240,12 @@ def init_db() -> None:
                 conn.execute(text(
                     "ALTER TABLE picks ALTER COLUMN model_version SET DEFAULT '%s'"
                     % MODEL_VERSION))
+                # result_value: the actual stat recorded at resolution (aces, games,
+                # etc.) so the recap can show the final number. Nullable, no backfill
+                # — existing graded rows simply have no stored value.
+                conn.execute(text(
+                    "ALTER TABLE picks ADD COLUMN IF NOT EXISTS "
+                    "result_value DOUBLE PRECISION"))
         except Exception as mexc:  # noqa: BLE001 — non-fatal; column may already exist
             logger.warning("picks pick_group migration skipped: %s", mexc)
         _READY = True
@@ -293,8 +305,10 @@ def log_pick(rec: dict) -> dict:
         return {}
 
 
-def update_result(pick_id: int, result: str) -> bool:
-    """Set the result (W/L/PENDING/NEEDS REVIEW) and resolved_at. Returns success."""
+def update_result(pick_id: int, result: str, value: float = None) -> bool:
+    """Set the result (W/L/PENDING/NEEDS REVIEW) and resolved_at. Returns success.
+    ``value`` is the actual stat the player recorded (aces, games, …); when given
+    it's stored so the recap can show the final number. None leaves it untouched."""
     if not _READY:
         return False
     try:
@@ -304,6 +318,11 @@ def update_result(pick_id: int, result: str) -> bool:
                 return False
             row.result = (result or "").upper()
             row.resolved_at = datetime.now(timezone.utc)
+            if value is not None:
+                try:
+                    row.result_value = float(value)
+                except (TypeError, ValueError):
+                    pass
             return True
     except Exception as exc:  # noqa: BLE001
         logger.exception("update_result failed: %s", exc)

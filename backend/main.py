@@ -198,6 +198,7 @@ class ResultLogRequest(BaseModel):
 class ResultUpdateRequest(BaseModel):
     id: int
     result: str                          # W / L / PENDING / NEEDS REVIEW
+    value: float | None = None           # actual stat recorded (for the recap)
 
 
 @app.post("/api/results/log")
@@ -262,7 +263,7 @@ async def results_audit():
 async def results_update(req: ResultUpdateRequest):
     """Set a pick's result (manual admin override or the auto-resolver)."""
     from src import database
-    ok = database.update_result(req.id, req.result)
+    ok = database.update_result(req.id, req.result, req.value)
     return {"ok": ok}
 
 
