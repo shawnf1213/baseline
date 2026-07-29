@@ -474,10 +474,11 @@ def _summarize(picks: list) -> dict:
     losses = [p for p in picks if p["result"] == "L"]
     pushes = [p for p in picks if p["result"] == "PUSH"]
     voids = [p for p in picks if p["result"] == "VOID"]
-    # PUSH and VOID (cancelled / DNP) are neither a win nor a loss — excluded from
-    # the win-rate denominator (decided = W + L only), but still shown in the log.
-    decided = wins + losses
-    win_rate = round(len(wins) / len(decided) * 100, 1) if decided else 0.0
+    # PUSH counts as a WIN (policy) — folded into the win-rate numerator AND the
+    # denominator. VOID (cancelled / DNP) never played, so it stays out of both.
+    # Denominator = W + L + PUSH.
+    decided = wins + losses + pushes
+    win_rate = round((len(wins) + len(pushes)) / len(decided) * 100, 1) if decided else 0.0
 
     # Current streak: walk decided picks newest→oldest, count consecutive sames.
     streak_type, streak_len = None, 0
@@ -539,14 +540,17 @@ def _slip_record(threex_picks: list) -> dict:
             l += 1                        # both legs must hit — one miss = loss
         else:
             w += 1
-    decided = w + l
+    # PUSH counts as a WIN (policy): an all-push slip is a win, and pushes sit in
+    # both the numerator and the denominator. Raw w / l / push counts are kept for
+    # display; only the rate folds pushes in.
+    decided = w + l + push
     return {
         "slips": len(groups),
         "wins": w,
         "losses": l,
         "pushes": push,
         "pending": pending,
-        "win_rate": round(w / decided * 100, 1) if decided else 0.0,
+        "win_rate": round((w + push) / decided * 100, 1) if decided else 0.0,
     }
 
 

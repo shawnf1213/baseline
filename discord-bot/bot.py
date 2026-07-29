@@ -2706,7 +2706,10 @@ def results_embed(rec: dict) -> discord.Embed:
                            description="No graded picks yet — check back after today's plays resolve.")
         e.set_footer(text=FOOTER_GENERIC)
         return e
-    wins, losses = rec.get("wins", 0), rec.get("losses", 0)
+    # PUSH counts as a win (policy) — fold pushes into the win column so the shown
+    # record agrees with the pushes-as-wins win_rate from the backend.
+    pushes = rec.get("pushes", 0) or 0
+    wins, losses = rec.get("wins", 0) + pushes, rec.get("losses", 0)
     win_rate = rec.get("win_rate", 0.0)
     color = COLOR_OVER if win_rate >= 50 else COLOR_UNDER
     # ON FIRE — only signal when the 5+ most-recent graded picks haven't been
@@ -2725,7 +2728,7 @@ def results_embed(rec: dict) -> discord.Embed:
         f"**Record:** {wins}-{losses}   ·   **Win rate:** {win_rate:g}%\n"
         + (f"🔥 **ON FIRE — {streak} in a row!**\n" if on_fire else "")
         + f"Total graded: {wins + losses}  ·  Pending: {rec.get('pending', 0)}"
-        + (f"  ·  Pushes: {rec.get('pushes', 0)}" if rec.get("pushes") else "")
+        + (f"  ·  incl. {pushes} push{'es' if pushes != 1 else ''}" if pushes else "")
         + (f"  ·  Needs review: {rec.get('needs_review', 0)}" if rec.get("needs_review") else "")
     )
     last = [p for p in rec.get("picks", []) if p.get("result") in ("W", "L", "PUSH", "VOID")][:10]
@@ -2743,13 +2746,17 @@ def results_embed(rec: dict) -> discord.Embed:
     slips = rec.get("threex_slips") or {}
     legs = rec.get("threex_legs") or {}
     if (slips.get("slips") or 0) or (legs.get("total") or 0):
-        sw, sl = slips.get("wins", 0), slips.get("losses", 0)
-        lw, ll = legs.get("wins", 0), legs.get("losses", 0)
+        # PUSH counts as a win (policy) — fold pushes into the win column for both
+        # the slip record and the individual-leg record.
+        _slip_push = slips.get("pushes", 0) or 0
+        _leg_push = legs.get("pushes", 0) or 0
+        sw, sl = slips.get("wins", 0) + _slip_push, slips.get("losses", 0)
+        lw, ll = legs.get("wins", 0) + _leg_push, legs.get("losses", 0)
         val = (f"**Slip record:** {sw}-{sl}   ·   **Win rate:** {slips.get('win_rate', 0):g}%\n"
                f"_(both legs must hit — a slip wins only when neither leg misses)_\n"
                f"**Individual legs:** {lw}-{ll}"
                + (f"  ·  Pending: {legs.get('pending', 0)}" if legs.get("pending") else "")
-               + (f"  ·  Pushes: {legs.get('pushes', 0)}" if legs.get("pushes") else ""))
+               + (f"  ·  incl. {_leg_push} push{'es' if _leg_push != 1 else ''}" if _leg_push else ""))
         e.add_field(name="🎟️ Baseline 3x", value=val, inline=False)
     e.set_footer(text=FOOTER_GENERIC)
     return e
