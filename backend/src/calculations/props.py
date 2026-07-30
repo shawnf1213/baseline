@@ -119,6 +119,13 @@ def _games_per_set(combined_hold: float, tour: str = "ATP") -> float:
 
 # Tour-average aces faced per match — used to normalise opponent ace-against rate
 _TOUR_AVG_ACE_AGAINST = {"ATP": 5.5, "WTA": 3.0}
+# Joint cap on the PRODUCT of the ace matchup multipliers (opponent ace-against ×
+# court pace × service volume × handedness × surface × H2H), measured against the
+# player's own base rate. Individually each is bounded; nothing bounded the stack,
+# and compounding is where the big over-projections came from. ±30% is deliberately
+# loose — it binds only the true extremes (observed max 1.375) and leaves the
+# typical board (mean 1.088) untouched.
+_ACE_STACK_MIN, _ACE_STACK_MAX = 0.70, 1.30
 
 # ── Tour-average stats by surface ─────────────────────────────────────────────
 # Used as fallback when opponent has < 3 SS matches on this surface.
@@ -648,7 +655,18 @@ def project_aces(
         # ace-conceder yields ~1.22x, a stingy returner ~0.80x. (The cap stays —
         # it keeps the ACE PROJECTION honest; "no cap" applies to how aces WEIGH
         # into FS, not to the projection itself.)
-        _undamped = 1.0 + (raw_opp_factor - 1.0) * 0.30
+        # SYMMETRY FIX (2026-07-30). The old form was 1.0 + (ratio-1)*0.30, which
+        # is linear in the RATIO — and the ratio is floored at 0 but unbounded
+        # above, so the damping was lopsided. Measured: an opponent 15% BETTER than
+        # average at avoiding aces suppressed only -4.2%, while one 64% worse
+        # boosted +19.3% (near the cap). That is a persistent upward bias, since
+        # ace-suppressing opponents were effectively ignored.
+        #
+        # Raising the ratio to the damping power is symmetric in LOG space: a 2x
+        # ace-conceder and a 0.5x one now produce exactly reciprocal factors
+        # (2^0.3 = 1.231, 0.5^0.3 = 0.812, product = 1.000). Same 0.30 strength and
+        # the same [0.78, 1.22] clamp — only the shape changes.
+        _undamped = raw_opp_factor ** 0.30 if raw_opp_factor > 0 else 1.0
         opp_factor = max(0.78, min(1.22, _undamped))
         blended = base * opp_factor
         _trace(trace, "L4_opponent_ace_against",
@@ -741,6 +759,35 @@ def project_aces(
                "avg, so a big server with a bad return game does NOT shorten the match "
                "vs a weak holder. Low eff-hold → fewer games → fewer aces; grind → more. "
                "Centred on tour ref, bounded ±15%.")
+
+    # ── JOINT MATCHUP-STACK CAP (2026-07-30) ─────────────────────────────────
+    # Every matchup multiplier is individually bounded — opponent ±22%, court pace
+    # ±35%, service volume ±15%, plus handedness / surface / H2H — but NOTHING
+    # bounded their PRODUCT, so they compound. Live boards showed stacks of 1.375
+    # (Atmane) and 1.351 (Mensik) on top of the base, and the graded record says
+    # that is where aces die: picks with a 5+ ace projected edge went 3-9 (25%),
+    # and losers averaged a BIGGER projected edge (4.14) than winners (3.08).
+    #
+    # This caps how far the matchup layers can move the player's own baseline. It
+    # is a GUARD, not a calibration: it does not touch the base rate or any single
+    # factor, it only refuses to let three or four of them max out together. Well
+    # inside the cap (the common case) nothing changes at all.
+    if base > 0:
+        _stack = proj / base
+        if _stack > _ACE_STACK_MAX or _stack < _ACE_STACK_MIN:
+            _capped = max(_ACE_STACK_MIN, min(_ACE_STACK_MAX, _stack))
+            _pre_cap = proj
+            proj = base * _capped
+            logger.info("ACE_STACK_CAP | %s | matchup stack %.3f -> %.3f | proj %.2f -> %.2f",
+                        player_stats.get("player_name", "?"), _stack, _capped, _pre_cap, proj)
+            _trace(trace, "matchup_stack_cap",
+                   {"base": round(base, 3), "uncapped_stack": round(_stack, 3),
+                    "cap_lo": _ACE_STACK_MIN, "cap_hi": _ACE_STACK_MAX,
+                    "proj_in": round(_pre_cap, 3)},
+                   round(_capped, 3), proj,
+                   "matchup multipliers are individually bounded but their PRODUCT was "
+                   "not — capped so compounding factors can't run the projection away "
+                   "from the player's own baseline")
 
     _trace(trace, "projector_output", {"chain_result": round(proj, 3)},
            proj, round(proj, 1),
