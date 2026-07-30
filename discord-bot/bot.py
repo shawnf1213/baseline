@@ -1128,16 +1128,11 @@ def match_outcomes_embed(p_name: str, o_name: str, surface: str, court_display: 
                      f"{h.get('surface_p2_wins', 0)} of {h['surface_matches']}")
         e.add_field(name=f"Head-to-head ({p_name} first)", value=line, inline=False)
 
-    # Provenance: is the win prob anchored to the market, and how deep is the data.
-    prov = []
-    prov.append("Market-anchored win prob" if data.get("ptgw_anchored") else "Model-only win prob (no market line)")
-    if data.get("data_quality"):
-        prov.append(f"data: {data['data_quality']}")
-    for nm, key in ((p_name, "player_surface_n"), (o_name, "opponent_surface_n")):
-        if isinstance(data.get(key), (int, float)):
-            prov.append(f"{nm} {int(data[key])} {surface.lower()} matches")
-    e.add_field(name="Basis", value=" · ".join(prov), inline=False)
-
+    # NOTE (2026-07-30, user): the "Basis" provenance field (market-anchored flag,
+    # data quality, surface sample sizes) was REMOVED from the embed along with the
+    # caveat below. Those signals are still computed and available in the response
+    # (ptgw_anchored / data_quality / *_surface_n) — they just aren't printed.
+    #
     # NOTE (2026-07-30, user): the "read this as an estimate" caveat field was
     # REMOVED from the embed. The limitation still stands — these set splits are a
     # by-product of the games-won fit, are not separately calibrated against set
