@@ -83,8 +83,11 @@ TG_UNANCHORED_CONF_PENALTY = float(os.getenv("TG_UNANCHORED_CONF_PENALTY", "12")
 # Strength-of-field: a player ranked worse than this (or unranked / outside the
 # top-500 rankings cache) counts as "challenger level". A matchup where BOTH
 # players clear this bar is a challenger-vs-challenger play, which the board
-# deprioritizes below tour-level matches (2026-07-29, user). Env-tunable.
-CHALLENGER_RANK_CUTOFF = int(os.getenv("CHALLENGER_RANK_CUTOFF", "250") or "250")
+# deprioritizes below tour-level matches (2026-07-29, user). 150 chosen against
+# the live board: catches Targu Mures ITF (Samson 153 / Sobol 196, Ristic 224 /
+# Kotliar 450) while sparing fringe-tour (Bronzetti 118) and tour (McNally 73).
+# Env-tunable.
+CHALLENGER_RANK_CUTOFF = int(os.getenv("CHALLENGER_RANK_CUTOFF", "150") or "150")
 from src.api.tennis_abstract import get_player_ta_stats, build_props_ta_view
 from src.api.sackmann import (
     load_player_sackmann_data,
