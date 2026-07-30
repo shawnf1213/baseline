@@ -1044,6 +1044,213 @@ async def prop(
         _leave_queue()
 
 
+# ── /match — match-outcome projections ──────────────────────────────────────────
+# Every outcome below comes from the SAME four-scenario mixture the props ride on,
+# from the selected player's perspective:
+#   S1 win in straights · S2 win in a decider · S3 lose in a decider · S4 lose in straights
+# so P(win >= 1 set) = 1 - S4, P(straights) = S1, P(goes the distance) = S2 + S3.
+# The scenario split is LINE-INDEPENDENT (verified: identical S1-S4 across lines
+# 6.5/10.5/14.5), so we ask for the mixture with a neutral line and ignore p_over.
+# That is why this needs no new backend endpoint.
+_MATCH_NEUTRAL_LINE = 10.5
+
+
+def match_outcomes_embed(p_name: str, o_name: str, surface: str, court_display: str,
+                         data: dict) -> discord.Embed:
+    """Match-outcome projection: win a set / win the match / straights / distance,
+    plus the supporting match profile. Projection only — no book price, no edge."""
+    sp = data.get("ptgw_scenario_probs") or {}
+    s1 = sp.get("S1") or 0.0
+    s2 = sp.get("S2") or 0.0
+    s3 = sp.get("S3") or 0.0
+    s4 = sp.get("S4") or 0.0
+    p_win = data.get("ptgw_p_win_match")
+    if not isinstance(p_win, (int, float)):
+        _wp = data.get("p1_win_prob")
+        p_win = (_wp / 100.0) if isinstance(_wp, (int, float)) else (s1 + s2)
+
+    p_set   = 1.0 - s4          # win at least one set
+    p_str   = s1                # win in straight sets
+    p_dist  = s2 + s3           # match goes the distance
+    p_opp_set = 1.0 - s1        # opponent wins at least one set
+
+    is_bo5 = bool(data.get("is_bo5"))
+    dist_label = "Match goes 4+ sets" if is_bo5 else "Match goes 3 sets"
+
+    e = discord.Embed(title="🎾 Match Outlook",
+                      color=COLOR_OVER if p_win >= 0.5 else COLOR_UNDER)
+    loc = court_display if court_display and court_display != "Generic surface" else f"{surface} court"
+    e.description = (f"**{p_name}** vs **{o_name}**\n_{loc}_"
+                     + (f"  ·  _{data.get('match_format_label')}_"
+                        if data.get("match_format_label") else ""))
+
+    # Headline block — win-a-set first, since that's the market this was built for.
+    rows = [
+        f"🎯 **Wins at least one set**  ·  **{p_set*100:.0f}%**",
+        f"🏆 Wins the match  ·  **{p_win*100:.0f}%**",
+        f"⚡ Wins in straight sets  ·  **{p_str*100:.0f}%**",
+        f"⏳ {dist_label}  ·  **{p_dist*100:.0f}%**",
+        f"↩️ {o_name} wins at least one set  ·  **{p_opp_set*100:.0f}%**",
+    ]
+    e.add_field(name=f"Outcome probabilities — {p_name}", value="\n".join(rows), inline=False)
+
+    # Match profile — the context behind the numbers.
+    prof = []
+    if isinstance(data.get("expected_sets"), (int, float)):
+        prof.append(f"Expected sets **{data['expected_sets']:.1f}**")
+    if data.get("competitiveness"):
+        prof.append(str(data["competitiveness"]))
+    if data.get("environment_label"):
+        prof.append(str(data["environment_label"]))
+    if data.get("court_speed_tier"):
+        _cpi = data.get("court_pace_index")
+        prof.append(f"{data['court_speed_tier']} court"
+                    + (f" (CPI {_cpi:g})" if isinstance(_cpi, (int, float)) else ""))
+    if prof:
+        e.add_field(name="Match profile", value=" · ".join(prof), inline=False)
+
+    # Serve/return context — tiebreak rate is the serve-dominance read the mixture uses.
+    serve = []
+    for nm, key in ((p_name, "player_tiebreak_rate"), (o_name, "opponent_tiebreak_rate")):
+        v = data.get(key)
+        if isinstance(v, (int, float)):
+            serve.append(f"{nm} **{v:.0f}%**")
+    if serve:
+        e.add_field(name="Tiebreak rate (serve dominance)", value="  ·  ".join(serve), inline=False)
+
+    # H2H — only when they've actually met.
+    h = data.get("h2h_context") or {}
+    if (h.get("total") or 0) > 0:
+        line = f"**{h.get('p1_wins', 0)}–{h.get('p2_wins', 0)}** in {h['total']} meeting" \
+               f"{'s' if h['total'] != 1 else ''}"
+        if h.get("surface_matches"):
+            line += (f"  ·  on {surface}: {h.get('surface_p1_wins', 0)}–"
+                     f"{h.get('surface_p2_wins', 0)} of {h['surface_matches']}")
+        e.add_field(name=f"Head-to-head ({p_name} first)", value=line, inline=False)
+
+    # Provenance: is the win prob anchored to the market, and how deep is the data.
+    prov = []
+    prov.append("Market-anchored win prob" if data.get("ptgw_anchored") else "Model-only win prob (no market line)")
+    if data.get("data_quality"):
+        prov.append(f"data: {data['data_quality']}")
+    for nm, key in ((p_name, "player_surface_n"), (o_name, "opponent_surface_n")):
+        if isinstance(data.get(key), (int, float)):
+            prov.append(f"{nm} {int(data[key])} {surface.lower()} matches")
+    e.add_field(name="Basis", value=" · ".join(prov), inline=False)
+
+    # Honest limitation — these set splits are a by-product of the games-won fit and
+    # have no graded track record of their own. Say so on every post.
+    e.add_field(
+        name="⚠️ Read this as an estimate",
+        value=("_Set outcomes are derived from the same scenario model the props use. "
+               "They are not separately calibrated against set results and carry no "
+               "graded track record — use as research, not a rated play._"),
+        inline=False)
+    return _stamped_footer(e, FOOTER_GENERIC)
+
+
+@client.tree.command(name="match",
+                     description="Match outlook: win a set, win the match, straight sets, distance")
+@app_commands.describe(
+    player="Player the projection is for — type to search",
+    opponent="Opponent — type to search",
+    surface="Court surface",
+    court="Tournament (optional) — choose one matching the surface, or None for generic",
+    gs_round="ATP Grand Slam only: Main Draw (best of 5) or Qualifying (best of 3). Default Main Draw.",
+)
+@app_commands.choices(surface=SURFACE_CHOICES, gs_round=ROUND_CHOICES)
+@app_commands.autocomplete(player=player_autocomplete, opponent=player_autocomplete,
+                           court=court_autocomplete)
+@app_commands.checks.cooldown(1, 5.0, key=lambda i: i.user.id)
+async def match_outlook(
+    interaction: discord.Interaction,
+    player: str,
+    opponent: str,
+    surface: app_commands.Choice[str],
+    court: str = "None",
+    gs_round: app_commands.Choice[str] = None,
+):
+    try:
+        await _enter_queue(interaction)
+    except _QueueBusy:
+        return
+    log.info("CMD /match | user=%s | %s vs %s | %s | court=%s",
+             interaction.user.id, player, opponent, surface.value, court)
+    try:
+        surface_val = surface.value
+        court = (court or "None").strip()
+
+        if court and court != "None":
+            court_surf = surface_for_court(court)
+            if court_surf is None:
+                await _send_error(interaction,
+                    f"`{court}` isn't a recognised tournament. Pick one from the court list or use None.")
+                return
+            if court_surf != surface_val:
+                await _send_error(interaction,
+                    f"`{court}` is a **{court_surf}** event but you selected **{surface_val}**. "
+                    f"Pick a court matching the surface, or use None.")
+                return
+
+        try:
+            p_id, p_tour, p_name = await resolve_player(player)
+            o_id, o_tour, o_name = await resolve_player(opponent)
+        except NETWORK_ERRORS:
+            log.warning("match resolve: backend unreachable")
+            await _send_error(interaction, MSG_UNREACHABLE)
+            return
+
+        if not p_id or not o_id:
+            missing = player if not p_id else opponent
+            await _send_error(interaction,
+                f"Couldn't find a player matching `{missing}`. Try the autocomplete suggestions.")
+            return
+
+        tour = p_tour or "ATP"
+        court_key = "" if court == "None" else backend_court_key(court)
+        court_display = "Generic surface" if court == "None" else court
+        is_atp_gs = (court in ATP_GRAND_SLAMS) and (tour == "ATP")
+        qualifying = is_atp_gs and gs_round is not None and gs_round.value == "qualifying"
+
+        payload = {
+            "player_id": p_id, "opponent_id": o_id,
+            "player_name": p_name, "opponent_name": o_name,
+            "tour": tour, "surface": surface_val, "court": court_key,
+            # The scenario mixture rides on the PTGW path; the line is irrelevant to
+            # the set split (verified line-independent) and p_over is discarded.
+            "prop_type": "Player Total Games Won",
+            "prop_line": _MATCH_NEUTRAL_LINE,
+            "qualifying": qualifying,
+        }
+
+        try:
+            data = await backend_post("/api/prop/calculate", payload, PROP_TIMEOUT)
+        except NETWORK_ERRORS:
+            log.warning("match calc: backend timeout/unreachable")
+            await _send_error(interaction, MSG_UNREACHABLE)
+            return
+
+        if _is_block_response(data):
+            await _send_error(interaction, MSG_BLOCK)
+            return
+
+        if not (data.get("ptgw_scenario_probs") or {}):
+            await _send_error(interaction,
+                "No match outlook available for this matchup — the scenario model "
+                "didn't return set probabilities. Check the players and surface.")
+            return
+
+        await interaction.followup.send(
+            embed=match_outcomes_embed(p_name, o_name, surface_val, court_display, data),
+            ephemeral=True,
+        )
+    except Exception:  # noqa: BLE001 — never let a command crash the process
+        log.exception("UNHANDLED /match error")
+        await _send_error(interaction, MSG_GENERIC)
+    finally:
+        _leave_queue()
+
+
 # ── /h2h ────────────────────────────────────────────────────────────────────────
 @client.tree.command(name="h2h", description="Head-to-head record between two players")
 @app_commands.describe(
@@ -1169,6 +1376,17 @@ async def help_cmd(interaction: discord.Interaction):
             "• **line** — the book line, e.g. 11.5\n"
             "• **gs_round** *(ATP Grand Slam only)* — Main Draw (best of 5) or "
             "Qualifying (best of 3). Defaults to Main Draw."
+        ),
+        inline=False,
+    )
+    e.add_field(
+        name="/match",
+        value=(
+            "Match outlook — set and match outcome probabilities, no line needed.\n"
+            "`/match player:Sinner opponent:Alcaraz surface:Hard`\n"
+            "Shows **wins at least one set**, wins the match, wins in straight sets, "
+            "and whether it goes the distance — plus the match profile, tiebreak "
+            "rates and H2H behind those numbers."
         ),
         inline=False,
     )
