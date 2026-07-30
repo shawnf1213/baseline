@@ -1550,7 +1550,12 @@ async def _log_picks_pending(picks: list, group: str = "potd"):
         rec = await asyncio.to_thread(results_tracker.get_record)
         cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=18)
         existing = set()
-        for q in (rec or {}).get("picks", []):
+        # record["picks"] is POTD-only — the 3x legs live in threex_legs["picks"].
+        # Dedup MUST see both, or a re-posted 3x leg is never recognised as a
+        # duplicate and gets logged again (the McNally FS 3x double on 2026-07-29).
+        _dedup_src = (list((rec or {}).get("picks", []))
+                      + list(((rec or {}).get("threex_legs") or {}).get("picks", [])))
+        for q in _dedup_src:
             ga = q.get("generated_at")
             try:
                 dt = datetime.datetime.fromisoformat((ga or "").replace("Z", "+00:00"))
