@@ -511,6 +511,12 @@ async def _evaluate(prop: dict, sem: asyncio.Semaphore):
             "projection": proj, "edge": edge, "edge_mag": abs(edge),
             "confidence": conf, "lean": data.get("lean"),
             "p1_win_prob": data.get("p1_win_prob"), "p2_win_prob": data.get("p2_win_prob"),
+            # Strength-of-field: both players' current ATP/WTA ranks and the
+            # both-challenger-level flag — deprioritizes challenger-vs-challenger
+            # matchups below tour-level plays in _rank_key.
+            "player_rank": data.get("player_rank"),
+            "opponent_rank": data.get("opponent_rank"),
+            "both_challenger_level": data.get("both_challenger_level"),
             # PTGW scenario-mixture surface (None for other props) — used by the
             # shadow log, the correlation guard, and the implied-claim display.
             "ptgw_p_over": data.get("ptgw_p_over"),
@@ -710,9 +716,12 @@ def _ptgw_qualify(pk: dict, thin: bool = False):
 
 
 def _rank_key(pk: dict) -> tuple:
-    """Ranking key (sort DESCENDING). Two explicit levels, confidence first:
+    """Ranking key (sort DESCENDING). Three explicit levels, strength-of-field first:
 
-      1. confidence  — the primary and dominant term
+      0. tour_level  — tour matches (1) ALWAYS rank above challenger-vs-challenger
+                       matchups (0). Deprioritize-only: challenger plays stay
+                       eligible, they just never sit above a tour-level play.
+      1. confidence  — the primary term within a strength-of-field group
       2. edge_mag    — tiebreaker ONLY, among plays of equal confidence
 
     A play with genuinely higher confidence therefore ALWAYS outranks a lower-
@@ -724,7 +733,9 @@ def _rank_key(pk: dict) -> tuple:
     ceiling and now order by edge among THEMSELVES, at the bottom of their band,
     instead of leapfrogging higher-confidence plays.
     """
-    return (pk.get("confidence") or 0, pk.get("edge_mag") or abs(pk.get("edge") or 0))
+    return (0 if pk.get("both_challenger_level") else 1,
+            pk.get("confidence") or 0,
+            pk.get("edge_mag") or abs(pk.get("edge") or 0))
 
 
 # ── Prop-reliability tiers for the per-player dedupe (7/23 audit, Fix C1) ─────

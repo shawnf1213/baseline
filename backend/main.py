@@ -80,6 +80,11 @@ TG_DIVERGENCE_GAMES = 3.0
 # projection. That's where the TG over-projection bit (2026-07-29, user). Cut
 # confidence so marginal unanchored TG props drop off the 65 board bar.
 TG_UNANCHORED_CONF_PENALTY = float(os.getenv("TG_UNANCHORED_CONF_PENALTY", "12") or "12")
+# Strength-of-field: a player ranked worse than this (or unranked / outside the
+# top-500 rankings cache) counts as "challenger level". A matchup where BOTH
+# players clear this bar is a challenger-vs-challenger play, which the board
+# deprioritizes below tour-level matches (2026-07-29, user). Env-tunable.
+CHALLENGER_RANK_CUTOFF = int(os.getenv("CHALLENGER_RANK_CUTOFF", "250") or "250")
 from src.api.tennis_abstract import get_player_ta_stats, build_props_ta_view
 from src.api.sackmann import (
     load_player_sackmann_data,
@@ -1615,6 +1620,33 @@ async def prop_calculate(req: PropRequest):
             _rankings = get_current_rankings()        # {player_id: rank}, cached 7d
         except Exception:  # noqa: BLE001
             _rankings = {}
+
+        # ── Strength-of-field flag ───────────────────────────────────────────
+        # Both players' current ATP/WTA singles rank (None = unranked / outside the
+        # top-500 cache). A matchup where BOTH are challenger-level — ranked worse
+        # than CHALLENGER_RANK_CUTOFF, or unranked — is a challenger-vs-challenger
+        # play; the board deprioritizes these below tour-level matches (they're
+        # thin-data, usually unanchored, and often ITF events the resolver can't
+        # grade). A client-supplied rank (req.*) wins over the cache lookup.
+        def _world_rank(pid, supplied):
+            if supplied:
+                return int(supplied)
+            try:
+                return _rankings.get(int(pid))
+            except (TypeError, ValueError):
+                return None
+        _p1_world_rank = _world_rank(req.player_id, req.player_rank)
+        _p2_world_rank = _world_rank(req.opponent_id, req.opponent_rank)
+        def _is_challenger(rk):
+            return rk is None or rk > CHALLENGER_RANK_CUTOFF
+        # Guard: only assert challenger-level when we actually have a ranking basis
+        # (the cache loaded, or the client supplied ranks). A total rankings-cache
+        # outage would otherwise read both ranks as None and deprioritize the ENTIRE
+        # board — so on no basis, default to tour-level (never deprioritize blind).
+        _rank_basis = bool(_rankings) or bool(req.player_rank) or bool(req.opponent_rank)
+        _both_challenger_level = bool(_rank_basis
+                                      and _is_challenger(_p1_world_rank)
+                                      and _is_challenger(_p2_world_rank))
         _p1_qw, p1_qw_match_rate = _opp_quality_weighted(_p1_surf_log, _rankings)
         _p2_qw, p2_qw_match_rate = _opp_quality_weighted(_p2_surf_log, _rankings)
         _apply_quality_weighting(p1_s, _p1_qw)
@@ -3165,6 +3197,12 @@ async def prop_calculate(req: PropRequest):
             "opponent_ta_recent_note":    p2_recent_meta["note"],
             "opponent_ta_penalty_kind":   p2_recent_meta.get("penalty_kind"),
             "opponent_ta_penalty":        p2_recent_meta.get("penalty", 0),
+            # Strength-of-field: both players' current ATP/WTA singles rank (None =
+            # unranked / outside the top-500 cache) and the both-challenger-level
+            # flag. The board deprioritizes challenger-vs-challenger matchups.
+            "player_rank":                _p1_world_rank,
+            "opponent_rank":              _p2_world_rank,
+            "both_challenger_level":      _both_challenger_level,
             # Sofascore surface log (for bar chart; may fall back to Sackmann)
             "sofascore_surface_log": p1_chart_log,
             "chart_source":          chart_source,
