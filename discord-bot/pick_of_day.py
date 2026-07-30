@@ -1028,24 +1028,35 @@ async def _rank_board():
     log.info("POD_COMPOSITION | TOTAL qualifying=%d | by type: %s",
              _total_q, dict(by_type_qual) or "none")
     picks.sort(key=_rank_key, reverse=True)
-    # Keep only each player's single best play (one entry per player). Selection is
-    # tier-aware (Fix C1): the more reliably-modelled prop TYPE represents the player
-    # unless a lower-tier prop leads by >= DEDUPE_TIER_OVERRIDE_MARGIN. SELECTION
-    # ONLY — displayed confidence is untouched and the global ORDER below stays
-    # _rank_key (confidence). See _dedupe_preferred.
-    _best_by_player: dict = {}
+    # Per-player selection: normally ONE best play per player, tier-aware (Fix C1) —
+    # the more reliably-modelled prop TYPE represents the player unless a lower-tier
+    # prop leads by >= DEDUPE_TIER_OVERRIDE_MARGIN. EXCEPTION (2026-07-29, user):
+    # when a player has 2+ props each at >= POTD_THRESHOLD (80) confidence, show ALL
+    # of those high-confidence props — a genuinely strong second play on the same
+    # player is worth surfacing, not hiding. Below that, still just the single best.
+    # SELECTION ONLY — displayed confidence is untouched; global ORDER stays _rank_key.
+    _props_by_player: dict = {}
     for pk in picks:
-        key = _norm(pk["player"])
-        cur = _best_by_player.get(key)
-        if cur is None:
-            _best_by_player[key] = pk
-        elif _dedupe_preferred(pk, cur):
-            log.info("POD_DEDUPE_TIER | %-22s kept %s(t%d,%.0f) over %s(t%d,%.0f)",
-                     (pk.get("player") or "")[:22],
-                     pk.get("prop_type"), _prop_tier(pk.get("prop_type")), pk.get("confidence") or 0,
-                     cur.get("prop_type"), _prop_tier(cur.get("prop_type")), cur.get("confidence") or 0)
-            _best_by_player[key] = pk
-    ordered = sorted(_best_by_player.values(), key=_rank_key, reverse=True)
+        _props_by_player.setdefault(_norm(pk["player"]), []).append(pk)
+    _selected: list = []
+    for _plist in _props_by_player.values():
+        _high = [p for p in _plist if (p.get("confidence") or 0) >= POTD_THRESHOLD]
+        if len(_high) >= 2:
+            _selected.extend(_high)      # multiple 80%+ props on one player -> keep all
+            log.info("POD_DEDUPE_MULTI | %-22s kept %d plays (all >=%d): %s",
+                     (_plist[0].get("player") or "")[:22], len(_high), POTD_THRESHOLD,
+                     ", ".join("%s(%.0f)" % (p.get("prop_type"), p.get("confidence") or 0) for p in _high))
+            continue
+        best = _plist[0]                 # picks is rank-sorted, so [0] is the top play
+        for cand in _plist[1:]:
+            if _dedupe_preferred(cand, best):
+                best = cand
+        if len(_plist) > 1:
+            log.info("POD_DEDUPE_TIER | %-22s kept %s(t%d,%.0f) as single best of %d props",
+                     (best.get("player") or "")[:22], best.get("prop_type"),
+                     _prop_tier(best.get("prop_type")), best.get("confidence") or 0, len(_plist))
+        _selected.append(best)
+    ordered = sorted(_selected, key=_rank_key, reverse=True)
 
     # ── Part 3 slate-correlation guard (only meaningful once PTGW_ENABLED) ────
     # Cap PTGW at PTGW_MAX_PER_BOARD (keep the highest-ranked), and flag when the

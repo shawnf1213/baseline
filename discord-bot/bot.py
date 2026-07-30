@@ -1218,7 +1218,7 @@ POD_MINUTE = int(os.getenv("POD_MINUTE", "50") or "50")
 # ranked list → 3x. (Env override PICKS_GEN_HOUR/MINUTE.)
 # POTD trigger — the board eval starts here and the ranked list + 3x post when it
 # finishes (~10 min later). Independent of the recap, which posts earlier.
-PICKS_GEN_HOUR = int(os.getenv("PICKS_GEN_HOUR", "20") or "20")     # 8:00 PM POTD
+PICKS_GEN_HOUR = int(os.getenv("PICKS_GEN_HOUR", "22") or "22")     # 10:00 PM POTD (2026-07-29 user: 8 PM -> 10 PM)
 PICKS_GEN_MINUTE = int(os.getenv("PICKS_GEN_MINUTE", "0") or "0")
 # Second-wave "additional plays" — a NEXT-MORNING scan at 8:00 AM ET that posts up to
 # SECOND_WAVE_MAX plays NOT already on the prior 8 PM board (excluded by player+prop_type).
@@ -1333,8 +1333,8 @@ ONEOFF_EXT_HM     = (12, 0)     # parked (no extension today)
 #
 # Proxy cost is ~neutral: these fetches already happened as background warming
 # during the generation run. They are moved earlier, not added.
-PREWARM_HOUR   = int(os.getenv("PREWARM_HOUR", "19") or "19")     # 7:30 PM — 30 min
-PREWARM_MINUTE = int(os.getenv("PREWARM_MINUTE", "30") or "30")   # before the 8 PM POTD
+PREWARM_HOUR   = int(os.getenv("PREWARM_HOUR", "21") or "21")     # 9:30 PM — 30 min
+PREWARM_MINUTE = int(os.getenv("PREWARM_MINUTE", "30") or "30")   # before the 10 PM POTD
 
 
 def _slot_is_live(oneoff_hm: tuple) -> bool:
@@ -2421,6 +2421,28 @@ async def daily_picks_generate():
             await channel.send(content="@everyone", embed=e, allowed_mentions=EVERYONE_MENTION)
             log.info("POTD trigger: skip-date %s — posted no-value notice", POD_SKIP_DATE)
             return
+        # Already-posted-today guard (2026-07-29): never post a second board for the
+        # same ET day — covers a manual re-post + the scheduled run, or a restart that
+        # re-fires the trigger. If a potd-group pick was already logged today, skip
+        # silently (no post, no ping). Never blocks on a guard error.
+        try:
+            _rec_g = await asyncio.to_thread(results_tracker.get_record)
+            _today_et = datetime.datetime.now(POD_TZINFO).strftime("%Y-%m-%d")
+            for _q in (_rec_g or {}).get("picks", []):
+                if (_q.get("pick_group") or "potd") != "potd":
+                    continue
+                try:
+                    _qd = datetime.datetime.fromisoformat(
+                        (_q.get("generated_at") or "").replace("Z", "+00:00")
+                    ).astimezone(POD_TZINFO).strftime("%Y-%m-%d")
+                except Exception:  # noqa: BLE001
+                    continue
+                if _qd == _today_et:
+                    log.info("POTD trigger: a POTD board was already posted today (%s) "
+                             "— skipping the scheduled run to avoid a duplicate", _today_et)
+                    return
+        except Exception:  # noqa: BLE001
+            pass
         status = await _post_daily_picks(channel, track=True)
         log.info("POTD trigger: %s", status)
     except Exception:  # noqa: BLE001
