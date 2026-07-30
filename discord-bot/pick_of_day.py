@@ -123,16 +123,19 @@ FS_ENABLED = os.getenv("FS_ENABLED", "true").strip().lower() in (
     "1", "true", "yes", "on")
 # Slate-correlation guard (Part 3): at most this many PTGW picks per board, and a
 # flag when multiple share the same implied direction. Only enforced once enabled.
-PTGW_MAX_PER_BOARD = 2
+# Raised 2 -> 3 (2026-07-29, user): the per-prop caps, not MAX_RANKED_PLAYS, were
+# capping the board at ~6 plays. Loosened so a full 12-play board can fill while no
+# single prop type dominates it.
+PTGW_MAX_PER_BOARD = 3
 # Total Games (match total) floods the board: it's a match-level stat with many
 # qualifying lines and, since the games_per_set fit, a low-information prop capped
 # at 80. Left uncapped it crowds out the props the model is actually built around.
 # Keep only the highest-ranked few per board.
-TOTAL_GAMES_MAX_PER_BOARD = 3
+TOTAL_GAMES_MAX_PER_BOARD = 4   # 3 -> 4 (2026-07-29, user: fill a 12-play board)
 # Fantasy Score is a composite scenario-mixture prop still on probation (7/23 audit
 # C2/C3): enabled and board-eligible, but NOT star-eligible until backtested, and
 # capped so it can't crowd the board while uncertified.
-FS_MAX_PER_BOARD = 2
+FS_MAX_PER_BOARD = 4            # 2 -> 4 (2026-07-29, user: fill a 12-play board)
 # Double Faults is the highest-variance prop we carry (Tier 3, never ⭐). Cap it per
 # board (matching FS) so the least-reliable prop can't dominate the list, and bar it
 # from 3x slip legs entirely (see _select_slip). 7/23 audit follow-up.

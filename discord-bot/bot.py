@@ -1882,21 +1882,16 @@ def _ranked_line(pick: dict, rank: int, suppress_correlation_note: bool = False)
         _std = pick.get("standard_line")
         _ctx = (f" (standard {_std:g})" if isinstance(_std, (int, float)) else "")
         out += f"\n😈 _Boosted demon line {pick['line']:g}{_ctx} — over-only_"
-    # PTGW: implied match-outcome claim removed 2026-07-26 (user) — a games-won total
-    # isn't a win/lose scenario. The slate-correlation caution still shows on the main
-    # board, but is suppressed on the Additional Plays post (2026-07-27, user).
-    if (pick.get("prop_type") == "Player Total Games Won" and pick.get("ptgw_correlated")
-            and not suppress_correlation_note):
-        out += "\n⚠️ _correlated with another play on the board_"
+    # PTGW: implied match-outcome claim removed 2026-07-26 (user). The slate-
+    # correlation caution is REMOVED too (2026-07-29, user) — board rows carry NO
+    # ⚠️ cautions. Correlation is still detected and capped internally
+    # (PTGW_MAX_PER_BOARD + the ptgw_correlated flag, logged for audits).
     # Total Games projection is anchored to the sharp Sofascore total, so its edge
-    # (proj − line) is already a clean "PrizePicks vs book" read — no extra line
-    # needed. Only flag the exception: the model materially disagrees with the book
-    # (|model − book| > 3 games), so the anchored number is masking a real gap.
-    if pick.get("prop_type") == "Total Games" and pick.get("tg_divergent"):
-        _bl = pick.get("tg_book_line")
-        _mp = pick.get("tg_model_proj")
-        if isinstance(_bl, (int, float)) and isinstance(_mp, (int, float)):
-            out += f"\n⚠️ _model {_mp:.1f} vs book {_bl:g} — anchored to book_"
+    # (proj − line) is already a clean "PrizePicks vs book" read. The old
+    # "model X vs book Y — anchored to book" divergence caution is REMOVED
+    # (2026-07-29, user): it exposed internal model-vs-book plumbing on a
+    # member-facing row without changing the play. Divergence is still computed
+    # and available (tg_divergent / tg_book_line / tg_model_proj) for logs+audits.
     # Fantasy Score shows NO implied-claim line — it reads like any other prop.
     return out
 
