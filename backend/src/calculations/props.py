@@ -365,6 +365,8 @@ def project_aces(
     match_format: str = "best_of_3",
     trace: list = None,
     h2h_stat_n: int = 0,          # stat-rich H2H meetings behind h2h_ace_avg
+    market_wp: float = None,      # de-vigged market win prob (0-1) for THIS player
+    market_weight: float = 0.7,   # weight on market when blending with the model
 ) -> dict:
     """
     5-layer ace projection model with expected-sets scaling:
@@ -386,6 +388,27 @@ def project_aces(
         o_rank=opponent_stats.get("rank") or opponent_stats.get("currentRank"),
         p_form=_p_form, o_form=_o_form,
     )
+    # ── MARKET-ANCHORED MATCH LENGTH (2026-07-30) ────────────────────────────
+    # Aces scale ONE-FOR-ONE with expected_sets, so the length estimate is the
+    # single largest lever on the number. This used to run on the model's own
+    # win-prob gap while FS / PTGW / BP all anchored theirs to the de-vigged
+    # market moneyline — so the same match could be "competitive, 2.45 sets" for
+    # aces and "lopsided, 2.10 sets" for every other prop. Measured on a live
+    # slate, 5 of 10 matches landed in a DIFFERENT sets bucket, worth up to ±17%
+    # on the ace projection (Tjen/Kalinskaya: model saw a 13.6 gap, the market a
+    # 40.4 gap). That is the "projected to go the distance, ended a blowout" case.
+    #
+    # Blends the SAME way the other props do: 0.7·market + 0.3·model. main.py
+    # supplies the de-vigged market prob; None (no moneyline) -> model-only,
+    # exactly as before, so an unanchored match is unchanged by this.
+    _model_gap = win_prob_gap
+    _gap_anchored = isinstance(market_wp, (int, float))
+    _blended_wp = None
+    if _gap_anchored:
+        _model_wp = _safe(p_prob, 50.0) / 100.0
+        _blended_wp = (market_weight * float(market_wp)
+                       + (1.0 - market_weight) * _model_wp)
+        win_prob_gap = abs(2.0 * _blended_wp - 1.0) * 100.0
     expected_sets, comp_label = _expected_sets_from_gap(win_prob_gap, is_bo5)
     # Sets-scaling denominator for aces. The per-match ace average is taken
     # over a player's whole season:
@@ -423,7 +446,11 @@ def project_aces(
     _trace(trace, "sets_scaling",
            {"win_prob_gap": round(win_prob_gap, 2), "competitiveness": comp_label,
             "expected_sets": expected_sets, "avg_historical_sets": avg_hist_sets,
-            "is_bo5": is_bo5, "tour": tour},
+            "is_bo5": is_bo5, "tour": tour,
+            "gap_market_anchored": _gap_anchored,
+            "model_only_gap": round(_model_gap, 2),
+            "market_wp": (round(float(market_wp), 4) if _gap_anchored else None),
+            "blended_wp": (round(_blended_wp, 4) if _gap_anchored else None)},
            per_set_scale, per_set_scale,
            "per_set_scale = expected_sets/avg_historical_sets; applied to the "
            "per-match ace average BEFORE the base blend, so it is already inside "

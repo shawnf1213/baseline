@@ -1923,6 +1923,28 @@ async def prop_calculate(req: PropRequest):
 
         # Run projection
         if req.prop_type == "Aces":
+            # MARKET-ANCHORED MATCH LENGTH (2026-07-30). Aces scale one-for-one
+            # with expected_sets, and this was the only serve prop still sizing the
+            # match off the model's own win prob while FS/PTGW/BP used the de-vigged
+            # moneyline. Same 0.7 market / 0.3 model blend as those props; no
+            # moneyline -> blended_wp stays None and project_aces falls back to its
+            # own estimate exactly as before.
+            _ace_ml = await asyncio.to_thread(
+                get_match_moneyline_prob,
+                req.player_id, req.opponent_id, req.tour)
+            _ace_mkt_wp = _ace_ml.get("market_p1") if isinstance(_ace_ml, dict) else None
+            # The moneyline is read off the player's NEXT scheduled event. If that
+            # event is against somebody else, the price describes a different match
+            # and must not anchor this one — fall back to model-only.
+            if isinstance(_ace_ml, dict) and _ace_ml.get("opponent_matches") is False:
+                logger.info("ACE_WINPROB | %s | moneyline is for a DIFFERENT opponent "
+                            "— ignoring, model-only sets", req.player_name or "player")
+                _ace_mkt_wp = None
+            if not isinstance(_ace_mkt_wp, (int, float)):
+                _ace_mkt_wp = None
+                logger.info("ACE_WINPROB | %s | UNANCHORED (%s) — model-only sets",
+                            req.player_name or "player",
+                            (_ace_ml.get("reason") if isinstance(_ace_ml, dict) else "no data"))
             result = project_aces(
                 p1_s, p2_s, court_for_calc, h2h_ace_avg, cpr_override=cpr,
                 player_ta=player_ta_props, opponent_ta=opponent_ta_props,
@@ -1930,6 +1952,8 @@ async def prop_calculate(req: PropRequest):
                 match_format=match_fmt,
                 trace=_ctrace,
                 h2h_stat_n=h2h_stat_n,
+                market_wp=_ace_mkt_wp,
+                market_weight=WINPROB_MARKET_WEIGHT,
             )
         elif req.prop_type == "Double Faults":
             result = project_double_faults(
