@@ -1382,7 +1382,7 @@ MSG_NO_PICK_DAILY = (
 # v2 no-POTD fallback: the board HAS plays, but none cleared the 80% Pick-of-the-
 # Day bar. The ranked board still posts; this rides in place of the ⭐ embed.
 MSG_NO_POTD_HAS_BOARD = (
-    "**No Pick of the Day today — no play met the 80% bar. Board below.**"
+    "**No Pick of the Day today — no play qualified for the ⭐ slot. Board below.**"
 )
 
 
