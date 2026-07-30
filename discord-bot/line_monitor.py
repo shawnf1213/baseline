@@ -4,8 +4,8 @@ Feature 2 — Line Movement Awareness (bot-internal, fully automated).
 No user can trigger or view this. After the midnight picks are generated and
 logged, the bot starts monitor() as a background task. Every 30 minutes it
 re-checks the PrizePicks board for the three logged props and, if a line has
-moved >= 0.5 from its midnight original, posts a Line Alert to the picks channel
-and says whether the lean still holds or has flipped against the new line.
+moved >= 0.5 from its midnight original, posts a Line Alert to the line-changes
+channel and says whether the lean still holds or has flipped against the new line.
 
 Isolated: no discord import. The bot passes in get_lines() and an async
 post_alert(text) callback, so a failure here only affects this one task.
@@ -51,7 +51,7 @@ async def monitor(picks: list, get_lines, post_alert, interval: int = INTERVAL_S
     picks: dicts with pp_player, prop_type, original_line, projection, lean,
            player, start_timestamp.
     get_lines: callable returning {(norm_player, prop_type): line}.
-    post_alert: async callable(text) that posts to the picks channel.
+    post_alert: async callable(text) that posts to the line-changes channel.
     """
     try:
         active = []

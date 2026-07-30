@@ -1267,6 +1267,10 @@ RESULTS_CHANNEL_ID = int(os.getenv("RESULTS_CHANNEL_ID", str(POD_CHANNEL_ID or 0
 # day, so the ping is fine), separate from the premium POTD channel where the
 # board/3x keep their own @everyone. Hardcoded by request (2026-07-29): no env override.
 TRACK_RECORD_CHANNEL_ID = 1532142615435284721
+# Line-movement alerts post here (🆘・line-changes) instead of the POTD board
+# channel — they're informational, fire repeatedly, and cluttered the board feed.
+# Hardcoded by request (2026-07-29): no env override. Never pinged.
+LINE_ALERT_CHANNEL_ID = 1532229544503672853
 # Minimum post-guard decided picks before the weekly calibration table means
 # anything. All history up to 2026-07-14 is pre-guard (confidence possibly scored
 # on a cache-poisoned snapshot), so the clean sample restarts from zero and the
@@ -1593,11 +1597,23 @@ def _start_line_monitor(channel, picks: list):
         if _line_monitor_task and not _line_monitor_task.done():
             _line_monitor_task.cancel()
 
+        # Line-change alerts go to their OWN channel (🆘・line-changes), not the
+        # board channel — they're informational, fire repeatedly, and were cluttering
+        # the POTD feed (2026-07-29, user). Falls back to the board channel only if
+        # that channel can't be resolved, so an alert is never silently dropped.
+        _alert_channel = client.get_channel(LINE_ALERT_CHANNEL_ID) or channel
+        if _alert_channel is not channel:
+            log.info("line monitor: alerts -> #%s (%s)",
+                     getattr(_alert_channel, "name", "?"), LINE_ALERT_CHANNEL_ID)
+        else:
+            log.warning("line monitor: channel %s not found — alerts fall back to the "
+                        "board channel", LINE_ALERT_CHANNEL_ID)
+
         async def _post_alert(text):
-            # Line-change alerts are informational and can fire repeatedly — post
-            # WITHOUT an @everyone ping to avoid spamming the channel. Mentions are
-            # suppressed entirely so a stray @everyone in the text can't ping either.
-            await channel.send(text, allowed_mentions=discord.AllowedMentions.none())
+            # Informational and repeat-firing — post WITHOUT an @everyone ping.
+            # Mentions are suppressed entirely so a stray @everyone in the text
+            # can't ping either.
+            await _alert_channel.send(text, allowed_mentions=discord.AllowedMentions.none())
 
         _line_monitor_task = asyncio.create_task(
             line_monitor.monitor(picks, pick_of_day.current_board_lines, _post_alert))
