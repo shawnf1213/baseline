@@ -1138,14 +1138,10 @@ def match_outcomes_embed(p_name: str, o_name: str, surface: str, court_display: 
             prov.append(f"{nm} {int(data[key])} {surface.lower()} matches")
     e.add_field(name="Basis", value=" · ".join(prov), inline=False)
 
-    # Honest limitation — these set splits are a by-product of the games-won fit and
-    # have no graded track record of their own. Say so on every post.
-    e.add_field(
-        name="⚠️ Read this as an estimate",
-        value=("_Set outcomes are derived from the same scenario model the props use. "
-               "They are not separately calibrated against set results and carry no "
-               "graded track record — use as research, not a rated play._"),
-        inline=False)
+    # NOTE (2026-07-30, user): the "read this as an estimate" caveat field was
+    # REMOVED from the embed. The limitation still stands — these set splits are a
+    # by-product of the games-won fit, are not separately calibrated against set
+    # results, and have no graded track record — it just isn't printed on the post.
     return _stamped_footer(e, FOOTER_GENERIC)
 
 
