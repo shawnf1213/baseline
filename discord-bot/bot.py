@@ -1360,7 +1360,7 @@ def _slot_is_live(oneoff_hm: tuple) -> bool:
     return live
 # One-off skip: don't post the daily recap on this ET date (it already posted
 # earlier that day). Set to "" to disable. Resumes normally the next day.
-RESULTS_SKIP_DATE = os.getenv("RESULTS_SKIP_DATE", "2026-07-29")
+RESULTS_SKIP_DATE = os.getenv("RESULTS_SKIP_DATE", "2026-07-30")
 # One-off Pick of the Day skip: on this ET date the scans DON'T generate picks —
 # the 4:50 scan posts a "no value, waiting for new tournaments" @everyone notice
 # and the evening scan stays silent. Set to "" to disable. Resumes next day.
