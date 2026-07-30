@@ -1058,8 +1058,8 @@ async def _rank_board():
 
     # ── Total Games board cap ────────────────────────────────────────────────
     # Keep only the highest-ranked TOTAL_GAMES_MAX_PER_BOARD Total Games plays; the
-    # rest are dropped so the board isn't dominated by a low-information prop. The
-    # ⭐ can still be a Total Games play if it's the strongest overall.
+    # rest are dropped so the board isn't dominated by a low-information prop. A TG
+    # play can hold the ⭐ only under the 90%-favourite + anchored gate (_star_eligible).
     _tg = [pk for pk in ordered if pk.get("prop_type") == "Total Games"]
     if len(_tg) > TOTAL_GAMES_MAX_PER_BOARD:
         _drop = set(id(pk) for pk in _tg[TOTAL_GAMES_MAX_PER_BOARD:])
@@ -1214,9 +1214,10 @@ async def generate_potd_and_slip(n: int = 3, exclude_keys: set = None) -> dict:
 
 
 # A Total Games (match total) play may only be the ⭐ Pick of the Day when one
-# player is at least a 90% favorite — the set count is then near-locked and the
-# total is a very clear win condition. Below that it can appear in the list but
-# must not lead.
+# player is at least a 90% favorite AND the total is market-anchored (a real book
+# line exists) — the set count is then near-locked and the total is a very clear,
+# market-backed win condition. Below 90%, or with no book total, it can appear in
+# the list but must not lead. Enforced in _star_eligible.
 STAR_TOTAL_GAMES_MIN_WP = 90.0
 
 
@@ -1249,9 +1250,10 @@ def _star_eligible(pk: dict) -> bool:
     (permanent), and Fantasy Score may not until an out-of-sample calibration
     backtest certifies it (PROBATION, Fix C3) — both still populate the board and
     3x. Every other prop — Aces, Break Points Won, Total Games, Player Total Games
-    Won — is star-eligible at >= 80. The old TG-90%-favourite bar and the PTGW-UNDER
-    structural requirement are RETIRED; those confidence-shaping stories now live
-    entirely inside the projection/guard chain, not in a second selection gate.
+    Won — is star-eligible at >= 80, EXCEPT Total Games, which carries an extra gate
+    (RESTORED 2026-07-29): it may lead only on a >=90% favourite AND an anchored
+    total (see the TG block below). The PTGW-UNDER structural requirement stays
+    retired; that story lives inside the projection/guard chain.
 
     (PTGW is theoretical here until PTGW_ENABLED flips: its confidence ceiling is
     80/76, so it can only ever star at exactly its ceiling — no special handling.)
@@ -1264,6 +1266,18 @@ def _star_eligible(pk: dict) -> bool:
         return False
     if pk.get("prop_type") in POD_STAR_PROBATION_PROPS:   # Fix C3: FS not star-eligible until backtested
         return False
+    # Total Games ⭐ gate (RESTORED 2026-07-29 after a conf-80 unanchored ITF TG led
+    # the card). TG is the model's worst-fit prop (R^2 0.09-0.16, 80 conf ceiling),
+    # so it may hold the ⭐ ONLY when the match is near-locked AND market-anchored:
+    #   • one player a >= STAR_TOTAL_GAMES_MIN_WP (90%) favourite — the set count is
+    #     near-certain, making the total a clear win condition, AND
+    #   • tg_anchored — a real book total sits behind the projection (unanchored TG
+    #     is pure model on a prop the model predicts poorly).
+    # It still ranks on the board and in the 3x; it just can't be the headline.
+    if pk.get("prop_type") == "Total Games":
+        _fav_wp = max(pk.get("p1_win_prob") or 0, pk.get("p2_win_prob") or 0)
+        if _fav_wp < STAR_TOTAL_GAMES_MIN_WP or not pk.get("tg_anchored"):
+            return False
     return (pk.get("confidence") or 0) >= POTD_THRESHOLD
 
 
