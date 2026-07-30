@@ -1260,14 +1260,28 @@ def spread_embed(p_name: str, o_name: str, surface: str, court_display: str,
                      + (f"  ·  _{data.get('match_format_label')}_"
                         if data.get("match_format_label") else ""))
 
-    need = -spread
-    rows = [f"🎯 **{p_name} {spread:+g} covers**  ·  **{p_cov*100:.0f}%**",
-            f"↩️ {o_name} {-spread:+g} covers  ·  **{other*100:.0f}%**"]
+    # Spell out what clearing the handicap actually REQUIRES in games, rather than
+    # leaving the reader to do the margin arithmetic.
+    if spread < 0:                                   # laying games
+        _need_txt = f"winning by {int(abs(spread)) + 1}+ total games"
+    else:                                            # receiving games
+        _max_loss = (int(spread) - 1) if float(spread).is_integer() else int(spread)
+        _need_txt = (f"losing by {_max_loss} or fewer games, or winning outright"
+                     if _max_loss > 0 else "winning outright")
+
+    rows = [f"🎯 **{p_cov*100:.0f}% chance {p_name} clears {spread:+g}**",
+            f"↩️ {other*100:.0f}% chance {o_name} clears {-spread:+g}"]
     if isinstance(margin, (int, float)):
         _verb = "wins by" if margin >= 0 else "loses by"
         rows.append(f"📐 Projected margin  ·  **{p_name} {_verb} {abs(margin):.1f} games**")
-    rows.append(f"_Needs a game margin better than {need:+g}_")
-    e.add_field(name="Cover probability", value="\n".join(rows), inline=False)
+    # Whole-number handicaps can land exactly on the number — that's a push (stake
+    # back), neither cleared nor lost. Half-point spreads can't push, so say nothing.
+    _push_txt = ""
+    if float(spread).is_integer():
+        _push_txt = (f"  A {int(abs(spread))}-game margin is a push."
+                     if abs(spread) > 0 else "")
+    rows.append(f"_Clearing {spread:+g} means {_need_txt}.{_push_txt}_")
+    e.add_field(name=f"Chance to clear {spread:+g}", value="\n".join(rows), inline=False)
 
     # Where the cover actually comes from — the same four scenarios as /match.
     scen = data.get("spread_scenarios") or {}
@@ -1280,10 +1294,14 @@ def spread_embed(p_name: str, o_name: str, surface: str, court_display: str,
             d_s = scen.get(s)
             if not d_s:
                 continue
-            lines.append(f"{labels[s]} ({d_s['p']*100:.0f}%) · margin {d_s['margin']:+.1f} "
-                         f"· covers {d_s['p_cover']*100:.0f}%")
+            # Two DIFFERENT percentages, so say which is which: how likely the
+            # scenario is, then — within that scenario only — how often it clears.
+            lines.append(f"**{labels[s]}** · {d_s['p']*100:.0f}% likely · "
+                         f"avg margin {d_s['margin']:+.1f} · "
+                         f"clears {spread:+g} in **{d_s['p_cover']*100:.0f}%** of those")
         if lines:
-            e.add_field(name="How it covers", value="\n".join(lines), inline=False)
+            e.add_field(name=f"Where the {p_cov*100:.0f}% comes from",
+                        value="\n".join(lines), inline=False)
 
     prof = []
     if isinstance(data.get("expected_sets"), (int, float)):
