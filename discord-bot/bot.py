@@ -1242,6 +1242,177 @@ async def match_outlook(
         _leave_queue()
 
 
+# ── /spread — game handicap ─────────────────────────────────────────────────────
+def spread_embed(p_name: str, o_name: str, surface: str, court_display: str,
+                 spread: float, data: dict) -> discord.Embed:
+    """Game-spread (games handicap) projection. Settles on the GAME MARGIN across
+    every set, regardless of who wins the match."""
+    p_cov = data.get("spread_p_cover")
+    margin = data.get("spread_margin_proj")
+    if not isinstance(p_cov, (int, float)):
+        p_cov = 0.0
+    other = 1.0 - p_cov
+
+    e = discord.Embed(title="🎾 Game Spread",
+                      color=COLOR_OVER if p_cov >= 0.5 else COLOR_UNDER)
+    loc = court_display if court_display and court_display != "Generic surface" else f"{surface} court"
+    e.description = (f"**{p_name}** {spread:+g} games  vs  **{o_name}**\n_{loc}_"
+                     + (f"  ·  _{data.get('match_format_label')}_"
+                        if data.get("match_format_label") else ""))
+
+    need = -spread
+    rows = [f"🎯 **{p_name} {spread:+g} covers**  ·  **{p_cov*100:.0f}%**",
+            f"↩️ {o_name} {-spread:+g} covers  ·  **{other*100:.0f}%**"]
+    if isinstance(margin, (int, float)):
+        _verb = "wins by" if margin >= 0 else "loses by"
+        rows.append(f"📐 Projected margin  ·  **{p_name} {_verb} {abs(margin):.1f} games**")
+    rows.append(f"_Needs a game margin better than {need:+g}_")
+    e.add_field(name="Cover probability", value="\n".join(rows), inline=False)
+
+    # Where the cover actually comes from — the same four scenarios as /match.
+    scen = data.get("spread_scenarios") or {}
+    if scen:
+        is_bo5 = bool(data.get("is_bo5"))
+        labels = {"S1": "Wins in straights", "S2": "Wins in a decider",
+                  "S3": "Loses in a decider", "S4": "Loses in straights"}
+        lines = []
+        for s in ("S1", "S2", "S3", "S4"):
+            d_s = scen.get(s)
+            if not d_s:
+                continue
+            lines.append(f"{labels[s]} ({d_s['p']*100:.0f}%) · margin {d_s['margin']:+.1f} "
+                         f"· covers {d_s['p_cover']*100:.0f}%")
+        if lines:
+            e.add_field(name="How it covers", value="\n".join(lines), inline=False)
+
+    prof = []
+    if isinstance(data.get("expected_sets"), (int, float)):
+        prof.append(f"Expected sets **{data['expected_sets']:.1f}**")
+    if data.get("competitiveness"):
+        prof.append(str(data["competitiveness"]))
+    if isinstance(data.get("p1_win_prob"), (int, float)):
+        prof.append(f"{p_name} wins **{data['p1_win_prob']:.0f}%**")
+    if data.get("court_speed_tier"):
+        prof.append(f"{data['court_speed_tier']} court")
+    if prof:
+        e.add_field(name="Match profile", value=" · ".join(prof), inline=False)
+
+    h = data.get("h2h_context") or {}
+    if (h.get("total") or 0) > 0:
+        line = (f"**{h.get('p1_wins', 0)}–{h.get('p2_wins', 0)}** in {h['total']} "
+                f"meeting{'s' if h['total'] != 1 else ''}")
+        if h.get("surface_matches"):
+            line += (f"  ·  on {surface}: {h.get('surface_p1_wins', 0)}–"
+                     f"{h.get('surface_p2_wins', 0)} of {h['surface_matches']}")
+        e.add_field(name=f"Head-to-head ({p_name} first)", value=line, inline=False)
+    return _stamped_footer(e, FOOTER_GENERIC)
+
+
+@client.tree.command(name="spread",
+                     description="Game spread (games handicap) — chance a player covers")
+@app_commands.describe(
+    player="Player the spread is for — type to search",
+    opponent="Opponent — type to search",
+    spread="Games handicap for that player, e.g. -4.5 (laying) or 4.5 (receiving)",
+    surface="Court surface",
+    court="Tournament (optional) — choose one matching the surface, or None for generic",
+    gs_round="ATP Grand Slam only: Main Draw (best of 5) or Qualifying (best of 3). Default Main Draw.",
+)
+@app_commands.choices(surface=SURFACE_CHOICES, gs_round=ROUND_CHOICES)
+@app_commands.autocomplete(player=player_autocomplete, opponent=player_autocomplete,
+                           court=court_autocomplete)
+@app_commands.checks.cooldown(1, 5.0, key=lambda i: i.user.id)
+async def spread_cmd(
+    interaction: discord.Interaction,
+    player: str,
+    opponent: str,
+    spread: float,
+    surface: app_commands.Choice[str],
+    court: str = "None",
+    gs_round: app_commands.Choice[str] = None,
+):
+    try:
+        await _enter_queue(interaction)
+    except _QueueBusy:
+        return
+    log.info("CMD /spread | user=%s | %s %+g vs %s | %s | court=%s",
+             interaction.user.id, player, spread, opponent, surface.value, court)
+    try:
+        if spread == 0 or abs(spread) > 15:
+            await _send_error(interaction,
+                "Give a game handicap between -15 and 15 (not 0) — e.g. `-4.5` to lay "
+                "4.5 games or `4.5` to receive them.")
+            return
+
+        surface_val = surface.value
+        court = (court or "None").strip()
+        if court and court != "None":
+            court_surf = surface_for_court(court)
+            if court_surf is None:
+                await _send_error(interaction,
+                    f"`{court}` isn't a recognised tournament. Pick one from the court list or use None.")
+                return
+            if court_surf != surface_val:
+                await _send_error(interaction,
+                    f"`{court}` is a **{court_surf}** event but you selected **{surface_val}**. "
+                    f"Pick a court matching the surface, or use None.")
+                return
+
+        try:
+            p_id, p_tour, p_name = await resolve_player(player)
+            o_id, o_tour, o_name = await resolve_player(opponent)
+        except NETWORK_ERRORS:
+            log.warning("spread resolve: backend unreachable")
+            await _send_error(interaction, MSG_UNREACHABLE)
+            return
+        if not p_id or not o_id:
+            missing = player if not p_id else opponent
+            await _send_error(interaction,
+                f"Couldn't find a player matching `{missing}`. Try the autocomplete suggestions.")
+            return
+
+        tour = p_tour or "ATP"
+        court_key = "" if court == "None" else backend_court_key(court)
+        court_display = "Generic surface" if court == "None" else court
+        is_atp_gs = (court in ATP_GRAND_SLAMS) and (tour == "ATP")
+        qualifying = is_atp_gs and gs_round is not None and gs_round.value == "qualifying"
+
+        payload = {
+            "player_id": p_id, "opponent_id": o_id,
+            "player_name": p_name, "opponent_name": o_name,
+            "tour": tour, "surface": surface_val, "court": court_key,
+            "prop_type": "Player Total Games Won",
+            "prop_line": _MATCH_NEUTRAL_LINE,
+            "spread": float(spread),
+            "qualifying": qualifying,
+        }
+        try:
+            data = await backend_post("/api/prop/calculate", payload, PROP_TIMEOUT)
+        except NETWORK_ERRORS:
+            log.warning("spread calc: backend timeout/unreachable")
+            await _send_error(interaction, MSG_UNREACHABLE)
+            return
+
+        if _is_block_response(data):
+            await _send_error(interaction, MSG_BLOCK)
+            return
+        if data.get("spread_p_cover") is None:
+            await _send_error(interaction,
+                "No spread projection available for this matchup — the scenario model "
+                "didn't return a margin. Check the players and surface.")
+            return
+
+        await interaction.followup.send(
+            embed=spread_embed(p_name, o_name, surface_val, court_display, float(spread), data),
+            ephemeral=True,
+        )
+    except Exception:  # noqa: BLE001 — never let a command crash the process
+        log.exception("UNHANDLED /spread error")
+        await _send_error(interaction, MSG_GENERIC)
+    finally:
+        _leave_queue()
+
+
 # ── /h2h ────────────────────────────────────────────────────────────────────────
 @client.tree.command(name="h2h", description="Head-to-head record between two players")
 @app_commands.describe(
@@ -1378,6 +1549,17 @@ async def help_cmd(interaction: discord.Interaction):
             "Shows **wins at least one set**, wins the match, wins in straight sets, "
             "and whether it goes the distance — plus the match profile, tiebreak "
             "rates and H2H behind those numbers."
+        ),
+        inline=False,
+    )
+    e.add_field(
+        name="/spread",
+        value=(
+            "Game spread (games handicap) — chance a player covers.\n"
+            "`/spread player:Sinner opponent:Alcaraz spread:-4.5 surface:Hard`\n"
+            "Settles on the **game margin** across every set, so it counts every "
+            "game won regardless of who takes the match. Shows the cover chance "
+            "for both sides, the projected margin, and how the cover happens."
         ),
         inline=False,
     )
