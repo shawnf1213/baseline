@@ -88,6 +88,13 @@ TG_UNANCHORED_CONF_PENALTY = float(os.getenv("TG_UNANCHORED_CONF_PENALTY", "12")
 # Kotliar 450) while sparing fringe-tour (Bronzetti 118) and tour (McNally 73).
 # Env-tunable.
 CHALLENGER_RANK_CUTOFF = int(os.getenv("CHALLENGER_RANK_CUTOFF", "150") or "150")
+# Aces: projected-edge band where the model has historically been WORST. Graded
+# record — edge 1-2 aces 69%, 2-3 40%, 3-5 64%, but 5+ went 3-9 (25%), and losers
+# carried a bigger mean edge (4.14) than winners (3.08). A runaway ace projection
+# is a warning, not an edge, so past this threshold confidence is pinned BELOW the
+# 65 board floor. Provisional (n=12) — env-tunable while the sample grows.
+ACE_BIG_EDGE_ACES = float(os.getenv("ACE_BIG_EDGE_ACES", "5") or "5")
+ACE_BIG_EDGE_CONF_CAP = int(os.getenv("ACE_BIG_EDGE_CONF_CAP", "64") or "64")
 from src.api.tennis_abstract import get_player_ta_stats, build_props_ta_view
 from src.api.sackmann import (
     load_player_sackmann_data,
@@ -2785,6 +2792,31 @@ async def prop_calculate(req: PropRequest):
         if not _prob_base:
             confidence = _edge_cap(confidence, proj_val, req.prop_line)
 
+        # ── ACES: a HUGE edge is a warning sign, not a green light (2026-07-30) ──
+        # _edge_cap above RAISES the ceiling as the edge grows (50/65/80/95), which
+        # assumes a bigger gap to the line means a better bet. For aces the graded
+        # record says the opposite: picks with a projected edge of 5+ aces went
+        # 3-9 (25%), and LOSERS averaged a bigger projected edge (4.14) than
+        # WINNERS (3.08). The edge signal is inverted at the top end — those are
+        # the runaway projections (31.2 on a 21 line), not genuine edges.
+        # So for aces only, an edge past the threshold is capped BELOW the board
+        # floor (BOARD_MIN_CONF 65), keeping the least trustworthy ace projections
+        # off the board entirely rather than promoting them to the top of it.
+        # PROVISIONAL: based on n=12 in that bucket. Revisit as the sample grows;
+        # ACE_BIG_EDGE_ACES / ACE_BIG_EDGE_CONF_CAP are env-tunable.
+        _ace_big_edge_reason = None
+        if req.prop_type == "Aces" and isinstance(proj_val, (int, float)):
+            _ace_edge = abs(proj_val - (req.prop_line or 0))
+            if _ace_edge >= ACE_BIG_EDGE_ACES and confidence > ACE_BIG_EDGE_CONF_CAP:
+                logger.info("ACE_BIG_EDGE_CAP | %s | edge %.1f aces (proj %.1f vs line %s) "
+                            "| confidence %s -> %s (5+ edge bucket is 3-9 lifetime)",
+                            req.player_name or "player", _ace_edge, proj_val,
+                            req.prop_line, confidence, ACE_BIG_EDGE_CONF_CAP)
+                confidence = ACE_BIG_EDGE_CONF_CAP
+                _ace_big_edge_reason = (
+                    "Ace edge %.1f over the line — historically the least reliable "
+                    "band (3-9), held below the board bar" % _ace_edge)
+
         # ══ PART 3 — HARD STRUCTURAL GUARDS (cheap invariants, model-independent) ══
         # These hold even if the mixture has a bug. Applied after all modifiers,
         # before the single finalize/clamp.
@@ -2830,6 +2862,11 @@ async def prop_calculate(req: PropRequest):
                 and _pre_cap > confidence and confidence == _data_ceiling)
             else None
         )
+        # The ace big-edge cap is the binding constraint when it fires, so it owns
+        # the displayed reason — this assignment runs after the block above, which
+        # would otherwise overwrite it with the (unrelated) data-ceiling tag.
+        if _ace_big_edge_reason:
+            confidence_cap_reason = _ace_big_edge_reason
 
         # Archetypes (playing style — also drives value-bet surface modifiers)
         p1_arch = classify_archetype(p1_all, req.tour)
