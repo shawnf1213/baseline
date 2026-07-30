@@ -112,6 +112,7 @@ from src.calculations.props import (
     project_break_points,
     bp_scenario_mixture,
     bp_fair_line,
+    game_spread_mixture,
     project_player_games_won,
     project_fantasy_score,
     FS_DIVERGENCE_CONF_CAP,
@@ -467,6 +468,11 @@ class PropRequest(BaseModel):
     # ATP Grand Slam qualifying rounds are best-of-3 (main draw is best-of-5).
     # Only meaningful for ATP Grand Slam courts; ignored otherwise.
     qualifying: bool = False
+    # Optional GAME SPREAD (games handicap) from the selected player's perspective:
+    # -4.5 = laying 4.5 games, +4.5 = receiving. When set, the response carries
+    # spread_p_cover / spread_margin_proj / spread_scenarios, computed off the same
+    # scenario mixture as the set + match outcomes. Ignored when None.
+    spread: Optional[float] = None
     # ADMIN DIAGNOSTIC ONLY — when true the response carries `component_trace`,
     # every step of the calculation chain in order with its inputs, its own value
     # and the running result. Opt-in and off by default: no bot or frontend caller
@@ -2963,9 +2969,29 @@ async def prop_calculate(req: PropRequest):
                 return []
             return df.to_dict(orient="records") if hasattr(df, "to_dict") else []
 
+        # ── GAME SPREAD (optional) ───────────────────────────────────────────
+        # Settles on the game MARGIN, so it reads off the same scenario mixture as
+        # the set/match outcomes — it can never disagree with them. Only computed
+        # when the caller passes a spread; None otherwise.
+        _spread_res = None
+        if req.spread is not None:
+            _spread_res = game_spread_mixture(
+                result.get("ptgw_scenario_probs"), req.spread,
+                tour=req.tour, match_format=match_fmt)
+            if _spread_res:
+                logger.info("GAME_SPREAD | %s %s%.1f | p_cover=%.3f margin_proj=%+.2f",
+                            req.player_name, "+" if _spread_res["spread"] > 0 else "",
+                            _spread_res["spread"], _spread_res["p_cover"],
+                            _spread_res["margin_proj"])
+
         return {
             "model_projection":     proj_val,
             "model_projection_premull": round(proj_val_premodel, 1) if isinstance(proj_val_premodel, (int, float)) else None,
+            # Game spread (None unless `spread` was supplied)
+            "spread_p_cover":       (_spread_res or {}).get("p_cover"),
+            "spread_margin_proj":   (_spread_res or {}).get("margin_proj"),
+            "spread_value":         (_spread_res or {}).get("spread"),
+            "spread_scenarios":     (_spread_res or {}).get("scenarios"),
             "recent_form_avg":      recent_form_avg,
             "consistency_tier":     consistency_tier,
             "retirement_risk":      retirement_risk,

@@ -1853,6 +1853,78 @@ def ptgw_scenario_mixture(p_sel, prop_line, tour="ATP", match_format="best_of_3"
     }
 
 
+# ── GAME SPREAD (games handicap) ─────────────────────────────────────────────
+# The spread settles on the GAME MARGIN — every game won by each player across
+# every set, summed, regardless of who won the match. The selected player covers
+# a handicap `spread` when  margin > -spread:
+#     spread -4.5 -> needs margin > +4.5 (win by 5+ games)
+#     spread +4.5 -> needs margin > -4.5 (lose by 4 or fewer, or win)
+#
+# Per-scenario margins come from the SAME fitted PTGW distributions, mirrored:
+# when the selected player wins in straights (S1) the opponent BY DEFINITION lost
+# in straights, so the opponent's games are drawn from S4 — mirroring is the
+# definition of the scenario, not a new assumption. Hence
+#     margin(S1) = mu(S1) - mu(S4)      margin(S2) = mu(S2) - mu(S3)
+# and antisymmetrically for the losing scenarios. Sanity: the implied TOTAL games
+# reproduce reality (ATP straights 19.7, ATP decider 30.1, WTA 18.6 / 28.9).
+#
+# The margin SD combines the two sides in quadrature. That treats the player's and
+# opponent's game counts as independent within a scenario, which is an
+# APPROXIMATION (they are weakly dependent — a scenario largely fixes the set
+# structure). It errs wide, so P(cover) is pulled toward 0.5 rather than
+# overstated — the conservative direction for a betting-facing number.
+_SPREAD_MIRROR = {"S1": "S4", "S2": "S3", "S3": "S2", "S4": "S1"}
+
+
+def game_spread_mixture(scenario_probs, spread, tour="ATP", match_format="best_of_3"):
+    """P(selected player covers `spread`) on the game handicap.
+
+    scenario_probs  the ALREADY-COMPUTED {S1..S4} from the match's scenario
+                    mixture — so this inherits the market-anchored win prob and
+                    the breakability overlay exactly, and can never disagree with
+                    the set/match outcomes shown alongside it.
+    spread          handicap from the selected player's perspective (-4.5 = laying
+                    4.5 games, +4.5 = receiving).
+    Returns p_cover, the projected margin, and the per-scenario breakdown.
+    Returns None when scenario_probs is missing/empty (never guesses).
+    """
+    if not scenario_probs:
+        return None
+    try:
+        spread = float(spread)
+    except (TypeError, ValueError):
+        return None
+    is_bo5 = match_format == "best_of_5"
+    fit = _PTGW_SCEN_BO5 if is_bo5 else _PTGW_SCEN_FIT.get(tour, _PTGW_SCEN_FIT["ATP"])
+    scen = fit["scen"]
+
+    need = -spread                      # covers when margin > need
+    p_cover = 0.0
+    margin_mean = 0.0
+    per_scen = {}
+    for s in ("S1", "S2", "S3", "S4"):
+        p_s = scenario_probs.get(s)
+        if not isinstance(p_s, (int, float)):
+            continue
+        mu_p, sd_p = scen[s]
+        mu_o, sd_o = scen[_SPREAD_MIRROR[s]]
+        m_mu = mu_p - mu_o
+        m_sd = math.sqrt(sd_p ** 2 + sd_o ** 2)
+        pc_s = _norm_sf(need, m_mu, m_sd)
+        p_cover += p_s * pc_s
+        margin_mean += p_s * m_mu
+        per_scen[s] = {"p": round(p_s, 4), "margin": round(m_mu, 2),
+                       "sd": round(m_sd, 2), "p_cover": round(pc_s, 4)}
+    p_cover = max(0.0, min(1.0, p_cover))
+    return {
+        "p_cover": round(p_cover, 4),
+        "p_not_cover": round(1.0 - p_cover, 4),
+        "margin_proj": round(margin_mean, 2),
+        "spread": spread,
+        "scenarios": per_scen,
+    }
+
+
 def _mixture_median(p_over_at, lo, hi, iters=30):
     """Solve for the line where P(over) = 0.50 (the distribution's MEDIAN) by
     bisection. p_over_at(x) must be monotonically DECREASING in x. This is the
