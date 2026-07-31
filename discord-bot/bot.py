@@ -3182,15 +3182,12 @@ def daily_recap_embed(rec: dict, target_date: str = None) -> discord.Embed:
                     if isinstance(_rv, (int, float)):
                         _row += f"  →  **{_rv:g}**"
                 _rows.append(_row)
-            # Cumulative slip record — pushes count as wins, same as everywhere else.
-            _sl = (rec.get("threex_slips") or {}) if rec else {}
-            _sw = (_sl.get("wins", 0) or 0) + (_sl.get("pushes", 0) or 0)
-            _slo = _sl.get("losses", 0) or 0
-            _tail = (f"\n_Slip record: {_sw}-{_slo}"
-                     + (f" · {_sw / (_sw + _slo) * 100:.0f}%" if (_sw + _slo) else "")
-                     + " — both legs must hit_")
+            # The cumulative slip record line was REMOVED from the recap
+            # (2026-07-30, user). The day's slip result still shows; the running
+            # 3x win/loss total does not. It is still tracked in the backend
+            # (record["threex_slips"]) for anyone who needs it.
             e.add_field(name=f"🎟️ Baseline 3x — {_slip_icon} {_slip_txt}",
-                        value="\n".join(_rows) + _tail, inline=False)
+                        value="\n".join(_rows), inline=False)
     except Exception:  # noqa: BLE001
         pass
 
