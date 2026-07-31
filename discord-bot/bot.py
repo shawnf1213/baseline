@@ -1701,14 +1701,17 @@ CALIBRATION_MIN_SAMPLE = 40
 # the FIRST run on the new model and the first to count.
 CALIBRATION_BASELINE_UTC = os.getenv("CALIBRATION_BASELINE_UTC", "2026-07-16T00:00:00")
 
-# Daily recap posts at 12:05 AM ET (recurring) — the day's matches are all finished
-# by then, so it recaps the JUST-COMPLETED day complete (2026-07-27, user; was 5 PM,
-# which posted before evening matches resolved). Matches that slid to the next day
-# grade the next day and land in that day's recap (resolution-date scoped). Env vars
-# still override — if RESULTS_POST_HOUR/MINUTE are set in Railway they win, so keep
-# them unset (or set to 0 / 5) for this 12:05 AM schedule to take effect.
-RESULTS_POST_HOUR = int(os.getenv("RESULTS_POST_HOUR", "0") or "0")
-RESULTS_POST_MINUTE = int(os.getenv("RESULTS_POST_MINUTE", "5") or "5")
+# Daily recap posts at 8:00 AM ET (2026-07-30, user; was 12:05 AM, before that
+# 5 PM). It still recaps the JUST-COMPLETED day — moving it later only makes that
+# recap MORE complete, since matches finishing after midnight have graded by then.
+# Matches that slid to the next day grade the next day and land in that day's
+# recap (resolution-date scoped, 6 AM→6 AM window). Env vars still override — if
+# RESULTS_POST_HOUR/MINUTE are set in Railway they win, so keep them unset (or set
+# to 8 / 0) for this 8:00 AM schedule to take effect.
+# NOTE: the second wave ("Additional Plays") also fires at 8:00 AM
+# (SECOND_WAVE_HOUR/MINUTE), so both @everyone posts land together.
+RESULTS_POST_HOUR = int(os.getenv("RESULTS_POST_HOUR", "8") or "8")
+RESULTS_POST_MINUTE = int(os.getenv("RESULTS_POST_MINUTE", "0") or "0")
 
 # ── One-off schedule override (DISABLED by default) ─────────────────────────
 # The recurring schedule now governs, driven by the Railway env vars
