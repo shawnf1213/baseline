@@ -3200,15 +3200,29 @@ def daily_recap_embed(rec: dict, target_date: str = None) -> discord.Embed:
     # (a match moved or started late). Names the next calendar date so members know
     # those carry over to the next recap. Only shown when there ARE such plays.
     try:
-        # Scope to THIS recap's own lists: the batches (minute-precision generated_at)
-        # that produced the graded picks above. This ties "playing tomorrow" to the
-        # 7/27 board + additional scan only — NOT the fresh 8 PM board for the NEXT
-        # day (a separate list, same 00:05 UTC minute but a later date).
-        _recap_batches = {(p.get("generated_at") or "")[:16] for p in graded}
+        # Scope by the pick's SLATE DATE — the day its match is actually played —
+        # using the same rule the board itself uses: a list generated from noon
+        # onward is building TOMORROW's card, anything earlier is today's.
+        #   board 7/29 8 PM  -> slate 7/30      wave 7/30 8 AM -> slate 7/30
+        #   board 7/30 10 PM -> slate 7/31 (NOT this recap)
+        #
+        # This replaces a batch-matching heuristic that scoped to whichever batches
+        # produced a graded pick. That broke once the recap moved to the morning:
+        # on 2026-07-30 a SINGLE pick from the 10 PM board (a 7/31 list) resolved
+        # before the 6 AM cutoff, which pulled its entire batch into scope and
+        # reported 10 of the NEXT day's plays as "didn't finish today".
+        def _slate_date_of(p):
+            try:
+                _g = datetime.datetime.fromisoformat(
+                    (p.get("generated_at") or "").replace("Z", "+00:00")).astimezone(POD_TZINFO)
+            except Exception:  # noqa: BLE001
+                return None
+            _d = _g.date() + datetime.timedelta(days=1) if _g.hour >= 12 else _g.date()
+            return _d.strftime("%Y-%m-%d")
         _pending = [p for p in picks
                     if p.get("result") not in ("W", "L", "PUSH", "VOID")
                     and not p.get("excluded_from_record")
-                    and (p.get("generated_at") or "")[:16] in _recap_batches]
+                    and _slate_date_of(p) == target_date]
         if _pending:
             _nd = datetime.datetime.strptime(target_date, "%Y-%m-%d") + datetime.timedelta(days=1)
             _names = ", ".join(sorted({(p.get("player") or "").split()[-1] for p in _pending}))
