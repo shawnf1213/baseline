@@ -3127,6 +3127,73 @@ def daily_recap_embed(rec: dict, target_date: str = None) -> discord.Embed:
     if t_total and t_rate < 60:
         record_val += "\n\n**Bad beats today, but we move.**"
     e.add_field(name="📋 Record", value=record_val, inline=False)
+
+    # ── 🎟️ Baseline 3x — the day's slip, graded ─────────────────────────────
+    # The 3x legs live in their OWN record block (threex_legs), not in `picks`,
+    # so the pick list above never showed them and the slip result was invisible
+    # in the recap. Scope them by the SAME 6 AM→6 AM resolution window as the
+    # main list, then grade the slip by the house rule: both legs must hit; a
+    # PUSH/VOID leg drops out and the slip is graded on what remains; any miss
+    # loses. Omitted entirely on days with no resolved slip.
+    try:
+        _legs_all = [p for p in (((rec.get("threex_legs") or {}).get("picks") or []) if rec else [])
+                     if not p.get("excluded_from_record")]
+        # A slip is a PAIR, so it must be graded as one unit. Group legs the same
+        # way the backend does (one slip per generation date) and attribute the
+        # slip to the day its LAST leg resolved. Without this, legs finishing on
+        # different days split the slip across two recaps and each half gets
+        # graded on its own — which showed a one-leg "CASHED" on 7/29.
+        _slips = {}
+        for p in _legs_all:
+            _slips.setdefault((p.get("generated_at") or "")[:10], []).append(p)
+        _legs = []
+        for _day, _grp in _slips.items():
+            if any(q.get("result") not in ("W", "L", "PUSH", "VOID") for q in _grp):
+                continue                      # slip still has a live/pending leg
+            _last = max((_et_date_of(q.get("resolved_at"), shift_hours=-6) or "")
+                        for q in _grp)
+            if _last == target_date:
+                _legs.extend(_grp)
+        if _legs:
+            _decided = [p["result"] for p in _legs if p["result"] in ("W", "L")]
+            if not _decided:
+                _slip_txt, _slip_icon = "PUSH", "⚪"
+            elif "L" in _decided:
+                _slip_txt, _slip_icon = "MISSED", "❌"
+            else:
+                _slip_txt, _slip_icon = "CASHED", "✅"
+            _rows = []
+            for p in _legs:
+                _ln = p.get("original_line")
+                if not isinstance(_ln, (int, float)):
+                    _ln = p.get("line")
+                _bits = [p.get("player") or "?"]
+                if p.get("prop_type"):
+                    _bits.append(str(p["prop_type"]))
+                if isinstance(_ln, (int, float)):
+                    _bits.append(f"{_ln:g}")
+                if p.get("lean"):
+                    _bits.append(str(p["lean"]).upper())
+                _row = f"{icon.get(p['result'], '⚪')} **{_bits[0]}** {' '.join(_bits[1:])}".rstrip()
+                if p["result"] == "VOID":
+                    _row += " — **DNP** (cancelled)"
+                else:
+                    _rv = p.get("result_value")
+                    if isinstance(_rv, (int, float)):
+                        _row += f"  →  **{_rv:g}**"
+                _rows.append(_row)
+            # Cumulative slip record — pushes count as wins, same as everywhere else.
+            _sl = (rec.get("threex_slips") or {}) if rec else {}
+            _sw = (_sl.get("wins", 0) or 0) + (_sl.get("pushes", 0) or 0)
+            _slo = _sl.get("losses", 0) or 0
+            _tail = (f"\n_Slip record: {_sw}-{_slo}"
+                     + (f" · {_sw / (_sw + _slo) * 100:.0f}%" if (_sw + _slo) else "")
+                     + " — both legs must hit_")
+            e.add_field(name=f"🎟️ Baseline 3x — {_slip_icon} {_slip_txt}",
+                        value="\n".join(_rows) + _tail, inline=False)
+    except Exception:  # noqa: BLE001
+        pass
+
     # "Some props play tomorrow" — when plays from this cycle haven't resolved yet
     # (a match moved or started late). Names the next calendar date so members know
     # those carry over to the next recap. Only shown when there ARE such plays.
