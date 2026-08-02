@@ -3076,9 +3076,18 @@ def daily_recap_embed(rec: dict, target_date: str = None) -> discord.Embed:
     # day it was played — while genuinely-next-day matches (earliest ~7 AM) stay out.
     # Only graded picks have a resolved_at; generation date is irrelevant here.
     picks = rec.get("picks", []) if rec else []
+    # Scoped by SLATE DATE — the day the match was played — NOT by when the pick
+    # happened to resolve (2026-08-02). The old 6 AM→6 AM resolution window filed
+    # a pick under whatever day it graded on, so Shapovalov (8/1 card, graded
+    # 4:54 AM on 8/1) landed in the 7/31 recap and was missing from 8/1's.
+    #
+    # Resolution-scoping existed so a late grader still appeared SOMEWHERE. That
+    # is no longer needed: a day's recap now waits until every pick on that card
+    # is settled, so nothing can be orphaned. This also makes the pick list agree
+    # with the readiness check and the carryover line, which are both slate-based.
     graded = [p for p in picks
               if p.get("result") in ("W", "L", "PUSH", "VOID")
-              and _et_date_of(p.get("resolved_at"), shift_hours=-6) == target_date]
+              and _slate_date_of(p) == target_date]
     today = graded
 
     # CASHED = W + PUSH — a push didn't miss, so it counts as cashed. The
@@ -3240,7 +3249,14 @@ def daily_recap_embed(rec: dict, target_date: str = None) -> discord.Embed:
                 inline=False)
     except Exception:  # noqa: BLE001
         pass
-    return _stamped_footer(e, FOOTER_GENERIC)
+    # Footer carries the date the recap is ABOUT, not the date it happens to be
+    # rendered. An 8/1 recap posted after midnight was stamping "8/2", which
+    # contradicted its own title.
+    try:
+        _fd = datetime.datetime.strptime(target_date, "%Y-%m-%d").replace(tzinfo=POD_TZINFO)
+    except Exception:  # noqa: BLE001
+        _fd = None
+    return _stamped_footer(e, FOOTER_GENERIC, when=_fd)
 
 
 def results_embed(rec: dict) -> discord.Embed:
@@ -3660,12 +3676,12 @@ async def _resolve_all_pending() -> int:
 # RESOLVE_EVERY_HOURS (2) and, as soon as a slate day has NOTHING left pending,
 # that day's recap posts. The 8:45 AM task below stays as a BACKSTOP.
 #
-# A pick unresolved RECAP_STALE_HOURS (12) after its list was built stops
-# blocking. Its match moved, was postponed, or the resolver can't see it — the
-# day should not hang forever on it. It stays PENDING (never force-graded), so
-# whenever it does resolve it lands on THAT day's recap, which is exactly
-# "moved to the next count for the following day".
-RECAP_STALE_HOURS = float(os.getenv("RECAP_STALE_HOURS", "12") or "12")
+# EVERY pick must be settled — there is no age-based escape hatch. An earlier
+# version let a pick that had been pending 12h stop blocking its day; that
+# posted an incomplete recap (2026-08-02, user), so the rule is now simply:
+# nothing pending, or the day does not post. A play whose match is postponed
+# therefore holds its recap until it grades or is voided — void it manually
+# (VOID = DNP) to release the day.
 _GRADED_RESULTS = ("W", "L", "PUSH", "VOID")
 
 
@@ -3709,10 +3725,10 @@ async def _post_recap_for(channel, date_str: str, why: str) -> bool:
 async def _maybe_post_ready_recap():
     """After a resolve pass: post the recap for any slate day that is DONE.
 
-    A day is done when every pick on that day's card is graded, or has been
-    pending longer than RECAP_STALE_HOURS. Looks back three days (oldest first)
-    so a day that was blocked by a stale pick still gets its recap once the
-    12-hour clock runs out."""
+    A day is done ONLY when every pick on that day's card is settled (W/L/PUSH/
+    VOID). Any pick still pending holds the whole day back, however old it is —
+    an incomplete recap is worse than a late one. Looks back three days
+    (oldest first) so a day held up by a late match still posts once it lands."""
     chan_id = TRACK_RECORD_CHANNEL_ID
     if not chan_id or not AUTOPOST_ENABLED:
         return
@@ -3734,19 +3750,13 @@ async def _maybe_post_ready_recap():
         day_picks = [p for p in picks if _slate_date_of(p) == day]
         if not day_picks:
             continue
-        blocking = [p for p in day_picks
-                    if p.get("result") not in _GRADED_RESULTS
-                    and _pick_age_hours(p) < RECAP_STALE_HOURS]
+        blocking = [p for p in day_picks if p.get("result") not in _GRADED_RESULTS]
         if blocking:
-            log.info("recap: %s not ready — %d pick(s) still pending under %dh",
-                     day, len(blocking), int(RECAP_STALE_HOURS))
+            log.info("recap: %s NOT ready — %d pick(s) still pending: %s",
+                     day, len(blocking),
+                     ", ".join((p.get("player") or "?") for p in blocking[:5]))
             continue
-        if not any(p.get("result") in _GRADED_RESULTS for p in day_picks):
-            continue                            # nothing actually graded on that card
-        _stale = [p for p in day_picks if p.get("result") not in _GRADED_RESULTS]
-        if await _post_recap_for(channel, day,
-                                 f"all {len(day_picks)} plays settled"
-                                 + (f", {len(_stale)} rolled to the next day" if _stale else "")):
+        if await _post_recap_for(channel, day, f"all {len(day_picks)} plays settled"):
             return                              # one recap per pass
 
 
