@@ -3043,6 +3043,21 @@ def _et_date_of(generated_at: str, shift_hours: float = 0):
         return None
 
 
+def _slate_date_of(p: dict) -> str:
+    """The ET date a pick's match is actually PLAYED, from when the list was built —
+    the same rule the board uses: a list generated from noon onward is building
+    TOMORROW's card, anything earlier is today's.
+      board 7/29 8 PM -> 7/30 · wave 7/30 8 AM -> 7/30 · board 7/30 10 PM -> 7/31
+    Returns None when generated_at is missing/unparseable."""
+    try:
+        _g = datetime.datetime.fromisoformat(
+            (p.get("generated_at") or "").replace("Z", "+00:00")).astimezone(POD_TZINFO)
+    except Exception:  # noqa: BLE001
+        return None
+    _d = _g.date() + datetime.timedelta(days=1) if _g.hour >= 12 else _g.date()
+    return _d.strftime("%Y-%m-%d")
+
+
 def daily_recap_embed(rec: dict, target_date: str = None) -> discord.Embed:
     """Date-based daily recap (the auto-posted format). Header 'M/D Premium List',
     that date's Pick-of-the-Day picks with W/L/PUSH indicators, a Today record + hit
@@ -3211,14 +3226,6 @@ def daily_recap_embed(rec: dict, target_date: str = None) -> discord.Embed:
         # on 2026-07-30 a SINGLE pick from the 10 PM board (a 7/31 list) resolved
         # before the 6 AM cutoff, which pulled its entire batch into scope and
         # reported 10 of the NEXT day's plays as "didn't finish today".
-        def _slate_date_of(p):
-            try:
-                _g = datetime.datetime.fromisoformat(
-                    (p.get("generated_at") or "").replace("Z", "+00:00")).astimezone(POD_TZINFO)
-            except Exception:  # noqa: BLE001
-                return None
-            _d = _g.date() + datetime.timedelta(days=1) if _g.hour >= 12 else _g.date()
-            return _d.strftime("%Y-%m-%d")
         _pending = [p for p in picks
                     if p.get("result") not in ("W", "L", "PUSH", "VOID")
                     and not p.get("excluded_from_record")
@@ -3648,13 +3655,113 @@ async def _resolve_all_pending() -> int:
     return graded
 
 
+# ── Event-driven recap (2026-08-02, user) ───────────────────────────────────
+# The recap no longer waits for a clock slot: the resolver runs every
+# RESOLVE_EVERY_HOURS (2) and, as soon as a slate day has NOTHING left pending,
+# that day's recap posts. The 8:45 AM task below stays as a BACKSTOP.
+#
+# A pick unresolved RECAP_STALE_HOURS (12) after its list was built stops
+# blocking. Its match moved, was postponed, or the resolver can't see it — the
+# day should not hang forever on it. It stays PENDING (never force-graded), so
+# whenever it does resolve it lands on THAT day's recap, which is exactly
+# "moved to the next count for the following day".
+RECAP_STALE_HOURS = float(os.getenv("RECAP_STALE_HOURS", "12") or "12")
+_GRADED_RESULTS = ("W", "L", "PUSH", "VOID")
+
+
+async def _recap_already_posted(channel, date_str: str) -> bool:
+    """True if this day's recap is already in the channel. Reads the channel
+    rather than trusting in-memory state, so a restart (or a manual post) can
+    never produce a second recap for the same day. On any read failure it
+    returns True — refusing to post is the safe direction."""
+    try:
+        _d = datetime.datetime.strptime(date_str, "%Y-%m-%d")
+        want = f"{_d.month}/{_d.day} Premium List"
+        async for msg in channel.history(limit=40):
+            for emb in (msg.embeds or []):
+                if emb.title and want in emb.title:
+                    return True
+        return False
+    except Exception:  # noqa: BLE001
+        log.exception("recap duplicate-check failed for %s — not posting", date_str)
+        return True
+
+
+async def _post_recap_for(channel, date_str: str, why: str) -> bool:
+    """Post one day's recap, guarded against duplicates. Returns True if sent."""
+    if not AUTOPOST_ENABLED:
+        log.info("recap: posting DISABLED (AUTOPOST_ENABLED off) — %s %s", date_str, why)
+        return False
+    if await _recap_already_posted(channel, date_str):
+        log.info("recap: %s already posted — skipping (%s)", date_str, why)
+        return False
+    rec = await asyncio.to_thread(results_tracker.get_record)
+    if not (rec and rec.get("total")):
+        log.info("recap: no graded record yet — nothing to post for %s", date_str)
+        return False
+    await channel.send(content="@everyone",
+                       embed=daily_recap_embed(rec, target_date=date_str),
+                       allowed_mentions=EVERYONE_MENTION)
+    log.info("recap: posted %s -> track-record (%s)", date_str, why)
+    return True
+
+
+async def _maybe_post_ready_recap():
+    """After a resolve pass: post the recap for any slate day that is DONE.
+
+    A day is done when every pick on that day's card is graded, or has been
+    pending longer than RECAP_STALE_HOURS. Looks back three days (oldest first)
+    so a day that was blocked by a stale pick still gets its recap once the
+    12-hour clock runs out."""
+    chan_id = TRACK_RECORD_CHANNEL_ID
+    if not chan_id or not AUTOPOST_ENABLED:
+        return
+    channel = client.get_channel(chan_id)
+    if channel is None:
+        log.warning("recap: channel %s not found", chan_id)
+        return
+    rec = await asyncio.to_thread(results_tracker.get_record)
+    picks = [p for p in ((rec or {}).get("picks") or [])
+             if not p.get("excluded_from_record")]
+    if not picks:
+        return
+    now = datetime.datetime.now(POD_TZINFO)
+    today = now.strftime("%Y-%m-%d")
+    for _off in (3, 2, 1):                      # oldest first; never the day in progress
+        day = (now - datetime.timedelta(days=_off)).strftime("%Y-%m-%d")
+        if day == today:
+            continue
+        day_picks = [p for p in picks if _slate_date_of(p) == day]
+        if not day_picks:
+            continue
+        blocking = [p for p in day_picks
+                    if p.get("result") not in _GRADED_RESULTS
+                    and _pick_age_hours(p) < RECAP_STALE_HOURS]
+        if blocking:
+            log.info("recap: %s not ready — %d pick(s) still pending under %dh",
+                     day, len(blocking), int(RECAP_STALE_HOURS))
+            continue
+        if not any(p.get("result") in _GRADED_RESULTS for p in day_picks):
+            continue                            # nothing actually graded on that card
+        _stale = [p for p in day_picks if p.get("result") not in _GRADED_RESULTS]
+        if await _post_recap_for(channel, day,
+                                 f"all {len(day_picks)} plays settled"
+                                 + (f", {len(_stale)} rolled to the next day" if _stale else "")):
+            return                              # one recap per pass
+
+
 @tasks.loop(hours=RESOLVE_EVERY_HOURS)
 async def daily_resolve_results():
-    """Periodic grader (runs every couple hours + on startup)."""
+    """Periodic grader — every RESOLVE_EVERY_HOURS (2) and on startup. After each
+    pass it posts the recap for any slate day that has finished settling."""
     try:
         await _resolve_all_pending()
     except Exception:  # noqa: BLE001
         log.exception("daily_resolve_results failed")
+    try:
+        await _maybe_post_ready_recap()
+    except Exception:  # noqa: BLE001
+        log.exception("event-driven recap check failed")
 
 
 @daily_resolve_results.before_loop
@@ -3700,18 +3807,18 @@ async def daily_results_post():
         except Exception:  # noqa: BLE001
             log.exception("pre-recap resolve failed (posting with current data)")
         rec = await asyncio.to_thread(results_tracker.get_record)
+        # BACKSTOP ONLY (2026-08-02). The recap is now event-driven — it posts from
+        # the 2-hourly resolver as soon as a day finishes settling. This slot exists
+        # so a day can never be silently skipped if that path fails; the duplicate
+        # check inside _post_recap_for means it no-ops on a normal day.
         if not AUTOPOST_ENABLED:
             # Resolution above still ran (grading stays current); only the POST is
             # suppressed while automated posting is off.
             log.info("daily results: recap posting DISABLED (AUTOPOST_ENABLED off) — "
                      "resolved pending, not posting the recap")
         elif rec and rec.get("total"):
-            # @everyone on the recap (2026-07-29, user): it posts once a day, so the
-            # ping is acceptable even in the public track-record channel.
-            await channel.send(content="@everyone",
-                               embed=daily_recap_embed(rec, target_date=_recap_date),
-                               allowed_mentions=EVERYONE_MENTION)
-            log.info("daily results: posted %s recap -> track-record %s (@everyone, overall %s-%s)",
+            await _post_recap_for(channel, _recap_date, "8:45 AM backstop")
+            log.info("daily results: backstop ran for %s -> track-record %s (overall %s-%s)",
                      _recap_date, chan_id, rec.get("wins"), rec.get("losses"))
         else:
             log.info("daily results: no graded record yet — skipping recap")
