@@ -2670,7 +2670,14 @@ async def _post_second_wave(channel, track: bool = True) -> str:
     if not AUTOPOST_ENABLED:
         log.info("second wave: automated posting DISABLED (AUTOPOST_ENABLED off)")
         return "autopost disabled"
+    # Exclude BOTH: anything logged in the last 18h (the normal same-cycle repeat)
+    # AND anything still awaiting a result, however old. The 18h window alone is
+    # time-based, so a POSTPONED play ages out of it and gets posted again as new
+    # — that is exactly what happened on 8/3, when Putintseva's 8/2 pick (logged
+    # ~31h earlier, still pending after a rain delay) led the Additional Plays and
+    # was logged a second time. Pending state, not elapsed time, is the real test.
     exclude = await _todays_posted_keys()
+    exclude |= await _pending_pick_keys()
     ordered, _thin = await pick_of_day._rank_board()
     if not ordered:
         log.info("second wave: no qualifying board — nothing to add")
