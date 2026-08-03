@@ -2657,6 +2657,12 @@ async def _pending_pick_keys() -> set:
     try:
         pending = await asyncio.to_thread(results_tracker.get_pending) or []
         for q in pending:
+            # A pick flagged excluded_from_record is not a live play — it was
+            # superseded or its post was pulled. It must not block that player's
+            # prop from a future board, or an excluded row (which may never be
+            # graded) would lock the matchup out permanently.
+            if q.get("excluded_from_record"):
+                continue
             keys.add((pick_of_day._norm(q.get("player", "")), q.get("prop_type")))
     except Exception:  # noqa: BLE001
         log.exception("board: failed to read pending pick keys (posting unfiltered)")
@@ -3857,34 +3863,27 @@ async def daily_results_post():
         if channel is None:
             log.warning("daily results: channel %s not found", chan_id)
             return
-        today = datetime.datetime.now(POD_TZINFO).strftime("%Y-%m-%d")
-        # Runs just after midnight → recap the JUST-COMPLETED day (yesterday in ET).
-        # daily_recap_embed's 6 AM→6 AM window keeps late finishers on the right day.
-        _recap_date = (datetime.datetime.now(POD_TZINFO)
-                       - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
-
-        # 1) RECAP — resolve pending picks first (so the recap reflects final
-        #    results), then post the just-completed day's date-based recap.
+        # 1) Resolve first, so anything that finished overnight is graded.
         try:
             await _resolve_all_pending()
         except Exception:  # noqa: BLE001
-            log.exception("pre-recap resolve failed (posting with current data)")
-        rec = await asyncio.to_thread(results_tracker.get_record)
-        # BACKSTOP ONLY (2026-08-02). The recap is now event-driven — it posts from
-        # the 2-hourly resolver as soon as a day finishes settling. This slot exists
-        # so a day can never be silently skipped if that path fails; the duplicate
-        # check inside _post_recap_for means it no-ops on a normal day.
+            log.exception("pre-recap resolve failed")
+
+        # 2) BACKSTOP (2026-08-02, corrected 2026-08-03). This slot used to FORCE a
+        # post of yesterday's date, which bypassed the all-settled rule entirely —
+        # on 8/3 it published the 8/2 recap at 08:45 with SEVEN picks still pending
+        # (rain-delayed Toronto matches now playing today). A backstop must not be
+        # able to publish a half-finished day.
+        #
+        # It now runs the SAME readiness check as the 2-hourly resolver: post only
+        # a day whose every pick is settled. That keeps its real purpose — catching
+        # a day the event path somehow missed — without inventing a second, weaker
+        # rule for when a recap may go out.
         if not AUTOPOST_ENABLED:
-            # Resolution above still ran (grading stays current); only the POST is
-            # suppressed while automated posting is off.
             log.info("daily results: recap posting DISABLED (AUTOPOST_ENABLED off) — "
                      "resolved pending, not posting the recap")
-        elif rec and rec.get("total"):
-            await _post_recap_for(channel, _recap_date, "8:45 AM backstop")
-            log.info("daily results: backstop ran for %s -> track-record %s (overall %s-%s)",
-                     _recap_date, chan_id, rec.get("wins"), rec.get("losses"))
-        else:
-            log.info("daily results: no graded record yet — skipping recap")
+            return
+        await _maybe_post_ready_recap()
 
         # The picks are NOT posted here — the POTD trigger is its own job
         # (daily_picks_generate) so the recap can land earlier, independently.
