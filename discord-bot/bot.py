@@ -1722,12 +1722,16 @@ RESULTS_POST_MINUTE = int(os.getenv("RESULTS_POST_MINUTE", "45") or "45")
 # env to a real date; the empty default never matches today, so on every date
 # _slot_is_live() picks the recurring slot and the one-off times below are dormant
 # (they only fire on a date that equals ONEOFF_SCHED_DATE, which is never "").
-ONEOFF_SCHED_DATE = os.getenv("ONEOFF_SCHED_DATE", "")
-# Dormant one-off times (only used if ONEOFF_SCHED_DATE is set via env). Kept off
-# the recurring slots so registering them can't collide.
+# ONE-OFF ACTIVE FOR 2026-08-02 (user): Toronto is rain-delayed and the
+# Eala/Pegula match is running late, so tonight's board is pushed 10:00 PM ->
+# 11:30 PM to build on settled results instead of delayed ones. On this date
+# _slot_is_live() runs the one-off slot and SKIPS the recurring 10 PM slot, so
+# exactly one board posts. Clear ONEOFF_SCHED_DATE (or let the date pass) and
+# everything reverts to the normal schedule automatically.
+ONEOFF_SCHED_DATE = os.getenv("ONEOFF_SCHED_DATE", "2026-08-02")
 ONEOFF_RECAP_HM   = (3, 0)      # dormant
-ONEOFF_POTD_HM    = (3, 5)      # dormant
-ONEOFF_PREWARM_HM = (2, 55)     # dormant
+ONEOFF_POTD_HM    = (23, 30)    # 11:30 PM board (one-off, 2026-08-02)
+ONEOFF_PREWARM_HM = (23, 0)     # 11:00 PM pre-warm, 30 min ahead of it
 # Extension scan PARKED for today: user asked only for the 5 PM recap + 7 PM POTD.
 # A past time-of-day means its next firing is tomorrow, which isn't the one-off
 # date, so the loop body no-ops — no unrequested 10:15 PM additions post.
@@ -2520,6 +2524,29 @@ async def _post_daily_picks(channel, track: bool = True) -> str:
              ONEOFF_PREWARM_HM[1] if datetime.datetime.now(POD_TZINFO).strftime("%Y-%m-%d")
              == ONEOFF_SCHED_DATE else PREWARM_MINUTE)
 
+    # Never re-post a play that is already live and ungraded (2026-08-02). The
+    # 18h dedup in _log_picks_pending stopped a pick being LOGGED twice, but the
+    # board could still DISPLAY it again, presenting an open play as new. This
+    # bites hardest when matches are postponed: a rain-delayed match slides onto
+    # the next card while its pick is still pending. Dropped plays are logged by
+    # name so a short board is explainable.
+    _open = await _pending_pick_keys()
+    if _open:
+        _before = len(ranked) + len(slip)
+        _drop = [p for p in ranked
+                 if (pick_of_day._norm(p.get("player")), p.get("prop_type")) in _open]
+        ranked = [p for p in ranked
+                  if (pick_of_day._norm(p.get("player")), p.get("prop_type")) not in _open]
+        slip = [p for p in slip
+                if (pick_of_day._norm(p.get("player")), p.get("prop_type")) not in _open]
+        if _drop:
+            log.info("daily picks: dropped %d play(s) still awaiting a result: %s "
+                     "(%d -> %d posted)", len(_drop),
+                     ", ".join(f"{p.get('player')} {p.get('prop_type')}" for p in _drop),
+                     _before, len(ranked) + len(slip))
+        if ranked:
+            ranked, has_star = pick_of_day._promote_star(ranked)
+
     if not ranked:
         no_play = discord.Embed(description=MSG_NO_PICK_DAILY, color=COLOR_NEUTRAL)
         no_play.set_author(name="🎾 Baseline Ranked Plays")
@@ -2616,6 +2643,24 @@ async def _todays_posted_keys() -> set:
                 keys.add((pick_of_day._norm(q.get("player", "")), q.get("prop_type")))
     except Exception:  # noqa: BLE001
         log.exception("second wave: failed to read today's posted keys")
+    return keys
+
+
+async def _pending_pick_keys() -> set:
+    """(_norm(player), prop_type) for every pick still UNRESOLVED.
+
+    A play that is already logged and awaiting a result must not be posted again
+    on a later board: the 18h dedup in _log_picks_pending stops it being logged
+    twice, but nothing stopped it being DISPLAYED twice, so members saw a live
+    play presented as new. That matters most when matches are postponed — a
+    rain-delayed match slides onto the next card while its pick is still open."""
+    keys = set()
+    try:
+        pending = await asyncio.to_thread(results_tracker.get_pending) or []
+        for q in pending:
+            keys.add((pick_of_day._norm(q.get("player", "")), q.get("prop_type")))
+    except Exception:  # noqa: BLE001
+        log.exception("board: failed to read pending pick keys (posting unfiltered)")
     return keys
 
 
