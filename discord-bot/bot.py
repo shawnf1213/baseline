@@ -3159,11 +3159,35 @@ def daily_recap_embed(rec: dict, target_date: str = None) -> discord.Embed:
     t_total = t_w + t_l + t_p
     t_rate = round(t_cash / t_total * 100) if t_total else 0
 
-    o_w, o_l = rec.get("wins", 0), rec.get("losses", 0)
-    o_p = rec.get("pushes", 0) or 0
-    o_cash = o_w + o_p
-    o_total = o_w + o_l + o_p
-    o_rate = round(o_cash / o_total * 100) if o_total else 0
+    # ROLLING 30 DAYS instead of all-time (2026-08-03, user). The lifetime total
+    # spans a stretch where earlier plays were still being corrected — regraded,
+    # voided, superseded — so it isn't a number to publish. A 30-day window covers
+    # only settled recent history and moves with current form.
+    # Counted on SLATE date, like the pick list, so a play belongs to the day it
+    # was played. Window is inclusive of the recap's own day.
+    try:
+        _win_start = (datetime.datetime.strptime(target_date, "%Y-%m-%d")
+                      - datetime.timedelta(days=29)).strftime("%Y-%m-%d")
+    except Exception:  # noqa: BLE001
+        _win_start = None
+    m_w = m_l = m_p = 0
+    if _win_start:
+        for p in picks:
+            if p.get("excluded_from_record"):
+                continue
+            _sd = _slate_date_of(p)
+            if not _sd or not (_win_start <= _sd <= target_date):
+                continue
+            _r = p.get("result")
+            if _r == "W":
+                m_w += 1
+            elif _r == "L":
+                m_l += 1
+            elif _r == "PUSH":
+                m_p += 1               # VOID/DNP never played — excluded both sides
+    m_cash = m_w + m_p
+    m_total = m_w + m_l + m_p
+    m_rate = round(m_cash / m_total * 100) if m_total else 0
 
     color = COLOR_UNDER if (t_total and t_rate < 50) else COLOR_OVER
     e = discord.Embed(title=f"📊 {header}", color=color)
@@ -3208,7 +3232,9 @@ def daily_recap_embed(rec: dict, target_date: str = None) -> discord.Embed:
     today_line = f"**Today:** {t_cash}/{t_total} cashed ({t_rate}%)"
     if t_p:
         today_line += f"  ·  incl. {t_p} push{'es' if t_p != 1 else ''}"
-    record_val = f"{today_line}\n**Overall:** {o_cash}/{o_total} cashed ({o_rate}%)"
+    record_val = today_line
+    if m_total:
+        record_val += f"\n**Last 30 days:** {m_cash}/{m_total} cashed ({m_rate}%)"
     # Rough-day note — included ONLY when the day's cashed rate is under 60% and at
     # least one play actually resolved. Deliberately conditional so it never reads
     # as canned: good days (>=60%) and empty days show nothing extra.
