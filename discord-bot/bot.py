@@ -1722,16 +1722,15 @@ RESULTS_POST_MINUTE = int(os.getenv("RESULTS_POST_MINUTE", "45") or "45")
 # env to a real date; the empty default never matches today, so on every date
 # _slot_is_live() picks the recurring slot and the one-off times below are dormant
 # (they only fire on a date that equals ONEOFF_SCHED_DATE, which is never "").
-# ONE-OFF ACTIVE FOR 2026-08-02 (user): Toronto is rain-delayed and the
-# Eala/Pegula match is running late, so tonight's board is pushed 10:00 PM ->
-# 11:30 PM to build on settled results instead of delayed ones. On this date
-# _slot_is_live() runs the one-off slot and SKIPS the recurring 10 PM slot, so
-# exactly one board posts. Clear ONEOFF_SCHED_DATE (or let the date pass) and
-# everything reverts to the normal schedule automatically.
-ONEOFF_SCHED_DATE = os.getenv("ONEOFF_SCHED_DATE", "2026-08-02")
+# One-off override, OFF. The 2026-08-02 11:30 PM rain-delay scan is spent — it
+# never fired because the duplicate guard below compared generation dates instead
+# of slate dates (fixed 2026-08-03), and the date has since passed. Set
+# ONEOFF_SCHED_DATE to a real date to re-arm; the empty default never matches, so
+# _slot_is_live() always picks the recurring slot.
+ONEOFF_SCHED_DATE = os.getenv("ONEOFF_SCHED_DATE", "")
 ONEOFF_RECAP_HM   = (3, 0)      # dormant
-ONEOFF_POTD_HM    = (23, 30)    # 11:30 PM board (one-off, 2026-08-02)
-ONEOFF_PREWARM_HM = (23, 0)     # 11:00 PM pre-warm, 30 min ahead of it
+ONEOFF_POTD_HM    = (23, 30)    # dormant (was the 8/2 one-off slot)
+ONEOFF_PREWARM_HM = (23, 0)     # dormant
 # Extension scan PARKED for today: user asked only for the 5 PM recap + 7 PM POTD.
 # A past time-of-day means its next firing is tomorrow, which isn't the one-off
 # date, so the loop body no-ops — no unrequested 10:15 PM additions post.
@@ -2896,25 +2895,27 @@ async def daily_picks_generate():
             await channel.send(content="@everyone", embed=e, allowed_mentions=EVERYONE_MENTION)
             log.info("POTD trigger: skip-date %s — posted no-value notice", POD_SKIP_DATE)
             return
-        # Already-posted-today guard (2026-07-29): never post a second board for the
-        # same ET day — covers a manual re-post + the scheduled run, or a restart that
-        # re-fires the trigger. If a potd-group pick was already logged today, skip
-        # silently (no post, no ping). Never blocks on a guard error.
+        # Duplicate-board guard (2026-07-29, rewritten 2026-08-03). Never post two
+        # boards for the same CARD — but compare SLATE dates, not generation dates.
+        #
+        # The original compared generation date and broke the 8/2 one-off: a board
+        # posted 01:25 AM built the 8/2 card, so when the 11:30 PM run (building the
+        # 8/3 card) fired, the guard saw "already posted today" and silently
+        # returned. Two boards on one calendar day are perfectly legitimate when
+        # they target different cards; two boards for the SAME card are not.
         try:
             _rec_g = await asyncio.to_thread(results_tracker.get_record)
-            _today_et = datetime.datetime.now(POD_TZINFO).strftime("%Y-%m-%d")
+            _now_et = datetime.datetime.now(POD_TZINFO)
+            _target_slate = ((_now_et + datetime.timedelta(days=1)) if _now_et.hour >= 12
+                             else _now_et).strftime("%Y-%m-%d")
             for _q in (_rec_g or {}).get("picks", []):
                 if (_q.get("pick_group") or "potd") != "potd":
                     continue
-                try:
-                    _qd = datetime.datetime.fromisoformat(
-                        (_q.get("generated_at") or "").replace("Z", "+00:00")
-                    ).astimezone(POD_TZINFO).strftime("%Y-%m-%d")
-                except Exception:  # noqa: BLE001
+                if _q.get("excluded_from_record"):
                     continue
-                if _qd == _today_et:
-                    log.info("POTD trigger: a POTD board was already posted today (%s) "
-                             "— skipping the scheduled run to avoid a duplicate", _today_et)
+                if _slate_date_of(_q) == _target_slate:
+                    log.info("POTD trigger: a board for the %s card was already posted "
+                             "— skipping to avoid a duplicate", _target_slate)
                     return
         except Exception:  # noqa: BLE001
             pass
