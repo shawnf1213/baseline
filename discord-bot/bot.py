@@ -3766,6 +3766,19 @@ async def _resolve_all_pending() -> int:
 # (VOID = DNP) to release the day.
 _GRADED_RESULTS = ("W", "L", "PUSH", "VOID")
 
+# ONE-OFF (2026-08-03, user): hold these days and release them TOGETHER. 8/2 was
+# fully settled while 8/3 still had matches running, and the user wants both to
+# land at once rather than 8/2 going out alone hours earlier. While any listed
+# day is still unsettled NOTHING posts; once every listed day is ready they post
+# in order on the same pass.
+#
+# Self-clearing: once all of them are in the channel the duplicate check no-ops
+# them and normal day-by-day posting resumes, so this can be left in place
+# harmlessly — but it is a one-off and should be emptied when convenient.
+RECAP_BATCH_DATES = [d.strip() for d in
+                     os.getenv("RECAP_BATCH_DATES", "2026-08-02,2026-08-03").split(",")
+                     if d.strip()]
+
 
 async def _recap_already_posted(channel, date_str: str) -> bool:
     """True if this day's recap is already in the channel. Reads the channel
@@ -3825,6 +3838,27 @@ async def _maybe_post_ready_recap():
         return
     now = datetime.datetime.now(POD_TZINFO)
     today = now.strftime("%Y-%m-%d")
+
+    def _day_ready(d):
+        dp = [p for p in picks if _slate_date_of(p) == d]
+        return bool(dp) and not [p for p in dp if p.get("result") not in _GRADED_RESULTS]
+
+    # ONE-OFF BATCH HOLD — release the listed days together or not at all. Only
+    # applies while at least one listed day is still unposted; once they are all
+    # in the channel this is inert and normal posting resumes.
+    if RECAP_BATCH_DATES:
+        _unposted = [d for d in RECAP_BATCH_DATES
+                     if not await _recap_already_posted(channel, d)]
+        if _unposted:
+            _not_ready = [d for d in _unposted if not _day_ready(d)]
+            if _not_ready:
+                log.info("recap: BATCH HOLD %s — waiting on %s (nothing posts yet)",
+                         ",".join(RECAP_BATCH_DATES), ",".join(_not_ready))
+                return
+            for d in sorted(_unposted):
+                await _post_recap_for(channel, d, "batched release")
+            return
+
     for _off in (3, 2, 1):                      # oldest first; never the day in progress
         day = (now - datetime.timedelta(days=_off)).strftime("%Y-%m-%d")
         if day == today:
