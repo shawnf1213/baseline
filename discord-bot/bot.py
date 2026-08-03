@@ -3252,22 +3252,19 @@ def daily_recap_embed(rec: dict, target_date: str = None) -> discord.Embed:
     try:
         _legs_all = [p for p in (((rec.get("threex_legs") or {}).get("picks") or []) if rec else [])
                      if not p.get("excluded_from_record")]
-        # A slip is a PAIR, so it must be graded as one unit. Group legs the same
-        # way the backend does (one slip per generation date) and attribute the
-        # slip to the day its LAST leg resolved. Without this, legs finishing on
-        # different days split the slip across two recaps and each half gets
-        # graded on its own — which showed a one-leg "CASHED" on 7/29.
-        _slips = {}
-        for p in _legs_all:
-            _slips.setdefault((p.get("generated_at") or "")[:10], []).append(p)
-        _legs = []
-        for _day, _grp in _slips.items():
-            if any(q.get("result") not in ("W", "L", "PUSH", "VOID") for q in _grp):
-                continue                      # slip still has a live/pending leg
-            _last = max((_et_date_of(q.get("resolved_at"), shift_hours=-6) or "")
-                        for q in _grp)
-            if _last == target_date:
-                _legs.extend(_grp)
+        # A slip is a PAIR and must be graded as one unit, on the day it was PLAYED.
+        # Attribute it by SLATE date, exactly like the pick list above.
+        #
+        # This previously keyed off the day the slip's LAST leg resolved, which
+        # broke as soon as a leg was postponed: on 8/3 the Eala leg from the 8/2
+        # slip finally graded, so that whole slip migrated onto the 8/3 recap,
+        # merged with 8/3's own slip, and rendered as a single three-leg "MISSED"
+        # — while 8/2 lost its 3x block entirely. Slate date can't drift like that,
+        # and since a day only posts once every pick is settled, the slip is always
+        # complete by the time its recap goes out.
+        _legs = [p for p in _legs_all if _slate_date_of(p) == target_date]
+        if any(p.get("result") not in ("W", "L", "PUSH", "VOID") for p in _legs):
+            _legs = []                        # slip still has a live leg — hold it
         if _legs:
             _decided = [p["result"] for p in _legs if p["result"] in ("W", "L")]
             if not _decided:
