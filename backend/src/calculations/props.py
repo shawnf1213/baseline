@@ -2774,6 +2774,83 @@ def project_total_games(
 # ---------------------------------------------------------------------------
 # Break Points Won  — 8-component formula
 # ---------------------------------------------------------------------------
+def project_break_points_saved(
+    player_stats: dict,
+    opponent_stats: dict,
+    tour: str = "ATP",
+    match_format: str = "best_of_3",
+    trace: list = None,
+) -> dict:
+    """Break Points Saved = (break points FACED) x (save rate).
+
+    Chosen as the first of the Underdog serve markets because it needs NO
+    points-per-game conversion: both inputs are already per-match counts the
+    stats layer fetches and surface-weights, so nothing has to be invented.
+      bp_faced_count  how many break points this player faces per match
+      bp_saved        the % of those they save
+
+    BP faced is a MATCHUP quantity, not a property of the server alone: it is
+    the opponent's returning that creates them. So the estimate blends the
+    server's own faced-rate with the returner's own created-rate
+    (return_bp_opportunities) — the same event counted from both ends. Where one
+    side is missing the other carries it rather than the projection failing.
+
+    Volume then scales by expected sets, exactly as the ace model does, since a
+    longer match means more service games and therefore more chances to be broken.
+    """
+    is_bo5 = (match_format == "best_of_5")
+    p_prob, o_prob, gap = _estimate_win_prob(
+        player_stats, opponent_stats,
+        p_rank=player_stats.get("rank") or player_stats.get("currentRank"),
+        o_rank=opponent_stats.get("rank") or opponent_stats.get("currentRank"),
+    )
+    expected_sets, comp_label = _expected_sets_from_gap(gap, is_bo5)
+    avg_hist = _ACE_BO5_SETS.get(tour, 2.8) if is_bo5 else _ACE_AVG_HISTORICAL_SETS.get(tour, 2.35)
+    sets_scale = expected_sets / max(avg_hist, 0.01)
+
+    own_faced = _safe(player_stats.get("bp_faced_count"), None)
+    opp_created = _safe(opponent_stats.get("return_bp_opportunities"), None)
+    if own_faced and opp_created:
+        faced = 0.5 * own_faced + 0.5 * opp_created
+        basis = "blend(own faced, opp created)"
+    elif own_faced:
+        faced, basis = own_faced, "own faced only (no opponent return data)"
+    elif opp_created:
+        faced, basis = opp_created, "opponent created only (no own faced data)"
+    else:
+        return {"projection": None, "reason": "no break-point volume data"}
+
+    save_rate = _safe(player_stats.get("bp_saved"), None)
+    if save_rate is None or save_rate <= 0:
+        return {"projection": None, "reason": "no save-rate data"}
+    save_rate = max(0.0, min(100.0, save_rate)) / 100.0
+
+    faced_scaled = faced * sets_scale
+    proj = faced_scaled * save_rate
+    _trace(trace, "bps_volume",
+           {"own_bp_faced": own_faced, "opp_return_bp_opps": opp_created,
+            "basis": basis, "expected_sets": expected_sets,
+            "avg_historical_sets": avg_hist, "competitiveness": comp_label},
+           round(sets_scale, 3), round(faced_scaled, 3),
+           "break points FACED is a matchup quantity — the server's faced-rate "
+           "blended with the returner's created-rate, then scaled by expected sets")
+    _trace(trace, "bps_save_rate", {"bp_saved_pct": round(save_rate * 100, 2)},
+           round(save_rate, 4), round(proj, 3),
+           "saved = faced x save rate; both inputs are direct per-match stats, so "
+           "this market needs no points-per-service-game conversion")
+    return {
+        "projection": round(proj, 1),
+        "bps_faced_proj": round(faced_scaled, 2),
+        "bps_save_rate": round(save_rate * 100, 1),
+        "bps_basis": basis,
+        "expected_sets": expected_sets,
+        "competitiveness": comp_label,
+        "p1_win_prob": round(p_prob, 3),
+        "p2_win_prob": round(o_prob, 3),
+        "win_prob_gap": round(gap, 2),
+    }
+
+
 def project_break_points(
     player_stats: dict,
     opponent_stats: dict,

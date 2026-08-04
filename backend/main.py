@@ -117,6 +117,7 @@ from src.calculations.props import (
     project_double_faults,
     project_total_games,
     project_break_points,
+    project_break_points_saved,
     bp_scenario_mixture,
     bp_fair_line,
     game_spread_mixture,
@@ -1961,6 +1962,15 @@ async def prop_calculate(req: PropRequest):
                 h2h_stat_n=h2h_stat_n,
                 market_wp=_ace_mkt_wp,
                 market_weight=WINPROB_MARKET_WEIGHT,
+            )
+        elif req.prop_type == "Break Points Saved":
+            # First of the Underdog serve markets (2026-08-04). Deliberately the
+            # one that needs no points-per-service-game conversion: bp_faced_count
+            # and bp_saved are both direct per-match stats, so nothing is invented.
+            # The other serve markets (Serve Points Won, First Serves In, ...) all
+            # depend on a games->points volume fit that has not been made yet.
+            result = project_break_points_saved(
+                p1_s, p2_s, tour=req.tour, match_format=match_fmt, trace=_ctrace,
             )
         elif req.prop_type == "Double Faults":
             result = project_double_faults(
