@@ -500,6 +500,26 @@ def _prop_stat_blocks(prop_type, data, surface=None):
             ("1st Srv Won", _pct(os_.get("first_serve_pts_won"))),
             ("2nd Srv Won", _pct(os_.get("second_serve_pts_won"))),
         ]
+    elif prop_type == "Break Points Saved":
+        # The projection is (games broken) x (save rate), so the stats shown are
+        # the ones that actually drive it: the SERVER's holding and save rate on
+        # one side, the RETURNER's break-point generation on the other.
+        # Serve-point splits and win rate are deliberately absent — neither feeds
+        # this number, and win rate especially invites reading a match-outcome
+        # signal into a serve stat.
+        p_lines = [
+            ("Service Games Won", _pct(ps.get("service_games_won_pct"))),
+            ("Hold vs This Opp", _pct(data.get("bps_effective_hold"))),
+            ("BP Saved", _pct(data.get("bps_save_rate") or ps.get("bp_saved"))),
+            ("BP Faced/Match", _num(ps.get("bp_faced_count"))),
+            ("Proj. BP Faced", _num(data.get("bps_faced_proj"))),
+        ]
+        o_lines = [
+            ("Return Games Won", _pct(os_.get("return_games_won_pct"))),
+            ("BP Created/Match", _num(os_.get("return_bp_opportunities"))),
+            ("BP Conversion", _pct(os_.get("bp_converted"))),
+            ("Service Games Won", _pct(os_.get("service_games_won_pct"))),
+        ]
     elif prop_type == "Player Total Games Won":
         # Core drivers: player hold rate vs opponent hold rate, plus player break rate.
         # The held-vs-broken decomposition was removed from the display 2026-07-26
@@ -531,10 +551,15 @@ def _prop_stat_blocks(prop_type, data, surface=None):
         if rate is None:
             return "—"
         return f"{rate:.0f}%" + ("  🎯 SPECIALIST" if rate > 35 else "")
-    if data.get("player_tiebreak_rate") is not None:
-        p_lines.append(("Tiebreak Rate", _tb_cell(data.get("player_tiebreak_rate"))))
-    if data.get("opponent_tiebreak_rate") is not None:
-        o_lines.append(("Tiebreak Rate", _tb_cell(data.get("opponent_tiebreak_rate"))))
+    # Suppressed for Break Points Saved: tiebreak rate says a set reached 6-6,
+    # which is a match-length signal and tells you nothing about how often this
+    # server faces or saves a break point. The block already carries hold rate,
+    # which is the serve-dominance measure that actually drives this projection.
+    if prop_type != "Break Points Saved":
+        if data.get("player_tiebreak_rate") is not None:
+            p_lines.append(("Tiebreak Rate", _tb_cell(data.get("player_tiebreak_rate"))))
+        if data.get("opponent_tiebreak_rate") is not None:
+            o_lines.append(("Tiebreak Rate", _tb_cell(data.get("opponent_tiebreak_rate"))))
 
     p_block = block(p_lines, _hand_label(data.get("player_handedness")), data.get("player_archetype"),
                     data.get("player_serve_profile"))

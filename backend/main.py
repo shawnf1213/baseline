@@ -2461,12 +2461,28 @@ async def prop_calculate(req: PropRequest):
 
         # Signal 3 — tiebreak note (all props) + tiebreak-supplemented opponent
         # serve tier (BP prop). p1 = selected player, p2 = opponent.
-        if p1_tb_rate is not None or p2_tb_rate is not None:
+        # Break Points Saved is excluded: tiebreak rate reports that a set reached
+        # 6-6, which is match-length information and plays no part in how often a
+        # server faces or saves a break point. Its own note is written below.
+        if (p1_tb_rate is not None or p2_tb_rate is not None) \
+                and req.prop_type != "Break Points Saved":
             result["_tiebreak_note"] = (
                 f"Tiebreak rate (serve dominance): {req.player_name} "
                 f"{('%.0f%%' % p1_tb_rate) if p1_tb_rate is not None else 'n/a'}, "
                 f"{req.opponent_name} {('%.0f%%' % p2_tb_rate) if p2_tb_rate is not None else 'n/a'} of sets."
             )
+        if req.prop_type == "Break Points Saved":
+            _bps_hold = result.get("bps_effective_hold")
+            _bps_broken = result.get("bps_games_broken")
+            _bps_faced = result.get("bps_faced_proj")
+            if all(v is not None for v in (_bps_hold, _bps_broken, _bps_faced)):
+                result["_tiebreak_note"] = (
+                    f"{req.player_name} holds {_bps_hold:.0f}% against this returner "
+                    f"— about {_bps_broken:.1f} break(s) conceded over "
+                    f"{result.get('bps_service_games', 0):.0f} service games, which "
+                    f"implies {_bps_faced:.1f} break points faced at a "
+                    f"{result.get('bps_save_rate', 0):.0f}% save rate."
+                )
         if req.prop_type == "Break Points Won":
             _opp_sgw_disp = ((p2_s or {}).get("service_games_won_pct")
                              or (p2_data.get("All") or {}).get("service_games_won_pct"))
@@ -3297,6 +3313,14 @@ async def prop_calculate(req: PropRequest):
             "opponent_ta_recent_note":    p2_recent_meta["note"],
             "opponent_ta_penalty_kind":   p2_recent_meta.get("penalty_kind"),
             "opponent_ta_penalty":        p2_recent_meta.get("penalty", 0),
+            # Break Points Saved surface (None for other props): the volume chain
+            # the projection is built from, so the display can show WHY rather
+            # than only the number.
+            "bps_faced_proj":       result.get("bps_faced_proj"),
+            "bps_games_broken":     result.get("bps_games_broken"),
+            "bps_service_games":    result.get("bps_service_games"),
+            "bps_effective_hold":   result.get("bps_effective_hold"),
+            "bps_save_rate":        result.get("bps_save_rate"),
             # Strength-of-field: both players' current ATP/WTA singles rank (None =
             # unranked / outside the top-500 cache) and the both-challenger-level
             # flag. The board deprioritizes challenger-vs-challenger matchups.
