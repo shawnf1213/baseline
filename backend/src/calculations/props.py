@@ -2783,10 +2783,25 @@ def project_break_points_saved(
 ) -> dict:
     """Break Points Saved = (break points FACED) x (save rate).
 
-    Chosen as the first of the Underdog serve markets because it needs NO
-    points-per-game conversion: both inputs are already per-match counts the
-    stats layer fetches and surface-weights, so nothing has to be invented.
-      bp_faced_count  how many break points this player faces per match
+    *** NOT BOARD-ELIGIBLE (2026-08-04). The volume input fails a consistency
+    check and this is under rebuild — it is unmapped on the Underdog board. ***
+
+    Within a single match, break points LOST equals games BROKEN exactly: losing
+    a break point ends that service game, and a game can only be broken once.
+    Measured across players, the two disagree badly — Draper 1.40x, Kostyuk
+    1.29x, Swiatek 1.25x, Giron 1.16x, Sonego 1.06x, every one over-implying
+    breaks. Because the identity is exact per match, that gap is a SAMPLE
+    mismatch (bp_faced_count is only extractable from matches where Sofascore
+    published the fraction, while service_games_won_pct is measured over all of
+    them), not a modelling subtlety. Multiplying a raw faced-average by a raw
+    save-rate therefore projects more breaks than the player's own hold rate
+    admits. The fix is to anchor volume to games broken — which the hold rate
+    measures well — and let the save RATE (stable) convert it, so the projection
+    is consistent by construction.
+
+    Inputs, both already fetched and surface-weighted:
+      bp_faced_count  break points faced per match (point-level: 0-40 is three,
+                      and deuce-game re-creations count again)
       bp_saved        the % of those they save
 
     BP faced is a MATCHUP quantity, not a property of the server alone: it is
