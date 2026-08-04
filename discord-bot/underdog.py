@@ -42,12 +42,11 @@ PROP_MAP = {
     "Aces":              "Aces",
     "Double Faults":     "Double Faults",
     "Breakpoints Won":   "Break Points Won",
-    # "Break Points Saved" is REVERTED off the board (2026-08-04). The projector
-    # exists but its VOLUME input does not survive a consistency check: break
-    # points lost must equal games broken within a match, and the two stats
-    # disagree by 6-40% across players (Draper 1.40x, Kostyuk 1.29x, Swiatek
-    # 1.25x). Until the volume side is anchored to the hold rate this market must
-    # not reach a board. See project_break_points_saved.
+    # Re-enabled 2026-08-04 after the volume rebuild: BP faced is now derived
+    # from games broken via the exact identity rather than averaged independently,
+    # so it can no longer imply more breaks than the hold rate admits. Brand new
+    # and ungraded, so it is on STAR PROBATION (see POD_STAR_PROBATION_PROPS).
+    "Break Points Saved": "Break Points Saved",
     "Games Won":         "Player Total Games Won",
     "Games Played":      "Total Games",         # match total, both players
     "Sets Won":          "Sets Won",

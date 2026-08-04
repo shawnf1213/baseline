@@ -2774,6 +2774,15 @@ def project_total_games(
 # ---------------------------------------------------------------------------
 # Break Points Won  — 8-component formula
 # ---------------------------------------------------------------------------
+# Break Points Saved guards. The save rate is a DIVISOR in the identity below, so
+# it is clamped away from 1.0 where a thin sample would otherwise explode the
+# projection; the bounds sit outside any realistic tour save rate (~50-70%).
+_BPS_SAVE_MIN, _BPS_SAVE_MAX = 0.30, 0.85
+# Effective hold is likewise bounded — no server holds 0% or 100% of a match.
+_BPS_HOLD_MIN, _BPS_HOLD_MAX = 0.45, 0.96
+_BPS_GAMES_PER_SET = 9.5          # fallback only, when match length is unknown
+
+
 def project_break_points_saved(
     player_stats: dict,
     opponent_stats: dict,
@@ -2823,41 +2832,82 @@ def project_break_points_saved(
     avg_hist = _ACE_BO5_SETS.get(tour, 2.8) if is_bo5 else _ACE_AVG_HISTORICAL_SETS.get(tour, 2.35)
     sets_scale = expected_sets / max(avg_hist, 0.01)
 
-    own_faced = _safe(player_stats.get("bp_faced_count"), None)
-    opp_created = _safe(opponent_stats.get("return_bp_opportunities"), None)
-    if own_faced and opp_created:
-        faced = 0.5 * own_faced + 0.5 * opp_created
-        basis = "blend(own faced, opp created)"
-    elif own_faced:
-        faced, basis = own_faced, "own faced only (no opponent return data)"
-    elif opp_created:
-        faced, basis = opp_created, "opponent created only (no own faced data)"
-    else:
-        return {"projection": None, "reason": "no break-point volume data"}
-
     save_rate = _safe(player_stats.get("bp_saved"), None)
     if save_rate is None or save_rate <= 0:
         return {"projection": None, "reason": "no save-rate data"}
-    save_rate = max(0.0, min(100.0, save_rate)) / 100.0
+    # Clamp before it is used as a DIVISOR below: the identity blows up as the
+    # save rate approaches 1, and a thin sample can produce exactly that.
+    save_rate = max(_BPS_SAVE_MIN, min(_BPS_SAVE_MAX, save_rate / 100.0))
 
-    faced_scaled = faced * sets_scale
-    proj = faced_scaled * save_rate
-    _trace(trace, "bps_volume",
-           {"own_bp_faced": own_faced, "opp_return_bp_opps": opp_created,
-            "basis": basis, "expected_sets": expected_sets,
-            "avg_historical_sets": avg_hist, "competitiveness": comp_label},
-           round(sets_scale, 3), round(faced_scaled, 3),
-           "break points FACED is a matchup quantity — the server's faced-rate "
-           "blended with the returner's created-rate, then scaled by expected sets")
-    _trace(trace, "bps_save_rate", {"bp_saved_pct": round(save_rate * 100, 2)},
+    # ── 1. SERVICE GAMES ─────────────────────────────────────────────────────
+    # From the player's own historical match length, rescaled to how long THIS
+    # match is expected to run. Each player serves about half the games.
+    tmg = _safe(player_stats.get("total_match_games"), None)
+    if tmg and tmg > 0:
+        svc_games = (tmg * sets_scale) / 2.0
+        svc_basis = "own total_match_games"
+    else:
+        svc_games = (expected_sets * _BPS_GAMES_PER_SET) / 2.0
+        svc_basis = "tour-average games per set"
+
+    # ── 2. EFFECTIVE HOLD — the matchup, not the server alone ────────────────
+    # How often this player is broken depends on the RETURNER too. Shift their
+    # own hold rate by how much better or worse the opponent returns than a
+    # tour-average returner. The opponent's return stats arriving here are
+    # already opponent-quality weighted upstream (return_games_won_pct carries
+    # the weighted value, not the raw average), so a returner who piled up
+    # breaks against weak servers does not inflate this.
+    hold = _safe(player_stats.get("service_games_won_pct"), None)
+    if hold is None or hold <= 0:
+        return {"projection": None, "reason": "no hold-rate data"}
+    hold = max(0.0, min(100.0, hold)) / 100.0
+    tour_hold_ref = _P3_HOLD_REF.get(tour, 0.75)
+    tour_ret_ref = 1.0 - tour_hold_ref
+    opp_ret = _safe(opponent_stats.get("return_games_won_pct"), None)
+    ret_edge = 0.0
+    if opp_ret is not None and opp_ret > 0:
+        ret_edge = (max(0.0, min(100.0, opp_ret)) / 100.0) - tour_ret_ref
+    eff_hold = max(_BPS_HOLD_MIN, min(_BPS_HOLD_MAX, hold - ret_edge))
+
+    # ── 3. BREAKS, THEN THE IDENTITY ─────────────────────────────────────────
+    # BP lost == games broken, exactly, within a match. So faced follows from
+    # broken and the save rate rather than being averaged independently — which
+    # is what made the previous version imply more breaks than the hold rate
+    # allowed (Draper 1.40x).
+    games_broken = svc_games * (1.0 - eff_hold)
+    faced = games_broken / (1.0 - save_rate)
+    proj = faced - games_broken          # == faced * save_rate, by construction
+
+    _trace(trace, "bps_service_games",
+           {"total_match_games": tmg, "basis": svc_basis,
+            "expected_sets": expected_sets, "avg_historical_sets": avg_hist,
+            "competitiveness": comp_label},
+           round(sets_scale, 3), round(svc_games, 2),
+           "service games this match — own match length rescaled to expected sets, halved")
+    _trace(trace, "bps_effective_hold",
+           {"own_hold_pct": round(hold * 100, 2),
+            "opp_return_games_won_pct": opp_ret,
+            "tour_return_ref_pct": round(tour_ret_ref * 100, 1),
+            "return_edge_pp": round(ret_edge * 100, 2)},
+           round(eff_hold, 4), round(games_broken, 2),
+           "hold shifted by how the opponent returns vs a tour-average returner "
+           "(their return stats are already opponent-quality weighted upstream)")
+    _trace(trace, "bps_identity",
+           {"games_broken": round(games_broken, 3),
+            "save_rate_pct": round(save_rate * 100, 2),
+            "implied_bp_faced": round(faced, 2)},
            round(save_rate, 4), round(proj, 3),
-           "saved = faced x save rate; both inputs are direct per-match stats, so "
-           "this market needs no points-per-service-game conversion")
+           "BP lost == games broken exactly, so faced = broken/(1-save) and "
+           "saved = faced - broken. Consistent by construction: this can never "
+           "imply more breaks than the hold rate admits")
     return {
         "projection": round(proj, 1),
-        "bps_faced_proj": round(faced_scaled, 2),
+        "bps_faced_proj": round(faced, 2),
+        "bps_games_broken": round(games_broken, 2),
+        "bps_service_games": round(svc_games, 2),
+        "bps_effective_hold": round(eff_hold * 100, 1),
         "bps_save_rate": round(save_rate * 100, 1),
-        "bps_basis": basis,
+        "bps_basis": svc_basis,
         "expected_sets": expected_sets,
         "competitiveness": comp_label,
         "p1_win_prob": round(p_prob, 3),

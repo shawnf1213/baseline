@@ -192,7 +192,11 @@ POD_STAR_EXCLUDE_PROPS = {"Double Faults"}
 # but cannot hold the ⭐ until a calibration backtest certifies it (projected P(over)
 # vs realized). Distinct from the PERMANENT DF block above — remove this set entry
 # once FS passes analysis/backtest_fs_calibration.py.
-POD_STAR_PROBATION_PROPS = {"Fantasy Score"}
+# Break Points Saved joins Fantasy Score on probation (2026-08-04): brand new,
+# never graded against a result, and its first version had to be reverted for a
+# volume error. It can populate a board but must not headline one until it has a
+# track record.
+POD_STAR_PROBATION_PROPS = {"Fantasy Score", "Break Points Saved"}
 
 # ── Demon props (boosted alternate lines, over-only) ─────────────────────────
 # Demons are evaluated through the normal projection chain but held to ELEVATED
@@ -759,6 +763,9 @@ DEDUPE_TIER_OVERRIDE_MARGIN = 8   # a lower-tier prop must LEAD by >= this to wi
 _PROP_TIER = {
     "Break Points Won": 1, "Aces": 1,
     "Total Games": 2, "Player Total Games Won": 2, "Fantasy Score": 2,
+    # Derived from hold rate x save rate rather than counted directly, and
+    # ungraded — tier 2 until it earns better.
+    "Break Points Saved": 2,
     "Double Faults": 3,
 }
 

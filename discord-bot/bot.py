@@ -827,6 +827,7 @@ PROP_CHOICES = [
     app_commands.Choice(name="Aces", value="Aces"),
     app_commands.Choice(name="Double Faults", value="Double Faults"),
     app_commands.Choice(name="Break Points Won", value="Break Points Won"),
+    app_commands.Choice(name="Break Points Saved", value="Break Points Saved"),
     app_commands.Choice(name="Total Games", value="Total Games"),
     app_commands.Choice(name="Player Total Games Won", value="Player Total Games Won"),
     app_commands.Choice(name="Fantasy Score", value="Fantasy Score"),
