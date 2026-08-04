@@ -3890,28 +3890,45 @@ async def _maybe_post_ready_recap():
         dp = [p for p in picks if _slate_date_of(p) == d]
         return bool(dp) and not [p for p in dp if p.get("result") not in _GRADED_RESULTS]
 
-    # ONE-OFF BATCH HOLD — release the listed days together or not at all. Only
-    # applies while at least one listed day is still unposted; once they are all
-    # in the channel this is inert and normal posting resumes.
+    # ONE-OFF BATCH HOLD — release the listed days together or not at all.
+    # PRIZEPICKS ONLY (2026-08-04): it must not gate another book. Underdog
+    # settles on its own schedule and its recap should go out as soon as its day
+    # is complete, so when the batch is holding we SKIP prizepicks rather than
+    # returning, and the loop below still reaches the other books.
+    _skip_prizepicks = False
     if RECAP_BATCH_DATES:
         _unposted = [d for d in RECAP_BATCH_DATES
                      if not await _recap_already_posted(channel, d)]
         if _unposted:
             _not_ready = [d for d in _unposted if not _day_ready(d)]
             if _not_ready:
-                log.info("recap: BATCH HOLD %s — waiting on %s (nothing posts yet)",
+                log.info("recap: BATCH HOLD %s — waiting on %s (prizepicks held; "
+                         "other books unaffected)",
                          ",".join(RECAP_BATCH_DATES), ",".join(_not_ready))
+                _skip_prizepicks = True
+            else:
+                for d in sorted(_unposted):
+                    await _post_recap_for(channel, d, "batched release")
                 return
-            for d in sorted(_unposted):
-                await _post_recap_for(channel, d, "batched release")
-            return
 
     for _src, _src_picks in _books:
+        if _src == "prizepicks" and _skip_prizepicks:
+            continue
         if not _src_picks:
             continue
-        for _off in (3, 2, 1):                  # oldest first; never the day in progress
+        for _off in (3, 2, 1, 0):               # oldest first, TODAY included
             day = (now - datetime.timedelta(days=_off)).strftime("%Y-%m-%d")
-            if day == today:
+            # TODAY may post once its card is complete (2026-08-04). "All picks
+            # settled" is the real test of a finished day, and waiting for the
+            # calendar to roll over just delays a finished recap by hours.
+            #
+            # One guard: a book can still ADD picks to today's card. PrizePicks'
+            # second wave lands at 8 AM, so posting before then could publish a
+            # recap the wave would immediately orphan. After that window today's
+            # card is fixed. Underdog has no second wave, so nothing to wait for.
+            if day == today and _src == "prizepicks" and now.hour < 9:
+                log.info("recap: %s %s complete but the 8 AM wave may still add "
+                         "picks — holding until 9 AM", _src, day)
                 continue
             day_picks = [p for p in _src_picks if _slate_date_of(p) == day]
             if not day_picks:
