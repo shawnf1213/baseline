@@ -3117,18 +3117,26 @@ def _slate_date_of(p: dict) -> str:
     return _d.strftime("%Y-%m-%d")
 
 
-def daily_recap_embed(rec: dict, target_date: str = None) -> discord.Embed:
-    """Date-based daily recap (the auto-posted format). Header 'M/D Premium List',
-    that date's Pick-of-the-Day picks with W/L/PUSH indicators, a Today record + hit
-    rate line, and the cumulative Overall line. ``target_date`` is an ET
-    'YYYY-MM-DD'; defaults to today in ET. Emoji/colour/PUSH handling unchanged."""
+def daily_recap_embed(rec: dict, target_date: str = None,
+                      source: str = "prizepicks") -> discord.Embed:
+    """Date-based daily recap. Header 'M/D Premium List', that date's picks with
+    W/L/PUSH indicators, a Today rate and a rolling 30-day rate. ``target_date`` is
+    an ET 'YYYY-MM-DD'; defaults to today in ET.
+
+    ``source`` selects WHICH book's record to render — "prizepicks" reads the
+    top-level record, "underdog" reads rec["underdog"], which the backend scores
+    separately. The two are never mixed: a second book has its own lines and must
+    earn its own track record."""
+    if source == "underdog":
+        rec = (rec or {}).get("underdog") or {}
     if target_date is None:
         target_date = datetime.datetime.now(POD_TZINFO).strftime("%Y-%m-%d")
     try:
         _d = datetime.datetime.strptime(target_date, "%Y-%m-%d")
-        header = f"{_d.month}/{_d.day} Premium List"
+        header = (f"{_d.month}/{_d.day} Underdog Recap" if source == "underdog"
+                  else f"{_d.month}/{_d.day} Premium List")
     except Exception:  # noqa: BLE001
-        header = "Premium List"
+        header = "Underdog Recap" if source == "underdog" else "Premium List"
 
     # Date-scoped by RESOLUTION date, on a 6 AM→6 AM "day" (shift_hours=-6) so a
     # match that finished late and graded just after midnight still counts for the
@@ -3780,14 +3788,16 @@ RECAP_BATCH_DATES = [d.strip() for d in
                      if d.strip()]
 
 
-async def _recap_already_posted(channel, date_str: str) -> bool:
-    """True if this day's recap is already in the channel. Reads the channel
-    rather than trusting in-memory state, so a restart (or a manual post) can
-    never produce a second recap for the same day. On any read failure it
-    returns True — refusing to post is the safe direction."""
+async def _recap_already_posted(channel, date_str: str,
+                                source: str = "prizepicks") -> bool:
+    """True if this day's recap for THIS source is already in the channel. Reads
+    the channel rather than trusting in-memory state, so a restart (or a manual
+    post) can never produce a second recap for the same day. On any read failure
+    it returns True — refusing to post is the safe direction."""
     try:
         _d = datetime.datetime.strptime(date_str, "%Y-%m-%d")
-        want = f"{_d.month}/{_d.day} Premium List"
+        want = (f"{_d.month}/{_d.day} Underdog Recap" if source == "underdog"
+                else f"{_d.month}/{_d.day} Premium List")
         async for msg in channel.history(limit=40):
             for emb in (msg.embeds or []):
                 if emb.title and want in emb.title:
@@ -3798,22 +3808,27 @@ async def _recap_already_posted(channel, date_str: str) -> bool:
         return True
 
 
-async def _post_recap_for(channel, date_str: str, why: str) -> bool:
-    """Post one day's recap, guarded against duplicates. Returns True if sent."""
+async def _post_recap_for(channel, date_str: str, why: str,
+                          source: str = "prizepicks") -> bool:
+    """Post one day's recap for one SOURCE, guarded against duplicates.
+    Returns True if sent."""
     if not AUTOPOST_ENABLED:
-        log.info("recap: posting DISABLED (AUTOPOST_ENABLED off) — %s %s", date_str, why)
+        log.info("recap: posting DISABLED (AUTOPOST_ENABLED off) — %s %s %s",
+                 source, date_str, why)
         return False
-    if await _recap_already_posted(channel, date_str):
-        log.info("recap: %s already posted — skipping (%s)", date_str, why)
+    if await _recap_already_posted(channel, date_str, source):
+        log.info("recap: %s %s already posted — skipping (%s)", source, date_str, why)
         return False
     rec = await asyncio.to_thread(results_tracker.get_record)
-    if not (rec and rec.get("total")):
-        log.info("recap: no graded record yet — nothing to post for %s", date_str)
+    _book = (rec or {}).get("underdog") if source == "underdog" else rec
+    if not (_book and _book.get("total")):
+        log.info("recap: no graded %s record yet — nothing to post for %s",
+                 source, date_str)
         return False
     await channel.send(content="@everyone",
-                       embed=daily_recap_embed(rec, target_date=date_str),
+                       embed=daily_recap_embed(rec, target_date=date_str, source=source),
                        allowed_mentions=EVERYONE_MENTION)
-    log.info("recap: posted %s -> track-record (%s)", date_str, why)
+    log.info("recap: posted %s %s -> track-record (%s)", source, date_str, why)
     return True
 
 
@@ -3832,12 +3847,18 @@ async def _maybe_post_ready_recap():
         log.warning("recap: channel %s not found", chan_id)
         return
     rec = await asyncio.to_thread(results_tracker.get_record)
-    picks = [p for p in ((rec or {}).get("picks") or [])
-             if not p.get("excluded_from_record")]
-    if not picks:
-        return
     now = datetime.datetime.now(POD_TZINFO)
     today = now.strftime("%Y-%m-%d")
+
+    # Each BOOK is settled and posted independently: Underdog's board finishing
+    # must not hold PrizePicks' recap, or vice versa. Sources are evaluated in
+    # order, and at most one recap posts per pass.
+    _books = [("prizepicks", [p for p in ((rec or {}).get("picks") or [])
+                              if not p.get("excluded_from_record")]),
+              ("underdog", [p for p in (((rec or {}).get("underdog") or {}).get("picks") or [])
+                            if not p.get("excluded_from_record")])]
+
+    picks = _books[0][1]                      # batch hold below is PrizePicks-only
 
     def _day_ready(d):
         dp = [p for p in picks if _slate_date_of(p) == d]
@@ -3859,21 +3880,25 @@ async def _maybe_post_ready_recap():
                 await _post_recap_for(channel, d, "batched release")
             return
 
-    for _off in (3, 2, 1):                      # oldest first; never the day in progress
-        day = (now - datetime.timedelta(days=_off)).strftime("%Y-%m-%d")
-        if day == today:
+    for _src, _src_picks in _books:
+        if not _src_picks:
             continue
-        day_picks = [p for p in picks if _slate_date_of(p) == day]
-        if not day_picks:
-            continue
-        blocking = [p for p in day_picks if p.get("result") not in _GRADED_RESULTS]
-        if blocking:
-            log.info("recap: %s NOT ready — %d pick(s) still pending: %s",
-                     day, len(blocking),
-                     ", ".join((p.get("player") or "?") for p in blocking[:5]))
-            continue
-        if await _post_recap_for(channel, day, f"all {len(day_picks)} plays settled"):
-            return                              # one recap per pass
+        for _off in (3, 2, 1):                  # oldest first; never the day in progress
+            day = (now - datetime.timedelta(days=_off)).strftime("%Y-%m-%d")
+            if day == today:
+                continue
+            day_picks = [p for p in _src_picks if _slate_date_of(p) == day]
+            if not day_picks:
+                continue
+            blocking = [p for p in day_picks if p.get("result") not in _GRADED_RESULTS]
+            if blocking:
+                log.info("recap: %s %s NOT ready — %d pick(s) still pending: %s",
+                         _src, day, len(blocking),
+                         ", ".join((p.get("player") or "?") for p in blocking[:5]))
+                continue
+            if await _post_recap_for(channel, day,
+                                     f"all {len(day_picks)} plays settled", _src):
+                return                          # one recap per pass
 
 
 @tasks.loop(hours=RESOLVE_EVERY_HOURS)

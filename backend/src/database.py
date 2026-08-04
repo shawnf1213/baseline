@@ -573,11 +573,36 @@ def _slip_record(threex_picks: list) -> dict:
     }
 
 
+# A pick's SOURCE is the book its board came from, derived from pick_group.
+# Everything that is not explicitly another book is PrizePicks, so legacy rows
+# (potd / second-wave / 3x / NULL) keep counting exactly where they always have.
+# Underdog groups are namespaced with an "underdog" prefix ("underdog",
+# "underdog-wave", "underdog-3x", ...) so a new Underdog product needs no change
+# here. Sources are scored SEPARATELY: mixing two books' hit rates into one
+# number would make both meaningless.
+SOURCE_PREFIXES = {"underdog": "underdog"}
+
+
+def pick_source(p: dict) -> str:
+    g = (p.get("pick_group") or "potd").lower()
+    for prefix, src in SOURCE_PREFIXES.items():
+        if g.startswith(prefix):
+            return src
+    return "prizepicks"
+
+
 def record_summary() -> dict:
-    """Aggregate record, split by pick group. Top-level fields describe the
-    Pick of the Day (the headline product; legacy NULL-group rows count here);
-    ``threex_legs`` is the individual-leg record and ``threex_slips`` is the
-    paired slip record for the 3x."""
+    """Aggregate record, split by SOURCE then by pick group.
+
+    Top-level fields describe the PrizePicks Pick of the Day (the headline
+    product; legacy NULL-group rows count here); ``threex_legs`` is the
+    individual-leg record and ``threex_slips`` the paired slip record for the 3x.
+
+    ``underdog`` carries the Underdog board's own record in the same shape as the
+    top level (picks / wins / losses / win_rate / ...). It is deliberately NOT
+    folded into the headline numbers — a second book has its own lines, its own
+    market, and must earn its own track record before it can be quoted alongside
+    the first."""
     # EXCLUDE superseded / duplicate records (excluded_from_record=1) from every
     # record computation and from the recap's pick list. They remain in the DB
     # (all_picks) for the audit, just invisible to the public record.
@@ -586,12 +611,20 @@ def record_summary() -> dict:
     def _grp(p):
         return (p.get("pick_group") or "potd").lower()
 
-    potd = [p for p in picks if _grp(p) != "3x"]
-    threex = [p for p in picks if _grp(p) == "3x"]
+    pp = [p for p in picks if pick_source(p) == "prizepicks"]
+    ud = [p for p in picks if pick_source(p) == "underdog"]
+
+    potd = [p for p in pp if _grp(p) != "3x"]
+    threex = [p for p in pp if _grp(p) == "3x"]
 
     summary = _summarize(potd)
     summary["threex_legs"] = _summarize(threex)
     summary["threex_slips"] = _slip_record(threex)
+    # Underdog, scored on its own. Same shape as the top level so any caller that
+    # can render the PrizePicks record can render this one unchanged.
+    summary["underdog"] = _summarize([p for p in ud if _grp(p) != "underdog-3x"])
+    summary["underdog"]["threex_legs"] = _summarize(
+        [p for p in ud if _grp(p) == "underdog-3x"])
 
     # Standard vs demon segmentation (weekly report line). Compact — counts and
     # win rate only, not the full pick lists, so the payload stays small.
@@ -599,8 +632,10 @@ def record_summary() -> dict:
         s = _summarize(rows)
         return {"total": s["total"], "wins": s["wins"], "losses": s["losses"],
                 "win_rate": s["win_rate"], "avg_confidence_wins": s["avg_confidence_wins"]}
+    # Scoped to PrizePicks: "demon" is a PrizePicks concept and Underdog carries
+    # no equivalent, so mixing its rows in would quietly dilute the standard bucket.
     summary["by_odds_type"] = {
-        "standard": _seg([p for p in picks if (p.get("odds_type") or "standard") == "standard"]),
-        "demon":    _seg([p for p in picks if (p.get("odds_type") or "standard") == "demon"]),
+        "standard": _seg([p for p in pp if (p.get("odds_type") or "standard") == "standard"]),
+        "demon":    _seg([p for p in pp if (p.get("odds_type") or "standard") == "demon"]),
     }
     return summary
