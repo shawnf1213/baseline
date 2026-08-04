@@ -2789,6 +2789,7 @@ def project_break_points_saved(
     tour: str = "ATP",
     match_format: str = "best_of_3",
     trace: list = None,
+    breaks_anchor: float = None,   # opponent's projected Break Points Won
 ) -> dict:
     """Break Points Saved = (break points FACED) x (save rate).
 
@@ -2874,7 +2875,20 @@ def project_break_points_saved(
     # broken and the save rate rather than being averaged independently — which
     # is what made the previous version imply more breaks than the hold rate
     # allowed (Draper 1.40x).
-    games_broken = svc_games * (1.0 - eff_hold)
+    # PREFERRED ANCHOR: the opponent's projected Break Points Won. A break point
+    # the returner wins is one the server failed to save, and converting ends the
+    # game, so their BP Won IS this player's breaks conceded — the same events
+    # counted from the other side. Using it means the two markets can never
+    # contradict each other on the same match, and it leans on the model's
+    # best-graded prop instead of a hold-rate proxy. The hold-rate derivation
+    # below stays as the fallback when that projection is unavailable.
+    hold_derived = svc_games * (1.0 - eff_hold)
+    if isinstance(breaks_anchor, (int, float)) and breaks_anchor > 0:
+        games_broken = float(breaks_anchor)
+        breaks_basis = "opponent's projected Break Points Won"
+    else:
+        games_broken = hold_derived
+        breaks_basis = "derived from effective hold (no BP-won projection)"
     faced = games_broken / (1.0 - save_rate)
     proj = faced - games_broken          # == faced * save_rate, by construction
 
@@ -2892,18 +2906,25 @@ def project_break_points_saved(
            round(eff_hold, 4), round(games_broken, 2),
            "hold shifted by how the opponent returns vs a tour-average returner "
            "(their return stats are already opponent-quality weighted upstream)")
+    _trace(trace, "bps_breaks_anchor",
+           {"opp_bp_won_projection": breaks_anchor,
+            "hold_derived_breaks": round(hold_derived, 2), "basis": breaks_basis},
+           round(games_broken, 3), round(games_broken, 3),
+           "breaks conceded = the OPPONENT's break points won (converting one ends "
+           "the game), so the two markets are tied to the same event count")
     _trace(trace, "bps_identity",
            {"games_broken": round(games_broken, 3),
             "save_rate_pct": round(save_rate * 100, 2),
             "implied_bp_faced": round(faced, 2)},
            round(save_rate, 4), round(proj, 3),
            "BP lost == games broken exactly, so faced = broken/(1-save) and "
-           "saved = faced - broken. Consistent by construction: this can never "
-           "imply more breaks than the hold rate admits")
+           "saved = faced - broken. Consistent by construction")
     return {
         "projection": round(proj, 1),
         "bps_faced_proj": round(faced, 2),
         "bps_games_broken": round(games_broken, 2),
+        "bps_breaks_basis": breaks_basis,
+        "bps_hold_derived_breaks": round(hold_derived, 2),
         "bps_service_games": round(svc_games, 2),
         "bps_effective_hold": round(eff_hold * 100, 1),
         "bps_save_rate": round(save_rate * 100, 1),

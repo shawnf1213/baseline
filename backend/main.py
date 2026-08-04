@@ -1964,13 +1964,28 @@ async def prop_calculate(req: PropRequest):
                 market_weight=WINPROB_MARKET_WEIGHT,
             )
         elif req.prop_type == "Break Points Saved":
-            # First of the Underdog serve markets (2026-08-04). Deliberately the
-            # one that needs no points-per-service-game conversion: bp_faced_count
-            # and bp_saved are both direct per-match stats, so nothing is invented.
-            # The other serve markets (Serve Points Won, First Serves In, ...) all
-            # depend on a games->points volume fit that has not been made yet.
+            # A break point the OPPONENT wins is, by definition, one this player
+            # failed to save — and converting a break point ends the game, so the
+            # opponent's Break Points Won IS this player's breaks conceded. Rather
+            # than infer breaks from the hold rate, run the existing BP Won
+            # projector with the sides swapped and anchor to that. It is the
+            # model's best-graded prop, and tying the two together means the two
+            # markets can never contradict each other on the same match.
+            _bpw_opp = project_break_points(
+                p2_s, p1_s,
+                player_all_stats=p2_all, opponent_all_stats=p1_all,
+                h2h_bp_avg=None, cpr_override=cpr,
+                player_ta=opponent_ta_props, opponent_ta=player_ta_props,
+                surface=req.surface, tour=req.tour,
+                match_format=match_fmt, court=court_for_calc,
+            )
+            _breaks = _bpw_opp.get("projection") if isinstance(_bpw_opp, dict) else None
+            logger.info("BPS_ANCHOR | %s | opponent %s projected BP won = %s "
+                        "(= breaks conceded)", req.player_name or "player",
+                        req.opponent_name or "opp", _breaks)
             result = project_break_points_saved(
                 p1_s, p2_s, tour=req.tour, match_format=match_fmt, trace=_ctrace,
+                breaks_anchor=_breaks,
             )
         elif req.prop_type == "Double Faults":
             result = project_double_faults(
