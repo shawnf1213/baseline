@@ -152,6 +152,63 @@ def parse_tennis(board: dict = None) -> list:
         return []
 
 
+# ── Set markets ──────────────────────────────────────────────────────────────
+# Sets Won / Sets Played need NO new model: in best-of-3 the four scenarios map
+# to exact set counts, so the probability is a plain sum, not a distribution.
+#
+#            S1 win-straights  S2 win-decider  S3 lose-decider  S4 lose-straights
+#  sets won        2                 2                1                 0
+#  sets played     2                 3                3                 2
+#
+# So P(Sets Won > 1.5) = S1+S2 = P(win match), P(Sets Won > 0.5) = 1 - S4, and
+# P(Sets Played > 2.5) = S2+S3 = P(it goes the distance). Same S1-S4 the props
+# and /match already ride on, so a set line can never disagree with them.
+#
+# Best-of-5 is NOT supported: there S2/S3 cover both 4- and 5-set matches, so a
+# 4.5 sets-played line is genuinely ambiguous. Tour tennis on Underdog is
+# best-of-3, and returning None is better than guessing.
+_SETS_BO3 = {
+    "Sets Won":    {"S1": 2, "S2": 2, "S3": 1, "S4": 0},
+    "Sets Played": {"S1": 2, "S2": 3, "S3": 3, "S4": 2},
+}
+
+
+def sets_market_prob(scenario_probs: dict, prop_type: str, line: float,
+                     is_bo5: bool = False) -> dict:
+    """P(over) / P(under) for a Sets Won or Sets Played line.
+
+    scenario_probs is the {S1..S4} already computed for the match, so this
+    inherits the market-anchored win prob. Returns None when the market isn't
+    supported (best-of-5) or the inputs are missing — never a guess.
+    """
+    outcomes = _SETS_BO3.get(prop_type)
+    if not outcomes or not scenario_probs or is_bo5:
+        return None
+    try:
+        line = float(line)
+    except (TypeError, ValueError):
+        return None
+    p_over = 0.0
+    exp = 0.0
+    total = 0.0
+    for s, sets in outcomes.items():
+        p = scenario_probs.get(s)
+        if not isinstance(p, (int, float)):
+            continue
+        total += p
+        exp += p * sets
+        if sets > line:
+            p_over += p
+    if total <= 0:
+        return None
+    return {
+        "p_over": round(p_over / total, 4),
+        "p_under": round(1.0 - (p_over / total), 4),
+        "projection": round(exp / total, 2),
+        "line": line,
+    }
+
+
 def implied_prob(american) -> float:
     """American price -> implied probability (with vig). None when unparseable."""
     try:
