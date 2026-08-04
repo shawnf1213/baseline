@@ -873,7 +873,7 @@ def _recent_supports_lean(pk: dict, lookback: int = 5, min_n: int = 3) -> bool:
 
 
 # ── STEPS 4 + 7: select the best picks, fully isolated ──────────────────────
-async def _rank_board():
+async def _rank_board(props: list = None):
     """Evaluate the whole board ONCE and return the qualifying candidates,
     deduped to each player's single best play, sorted best-first.
 
@@ -882,8 +882,15 @@ async def _rank_board():
     unexpected errors — callers wrap. This is the shared evaluation pass behind
     both the Pick of the Day and the 3x slip, so the heavy serialized backend
     calc runs a single time per trigger."""
-    board = await asyncio.to_thread(_fetch_board)
-    props = _parse_board(board)
+    # `props` lets a DIFFERENT book feed the same machine (2026-08-03). Underdog
+    # passes its own parsed board here so it inherits EVERY gate — per-prop
+    # confidence bars, the thin-slate drop, per-prop board caps, the tier-aware
+    # per-player dedupe, the ranking rule and star eligibility — rather than
+    # reimplementing them and letting the two boards drift apart. None = the
+    # normal PrizePicks path, unchanged.
+    if props is None:
+        board = await asyncio.to_thread(_fetch_board)
+        props = _parse_board(board)
     if not props:
         log.info("POD: no eligible tennis props on the board")
         return None

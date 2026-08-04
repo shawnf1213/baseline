@@ -72,7 +72,33 @@ def fetch_board() -> dict:
         return {}
 
 
-def parse_tennis(board: dict = None) -> list:
+def _is_straight(ln: dict) -> bool:
+    """True only for a clean two-way over/under at level (1.0x) payout.
+
+    Underdog mixes three things on one endpoint (2026-08-03, user: scan only the
+    straight ones):
+      • level two-way lines — payout 1.0x on both sides            <- the 262 we keep
+      • MULTIPLIER lines — asymmetric payouts (0.91/1.05 … 0.73/1.37, up to 3.5x)
+        that are a different bet: the payout, not just the line, carries the edge
+      • ONE-SIDED lines — only 'higher' or only 'lower' offered, so there is no
+        two-way market to take a side of
+    Anything but the first is rejected here.
+    """
+    opts = ln.get("options") or []
+    if len(opts) < 2:
+        return False
+    if {o.get("choice") for o in opts} != {"higher", "lower"}:
+        return False
+    for o in opts:
+        try:
+            if abs(float(o.get("payout_multiplier")) - 1.0) > 1e-9:
+                return False
+        except (TypeError, ValueError):
+            return False
+    return True
+
+
+def parse_tennis(board: dict = None, straight_only: bool = True) -> list:
     """Tennis props as [{player, opponent, prop_type, line, ...}], mirroring the
     shape pick_of_day._parse_board returns so the projection path is shared.
 
@@ -90,11 +116,15 @@ def parse_tennis(board: dict = None) -> list:
         solo = {g.get("id"): g for g in (board.get("solo_games") or [])}
 
         out, skipped = [], {}
+        n_mult = 0
         for ln in (board.get("over_under_lines") or []):
             ou = ln.get("over_under") or {}
             st = ou.get("appearance_stat") or {}
             app = apps.get(st.get("appearance_id"))
             if not app:
+                continue
+            if straight_only and not _is_straight(ln):
+                n_mult += 1
                 continue
             disp = st.get("display_stat")
             prop = PROP_MAP.get(disp)
@@ -139,6 +169,9 @@ def parse_tennis(board: dict = None) -> list:
                 "status": game.get("status"),
                 "round": ((game.get("pre_game_data") or {}).get("round_display")),
             })
+        if n_mult:
+            log.info("underdog: skipped %d multiplier / one-sided line(s) — only "
+                     "level two-way over/under is scanned", n_mult)
         if skipped:
             log.info("underdog: skipped %d line(s) in unmapped markets: %s",
                      sum(skipped.values()),
@@ -150,6 +183,37 @@ def parse_tennis(board: dict = None) -> list:
     except Exception as exc:  # noqa: BLE001
         log.exception("underdog parse failed: %s", exc)
         return []
+
+
+def to_board_props(props: list = None) -> list:
+    """Underdog props in the exact shape pick_of_day._parse_board returns, so they
+    can be fed straight into _rank_board(props=...) and inherit ALL of the
+    PrizePicks gating rather than a parallel copy of it.
+
+    SET MARKETS ARE EXCLUDED HERE. Every gate in that pipeline is expressed in
+    CONFIDENCE (board floor 65, POTD bar 80, per-prop caps, tier-aware dedupe),
+    and Sets Won / Sets Played produce a probability, not a confidence score.
+    Feeding them in would mean inventing a confidence number for them, so they
+    stay out of the gated board until they have a scoring basis of their own.
+    Doubles entries are dropped for the same reason PrizePicks drops them.
+    """
+    src = props if props is not None else parse_tennis()
+    out = []
+    for p in src:
+        if p.get("prop_type") in SET_PROPS:
+            continue
+        if p.get("live"):
+            continue
+        pl, op = p.get("player") or "", p.get("opponent") or ""
+        if not pl or not op or "/" in pl or "/" in op:
+            continue
+        out.append({"player": pl, "opponent": op,
+                    "prop_type": p["prop_type"], "line": p["line"],
+                    "odds_type": "standard",          # Underdog has no demon concept
+                    "source": "underdog",
+                    "over_price": p.get("over_price"),
+                    "under_price": p.get("under_price")})
+    return out
 
 
 # ── Set markets ──────────────────────────────────────────────────────────────
