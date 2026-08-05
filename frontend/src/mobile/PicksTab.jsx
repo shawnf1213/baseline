@@ -13,10 +13,10 @@ const BOOKS = [
 //
 // The two books are never merged. Underdog has its own lines and its own market,
 // so it earns its own record, exactly as the backend scores it.
-export default function PicksTab({ record, loading, error, onOpenPlayer }) {
+export default function PicksTab({ record, slate, loading, error, onOpenPlayer }) {
   const [book, setBook] = useState('prizepicks')
 
-  const { days } = useMemo(() => derivePicks(record, book), [record, book])
+  const { days } = useMemo(() => derivePicks(record, book, slate), [record, book, slate])
   const rolling = useMemo(() => rollingRecord(days, 30), [days])
   const today = etToday()
 
@@ -108,7 +108,8 @@ function PickRow({ r, onOpen }) {
             }}>3X</span>
           )}
           <div style={{ color: T.muted, fontSize: 12.5, marginTop: 2 }}>
-            vs {r.opponent}{r.surface ? ` · ${r.surface}` : ''}{r.tour ? ` · ${r.tour}` : ''}
+            vs {r.opponent}{r.surface ? ` · ${r.surface}` : ''}
+            {r.tour && !r.tourInferred ? ` · ${r.tour}` : ''}
           </div>
         </div>
         <ResultBadge tone={meta.tone} label={meta.label}

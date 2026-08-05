@@ -288,7 +288,12 @@ export function slateDateOf(p) {
   const raw = p?.generated_at
   if (!raw) return null
   try {
-    const d = new Date(String(raw).replace(' ', 'T').replace(/Z?$/, 'Z'))
+    // Stamps arrive as '2026-06-27T04:33:29.129430+00:00' — already offset-aware.
+    // Only a naive stamp gets a 'Z'; appending one to an existing offset yields
+    // an invalid date, which silently emptied the whole tab.
+    let s = String(raw).trim().replace(' ', 'T')
+    if (!/(Z|[+-]\d{2}:?\d{2})$/.test(s)) s += 'Z'
+    const d = new Date(s)
     if (isNaN(d)) return null
     const hour = Number(d.toLocaleString('en-US', { timeZone: 'America/New_York', hour: '2-digit', hour12: false }))
     const ymd = d.toLocaleDateString('en-CA', { timeZone: 'America/New_York' })
@@ -318,7 +323,12 @@ export const resultMeta = (r) =>
 // Baseline's tracked picks for one book, newest slate first, grouped by slate date.
 // Unlike deriveBoard this KEEPS decided picks — the result is the point.
 export function derivePicks(record, source = 'prizepicks', slate = null) {
-  const picks = (record?.picks || [])
+  // The backend scores the two books SEPARATELY and shapes the payload to match:
+  // record.picks is PrizePicks-only, and Underdog lives under record.underdog
+  // in the same shape. Reading record.picks for both silently returns nothing
+  // for Underdog. The pickSource filter stays as a guard, not the selector.
+  const src = source === 'underdog' ? (record?.underdog?.picks || []) : (record?.picks || [])
+  const picks = src
     .filter(p => !p.excluded_from_record)
     .filter(p => pickSource(p) === source)
   const { startMap, tourMap } = mapsFromSlate(slate)
@@ -344,7 +354,12 @@ export function derivePicks(record, source = 'prizepicks', slate = null) {
       result: String(p.result || 'PENDING').toUpperCase().trim(),
       resultValue: typeof p.result_value === 'number' ? p.result_value : null,
       surface: p.surface || '',
+      // Picks carry no tour column. The slate is a REAL signal where the name
+      // matches; anything else is a guess from the tournament string that
+      // defaults to ATP — and would confidently mislabel a WTA player. Flag it
+      // so the UI can decline to show a guess as fact.
       tour: lookup(tourMap, p.player) || inferTour(p.tournament),
+      tourInferred: !lookup(tourMap, p.player),
       tournament: p.tournament || '',
       oddsType: p.odds_type || 'standard',
       isThreeX: String(p.pick_group || '').toLowerCase().includes('3x'),

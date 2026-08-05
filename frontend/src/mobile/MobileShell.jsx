@@ -19,6 +19,7 @@ export default function MobileShell() {
   const [openPlayer, setOpenPlayer] = useState(null)
   const [boards, setBoards] = useState({ prizepicks: EMPTY_BOARD, underdog: EMPTY_BOARD })
   const [record, setRecord] = useState(null)
+  const [slate, setSlate] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [recordError, setRecordError] = useState(null)
@@ -40,6 +41,7 @@ export default function MobileShell() {
         prizepicks: pp?.__err ? EMPTY_BOARD : parsePrizePicksBoard(pp, slate),
         underdog: ud?.__err ? EMPTY_BOARD : parseUnderdogBoard(ud, slate),
       })
+      setSlate(slate)
       if (pp?.__err && ud?.__err) setError(pp.__err?.message || 'load failed')
       if (rec?.__err) setRecordError(rec.__err?.message || 'record failed')
       else setRecord(rec)
@@ -76,7 +78,7 @@ export default function MobileShell() {
       {/* Tab content */}
       <main style={{ padding: `16px 14px calc(84px + ${SAFE_BOTTOM})`, maxWidth: 640, margin: '0 auto' }}>
         {tab === 'board' && <BoardTab boards={boards} book={book} setBook={setBook} loading={loading} error={error} reload={load} onOpenPlayer={onOpenPlayer} />}
-        {tab === 'picks' && <PicksTab record={record} loading={loading} error={recordError} onOpenPlayer={onOpenPlayer} />}
+        {tab === 'picks' && <PicksTab record={record} slate={slate} loading={loading} error={recordError} onOpenPlayer={onOpenPlayer} />}
         {tab === 'players' && <PlayersTab board={boards[book]} loading={loading} onOpenPlayer={onOpenPlayer} />}
         {tab === 'search' && <SearchTab onOpenPlayer={onOpenPlayer} />}
         {tab === 'research' && <ResearchTab onOpenPlayer={onOpenPlayer} />}
