@@ -2482,7 +2482,9 @@ def ranked_embeds(ranked: list, start_rank: int = 1, total: int = None,
     for idx, page in enumerate(pages):
         first, last = rank_cursor, rank_cursor + len(page) - 1
         rank_cursor = last + 1
-        title = title_override or f"🎾 Ranked Board — {slate.month}/{slate.day}"
+        # Named to match the Underdog board exactly ("🎾 M/D Underdog Board") so the
+        # two books read as the same kind of post rather than two different things.
+        title = title_override or f"🎾 {slate.month}/{slate.day} PrizePicks Board"
         if idx:
             title += " (cont.)"
         e = discord.Embed(title=title, color=COLOR_NEUTRAL)
@@ -3015,7 +3017,7 @@ async def _before_extension_pod_run():
 ])
 async def daily_picks_generate():
     """THE POTD TRIGGER — evaluates the board and posts the ⭐ Pick of the Day +
-    Ranked Board (@everyone) + the 3x when the run finishes (~6-10 min).
+    PrizePicks Board (@everyone) + the 3x when the run finishes (~6-10 min).
     Independent of the recap, which posts earlier.
 
     Registered at BOTH the one-off slot (6:50 PM on ONEOFF_SCHED_DATE) and the
