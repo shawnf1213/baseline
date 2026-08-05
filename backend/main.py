@@ -2314,7 +2314,22 @@ async def prop_calculate(req: PropRequest):
                 # scenario mixture as PTGW/FS (winners full matchup scale, losers
                 # damped by BP_LOSS_MATCHUP_WEIGHT). Supersedes C8. Aces/DF live in a
                 # different branch entirely and are byte-for-byte untouched.
-                _bp_base = bp_result.get("base_proj")
+                # base_proj on the result dict is C1–C6 ONLY — the C7 momentum
+                # bonus is a separate additive field applied after it. Passing
+                # base_proj straight in therefore dropped C7 entirely and the
+                # mixture rescaled off a level the chain had already moved past
+                # (Bergs/Báez 2026-08-05: chain 1.97, mixture rescaled from 1.59
+                # and returned 1.5 against an opponent-implied ~2.06 — the play
+                # lost). C8 stays excluded on purpose: the S1–S4 scenarios model
+                # match length themselves, so applying both would double-count it.
+                _bp_base_c6 = bp_result.get("base_proj")
+                _bp_momentum = bp_result.get("momentum_bonus")
+                _bp_base = (
+                    _bp_base_c6 + _bp_momentum
+                    if isinstance(_bp_base_c6, (int, float))
+                    and isinstance(_bp_momentum, (int, float))
+                    else _bp_base_c6
+                )
                 if isinstance(_bp_base, (int, float)) and _bp_base > 0 and req.prop_line is not None:
                     _bp_model_wp = (bp_result.get("p1_win_prob") or 50.0) / 100.0
                     _bp_ml = await asyncio.to_thread(
@@ -2344,6 +2359,10 @@ async def prop_calculate(req: PropRequest):
                     result["bp_scaled_means"] = _bp_mix["scaled_scenario_means"]
                     result["bp_mixture_mean"] = round(_bp_mix["mixture_mean"], 3)
                     result["bp_fair_line"] = round(_bp_fair, 2)
+                    # NB: this key is later shadowed in the response dict by
+                    # "bp_base_proj": result.get("base_proj"), so what ships is
+                    # the C1–C6 sub-total — which is what the frontend breakdown
+                    # wants, since it lists Momentum Bonus as its own line.
                     result["bp_base_proj"] = round(_bp_base, 3)
                     result["bp_model_wp"] = round(_bp_model_wp, 4)
                     result["bp_market_wp"] = round(_bp_mkt_wp, 4) if _bp_anchored else None
