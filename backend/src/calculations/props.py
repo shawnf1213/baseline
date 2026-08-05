@@ -2052,7 +2052,28 @@ _BP_SCEN_BO5 = {"scen": {"S1": (4.2, 1.8), "S2": (5.2, 2.3),
                          "S3": (2.6, 2.0), "S4": (1.0, 1.3)}}
 # Population outcome-blind mean breaks/match (probability-weighted over the fit
 # buckets) — the neutral baseline for the matchup scale (base_proj / base_pop).
-_BP_BASE_POP = {"ATP": 2.24, "WTA": 4.24}
+#
+# RECALIBRATED 2026-08-05. The previous values (ATP 2.24, WTA 4.24) were NOT the
+# probability-weighted mean of the buckets above: reproducing that definition with
+# this module's own _scenario_p3 at a neutral p_sel=0.5 gives ATP 2.011 and WTA
+# 3.963, so the coded numbers were +11.4% / +7.0% high. They implied ~69% of ATP
+# matches go three sets; the fit implies ~40%.
+#
+# Because base_scale = base_proj / base_pop, an inflated denominator scaled EVERY
+# break projection down — the mixture returned 0.916x its own input at the
+# population level instead of ~1.0. Corrected, it is level-preserving (1.001 at
+# 2.00; 1.011 at 1.89). Residual compression at the extremes is the intended
+# BP_LOSS_MATCHUP_WEIGHT damping, not bias.
+#
+# Independently confirmed against 590 real ATP BO3 player-matches: realized mean
+# breaks/match = 2.02 overall (Hard 1.89, Clay 2.09), matching the self-consistent
+# 2.011 and not the coded 2.24.
+#
+# NOTE: still TOUR-wide, not per-surface. Hard (1.89) genuinely breaks less than
+# Clay (2.09), so a shared baseline still slightly under-serves hard and
+# over-serves clay. Making it surface-specific requires surface-specific _BP_SCEN_FIT
+# buckets too — a real fit, not a constant edit. Logged, not attempted here.
+_BP_BASE_POP = {"ATP": 2.01, "WTA": 3.96}
 _BP_BASE_POP_BO5 = 3.2
 # Backtest-tunable matchup leverage in LOSS scenarios (win scenarios always 1.0).
 # Initial 0.35; the backtest sweep picks the final value. The bp_scenario_mixture
