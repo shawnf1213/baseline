@@ -26,6 +26,7 @@ from discord.ext import tasks
 from dotenv import load_dotenv
 
 import pick_of_day      # isolated Pick of the Day feature (own failure handling)
+import underdog         # Underdog Fantasy board client (own failure handling)
 import results_tracker   # Feature 1 — durable results log (own failure handling)
 import line_monitor      # Feature 2 — automated line-movement monitor (bot-only)
 
@@ -2671,6 +2672,112 @@ async def _todays_posted_keys() -> set:
     return keys
 
 
+# ── Underdog board ──────────────────────────────────────────────────────────
+# A SECOND book, scanned and posted on its own schedule at 10:30 PM ET and
+# scored separately (pick_group "underdog" -> its own record block). It runs
+# 30 minutes after the PrizePicks board so the two posts don't land together.
+#
+# It reuses pick_of_day._rank_board(props=...) rather than a parallel pipeline,
+# so every gate — per-prop confidence bars, thin-slate handling, per-prop board
+# caps, tier-aware per-player dedupe, the ranking rule, star eligibility — is
+# literally the same code the PrizePicks board runs. The two cannot drift.
+UNDERDOG_HOUR = int(os.getenv("UNDERDOG_HOUR", "22") or "22")     # 10:30 PM ET
+UNDERDOG_MINUTE = int(os.getenv("UNDERDOG_MINUTE", "30") or "30")
+
+
+async def _post_underdog_board(channel, track: bool = True) -> str:
+    """Scan Underdog's board and post it. Never raises."""
+    if not AUTOPOST_ENABLED:
+        log.info("underdog board: automated posting DISABLED (AUTOPOST_ENABLED off)")
+        return "autopost disabled"
+    props = await asyncio.to_thread(underdog.to_board_props)
+    if not props:
+        log.info("underdog board: no straight two-way props on the board")
+        return "no underdog props"
+    ordered, thin = await pick_of_day._rank_board(props=props)
+    if not ordered:
+        log.info("underdog board: nothing cleared the gating")
+        return "no qualifying plays"
+
+    # Same rule as the PrizePicks board: never re-post a play that is already
+    # live and ungraded, whichever book it came from.
+    _open = await _pending_pick_keys()
+    if _open:
+        _drop = [p for p in ordered
+                 if (pick_of_day._norm(p.get("player")), p.get("prop_type")) in _open]
+        ordered = [p for p in ordered
+                   if (pick_of_day._norm(p.get("player")), p.get("prop_type")) not in _open]
+        if _drop:
+            log.info("underdog board: dropped %d play(s) still awaiting a result: %s",
+                     len(_drop),
+                     ", ".join(f"{p.get('player')} {p.get('prop_type')}" for p in _drop))
+    if not ordered:
+        log.info("underdog board: every qualifying play is already live")
+        return "all plays already open"
+
+    ranked = ordered[:pick_of_day.MAX_RANKED_PLAYS]
+    ranked, has_star = pick_of_day._promote_star(ranked)
+    await _annotate_form_alerts(ranked)
+
+    slate = _slate_date(ranked)
+    title = f"🎾 {slate.month}/{slate.day} Underdog Board"
+    if has_star:
+        embeds = [potd_embed(ranked[0])] + ranked_embeds(
+            ranked[1:], start_rank=2, total=len(ranked), title_override=title)
+    else:
+        embeds = ranked_embeds(ranked, start_rank=1, total=len(ranked),
+                               title_override=title)
+    await channel.send(content=("@everyone" if track else None),
+                       embeds=embeds[:10], allowed_mentions=EVERYONE_MENTION)
+    for i in range(10, len(embeds), 10):
+        await channel.send(embeds=embeds[i:i + 10])
+
+    # LOG ONLY AFTER A SUCCESSFUL SEND, same rule as the PrizePicks board — an
+    # unposted play is not a play. pick_group "underdog" keeps this book's record
+    # entirely separate from PrizePicks (see database.pick_source).
+    if track:
+        await _log_picks_pending(ranked, group="underdog")
+    return "posted %d underdog plays%s" % (len(ranked), " (with ⭐)" if has_star else "")
+
+
+@tasks.loop(time=[datetime.time(hour=UNDERDOG_HOUR, minute=UNDERDOG_MINUTE,
+                                tzinfo=POD_TZINFO)])
+async def daily_underdog_board():
+    """The Underdog board trigger — 10:30 PM ET, half an hour after PrizePicks."""
+    if not POD_CHANNEL_ID:
+        return
+    try:
+        channel = client.get_channel(POD_CHANNEL_ID)
+        if channel is None:
+            log.warning("underdog board: channel %s not found", POD_CHANNEL_ID)
+            return
+        # Same duplicate guard as the PrizePicks board, scoped to THIS book: one
+        # Underdog board per card, compared on slate date rather than calendar day.
+        try:
+            _rec_u = await asyncio.to_thread(results_tracker.get_record)
+            _now_u = datetime.datetime.now(POD_TZINFO)
+            _target = ((_now_u + datetime.timedelta(days=1)) if _now_u.hour >= 12
+                       else _now_u).strftime("%Y-%m-%d")
+            for _q in ((_rec_u or {}).get("underdog") or {}).get("picks", []):
+                if _q.get("excluded_from_record"):
+                    continue
+                if _slate_date_of(_q) == _target:
+                    log.info("underdog board: a board for the %s card was already "
+                             "posted — skipping", _target)
+                    return
+        except Exception:  # noqa: BLE001
+            pass
+        status = await _post_underdog_board(channel, track=True)
+        log.info("underdog board: %s", status)
+    except Exception:  # noqa: BLE001
+        log.exception("underdog board trigger failed")
+
+
+@daily_underdog_board.before_loop
+async def _before_underdog_board():
+    await client.wait_until_ready()
+
+
 async def _pending_pick_keys() -> set:
     """(_norm(player), prop_type) for every pick still UNRESOLVED.
 
@@ -4237,6 +4344,16 @@ async def on_ready():
                      SECOND_WAVE_HOUR, SECOND_WAVE_MINUTE, POD_TZINFO, SECOND_WAVE_MAX, POD_CHANNEL_ID)
         except Exception:
             log.exception("failed to start second-wave loop")
+    # Underdog board — a SECOND book on its own 10:30 PM schedule, scored
+    # separately. Started independently so a failure here can never affect the
+    # PrizePicks board or its record.
+    if POD_CHANNEL_ID and not daily_underdog_board.is_running():
+        try:
+            daily_underdog_board.start()
+            log.info("Underdog board scheduled at %02d:%02d %s -> channel %s",
+                     UNDERDOG_HOUR, UNDERDOG_MINUTE, POD_TZINFO, POD_CHANNEL_ID)
+        except Exception:
+            log.exception("failed to start underdog board loop")
     # Cache pre-warm — 30 min before generation. Started SEPARATELY from the POTD
     # trigger so a pre-warm failure can never stop the picks from being posted.
     if not daily_cache_prewarm.is_running():
