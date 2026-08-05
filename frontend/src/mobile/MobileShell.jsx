@@ -2,31 +2,47 @@ import { useState, useEffect, useCallback } from 'react'
 import { T, SAFE_TOP, SAFE_BOTTOM } from './theme'
 import BottomNav from './BottomNav'
 import BoardTab from './BoardTab'
+import PicksTab from './PicksTab'
 import PlayersTab from './PlayersTab'
 import SearchTab from './SearchTab'
 import ResearchTab from './ResearchTab'
 import PlayerDashboard from './PlayerDashboard'
 import InstallPrompt from '../components/InstallPrompt'
-import { fetchPrizePicksBoard, fetchSlate } from '../utils/api'
-import { parsePrizePicksBoard } from './data'
+import { fetchPrizePicksBoard, fetchUnderdogBoard, fetchSlate, fetchRecord } from '../utils/api'
+import { parsePrizePicksBoard, parseUnderdogBoard } from './data'
+
+const EMPTY_BOARD = { date: null, isToday: false, rows: [] }
 
 export default function MobileShell() {
   const [tab, setTab] = useState('board')
+  const [book, setBook] = useState('prizepicks')
   const [openPlayer, setOpenPlayer] = useState(null)
-  const [board, setBoard] = useState({ date: null, isToday: false, rows: [] })
+  const [boards, setBoards] = useState({ prizepicks: EMPTY_BOARD, underdog: EMPTY_BOARD })
+  const [record, setRecord] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  const [recordError, setRecordError] = useState(null)
 
   const load = useCallback(async () => {
-    setLoading(true); setError(null)
+    setLoading(true); setError(null); setRecordError(null)
     try {
-      // LIVE PrizePicks market is the source of truth — independent of the bot.
-      // Slate only enriches tour / surface / start time where names match.
-      const [pp, slate] = await Promise.all([
-        fetchPrizePicksBoard(),
+      // The LIVE markets are the source of truth for the Boards tabs — the app is
+      // independent of the bot here. The record is only for the Picks tab.
+      // Slate enriches tour / surface / start time where names match.
+      const [pp, ud, slate, rec] = await Promise.all([
+        fetchPrizePicksBoard().catch(e => ({ __err: e })),
+        fetchUnderdogBoard().catch(e => ({ __err: e })),
         fetchSlate().catch(() => null),
+        fetchRecord().catch(e => ({ __err: e })),
       ])
-      setBoard(parsePrizePicksBoard(pp, slate))
+      // One book failing must not blank the other.
+      setBoards({
+        prizepicks: pp?.__err ? EMPTY_BOARD : parsePrizePicksBoard(pp, slate),
+        underdog: ud?.__err ? EMPTY_BOARD : parseUnderdogBoard(ud, slate),
+      })
+      if (pp?.__err && ud?.__err) setError(pp.__err?.message || 'load failed')
+      if (rec?.__err) setRecordError(rec.__err?.message || 'record failed')
+      else setRecord(rec)
     } catch (e) {
       setError(e?.message || 'load failed')
     } finally {
@@ -59,8 +75,9 @@ export default function MobileShell() {
 
       {/* Tab content */}
       <main style={{ padding: `16px 14px calc(84px + ${SAFE_BOTTOM})`, maxWidth: 640, margin: '0 auto' }}>
-        {tab === 'board' && <BoardTab board={board} loading={loading} error={error} reload={load} onOpenPlayer={onOpenPlayer} />}
-        {tab === 'players' && <PlayersTab board={board} loading={loading} onOpenPlayer={onOpenPlayer} />}
+        {tab === 'board' && <BoardTab boards={boards} book={book} setBook={setBook} loading={loading} error={error} reload={load} onOpenPlayer={onOpenPlayer} />}
+        {tab === 'picks' && <PicksTab record={record} loading={loading} error={recordError} onOpenPlayer={onOpenPlayer} />}
+        {tab === 'players' && <PlayersTab board={boards[book]} loading={loading} onOpenPlayer={onOpenPlayer} />}
         {tab === 'search' && <SearchTab onOpenPlayer={onOpenPlayer} />}
         {tab === 'research' && <ResearchTab onOpenPlayer={onOpenPlayer} />}
       </main>
@@ -72,7 +89,7 @@ export default function MobileShell() {
         <PlayerDashboard
           key={openPlayer.name}
           player={openPlayer}
-          board={board}
+          board={boards[book]}
           onClose={() => setOpenPlayer(null)}
           onOpenPlayer={onOpenPlayer}
         />

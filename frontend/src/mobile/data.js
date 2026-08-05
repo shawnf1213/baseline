@@ -4,10 +4,18 @@
 
 // Prop types. `history` = supported by GET /api/history (over/under logs);
 // Fantasy Score is a composite with no per-match log, so it has no hit strip.
+// Break Points Saved is COMPOSITE — reconstructed from faced x save% rather than
+// logged per match — so like Fantasy Score it has no hit strip.
+//
+// Sets Won / Sets Played are deliberately ABSENT: /api/prop/calculate has no
+// branch for them (they are derived from the scenario mixture inside the bot),
+// so a set row could never show a projection. Underdog lists them; we drop them
+// in parseUnderdogBoard rather than render permanent dashes.
 export const PROP_TYPES = [
   { key: 'Aces', short: 'Aces', history: true },
   { key: 'Double Faults', short: 'Double Faults', history: true },
   { key: 'Break Points Won', short: 'Break Pts Won', history: true },
+  { key: 'Break Points Saved', short: 'Break Pts Saved', history: false },
   { key: 'Total Games', short: 'Total Games', history: true },
   { key: 'Player Total Games Won', short: 'Games Won', history: true },
   { key: 'Fantasy Score', short: 'Fantasy Score', history: false },
@@ -135,6 +143,91 @@ function lookup(map, player) {
   return map[normName(player)] ?? map[lastName(player)] ?? null
 }
 
+// ── Underdog board ───────────────────────────────────────────────────────────
+// Mirrors discord-bot/underdog.py: same PROP_MAP, same straight-only filter, same
+// appearance -> solo_game -> other-side opponent resolution. Kept in sync by hand
+// because the bot's copy is Python and server-side; if one changes, change both.
+const UD_PROP_MAP = {
+  'Aces': 'Aces',
+  'Double Faults': 'Double Faults',
+  'Breakpoints Won': 'Break Points Won',
+  'Break Points Saved': 'Break Points Saved',
+  'Games Won': 'Player Total Games Won',
+  'Games Played': 'Total Games',
+  // 'Sets Won' / 'Sets Played' intentionally unmapped — see PROP_TYPES.
+}
+const UD_RANK_PREFIX = /^\(\s*\d+\s*\)\s*/   // "(1) Aryna Sabalenka"
+const udClean = (s) => (s || '').trim().replace(UD_RANK_PREFIX, '').trim()
+
+// A line is only takeable if BOTH sides exist at level (1.0x) payout. Underdog
+// mixes multiplier lines (0.73x/1.37x …) and one-sided lines onto the same feed;
+// those are a different bet, so the bot skips them and so do we.
+function udIsStraight(ln) {
+  const opts = ln?.options || []
+  if (opts.length < 2) return false
+  const choices = new Set(opts.map(o => o?.choice))
+  if (!(choices.has('higher') && choices.has('lower') && choices.size === 2)) return false
+  return opts.every(o => Math.abs(Number(o?.payout_multiplier) - 1) < 1e-9)
+}
+
+export function parseUnderdogBoard(json, slate) {
+  const empty = { date: etToday(), isToday: true, rows: [], source: 'underdog' }
+  if (!json || typeof json !== 'object') return empty
+  const players = {}
+  for (const p of (json.players || [])) {
+    if (String(p?.sport_id || '').toUpperCase() === 'TENNIS') players[p.id] = p
+  }
+  const apps = {}
+  for (const a of (json.appearances || [])) if (a?.player_id in players) apps[a.id] = a
+  const solo = {}
+  for (const g of (json.solo_games || [])) solo[g.id] = g
+
+  const { startMap, tourMap, surfaceMap } = mapsFromSlate(slate)
+  const seen = new Set()
+  const rows = []
+  for (const ln of (json.over_under_lines || [])) {
+    const st = (ln?.over_under || {}).appearance_stat || {}
+    const app = apps[st.appearance_id]
+    if (!app) continue
+    if (!udIsStraight(ln)) continue
+    const propType = UD_PROP_MAP[st.display_stat]
+    if (!propType) continue
+    if (ln.live_event) continue
+    const game = solo[app.match_id] || {}
+    const pid = app.player_id
+    const opponent = udClean(
+      pid === game.home_player_id ? game.away_player_name
+      : pid === game.away_player_id ? game.home_player_name
+      : ''
+    )
+    const pl = players[pid] || {}
+    const player = udClean(`${pl.first_name || ''} ${pl.last_name || ''}`)
+    const line = Number(ln.stat_value)
+    if (!player || !opponent || isNaN(line)) continue
+    if (player.includes('/') || opponent.includes('/')) continue   // doubles
+    const key = `${player}|${propType}|${line}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    let overPx = null, underPx = null
+    for (const o of (ln.options || [])) {
+      if (o.choice === 'higher') overPx = o.american_price
+      else if (o.choice === 'lower') underPx = o.american_price
+    }
+    rows.push({
+      key, player, opponent, propType, line,
+      projection: null, edge: null, confidence: null,
+      surface: lookup(surfaceMap, player) || '',
+      tour: lookup(tourMap, player) || '',
+      tournament: '',
+      oddsType: 'standard',
+      startTs: lookup(startMap, player),
+      overPrice: overPx, underPrice: underPx,
+      startsAt: game.scheduled_at || null,
+    })
+  }
+  return { date: etToday(), isToday: true, rows, source: 'underdog' }
+}
+
 // Results that mean the match is already decided — NOT researchable. Only
 // undecided props (PENDING / not-yet-graded) are upcoming or in-play.
 const DECIDED = new Set(['W', 'L', 'PUSH', 'VOID', 'NEEDS REVIEW'])
@@ -180,6 +273,117 @@ export function deriveBoard(record, slate) {
     })
   }
   return { date: maxDate, isToday: maxDate === etToday(), rows }
+}
+
+// ── Baseline's own picks (the bot's boards), tracked ─────────────────────────
+// This is the ONLY part of the app that mirrors the bot. The Boards tabs above
+// are independent: they show the live market for the prop types Baseline scans,
+// whether or not the bot picked them.
+
+// Mirrors discord-bot/bot.py::_slate_date_of — the ET date a pick's match is
+// actually PLAYED. A list built from noon onward is tomorrow's card; earlier is
+// today's. Must match the bot exactly or the app groups picks differently than
+// the recap does.
+export function slateDateOf(p) {
+  const raw = p?.generated_at
+  if (!raw) return null
+  try {
+    const d = new Date(String(raw).replace(' ', 'T').replace(/Z?$/, 'Z'))
+    if (isNaN(d)) return null
+    const hour = Number(d.toLocaleString('en-US', { timeZone: 'America/New_York', hour: '2-digit', hour12: false }))
+    const ymd = d.toLocaleDateString('en-CA', { timeZone: 'America/New_York' })
+    if (hour < 12) return ymd
+    const [y, m, dd] = ymd.split('-').map(Number)
+    const next = new Date(Date.UTC(y, m - 1, dd + 1))
+    return next.toISOString().slice(0, 10)
+  } catch { return null }
+}
+
+// Mirrors src/database.py::pick_source — the book a pick's board came from.
+export function pickSource(p) {
+  const g = String(p?.pick_group || 'potd').toLowerCase()
+  return g.startsWith('underdog') ? 'underdog' : 'prizepicks'
+}
+
+const RESULT_META = {
+  W: { label: 'WON', tone: 'win' },
+  L: { label: 'LOST', tone: 'loss' },
+  PUSH: { label: 'PUSH', tone: 'win' },      // pushes count as wins, per the recap
+  VOID: { label: 'VOID', tone: 'void' },
+  'NEEDS REVIEW': { label: 'REVIEW', tone: 'void' },
+}
+export const resultMeta = (r) =>
+  RESULT_META[String(r || '').toUpperCase().trim()] || { label: 'PENDING', tone: 'pending' }
+
+// Baseline's tracked picks for one book, newest slate first, grouped by slate date.
+// Unlike deriveBoard this KEEPS decided picks — the result is the point.
+export function derivePicks(record, source = 'prizepicks', slate = null) {
+  const picks = (record?.picks || [])
+    .filter(p => !p.excluded_from_record)
+    .filter(p => pickSource(p) === source)
+  const { startMap, tourMap } = mapsFromSlate(slate)
+
+  const byDate = new Map()
+  for (const p of picks) {
+    const d = slateDateOf(p)
+    if (!d) continue
+    const proj = typeof p.model_projection === 'number' ? p.model_projection : null
+    const line = typeof p.line === 'number' ? p.line
+               : (typeof p.original_line === 'number' ? p.original_line : null)
+    const row = {
+      key: `${p.id ?? ''}|${p.player}|${p.prop_type}|${p.line}`,
+      id: p.id,
+      player: p.player,
+      opponent: p.opponent || '',
+      propType: p.prop_type,
+      line,
+      lean: (p.lean || '').toUpperCase(),
+      projection: proj,
+      edge: (proj != null && line != null) ? Math.round((proj - line) * 10) / 10 : null,
+      confidence: typeof p.confidence === 'number' ? p.confidence : null,
+      result: String(p.result || 'PENDING').toUpperCase().trim(),
+      resultValue: typeof p.result_value === 'number' ? p.result_value : null,
+      surface: p.surface || '',
+      tour: lookup(tourMap, p.player) || inferTour(p.tournament),
+      tournament: p.tournament || '',
+      oddsType: p.odds_type || 'standard',
+      isThreeX: String(p.pick_group || '').toLowerCase().includes('3x'),
+      startTs: lookup(startMap, p.player),
+    }
+    if (!byDate.has(d)) byDate.set(d, [])
+    byDate.get(d).push(row)
+  }
+
+  const days = [...byDate.entries()]
+    .sort((a, b) => (a[0] < b[0] ? 1 : -1))
+    .map(([date, rows]) => {
+      rows.sort((a, b) => (b.confidence ?? -1) - (a.confidence ?? -1))
+      let w = 0, l = 0, pending = 0
+      for (const r of rows) {
+        if (r.result === 'W' || r.result === 'PUSH') w++
+        else if (r.result === 'L') l++
+        else if (r.result !== 'VOID') pending++
+      }
+      const decided = w + l
+      return {
+        date, rows, wins: w, losses: l, pending,
+        winRate: decided ? Math.round((w / decided) * 1000) / 10 : null,
+        settled: pending === 0 && rows.length > 0,
+      }
+    })
+  return { source, days }
+}
+
+// Rolling record across the last N slate days that have any decided pick.
+export function rollingRecord(days, windowDays = 30) {
+  const cutoff = new Date(Date.now() - windowDays * 86400000).toISOString().slice(0, 10)
+  let w = 0, l = 0
+  for (const d of days) {
+    if (d.date < cutoff) continue
+    w += d.wins; l += d.losses
+  }
+  const decided = w + l
+  return { wins: w, losses: l, winRate: decided ? Math.round((w / decided) * 1000) / 10 : null, decided }
 }
 
 // Distinct players present on the board (for the Players tab).

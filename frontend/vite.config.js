@@ -91,6 +91,18 @@ export default defineConfig({
           'Accept': 'application/json',
         },
       },
+      // Underdog's board API is unauthenticated but browser-CORS-locked, same as
+      // PrizePicks — so it goes through a same-origin proxy rather than direct.
+      '/ud': {
+        target: 'https://api.underdogfantasy.com',
+        changeOrigin: true,
+        secure: true,
+        rewrite: (p) => p.replace(/^\/ud/, ''),
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+          'Accept': 'application/json',
+        },
+      },
       '/api': {
         target: 'https://backend-production-84ab.up.railway.app',
         changeOrigin: true,

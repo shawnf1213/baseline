@@ -1,10 +1,11 @@
 import { T, SAFE_BOTTOM } from './theme'
 
 const TABS = [
-  { key: 'board',    label: 'Board',    icon: 'board' },
+  { key: 'board',    label: 'Boards',   icon: 'board' },
+  { key: 'picks',    label: 'Picks',    icon: 'picks' },
   { key: 'players',  label: 'Players',  icon: 'players' },
   { key: 'search',   label: 'Search',   icon: 'search' },
-  { key: 'research', label: 'My Research', icon: 'bookmark' },
+  { key: 'research', label: 'Saved',    icon: 'bookmark' },
 ]
 
 function Icon({ name, active }) {
@@ -12,6 +13,7 @@ function Icon({ name, active }) {
   const p = { width: 23, height: 23, viewBox: '0 0 24 24', fill: 'none', stroke: c, strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round' }
   switch (name) {
     case 'board': return (<svg {...p}><path d="M4 5h16M4 12h16M4 19h10" /></svg>)
+    case 'picks': return (<svg {...p}><path d="M9 11l2 2 4-4" /><path d="M5 4h14a1 1 0 0 1 1 1v15l-3-2-2 2-3-2-3 2-2-2-3 2V5a1 1 0 0 1 1-1z" /></svg>)
     case 'players': return (<svg {...p}><circle cx="9" cy="8" r="3.2" /><path d="M3.5 19a5.5 5.5 0 0 1 11 0" /><path d="M16 7.5a3 3 0 0 1 0 5.8M20.5 19a5 5 0 0 0-3.5-4.8" /></svg>)
     case 'search': return (<svg {...p}><circle cx="11" cy="11" r="7" /><path d="M21 21l-4.3-4.3" /></svg>)
     case 'bookmark': return (<svg {...p} fill={active ? T.green : 'none'}><path d="M6 3h12a1 1 0 0 1 1 1v17l-7-4-7 4V4a1 1 0 0 1 1-1z" /></svg>)
@@ -25,7 +27,7 @@ export default function BottomNav({ active, onChange }) {
       position: 'fixed', left: 0, right: 0, bottom: 0, zIndex: 1000,
       background: 'rgba(10,10,10,0.96)', borderTop: `1px solid ${T.border}`,
       paddingBottom: SAFE_BOTTOM,
-      display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)',
+      display: 'grid', gridTemplateColumns: `repeat(${TABS.length}, 1fr)`,
       backdropFilter: 'blur(8px)', WebkitBackdropFilter: 'blur(8px)',
     }}>
       {TABS.map(t => {

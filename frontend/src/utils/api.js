@@ -25,6 +25,11 @@ export const api = axios.create({ baseURL: BASE, timeout: 60000 })
 export const fetchPrizePicksBoard = (signal) =>
   axios.get('/pp/projections?per_page=1000', { timeout: 20000, signal }).then(r => r.data)
 
+// Underdog publishes its whole board on one unauthenticated endpoint, but it is
+// CORS-locked to browsers, so it takes the same same-origin `/ud` proxy treatment.
+export const fetchUnderdogBoard = (signal) =>
+  axios.get('/ud/beta/v6/over_under_lines', { timeout: 25000, signal }).then(r => r.data)
+
 export const searchPlayers  = (query, tour, signal) =>
   api.get('/api/search', { params: { query, tour }, signal }).then(r => r.data)
 export const fetchStats     = (player_id, tour, player_name = '') => api.post('/api/player/stats', { player_id, tour, player_name }).then(r => r.data)

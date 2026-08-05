@@ -1,6 +1,6 @@
 import { useMemo, useState, useEffect } from 'react'
 import { T } from './theme'
-import { Card, Delta, Heart, Spinner, Empty } from './bits'
+import { Card, Delta, Heart, Spinner, Empty, Segment } from './bits'
 import FilterSheet from './FilterSheet'
 import { shortProp, startTimeLabel, fmt } from './data'
 import { projectRow, cachedProjection } from './project'
@@ -28,10 +28,16 @@ function useBoardProjections(rows) {
   return map
 }
 
-export default function BoardTab({ board, loading, error, onOpenPlayer }) {
+const BOOKS = [
+  { key: 'prizepicks', label: 'PrizePicks' },
+  { key: 'underdog', label: 'Underdog' },
+]
+
+export default function BoardTab({ boards, book, setBook, loading, error, onOpenPlayer }) {
   const [filters, setFilters] = useState(DEFAULT_FILTERS)
   const [sheet, setSheet] = useState(false)
   const { has, toggle } = useBookmarks()
+  const board = boards?.[book]
 
   // Filter first (depends only on board + filters → stable input for projection).
   const filtered = useMemo(() => {
@@ -70,7 +76,8 @@ export default function BoardTab({ board, loading, error, onOpenPlayer }) {
           <div style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 26, color: T.white, letterSpacing: 0.5, lineHeight: 1 }}>Board</div>
           <div style={{ color: T.muted, fontSize: 12.5, marginTop: 4, display: 'flex', alignItems: 'center', gap: 6 }}>
             <span className="live-dot" style={{ width: 6, height: 6 }} />
-            Live PrizePicks{rows.length ? ` · ${rows.length}` : ''}{projecting ? ' · projecting…' : ''}
+            Live {book === 'underdog' ? 'Underdog' : 'PrizePicks'}
+            {rows.length ? ` · ${rows.length}` : ''}{projecting ? ' · projecting…' : ''}
           </div>
         </div>
         <button onClick={() => setSheet(true)} style={{
@@ -84,6 +91,8 @@ export default function BoardTab({ board, loading, error, onOpenPlayer }) {
         </button>
       </div>
 
+      <Segment options={BOOKS} value={book} onChange={setBook} style={{ marginBottom: 14 }} />
+
       {loading && <div style={{ display: 'flex', justifyContent: 'center', padding: 48 }}><Spinner size={28} /></div>}
 
       {!loading && error && (
@@ -93,7 +102,8 @@ export default function BoardTab({ board, loading, error, onOpenPlayer }) {
       {!loading && !error && !rows.length && (
         <Empty icon="🎾"
           title={board?.rows?.length ? 'No props match these filters' : 'No tennis props on the board'}
-          hint={board?.rows?.length ? 'Try clearing a filter.' : 'PrizePicks has no tennis lines up right now. Check back when matches are near.'} />
+          hint={board?.rows?.length ? 'Try clearing a filter.'
+            : `${book === 'underdog' ? 'Underdog' : 'PrizePicks'} has no tennis lines up right now. Check back when matches are near.`} />
       )}
 
       {!loading && !error && rows.map(r => (
@@ -105,8 +115,9 @@ export default function BoardTab({ board, loading, error, onOpenPlayer }) {
 
       {!loading && !error && !!rows.length && (
         <div style={{ color: T.muted2, fontSize: 11.5, textAlign: 'center', padding: '16px 12px 4px', lineHeight: 1.5 }}>
-          Live PrizePicks lines with Baseline's model projection. Edge = projection − line.
-          Tap any prop to open the player.
+          Live {book === 'underdog' ? 'Underdog' : 'PrizePicks'} lines with Baseline's model projection.
+          Edge = projection − line. Tap any prop to open the player.
+          {book === 'underdog' && ' Multiplier and one-sided lines are excluded.'}
         </div>
       )}
 

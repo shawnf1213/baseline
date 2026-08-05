@@ -51,6 +51,48 @@ export function Heart({ active, onClick, size = 22 }) {
   )
 }
 
+// Two-or-more-way switcher used as a section-level tab bar (Boards: PP/UD).
+export function Segment({ options, value, onChange, style }) {
+  return (
+    <div style={{
+      display: 'grid', gridTemplateColumns: `repeat(${options.length}, 1fr)`, gap: 4,
+      background: T.card, border: `1px solid ${T.border}`, borderRadius: 12, padding: 4, ...style,
+    }}>
+      {options.map(o => {
+        const on = o.key === value
+        return (
+          <button key={o.key} onClick={() => onChange(o.key)} style={{
+            minHeight: 38, borderRadius: 9, border: 'none', cursor: 'pointer',
+            background: on ? 'rgba(0,230,118,0.14)' : 'transparent',
+            color: on ? T.green : T.muted,
+            fontFamily: T.cond, fontWeight: 800, fontSize: 13, letterSpacing: 1,
+            textTransform: 'uppercase', WebkitTapHighlightColor: 'transparent',
+            transition: 'all 140ms ease',
+          }}>{o.label}</button>
+        )
+      })}
+    </div>
+  )
+}
+
+// Settled state of a tracked pick. PUSH reads as a win because that is how the
+// record scores it (W+PUSH over W+L+PUSH), so the badge must not imply otherwise.
+export function ResultBadge({ tone, label, value }) {
+  const c = tone === 'win' ? T.green : tone === 'loss' ? T.red : tone === 'void' ? T.muted2 : T.amber
+  const bg = tone === 'win' ? 'rgba(0,230,118,0.12)'
+           : tone === 'loss' ? 'rgba(255,82,82,0.12)'
+           : tone === 'void' ? 'rgba(255,255,255,0.05)' : 'rgba(255,193,7,0.10)'
+  return (
+    <span style={{
+      display: 'inline-flex', alignItems: 'center', gap: 5, padding: '3px 9px', borderRadius: 7,
+      background: bg, border: `1px solid ${c}33`, color: c,
+      fontFamily: T.cond, fontWeight: 800, fontSize: 11, letterSpacing: 1, textTransform: 'uppercase',
+    }}>
+      {label}{value != null && <span style={{ opacity: 0.75, letterSpacing: 0.2 }}>{value}</span>}
+    </span>
+  )
+}
+
 export function Spinner({ size = 22 }) {
   return (
     <span style={{
