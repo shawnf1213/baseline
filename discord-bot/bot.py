@@ -3254,7 +3254,7 @@ def _slate_date_of(p: dict) -> str:
 
 def daily_recap_embed(rec: dict, target_date: str = None,
                       source: str = "prizepicks") -> discord.Embed:
-    """Date-based daily recap. Header 'M/D Premium List', that date's picks with
+    """Date-based daily recap. Header 'M/D PrizePicks Recap', that date's picks with
     W/L/PUSH indicators, a Today rate and a rolling 30-day rate. ``target_date`` is
     an ET 'YYYY-MM-DD'; defaults to today in ET.
 
@@ -3269,9 +3269,9 @@ def daily_recap_embed(rec: dict, target_date: str = None,
     try:
         _d = datetime.datetime.strptime(target_date, "%Y-%m-%d")
         header = (f"{_d.month}/{_d.day} Underdog Recap" if source == "underdog"
-                  else f"{_d.month}/{_d.day} Premium List")
+                  else f"{_d.month}/{_d.day} PrizePicks Recap")
     except Exception:  # noqa: BLE001
-        header = "Underdog Recap" if source == "underdog" else "Premium List"
+        header = "Underdog Recap" if source == "underdog" else "PrizePicks Recap"
 
     # Date-scoped by RESOLUTION date, on a 6 AM→6 AM "day" (shift_hours=-6) so a
     # match that finished late and graded just after midnight still counts for the
@@ -3931,11 +3931,18 @@ async def _recap_already_posted(channel, date_str: str,
     it returns True — refusing to post is the safe direction."""
     try:
         _d = datetime.datetime.strptime(date_str, "%Y-%m-%d")
-        want = (f"{_d.month}/{_d.day} Underdog Recap" if source == "underdog"
-                else f"{_d.month}/{_d.day} Premium List")
+        # PrizePicks accepts the LEGACY "Premium List" title as well. Recaps posted
+        # before the 2026-08-05 rename are still in the channel, and failing to
+        # recognise one would publish a SECOND recap for a day already covered —
+        # the exact duplicate this guard exists to prevent.
+        if source == "underdog":
+            wants = [f"{_d.month}/{_d.day} Underdog Recap"]
+        else:
+            wants = [f"{_d.month}/{_d.day} PrizePicks Recap",
+                     f"{_d.month}/{_d.day} Premium List"]
         async for msg in channel.history(limit=40):
             for emb in (msg.embeds or []):
-                if emb.title and want in emb.title:
+                if emb.title and any(w in emb.title for w in wants):
                     return True
         return False
     except Exception:  # noqa: BLE001
