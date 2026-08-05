@@ -73,6 +73,29 @@ def _fantasy_score(m: dict):
           + 0.5 * aces - 0.5 * df)
     return round(fs, 1)
 
+def _break_points_saved(m: dict):
+    """Break points SAVED in one match = faced x save%.
+
+    Sofascore reports the save side as a percentage plus a faced count, never a
+    saved count, so like _fantasy_score this is COMPOSITE and has no entry in
+    PROP_FIELD. Both inputs are stored per match (_SPLIT_NUMERIC_KEYS), so this
+    reconstructs the count the market actually settles on.
+
+    Shipping the prop without this was the exact failure PROP_FIELD's own comment
+    warns about — a prop the model can PICK must be a prop the resolver can
+    SCORE, or it hangs in NEEDS REVIEW forever (as PTGW did until 2026-07-15).
+    Returns None if either input is missing, so it degrades to NEEDS REVIEW
+    rather than inventing a number.
+    """
+    faced = m.get("bp_faced_count")
+    pct = m.get("bp_saved")
+    if not isinstance(faced, (int, float)) or not isinstance(pct, (int, float)):
+        return None
+    if faced < 0 or pct < 0:
+        return None
+    return round(faced * (pct / 100.0))
+
+
 FRESH_AMBER_DAYS = 21
 FRESH_RED_DAYS   = 45
 RED_CONF_PENALTY = 15
@@ -253,8 +276,9 @@ def resolve_pick(player: str, opponent: str, prop_type: str,
     whether ``lean`` over/under ``line`` for ``prop_type`` was correct.
     Returns {result: W/L/NEEDS REVIEW, value, opponent_matched, date}."""
     is_fs = prop_type == "Fantasy Score"
+    is_bps = prop_type == "Break Points Saved"
     field = PROP_FIELD.get(prop_type)
-    if not field and not is_fs:
+    if not field and not is_fs and not is_bps:
         return {"result": "NEEDS REVIEW", "reason": "unsupported prop"}
     p = resolve_player(player)
     if not p:
@@ -290,7 +314,12 @@ def resolve_pick(player: str, opponent: str, prop_type: str,
                     "opponent_matched": opponent, "date": void.get("date")}
         return {"result": "NEEDS REVIEW", "reason": "completed match not found"}
 
-    value = _fantasy_score(best) if is_fs else _val(best, field)
+    if is_fs:
+        value = _fantasy_score(best)
+    elif is_bps:
+        value = _break_points_saved(best)
+    else:
+        value = _val(best, field)
     if value is None:
         return {"result": "NEEDS REVIEW", "reason": "stat unavailable",
                 "opponent_matched": best.get("opponent_name"), "date": best.get("date")}
