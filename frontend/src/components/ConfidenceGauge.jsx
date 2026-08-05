@@ -18,7 +18,7 @@ function getLabel(v) {
  * Speedometer-style gauge: 160px diameter, tick marks, gradient arc with glow.
  * Pass `size` to override (defaults to 160).
  */
-export default function ConfidenceGauge({ confidence = 0, size = 160 }) {
+export default function ConfidenceGauge({ confidence = 0, size = 160, showLabel = true }) {
   const color = getColor(confidence)
   const label = getLabel(confidence)
   const cx = size / 2
@@ -94,24 +94,28 @@ export default function ConfidenceGauge({ confidence = 0, size = 160 }) {
           }}>
             <NumberFlow value={confidence} /><span style={{ fontSize: size * 0.18 }}>%</span>
           </div>
-          <div style={{
-            fontSize: 9, color: 'var(--muted)',
-            fontFamily: '"Barlow Condensed", sans-serif',
-            fontWeight: 700, letterSpacing: 2,
-            textTransform: 'uppercase',
-            marginTop: 4,
-          }}>Confidence</div>
+          {showLabel && (
+            <div style={{
+              fontSize: 9, color: 'var(--muted)',
+              fontFamily: '"Barlow Condensed", sans-serif',
+              fontWeight: 700, letterSpacing: 2,
+              textTransform: 'uppercase',
+              marginTop: 4,
+            }}>Confidence</div>
+          )}
         </div>
       </div>
-      <div style={{
-        display: 'inline-flex', alignItems: 'center', gap: 8,
-        fontSize: 12, color,
-        fontFamily: '"Barlow Condensed", sans-serif',
-        fontWeight: 700, letterSpacing: 1.5, textTransform: 'uppercase',
-      }}>
-        <span style={{ width: 8, height: 8, borderRadius: '50%', background: color, boxShadow: `0 0 8px ${color}` }} />
-        {label}
-      </div>
+      {showLabel && (
+        <div style={{
+          display: 'inline-flex', alignItems: 'center', gap: 8,
+          fontSize: 12, color,
+          fontFamily: '"Barlow Condensed", sans-serif',
+          fontWeight: 700, letterSpacing: 1.5, textTransform: 'uppercase',
+        }}>
+          <span style={{ width: 8, height: 8, borderRadius: '50%', background: color, boxShadow: `0 0 8px ${color}` }} />
+          {label}
+        </div>
+      )}
     </div>
   )
 }
