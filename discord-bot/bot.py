@@ -3916,10 +3916,13 @@ _GRADED_RESULTS = ("W", "L", "PUSH", "VOID")
 # in order on the same pass.
 #
 # Self-clearing: once all of them are in the channel the duplicate check no-ops
-# them and normal day-by-day posting resumes, so this can be left in place
-# harmlessly — but it is a one-off and should be emptied when convenient.
+# them and normal day-by-day posting resumes.
+#
+# EMPTY by default as of 2026-08-05 — the 8/2 and 8/3 backfill it was added for
+# posted days ago, so it was doing a redundant channel read every recap cycle.
+# Set the RECAP_BATCH_DATES env var to re-arm it for a future batch.
 RECAP_BATCH_DATES = [d.strip() for d in
-                     os.getenv("RECAP_BATCH_DATES", "2026-08-02,2026-08-03").split(",")
+                     os.getenv("RECAP_BATCH_DATES", "").split(",")
                      if d.strip()]
 
 
