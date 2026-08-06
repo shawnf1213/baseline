@@ -1563,6 +1563,27 @@ async def prop_calculate(req: PropRequest):
         p1_s = _merge_with_ss(p1_blended, p1_ss_raw)
         p2_s = _merge_with_ss(p2_blended, p2_ss_raw)
 
+        # Competition tier for the total->P(3 sets) mapping (props._match_level).
+        # The per-surface aggregates do NOT carry it — only the raw match rows do —
+        # so without this every match resolved to "main" and the challenger
+        # constants were dead code. Mean over the whole record, not the surface
+        # split, so a player thin on this surface still classifies.
+        #
+        # DELIBERATELY a private key, NOT "competition_level": props.py:1620 has a
+        # dormant strength-of-schedule term keyed on that name which defaults to
+        # 2.5-2.5=0 because nothing ever populated it. Writing it here would switch
+        # that term on for every prop as a side effect of a P(3 sets) fix — it moved
+        # Sabalenka/Zhang's projected total 17.3 -> 19.6 in testing. Enabling SoS is
+        # a separate decision that needs its own measurement.
+        def _comp_level(data: dict):
+            tiers = [m.get("comp_tier") for m in (data.get("all_matches") or [])
+                     if isinstance(m.get("comp_tier"), (int, float))]
+            return round(sum(tiers) / len(tiers), 3) if tiers else None
+        for _sd, _raw in ((p1_s, p1_data), (p2_s, p2_data)):
+            _cl = _comp_level(_raw)
+            if _cl is not None:
+                _sd["_comp_tier_mean"] = _cl
+
         # Override matches_played with unified pool count when it's higher.
         # This ensures challenger players (whose SS stats API fails) show the
         # correct match count from all sources rather than 0 or undercount.

@@ -1841,12 +1841,77 @@ _P3_HOLD_K = 1.0                            # p3 sensitivity to hold dominance
 _P3_HOLD_ADJ_MAX = 0.12                     # bound on the breakability shift
 
 
-def _scenario_p3(p_sel, fit, mean_hold=None, tour="ATP"):
+# ── P(3 sets) FROM THE PROJECTED MATCH TOTAL ─────────────────────────────────
+# A BO3 match length IS a statement about set count, and until 2026-08-06 nothing
+# in the model used it: p3 came from the win-prob gap and hold alone, so a heavy
+# favourite projected for a 17-game blowout carried the SAME decider probability
+# as an even matchup projected for 25.
+#
+# The physical partition (enumerating every legal set score — 6-0/6-1/6-2/6-3/
+# 6-4/7-5/7-6, i.e. 6,7,8,9,10,12,13 games):
+#     12-17 games  straight sets ONLY  (a 3-setter needs 6-0 0-6 6-0 = 18 minimum)
+#     18-26 games  either possible
+#     27+   games  three sets ONLY     (2 sets cannot exceed 7-6 7-6 = 26)
+#
+# Measured on 3,347 deduped real BO3 matches (Grand Slams excluded), P(3 sets) by
+# realized total is far sharper than that partition alone implies: 0.4% at 0-17,
+# 0.6% at 20-21, 7.3% at 22-23, 50.9% at 24-25, 93.1% at 26+ — because a 3-setter
+# inside 18-23 games needs very lopsided sets and is rare.
+#
+# The model consumes an EXPECTED total, not a realized one, so a conditional
+# lookup would be the wrong instrument. Inverting the law of total expectation is
+# the right one:  E[total] = (1-p3)*m2 + p3*m3  =>  p3 = (E[total] - m2)/(m3 - m2)
+# where m2/m3 are the measured mean totals of 2-set and 3-set matches.
+#
+# Fitted per tour AND level 2026-08-06 (n shown); challenger = comp_tier < 2.5.
+_P3_MATCH_TOTALS = {
+    ("ATP", "main"):  (19.81, 30.55),   # n=1405 (884 two-set / 515 three-set)
+    ("ATP", "chall"): (18.86, 30.25),   # n= 399 (253 / 145)
+    ("WTA", "main"):  (18.22, 28.53),   # n=1222 (774 / 434)
+    ("WTA", "chall"): (18.47, 28.53),   # n= 155 ( 96 /  58) — thinnest segment
+}
+
+
+def _match_level(player_stats: dict, opponent_stats: dict) -> str:
+    """"main" or "chall" for the total->p3 mapping, from the two players' mean
+    competition tier (_comp_tier_mean, injected in main.py — NOT the
+    competition_level key, which feeds a separate dormant SoS term).
+    2.5 is the same main/challenger boundary constants.py uses.
+    Averaging both sides describes the MATCH rather than either player; missing
+    data returns "main", the larger and better-fitted segment."""
+    lv = [s.get("_comp_tier_mean") for s in (player_stats or {}, opponent_stats or {})
+          if isinstance((s or {}).get("_comp_tier_mean"), (int, float))]
+    if not lv:
+        return "main"
+    return "main" if (sum(lv) / len(lv)) >= 2.5 else "chall"
+
+
+def p3_from_match_total(games_combined, tour="ATP", level="main"):
+    """Unconditional P(3 sets) implied by a projected match total. None when the
+    total is missing or the segment is unfitted, so callers degrade to the
+    gap-and-hold construction rather than to a guess."""
+    if not isinstance(games_combined, (int, float)) or games_combined <= 0:
+        return None
+    m2, m3 = _P3_MATCH_TOTALS.get((tour, level), (None, None))
+    if m2 is None or m3 <= m2:
+        return None
+    return max(0.0, min(1.0, (games_combined - m2) / (m3 - m2)))
+
+
+def _scenario_p3(p_sel, fit, mean_hold=None, tour="ATP",
+                 games_combined=None, level="main"):
     """Shared 3-set-probability construction for ALL scenario mixtures (PTGW/FS/BP).
     Returns (p3_win, p3_lose) = P(match reaches a decider | win / | lose). p3 falls
     as the win-prob gap grows; when `mean_hold` is supplied it is lifted for low-
     breakability matches (both hold → long tiebreak sets → more deciders) and trimmed
-    for high-breakability ones. Both stay inside the [p3_min, p3_max] clamp."""
+    for high-breakability ones. Both stay inside the [p3_min, p3_max] clamp.
+
+    When `games_combined` is supplied the projected match LENGTH sets the overall
+    LEVEL of p3 (see _P3_MATCH_TOTALS), while the gap/hold construction above keeps
+    its SHAPE — the win-vs-lose split. Both legs are rescaled by a single factor so
+    their probability-weighted mean equals the total-implied p3, which leaves the
+    ratio between them untouched. Omitting it preserves the pre-2026-08-06
+    behaviour exactly, so this is opt-in per caller."""
     gap = p_sel - 0.5
     p3_win = fit["p3_win"] - _PTGW_GAP_K * gap
     p3_lose = fit["p3_lose"] + _PTGW_GAP_K * gap
@@ -1855,6 +1920,16 @@ def _scenario_p3(p_sel, fit, mean_hold=None, tour="ATP"):
         adj = max(-_P3_HOLD_ADJ_MAX, min(_P3_HOLD_ADJ_MAX, _P3_HOLD_K * dom))
         p3_win += adj
         p3_lose += adj
+
+    _p3_total = p3_from_match_total(games_combined, tour, level)
+    if _p3_total is not None:
+        # Weighted mean of the two legs is the unconditional P(3 sets).
+        _implied = p_sel * p3_win + (1.0 - p_sel) * p3_lose
+        if _implied > 1e-6:
+            _k = _p3_total / _implied
+            p3_win *= _k
+            p3_lose *= _k
+
     p3_win = max(_PTGW_P3_MIN, min(_PTGW_P3_MAX, p3_win))
     p3_lose = max(_PTGW_P3_MIN, min(_PTGW_P3_MAX, p3_lose))
     return p3_win, p3_lose
@@ -1892,7 +1967,7 @@ def _ptgw_base_pop(tour="ATP", is_bo5=False) -> float:
 
 
 def ptgw_scenario_mixture(p_sel, prop_line, tour="ATP", match_format="best_of_3",
-                          mean_hold=None, games_combined=None):
+                          mean_hold=None, games_combined=None, level="main"):
     """Return the PTGW scenario mixture for the SELECTED player.
 
     p_sel           the selected player's match-win probability (0-1)
@@ -1914,7 +1989,11 @@ def ptgw_scenario_mixture(p_sel, prop_line, tour="ATP", match_format="best_of_3"
     p_sel = max(0.02, min(0.98, float(p_sel)))
     is_bo5 = match_format == "best_of_5"
     fit = _PTGW_SCEN_BO5 if is_bo5 else _PTGW_SCEN_FIT.get(tour, _PTGW_SCEN_FIT["ATP"])
-    p3_win, p3_lose = _scenario_p3(p_sel, fit, mean_hold=mean_hold, tour=tour)
+    # BO5 has no fitted total->p3 mapping (the GS sample is far too thin), so the
+    # coupling is BO3-only; games_combined=None there keeps the old construction.
+    p3_win, p3_lose = _scenario_p3(
+        p_sel, fit, mean_hold=mean_hold, tour=tour,
+        games_combined=(None if is_bo5 else games_combined), level=level)
 
     # Scenario probabilities from the selected player's perspective.
     p = {
@@ -2067,7 +2146,7 @@ def _mixture_median(p_over_at, lo, hi, iters=30):
 
 
 def ptgw_fair_line(p_sel, tour="ATP", match_format="best_of_3", mean_hold=None,
-                   games_combined=None):
+                   games_combined=None, level="main"):
     """Median (fair line) of the PTGW scenario mixture — the displayed projection.
 
     games_combined must be threaded through: it is what rescales the scenario
@@ -2077,7 +2156,8 @@ def ptgw_fair_line(p_sel, tour="ATP", match_format="best_of_3", mean_hold=None,
     return _mixture_median(
         lambda x: ptgw_scenario_mixture(p_sel, x, tour, match_format,
                                         mean_hold=mean_hold,
-                                        games_combined=games_combined)["p_over"],
+                                        games_combined=games_combined,
+                                        level=level)["p_over"],
         0.0, 30.0)
 
 
@@ -2566,16 +2646,23 @@ def project_player_games_won(
     _pg_mean_hold = (((_pg_hp + _pg_ho) / 2.0) / 100.0
                      if isinstance(_pg_hp, (int, float)) and isinstance(_pg_ho, (int, float))
                      else None)
+    # Tour LEVEL for the total->p3 mapping. competition_level is each player's mean
+    # comp_tier across their record; >= 2.5 is main tour, below that challenger
+    # (src/constants.py::tier_proxy_rank uses the same boundary). Averaging the two
+    # sides describes the MATCH, not either player. Missing data -> "main", the
+    # larger and better-fitted segment.
+    _pg_lvl = _match_level(player_stats, opponent_stats)
     if isinstance(prop_line, (int, float)) and prop_line > 0:
         mix = ptgw_scenario_mixture(p_sel, prop_line, tour=tour, match_format=match_format,
                                     mean_hold=_pg_mean_hold,
-                                    games_combined=games_combined)
+                                    games_combined=games_combined, level=_pg_lvl)
         # DISPLAYED projection = the MEDIAN (fair line), not the mean: PTGW is
         # bimodal, so the mean sits in the valley between the win and loss bands.
         # The median is a real 50/50 value. The mean is retained as ptgw_mixture_mean.
         fair_line = max(4.5, ptgw_fair_line(p_sel, tour=tour, match_format=match_format,
                                             mean_hold=_pg_mean_hold,
-                                            games_combined=games_combined))
+                                            games_combined=games_combined,
+                                            level=_pg_lvl))
         projection = fair_line
         _trace(trace, "PTGW_scenario_mixture",
                {"line": prop_line,
