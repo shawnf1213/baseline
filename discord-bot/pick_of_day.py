@@ -1075,6 +1075,37 @@ async def _rank_board(props: list = None):
         _selected.append(best)
     ordered = sorted(_selected, key=_rank_key, reverse=True)
 
+    # ── Per-MATCH dedupe (2026-08-05, user) ──────────────────────────────────
+    # The pass above is per-PLAYER, so it cannot see that two survivors are the
+    # two sides of ONE match — Bouzkova OVER 4.5 BPS (84) and Townsend OVER 4.5
+    # BPS (76) both reached the 8/5 board off the same fixture. That is one match
+    # represented twice, and for the mirrored props (BP saved/won, total games)
+    # the two sides are close to the same bet stated from opposite ends.
+    #
+    # ONE play per match, keeping the highest-ranked. `ordered` is already
+    # rank-sorted, so the first sighting of a match key is the best of it.
+    # The key is the UNORDERED pair, so it matches whichever side is listed
+    # first. Any pick missing an opponent falls back to its own name and is
+    # therefore never merged with another player.
+    _seen_match: dict = {}
+    _match_kept: list = []
+    for pk in ordered:
+        _p, _o = _norm(pk.get("player") or ""), _norm(pk.get("opponent") or "")
+        _key = tuple(sorted((_p, _o))) if _o else (_p,)
+        _prev = _seen_match.get(_key)
+        if _prev is None:
+            _seen_match[_key] = pk
+            _match_kept.append(pk)
+            continue
+        log.info("POD_DEDUPE_MATCH | %s vs %s — dropped %s %s(%.0f), kept %s %s(%.0f)",
+                 (pk.get("player") or "")[:20], (pk.get("opponent") or "")[:20],
+                 pk.get("player"), pk.get("prop_type"), pk.get("confidence") or 0,
+                 _prev.get("player"), _prev.get("prop_type"), _prev.get("confidence") or 0)
+    if len(_match_kept) != len(ordered):
+        log.info("POD_DEDUPE_MATCH | %d plays -> %d after one-per-match",
+                 len(ordered), len(_match_kept))
+    ordered = _match_kept
+
     # ── Part 3 slate-correlation guard (only meaningful once PTGW_ENABLED) ────
     # Cap PTGW at PTGW_MAX_PER_BOARD (keep the highest-ranked), and flag when the
     # surviving PTGW picks all imply the same match direction (e.g. all "favourite
