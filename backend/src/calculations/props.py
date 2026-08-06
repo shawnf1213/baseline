@@ -1847,11 +1847,16 @@ _P3_HOLD_ADJ_MAX = 0.12                     # bound on the breakability shift
 # favourite projected for a 17-game blowout carried the SAME decider probability
 # as an even matchup projected for 25.
 #
-# The physical partition (enumerating every legal set score — 6-0/6-1/6-2/6-3/
-# 6-4/7-5/7-6, i.e. 6,7,8,9,10,12,13 games):
-#     12-17 games  straight sets ONLY  (a 3-setter needs 6-0 0-6 6-0 = 18 minimum)
-#     18-26 games  either possible
-#     27+   games  three sets ONLY     (2 sets cannot exceed 7-6 7-6 = 26)
+# The physical partition for COMPLETED matches (enumerating every legal set score
+# — 6-0/6-1/6-2/6-3/6-4/7-5/7-6, i.e. 6,7,8,9,10,12,13 games):
+#     12-17 games  straight sets    (a completed 3-setter needs 6-0 0-6 6-0 = 18;
+#                                    the decider still has to be played and won)
+#     18-26 games  either possible  (18 is 6-4 6-2 as readily as a short 3-setter)
+#     27+   games  three sets ONLY  (2 sets cannot exceed 7-6 7-6 = 26)
+# NOT an absolute floor: a RETIREMENT ends a decider early and can land a 3-set
+# match under 18. Measured at 1 of 379 three-setters (0.3%) — e.g. 6-2 1-6 0-2 ret.
+# Rare enough to leave to the fit rather than special-case, and retirements are
+# voided by the resolver anyway.
 #
 # Measured on 3,347 deduped real BO3 matches (Grand Slams excluded), P(3 sets) by
 # realized total is far sharper than that partition alone implies: 0.4% at 0-17,
