@@ -54,6 +54,18 @@ export default function MobileShell() {
 
   useEffect(() => { load() }, [load])
 
+  // Open at the TOP. Browsers restore the previous scroll offset on reload, and
+  // in an installed PWA that persists across launches — so the app could open
+  // part-way down its own header and look like content was missing above.
+  useEffect(() => {
+    if ('scrollRestoration' in window.history) window.history.scrollRestoration = 'manual'
+    window.scrollTo(0, 0)
+  }, [])
+
+  // Switching tabs should also start at the top rather than inherit the last
+  // tab's offset — a long Boards scroll otherwise carries into a short Picks list.
+  useEffect(() => { window.scrollTo(0, 0) }, [tab])
+
   const onOpenPlayer = useCallback((p) => {
     setOpenPlayer(p)
     window.scrollTo(0, 0)

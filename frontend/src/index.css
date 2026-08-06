@@ -46,6 +46,17 @@
 
 html {
   background: var(--bg-core);
+
+  /* Mobile Safari and Chrome apply "text inflation": they scale text UP beyond
+     the authored size when they judge a block too small for the viewport. The
+     mobile shell sizes everything in fixed px, so inflation made the whole app
+     render larger than designed — it read as being permanently zoomed in, and
+     it is invisible in a desktop browser at a phone viewport because inflation
+     only runs on real mobile engines. 100% means "render text at the size I
+     asked for"; it does NOT disable the user's own pinch-zoom or their OS
+     accessibility text settings. */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
 }
 
 body {
