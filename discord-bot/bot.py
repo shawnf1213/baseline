@@ -2686,6 +2686,15 @@ async def _todays_posted_keys() -> set:
 UNDERDOG_HOUR = int(os.getenv("UNDERDOG_HOUR", "22") or "22")     # 10:30 PM ET
 UNDERDOG_MINUTE = int(os.getenv("UNDERDOG_MINUTE", "30") or "30")
 
+# Underdog pre-warm — 10:15 PM ET, 15 minutes before its board (2026-08-05, user).
+# The 9:30 PM daily_cache_prewarm walks the PRIZEPICKS board only, so the Underdog
+# board was the one scan that always ran cold: its own prop mix (Break Points
+# Saved especially) and any player PrizePicks doesn't list were uncached, so
+# generation took the full walk and the post straggled well past 10:30 instead of
+# landing with the main drop. This warms the same board it is about to build.
+UNDERDOG_PREWARM_HOUR = int(os.getenv("UNDERDOG_PREWARM_HOUR", "22") or "22")
+UNDERDOG_PREWARM_MINUTE = int(os.getenv("UNDERDOG_PREWARM_MINUTE", "15") or "15")
+
 
 async def _post_underdog_board(channel, track: bool = True) -> str:
     """Scan Underdog's board and post it. Never raises."""
@@ -2740,6 +2749,38 @@ async def _post_underdog_board(channel, track: bool = True) -> str:
     if track:
         await _log_picks_pending(ranked, group="underdog")
     return "posted %d underdog plays%s" % (len(ranked), " (with ⭐)" if has_star else "")
+
+
+@tasks.loop(time=[datetime.time(hour=UNDERDOG_PREWARM_HOUR,
+                                minute=UNDERDOG_PREWARM_MINUTE, tzinfo=POD_TZINFO)])
+async def underdog_cache_prewarm():
+    """Walk the Underdog board 15 minutes before it generates and THROW THE
+    RESULT AWAY — the only product is a warm player-stats cache, exactly like
+    daily_cache_prewarm does for PrizePicks.
+
+    Posts nothing, logs nothing to the record, and never raises: a failed
+    pre-warm degrades to 'the 10:30 generation runs cold', which is simply the
+    behaviour before this existed."""
+    try:
+        t0 = time.time()
+        props = await asyncio.to_thread(underdog.to_board_props)
+        if not props:
+            log.info("UD_PREWARM | no straight two-way props on the board — nothing to warm")
+            return
+        ordered, _thin = await pick_of_day._rank_board(props=props)
+        log.info("UD_PREWARM | board walked in %.1f min | %d props scanned, %d qualifying "
+                 "(DISCARDED — this run exists only to warm the caches so the "
+                 "%02d:%02d Underdog generation computes warm)",
+                 (time.time() - t0) / 60.0, len(props), len(ordered or []),
+                 UNDERDOG_HOUR, UNDERDOG_MINUTE)
+    except Exception:  # noqa: BLE001
+        log.exception("UD_PREWARM failed — the Underdog board will run cold "
+                      "(no worse than before the pre-warm existed)")
+
+
+@underdog_cache_prewarm.before_loop
+async def _before_underdog_prewarm():
+    await client.wait_until_ready()
 
 
 @tasks.loop(time=[datetime.time(hour=UNDERDOG_HOUR, minute=UNDERDOG_MINUTE,
@@ -4366,6 +4407,16 @@ async def on_ready():
                      UNDERDOG_HOUR, UNDERDOG_MINUTE, POD_TZINFO, POD_CHANNEL_ID)
         except Exception:
             log.exception("failed to start underdog board loop")
+    # Underdog pre-warm — 15 min before the Underdog board. Started separately
+    # from the board itself so a pre-warm failure can never stop the board.
+    if POD_CHANNEL_ID and not underdog_cache_prewarm.is_running():
+        try:
+            underdog_cache_prewarm.start()
+            log.info("Underdog pre-warm scheduled at %02d:%02d %s (board at %02d:%02d)",
+                     UNDERDOG_PREWARM_HOUR, UNDERDOG_PREWARM_MINUTE, POD_TZINFO,
+                     UNDERDOG_HOUR, UNDERDOG_MINUTE)
+        except Exception:
+            log.exception("failed to start underdog pre-warm loop")
     # Cache pre-warm — 30 min before generation. Started SEPARATELY from the POTD
     # trigger so a pre-warm failure can never stop the picks from being posted.
     if not daily_cache_prewarm.is_running():
