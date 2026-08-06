@@ -1871,14 +1871,43 @@ def _norm_sf(x, mu, sd):
 _SQRT2 = 2.0 ** 0.5
 
 
+_PTGW_SCALE_LO, _PTGW_SCALE_HI = 0.70, 1.30   # sanity clamp on the match-length scale
+
+
+def _ptgw_base_pop(tour="ATP", is_bo5=False) -> float:
+    """Population-average MATCH total (both players' games) implied by the fit.
+
+    Computed from the buckets themselves at a neutral p_sel=0.5 rather than
+    hardcoded — a hardcoded constant that drifts from its own fit is exactly the
+    defect that made _BP_BASE_POP scale every break projection down by 11%.
+    At p_sel=0.5 the two sides are symmetric, so the match total is 2x the
+    per-player mean.
+    """
+    fit = _PTGW_SCEN_BO5 if is_bo5 else _PTGW_SCEN_FIT.get(tour, _PTGW_SCEN_FIT["ATP"])
+    p3w, p3l = _scenario_p3(0.5, fit, tour=tour)
+    p = {"S1": 0.5 * (1.0 - p3w), "S2": 0.5 * p3w,
+         "S3": 0.5 * p3l,          "S4": 0.5 * (1.0 - p3l)}
+    per_player = sum(p[s] * fit["scen"][s][0] for s in p)
+    return 2.0 * per_player
+
+
 def ptgw_scenario_mixture(p_sel, prop_line, tour="ATP", match_format="best_of_3",
-                          mean_hold=None):
+                          mean_hold=None, games_combined=None):
     """Return the PTGW scenario mixture for the SELECTED player.
 
-    p_sel      the selected player's match-win probability (0-1)
-    prop_line  the PTGW line (e.g. 11.5)
-    mean_hold  average service-hold fraction of the two players (breakability, shared
-               3-set overlay — see _scenario_p3). None -> gap-only.
+    p_sel           the selected player's match-win probability (0-1)
+    prop_line       the PTGW line (e.g. 11.5)
+    mean_hold       average service-hold fraction of the two players (breakability,
+                    shared 3-set overlay — see _scenario_p3). None -> gap-only.
+    games_combined  THIS match's projected total games. The scenario means are
+                    fitted across all matches, so without rescaling they describe
+                    an average-length match no matter how long this one projects —
+                    and the two sides of one match then fail to sum to its total.
+                    Sabalenka/Zhang 2026-08-06: chain split 11.62 + 5.28 = 16.90,
+                    but the unscaled mixture reported 12.4 + 7.8 = 20.2, implying
+                    Sabalenka won only 9.3 games in a match she was 88% to WIN —
+                    fewer than the 12 a straight-sets win requires. None keeps the
+                    old unscaled behaviour.
     Returns dict: p_over, mixture_mean, scenario probabilities, and the per-scenario
     contribution to P(over) — everything the confidence step and trace need.
     """
@@ -1902,18 +1931,39 @@ def ptgw_scenario_mixture(p_sel, prop_line, tour="ATP", match_format="best_of_3"
     # never be less than P(win). The normal tail would wrongly shave it to ~0.87;
     # this enforces the physics instead.
     winner_floor = 18 if is_bo5 else 12
+
+    # MATCH-LENGTH SCALE. The buckets are fitted across all matches; this match
+    # may be much shorter (a lopsided favourite) or longer. Rescale the means to
+    # THIS match's projected total so both sides sum to it, exactly as
+    # bp_scenario_mixture rescales by base_proj/base_pop.
+    base_pop = _ptgw_base_pop(tour, is_bo5)
+    if isinstance(games_combined, (int, float)) and games_combined > 0 and base_pop > 0:
+        scale = max(_PTGW_SCALE_LO, min(_PTGW_SCALE_HI, games_combined / base_pop))
+    else:
+        scale = 1.0
+
     p_over = 0.0
     mix_mean = 0.0
     contrib = {}
+    scaled_mu = {}
     for s in ("S1", "S2", "S3", "S4"):
         mu, sd = scen[s]
+        mu_s, sd_s = mu * scale, sd * scale
+        # PHYSICS OVERRIDES THE SCALE for the two WIN scenarios: a match winner
+        # cannot take fewer than (sets-to-win x 6) games however short the match
+        # projects, so scaling their mean below the floor would describe an
+        # impossible result. The loser's games carry the length variation, which
+        # is where it actually lives.
+        if s in ("S1", "S2"):
+            mu_s = max(mu_s, float(winner_floor))
         if s in ("S1", "S2") and prop_line < winner_floor:
             po_s = 1.0                       # winner always clears a sub-floor line
         else:
-            po_s = _norm_sf(prop_line, mu, sd)   # P(games > line | scenario)
+            po_s = _norm_sf(prop_line, mu_s, sd_s)   # P(games > line | scenario)
+        scaled_mu[s] = round(mu_s, 2)
         contrib[s] = round(p[s] * po_s, 4)
         p_over += p[s] * po_s
-        mix_mean += p[s] * mu
+        mix_mean += p[s] * mu_s
     p_over = max(0.0, min(1.0, p_over))
     return {
         "p_over": p_over,
@@ -1921,6 +1971,9 @@ def ptgw_scenario_mixture(p_sel, prop_line, tour="ATP", match_format="best_of_3"
         "mixture_mean": mix_mean,
         "scenario_probs": {k: round(v, 4) for k, v in p.items()},
         "over_contrib": contrib,
+        "scaled_scenario_means": scaled_mu,
+        "base_scale": round(scale, 3),
+        "base_pop_total": round(base_pop, 2),
         "p3_win": round(p3_win, 3),
         "p3_lose": round(p3_lose, 3),
         "p_win_match": round(p_sel, 4),
@@ -2013,11 +2066,18 @@ def _mixture_median(p_over_at, lo, hi, iters=30):
     return round(0.5 * (lo + hi), 1)
 
 
-def ptgw_fair_line(p_sel, tour="ATP", match_format="best_of_3", mean_hold=None):
-    """Median (fair line) of the PTGW scenario mixture — the displayed projection."""
+def ptgw_fair_line(p_sel, tour="ATP", match_format="best_of_3", mean_hold=None,
+                   games_combined=None):
+    """Median (fair line) of the PTGW scenario mixture — the displayed projection.
+
+    games_combined must be threaded through: it is what rescales the scenario
+    means to this match's length. Omitting it silently returns the average-match
+    median, which is how the two sides of one match came to sum to more games
+    than the match itself."""
     return _mixture_median(
         lambda x: ptgw_scenario_mixture(p_sel, x, tour, match_format,
-                                        mean_hold=mean_hold)["p_over"],
+                                        mean_hold=mean_hold,
+                                        games_combined=games_combined)["p_over"],
         0.0, 30.0)
 
 
@@ -2508,12 +2568,14 @@ def project_player_games_won(
                      else None)
     if isinstance(prop_line, (int, float)) and prop_line > 0:
         mix = ptgw_scenario_mixture(p_sel, prop_line, tour=tour, match_format=match_format,
-                                    mean_hold=_pg_mean_hold)
+                                    mean_hold=_pg_mean_hold,
+                                    games_combined=games_combined)
         # DISPLAYED projection = the MEDIAN (fair line), not the mean: PTGW is
         # bimodal, so the mean sits in the valley between the win and loss bands.
         # The median is a real 50/50 value. The mean is retained as ptgw_mixture_mean.
         fair_line = max(4.5, ptgw_fair_line(p_sel, tour=tour, match_format=match_format,
-                                            mean_hold=_pg_mean_hold))
+                                            mean_hold=_pg_mean_hold,
+                                            games_combined=games_combined))
         projection = fair_line
         _trace(trace, "PTGW_scenario_mixture",
                {"line": prop_line,
