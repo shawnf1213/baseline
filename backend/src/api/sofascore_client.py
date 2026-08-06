@@ -1325,6 +1325,16 @@ def _fetch_event_page(player_id: int, page: int) -> list:
 
 
 MAX_PAGES_DEFAULT = 50    # fetch up to 50 pages (~500 events) — covers full career history
+
+# How many of a player's most recent matches get their STATISTICS fetched.
+# Raised 50 -> 100 on 2026-08-05. At 50 this silently truncated every per-surface
+# rate: stats are fetched newest-first across ALL surfaces, so a heavy schedule
+# burned the budget before covering a year. Measured then: Zverev had stats for
+# 8 of 52 hard matches in the trailing 52 weeks, Sinner 13 of 60, Báez 10 of 27 —
+# a 39% mean missing rate. "Career on surface" was really "whatever slice of the
+# last 50 matches landed on that surface". Per-event statistics are IMMUTABLE and
+# durably cached, so the extra calls are a one-time cost per player, not per scan.
+STATS_EVENT_CAP = 100
 # H2H prop projections fetch the FULL career (2026-07-28, user): old meetings (5+
 # years back) were being dropped by the shallow caps, so a real matchup signal (e.g.
 # Kalinskaya double-faults ~5 vs Kasatkina) never reached the projection. The batched
@@ -2075,19 +2085,20 @@ def get_player_stats_by_surface(player_id, tour: str = "ATP", force_fresh: bool 
             surf_detected,
         )
 
-    # DETERMINISTIC SELECTION — sort newest-first BEFORE the [:50] cap so the 50
-    # events we attempt are a pure function of the player's match history, not of
-    # the order the paginated API happened to return them in. Without this, two
-    # runs can attempt two different 50-event subsets of the same history and
-    # legitimately produce different stat-rich counts. Ties break on event id so
-    # the order is total (same-timestamp events can't reshuffle between runs).
+    # DETERMINISTIC SELECTION — sort newest-first BEFORE the cap so the events we
+    # attempt are a pure function of the player's match history, not of the order
+    # the paginated API happened to return them in. Without this, two runs can
+    # attempt two different subsets of the same history and legitimately produce
+    # different stat-rich counts. Ties break on event id so the order is total
+    # (same-timestamp events can't reshuffle between runs).
     valid.sort(key=lambda e: ((e.get("startTimestamp") or 0), (e.get("id") or 0)),
                reverse=True)
     logger.info("[STATS_FLOW] VALID_EVENTS | valid=%d (finished singles, sorted "
-                "newest-first before the %d-event stats cap)", len(valid), 50)
+                "newest-first before the %d-event stats cap)", len(valid),
+                STATS_EVENT_CAP)
 
-    # Fetch stats for the most recent 50 matches in parallel
-    event_ids = [e.get("id", 0) for e in valid[:50]]
+    # Fetch stats for the most recent STATS_EVENT_CAP matches in parallel
+    event_ids = [e.get("id", 0) for e in valid[:STATS_EVENT_CAP]]
     stats_map = _fetch_stats_parallel(event_ids)
     events_with_stats = sum(1 for eid in event_ids if stats_map.get(eid, {}).get("statistics"))
     logger.info("[STATS_FLOW] STATS_FETCHED | requested=%d got_statistics=%d", len(event_ids), events_with_stats)
