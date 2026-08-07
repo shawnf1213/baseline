@@ -2878,6 +2878,22 @@ MLB_TEST_RUN = os.getenv("MLB_TEST_RUN", "").strip().lower() in (
     "1", "true", "yes", "on")
 MLB_TEST_VALUE = float(os.getenv("MLB_TEST_VALUE", "1") or 1)
 
+# MLB_PURGE_SLATE=YYYY-MM-DD deletes every stored MLB row for that slate, ONCE at
+# startup. It exists to clear fabricated test data before it can pollute a real
+# record. Targets an explicit date rather than guessing which rows look fake —
+# a heuristic would eventually delete a real pick. Unset it after use.
+MLB_PURGE_SLATE = (os.getenv("MLB_PURGE_SLATE", "") or "").strip()
+
+
+async def _mlb_purge_once():
+    """Runs once at startup when MLB_PURGE_SLATE is set. Never raises."""
+    try:
+        mlb_store = _mlb_import("mlb.store")
+        n = await asyncio.to_thread(mlb_store.purge_slate, MLB_PURGE_SLATE)
+        log.warning("MLB PURGE: removed %d row(s) for slate %s", n, MLB_PURGE_SLATE)
+    except Exception:  # noqa: BLE001
+        log.exception("MLB purge failed (tennis unaffected)")
+
 
 async def _mlb_one_shot_test():
     """Runs once at startup when MLB_TEST_RUN is set. Never raises."""
@@ -4609,6 +4625,13 @@ async def on_ready():
                 log.warning("MLB resolve/recap every %dh", MLB_RESOLVE_EVERY_HOURS)
         except Exception:
             log.exception("failed to start MLB resolve loop (tennis unaffected)")
+        try:
+            if MLB_PURGE_SLATE:
+                asyncio.create_task(_mlb_purge_once())
+                log.warning("MLB_PURGE_SLATE=%s — one-shot purge scheduled",
+                            MLB_PURGE_SLATE)
+        except Exception:
+            log.exception("failed to schedule MLB purge (tennis unaffected)")
         try:
             if MLB_TEST_RUN:
                 # asyncio.create_task, NOT client.loop.create_task: in discord.py

@@ -258,5 +258,34 @@ def record(book: str, since_days: int = None) -> dict:
         return {}
 
 
+def purge_slate(slate_date: str, book: str = None) -> int:
+    """Delete every stored row for one slate. Returns rows removed.
+
+    Exists to clear fabricated test data (see recap.force_resolve_all) before it
+    can pollute a real record. Deliberately targets an EXPLICIT slate_date rather
+    than "anything that looks like a test": a rule that guesses which rows are
+    fake would eventually delete a real one.
+    """
+    if not _init():
+        return 0
+    try:
+        s = _Session()
+        try:
+            q = s.query(_MlbPick).filter_by(slate_date=slate_date)
+            if book:
+                q = q.filter_by(book=book)
+            n = q.count()
+            q.delete(synchronize_session=False)
+            s.commit()
+            log.warning("mlb store: PURGED %d row(s) for slate %s%s",
+                        n, slate_date, f" (book={book})" if book else "")
+            return n
+        finally:
+            s.close()
+    except Exception as exc:  # noqa: BLE001
+        log.exception("mlb store purge_slate failed: %s", exc)
+        return 0
+
+
 def _to_dict(r) -> dict:
     return {c.name: getattr(r, c.name) for c in r.__table__.columns}
