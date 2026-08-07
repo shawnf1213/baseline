@@ -75,6 +75,52 @@ def scan_board(date: str = None, line_map: dict = None) -> list:
         return []
 
 
+def run_daily(book: str, date: str = None, shadow: bool = True,
+              post_it: bool = True) -> dict:
+    """Full daily cycle for ONE book: scan -> attach that book's lines -> post ->
+    persist.
+
+    Persisting is what makes a recap possible: without a stored board there is
+    nothing to grade and nothing to summarise. Rows land in mlb_picks, never the
+    tennis `picks` table, and only plays that matched a real line are stored —
+    a projection with no market has nothing to be graded against.
+
+    Books run independently. One book failing does not stop the other, and
+    neither can reach tennis. Never raises.
+    """
+    from . import lines as _lines, post as _post, store as _store, recap as _recap
+    out = {"book": book, "projections": 0, "priced": 0,
+           "posted": False, "stored": 0}
+    try:
+        rows = scan_board(date)
+        out["projections"] = len(rows)
+        rows = _lines.attach(rows, _lines.fetch_lines(book), book=book)
+        rows.sort(key=lambda r: -((r.get("p_over") if r.get("lean") == "OVER"
+                                   else r.get("p_under")) or 0))
+        out["priced"] = sum(1 for r in rows if r.get("line") is not None)
+
+        slate = date or _recap.et_today()
+        label = f"{int(slate[5:7])}/{int(slate[8:10])}"
+        potd = _post.select_potd(rows)
+
+        if post_it:
+            res = _post.post_board(rows, label, book=book, shadow=shadow)
+            out["posted"] = bool(res.get("ok"))
+            out["post_reason"] = res.get("reason")
+            # Log ONLY after a successful send, the same rule the tennis board
+            # follows: an unposted play is not a play.
+            if not out["posted"]:
+                return out
+        out["stored"] = _store.log_board(
+            rows, book, slate,
+            potd_key=(potd or {}).get("pitcher"), shadow=shadow)
+        return out
+    except Exception as exc:  # noqa: BLE001
+        log.exception("mlb run_daily (%s) failed: %s", book, exc)
+        out["error"] = str(exc)[:200]
+        return out
+
+
 def project(subject_id, opponent_id, prop: str = "strikeouts", line=None) -> dict:
     """Single projection by prop name. {} for an unsupported prop or any failure."""
     try:

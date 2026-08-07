@@ -160,7 +160,8 @@ def build_board_embed(rows: list, date_label: str, book: str = "underdog",
         body = "\n\n".join(f"**{i}.** {_fmt_line(r)}"
                            for i, r in enumerate(rows, start_rank))
     else:
-        body = "_No qualifying starters — every probable was below the sample floor._"
+        body = ("_No priced plays — no starter on this slate matched a "
+                "straight two-way line on this book._")
     if shadow:
         body = ("⚠️ **SHADOW — not a released board.** Projections only, "
                 "nothing logged to the record.\n\n" + body)
@@ -176,7 +177,14 @@ def build_board_embed(rows: list, date_label: str, book: str = "underdog",
 def build_embeds(rows: list, date_label: str, book: str,
                  shadow: bool = True) -> list:
     """POTD first when one qualifies, then the rest of the board — the same shape
-    the tennis boards post in."""
+    the tennis boards post in.
+
+    PRICED PLAYS ONLY. A projection with no book line is not actionable: there is
+    nothing to be over or under, nothing to grade, and nothing to store. Showing
+    them padded the board with "no line" rows that occupied slots a real play
+    could have used. They are filtered here so no display path can reach them.
+    """
+    rows = [r for r in rows if r.get("line") is not None]
     potd = select_potd(rows)
     if not potd:
         return [build_board_embed(rows, date_label, book=book, shadow=shadow)]
