@@ -2875,6 +2875,28 @@ async def _mlb_one_shot_test():
                 log.warning("MLB TEST recap (%s): %s", book, rec)
             except Exception:  # noqa: BLE001
                 log.exception("MLB TEST failed for %s", book)
+        # Report the outcome INTO the recap channel. Without this a store failure
+        # is only visible in Railway logs, and "nothing posted" is indistinguish-
+        # able from "never ran".
+        try:
+            mlb_store = _mlb_import("mlb.store")
+            mlb_post = _mlb_import("mlb.post")
+            import requests as _rq
+            status = ("store CONNECTED" if mlb_store.available()
+                      else "store UNAVAILABLE (MLB_DATABASE_URL not resolving)")
+            for book in ("prizepicks", "underdog"):
+                cid = mlb_post.channel_for(book, "recap")
+                if not cid:
+                    continue
+                _rq.post(
+                    f"https://discord.com/api/v10/channels/{cid}/messages",
+                    headers={"Authorization":
+                             f"Bot {os.getenv('DISCORD_BOT_TOKEN','')}",
+                             "Content-Type": "application/json"},
+                    json={"content": f"🔧 MLB test diagnostic — {status}",
+                          "allowed_mentions": {"parse": []}}, timeout=20)
+        except Exception:  # noqa: BLE001
+            log.exception("MLB TEST diagnostic post failed")
     except Exception:  # noqa: BLE001
         log.exception("MLB TEST run failed entirely (tennis unaffected)")
 
@@ -4548,19 +4570,34 @@ async def on_ready():
     # MLB — separate sport, separate channels, separate database. Wrapped so a
     # failure to start MLB can never prevent a tennis loop from starting.
     if MLB_TASKS_ENABLED:
+        log.warning("MLB startup: tasks enabled, test_run=%s", MLB_TEST_RUN)
+        # Each start gets its OWN boundary. Previously one try wrapped all three,
+        # so a failure in the first .start() aborted the block and the test run
+        # never fired — a silent skip that looked identical to "not configured".
         try:
             if not mlb_daily_boards.is_running():
                 mlb_daily_boards.start()
-                log.info("MLB boards scheduled at %02d:%02d %s",
-                         MLB_BOARD_HOUR, MLB_BOARD_MINUTE, POD_TZINFO)
+                log.warning("MLB boards scheduled at %02d:%02d %s",
+                            MLB_BOARD_HOUR, MLB_BOARD_MINUTE, POD_TZINFO)
+        except Exception:
+            log.exception("failed to start MLB board loop (tennis unaffected)")
+        try:
             if not mlb_resolve_and_recap.is_running():
                 mlb_resolve_and_recap.start()
-                log.info("MLB resolve/recap every %dh", MLB_RESOLVE_EVERY_HOURS)
+                log.warning("MLB resolve/recap every %dh", MLB_RESOLVE_EVERY_HOURS)
+        except Exception:
+            log.exception("failed to start MLB resolve loop (tennis unaffected)")
+        try:
             if MLB_TEST_RUN:
-                client.loop.create_task(_mlb_one_shot_test())
+                # asyncio.create_task, NOT client.loop.create_task: in discord.py
+                # 2.x Client.loop can be the MISSING sentinel and attribute access
+                # on it raises — which the old single boundary swallowed.
+                asyncio.create_task(_mlb_one_shot_test())
                 log.warning("MLB_TEST_RUN set — one-shot test scheduled")
         except Exception:
-            log.exception("failed to start MLB loops (tennis unaffected)")
+            log.exception("failed to schedule MLB test run (tennis unaffected)")
+    else:
+        log.warning("MLB startup: MLB_TASKS_ENABLED is FALSE — no MLB tasks")
     # Cache pre-warm — 30 min before generation. Started SEPARATELY from the POTD
     # trigger so a pre-warm failure can never stop the picks from being posted.
     if not daily_cache_prewarm.is_running():
