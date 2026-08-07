@@ -58,6 +58,7 @@ import math
 import datetime as _dt
 
 from . import client
+from core import odds as _odds
 
 log = logging.getLogger("baseline.mlb.strikeouts")
 
@@ -79,12 +80,24 @@ LEAGUE_BF_PER_START = 23.73       # was 22.7 from a single slate — undercounte
 LEAGUE_K_RATE = 0.2348            # K per batter faced, pitching side
 LEAGUE_TEAM_K_RATE = 0.221        # K per plate appearance, batting side
 
-# How hard the opponent's contact profile moves the projection. 1.0 = fully
-# proportional (a team that strikes out 10% more relative to league lifts the
-# projection 10%). Held at 1.0 until there is a fitted value — an invented
-# damping constant is exactly the kind of unfitted number that put _BP_BASE_POP
-# 11% off its own model on the tennis side.
-OPP_WEIGHT = 1.0
+# ── OPPONENT ADJUSTMENT: log5 / odds ratio ───────────────────────────────────
+# Bill James' log5, the standard method for combining two rates against a league
+# baseline. Sport-agnostic — the same identity is used for NBA/NFL matchup rates —
+# so it belongs in the shared core rather than here once that exists.
+#
+#     expected = (P*B/L) / ( (P*B/L) + ((1-P)(1-B)/(1-L)) )
+#
+# Chosen over the linear factor this module shipped with (proj * (1 + w*(B/L - 1)))
+# NOT because it measured better — on 92 held-out starts the two are
+# indistinguishable, 8.787pp vs 8.773pp mean absolute error, log5 ahead on 41% —
+# but because it has NO FREE PARAMETER. The linear form needs a weight, and the
+# weight was sitting at an invented 1.0; fitting it on this sample would be
+# fitting noise, since per-start K rate error is ~8.8pp against a ~0.4pp
+# adjustment gain. log5 removes the question. It is also bounded on [0,1], which
+# the linear form is not.
+#
+# Both beat no adjustment at all (9.141pp), so the opponent term earns its place.
+# See FanGraphs, "Better Match-Up Data: Forecasting Strikeout Rate".
 
 
 def pitcher_form(pitcher_id, as_of: _dt.date = None) -> dict:
@@ -156,13 +169,15 @@ def project(pitcher_id, opponent_team_id, line=None, as_of: _dt.date = None,
         lg = client.league_k_rate(tb) if tb else LEAGUE_TEAM_K_RATE
         opp = (tb or {}).get(opponent_team_id) or {}
         opp_k = opp.get("k_rate")
-        if isinstance(opp_k, (int, float)) and lg > 0:
-            opp_factor = 1.0 + OPP_WEIGHT * ((opp_k / lg) - 1.0)
+        p_rate = form["k_rate"]
+        if isinstance(opp_k, (int, float)) and 0 < lg < 1:
+            adj_rate = log5(p_rate, opp_k, lg)
         else:
-            opp_factor = 1.0            # unknown opponent -> league-neutral
+            adj_rate = p_rate           # unknown opponent -> pitcher's own rate
+        opp_factor = (adj_rate / p_rate) if p_rate else 1.0
 
         exp_bf = form["bf_per_start"]
-        mu = exp_bf * form["k_rate"] * opp_factor
+        mu = exp_bf * adj_rate
 
         out = {
             "sport": "mlb",
@@ -172,6 +187,7 @@ def project(pitcher_id, opponent_team_id, line=None, as_of: _dt.date = None,
             "projection": round(mu, 2),
             "expected_bf": round(exp_bf, 1),
             "k_rate": round(form["k_rate"], 4),
+            "adjusted_k_rate": round(adj_rate, 4),
             "opponent_k_rate": round(opp_k, 4) if isinstance(opp_k, (int, float)) else None,
             "league_k_rate": round(lg, 4),
             "opponent_factor": round(opp_factor, 3),
@@ -191,43 +207,26 @@ def project(pitcher_id, opponent_team_id, line=None, as_of: _dt.date = None,
         return {}
 
 
-def _nb_params(mu: float, dispersion: float = DISPERSION):
-    """Negative binomial (r, p) from a mean and a variance/mean ratio.
-
-    var = mu * dispersion, and for NB var = mu + mu^2/r, so r = mu/(dispersion-1).
-    At dispersion <= 1 the distribution is Poisson or under-dispersed and NB has
-    no valid r — callers fall back to Poisson.
-    """
-    if dispersion <= 1.0 or mu <= 0:
-        return None, None
-    r = mu / (dispersion - 1.0)
-    p = r / (r + mu)
-    return r, p
+# log5 is a sport-agnostic identity, so it lives in core/odds.py and is aliased
+# here rather than duplicated. Re-exported so mlb.strikeouts.log5 still resolves.
+log5 = _odds.log5
 
 
 def _pmf(k: int, mu: float) -> float:
-    """P(K = k). Negative binomial at the measured dispersion, Poisson if the
-    dispersion degenerates."""
-    r, p = _nb_params(mu)
-    if r is None:
-        return math.exp(-mu) * mu ** k / math.factorial(k)
-    return (math.exp(math.lgamma(k + r) - math.lgamma(r) - math.lgamma(k + 1))
-            * (p ** r) * ((1 - p) ** k))
+    """P(K = k) at the measured MLB dispersion. Thin wrapper over the shared
+    count distribution so the MLB constant lives with the MLB model."""
+    return _odds.nb_pmf(k, mu, DISPERSION)
 
 
 def _over_under(mu: float, line: float) -> dict:
-    """P(over) / P(under) for a strikeout line.
-
-    Lines are almost always X.5, so no continuity correction is needed; a whole
-    -number line would push, which the caller must handle rather than this
-    function silently folding into one side.
-    """
-    floor = int(math.floor(line))
-    p_at_or_under = sum(_pmf(k, mu) for k in range(0, floor + 1))
-    p_at_or_under = max(0.0, min(1.0, p_at_or_under))
+    """P(over) / P(under) / P(push) for a strikeout line, via the shared count
+    helper. Whole-number lines push and are reported separately — folding a push
+    into a side is how a record gets misstated."""
+    r = _odds.count_over_under(mu, line, dispersion=DISPERSION)
     return {
-        "p_over": round(1.0 - p_at_or_under, 4),
-        "p_under": round(p_at_or_under, 4),
-        "lean": "OVER" if (1.0 - p_at_or_under) >= 0.5 else "UNDER",
+        "p_over": round(r["p_over"], 4),
+        "p_under": round(r["p_under"], 4),
+        "p_push": round(r["p_push"], 4),
+        "lean": r["lean"],
         "dispersion": DISPERSION,
     }
