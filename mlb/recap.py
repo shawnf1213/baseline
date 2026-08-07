@@ -149,8 +149,48 @@ def build_recap_embed(book: str, slate_date: str, shadow: bool = True) -> dict:
     }
 
 
+def already_posted(book: str, slate_date: str, token: str = None) -> bool:
+    """True if this book's recap for this slate is ALREADY in its channel.
+
+    Reads the channel rather than trusting in-memory state, exactly as the tennis
+    guard does: a restart, a redeploy or a manual post must never produce a second
+    recap for the same day. tasks.loop fires immediately on start, so without this
+    every bot restart reposted — which is precisely what happened.
+
+    On any read failure returns TRUE (refuse to post). Duplicate spam is worse
+    than a missed recap, and a missed one is recovered on the next pass.
+    """
+    import requests
+    cid = _post.channel_for(book, "recap")
+    tok = token or os.getenv("DISCORD_BOT_TOKEN", "")
+    if not cid or not tok:
+        return True
+    try:
+        _y, _m, _d = slate_date.split("-")
+        want = f"{int(_m)}/{int(_d)} {BOOK_LABEL.get(book, book)} MLB Recap"
+    except Exception:  # noqa: BLE001
+        return True
+    try:
+        r = requests.get(
+            f"https://discord.com/api/v10/channels/{cid}/messages",
+            headers={"Authorization": f"Bot {tok}"},
+            params={"limit": 50}, timeout=20)
+        if r.status_code >= 300:
+            log.warning("mlb recap dup-check HTTP %s — not posting", r.status_code)
+            return True
+        for m in (r.json() or []):
+            for e in (m.get("embeds") or []):
+                if want in (e.get("title") or ""):
+                    return True
+        return False
+    except Exception as exc:  # noqa: BLE001
+        log.warning("mlb recap dup-check failed (%s) — not posting", str(exc)[:120])
+        return True
+
+
 def post_recap(book: str, slate_date: str = None, token: str = None,
-               shadow: bool = True, require_settled: bool = True) -> dict:
+               shadow: bool = True, require_settled: bool = True,
+               force: bool = False) -> dict:
     """POST one book's recap to that book's MLB recap channel.
 
     require_settled mirrors the tennis rule: a day posts only once every pick on
@@ -163,6 +203,9 @@ def post_recap(book: str, slate_date: str = None, token: str = None,
     if not cid:
         return {"ok": False, "book": book,
                 "reason": f"no recap channel configured for {book!r}"}
+    if not force and already_posted(book, slate_date, token=tok):
+        return {"ok": False, "book": book,
+                "reason": "recap already posted for that slate — skipping"}
     rows = store.board_for(book, slate_date)
     if not rows:
         return {"ok": False, "book": book, "reason": "no stored board for that slate"}
