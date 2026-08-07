@@ -2751,6 +2751,134 @@ async def _post_underdog_board(channel, track: bool = True) -> str:
     return "posted %d underdog plays%s" % (len(ranked), " (with ⭐)" if has_star else "")
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# MLB — a SEPARATE SPORT, fully isolated (NORTH_STAR rules 1 & 2)
+# ══════════════════════════════════════════════════════════════════════════════
+# These tasks are ADDITIVE. They do not read, call or modify a single tennis
+# function, and every one of them imports `mlb` lazily INSIDE its own try/except
+# so that even an ImportError cannot escape into the tennis loops. If MLB breaks
+# entirely, tennis does not notice.
+#
+# MLB posts to its own hidden channels and writes to its own Postgres
+# (MLB_DATABASE_URL, a different database in a different Railway project from
+# tennis). It never touches the tennis record.
+MLB_TASKS_ENABLED = os.getenv("MLB_TASKS_ENABLED", "true").strip().lower() in (
+    "1", "true", "yes", "on")
+
+
+def _mlb_import(module_name: str):
+    """Import an `mlb.*` submodule, making the repo root importable first.
+
+    The bot is launched as `python /app/discord-bot/bot.py`, so sys.path[0] is
+    discord-bot/ and the repo-root `mlb` package is NOT on the path. Without this
+    every MLB task would raise ImportError, have it swallowed by its own error
+    boundary, and silently never run — safe for tennis, but invisibly dead, which
+    is the worst of both. Mutating sys.path here rather than in start.sh keeps the
+    change inside the MLB block where it cannot affect how tennis is launched.
+    """
+    # sys is imported LOCALLY: bot.py has no module-level `import sys`, and
+    # adding one would be an edit to tennis's import block for MLB's benefit.
+    import sys
+    import importlib
+    _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if _root not in sys.path:
+        sys.path.insert(0, _root)
+    return importlib.import_module(module_name)
+MLB_BOARD_HOUR = int(os.getenv("MLB_BOARD_HOUR", "9") or "9")      # 9:00 AM ET —
+MLB_BOARD_MINUTE = int(os.getenv("MLB_BOARD_MINUTE", "0") or "0")  # probables are up,
+                                                                   # ahead of every slate
+MLB_RESOLVE_EVERY_HOURS = int(os.getenv("MLB_RESOLVE_EVERY_HOURS", "2") or "2")
+
+
+@tasks.loop(time=[datetime.time(hour=MLB_BOARD_HOUR, minute=MLB_BOARD_MINUTE,
+                                tzinfo=POD_TZINFO)])
+async def mlb_daily_boards():
+    """Post both MLB books' boards, then persist them. Shadow — hidden channels."""
+    if not MLB_TASKS_ENABLED:
+        return
+    try:
+        mlb_board = _mlb_import("mlb.board")
+        for book in ("prizepicks", "underdog"):
+            try:
+                res = await asyncio.to_thread(mlb_board.run_daily, book)
+                log.info("MLB board (%s): %s", book, res)
+            except Exception:  # noqa: BLE001 — one book must not stop the other
+                log.exception("MLB board failed for %s", book)
+    except Exception:  # noqa: BLE001 — MLB must never reach tennis
+        log.exception("MLB board task failed entirely (tennis unaffected)")
+
+
+@mlb_daily_boards.before_loop
+async def _before_mlb_boards():
+    await client.wait_until_ready()
+
+
+@tasks.loop(hours=MLB_RESOLVE_EVERY_HOURS)
+async def mlb_resolve_and_recap():
+    """Grade MLB picks, then post each book's recap once its slate is settled.
+
+    Entirely separate from daily_resolve_results — different store, different
+    channels, different resolver. A tennis recap cannot be affected by this.
+    """
+    if not MLB_TASKS_ENABLED:
+        return
+    try:
+        mlb_recap = _mlb_import("mlb.recap")
+        for book in ("prizepicks", "underdog"):
+            try:
+                graded = await asyncio.to_thread(mlb_recap.resolve_pending, book)
+                log.info("MLB resolve (%s): %s", book, graded)
+                res = await asyncio.to_thread(mlb_recap.post_recap, book)
+                if res.get("ok"):
+                    log.info("MLB recap posted (%s)", book)
+                else:
+                    log.info("MLB recap held (%s): %s", book, res.get("reason"))
+            except Exception:  # noqa: BLE001
+                log.exception("MLB resolve/recap failed for %s", book)
+    except Exception:  # noqa: BLE001
+        log.exception("MLB resolve task failed entirely (tennis unaffected)")
+
+
+@mlb_resolve_and_recap.before_loop
+async def _before_mlb_resolve():
+    await client.wait_until_ready()
+
+
+# ── ONE-SHOT TEST PATH (env-gated, off by default) ───────────────────────────
+# MLB_TEST_RUN=1 makes the bot, ONCE at startup: post both boards, force-grade
+# every pending MLB pick with MLB_TEST_VALUE, and post both recaps. It exists to
+# exercise store -> resolve -> recap before real games settle.
+#
+# The results it writes are FABRICATED. It is off unless explicitly set, it only
+# ever touches the shadow MLB database, and it logs at WARNING so it can never be
+# mistaken for a real grading pass. Unset MLB_TEST_RUN after testing.
+MLB_TEST_RUN = os.getenv("MLB_TEST_RUN", "").strip().lower() in (
+    "1", "true", "yes", "on")
+MLB_TEST_VALUE = float(os.getenv("MLB_TEST_VALUE", "1") or 1)
+
+
+async def _mlb_one_shot_test():
+    """Runs once at startup when MLB_TEST_RUN is set. Never raises."""
+    try:
+        mlb_board = _mlb_import("mlb.board")
+        mlb_recap = _mlb_import("mlb.recap")
+        log.warning("MLB TEST RUN starting — results will be FABRICATED "
+                    "(value=%s), shadow database only", MLB_TEST_VALUE)
+        for book in ("prizepicks", "underdog"):
+            try:
+                res = await asyncio.to_thread(mlb_board.run_daily, book)
+                log.warning("MLB TEST board (%s): %s", book, res)
+                forced = await asyncio.to_thread(
+                    mlb_recap.force_resolve_all, book, MLB_TEST_VALUE)
+                log.warning("MLB TEST force-resolve (%s): %s", book, forced)
+                rec = await asyncio.to_thread(mlb_recap.post_recap, book)
+                log.warning("MLB TEST recap (%s): %s", book, rec)
+            except Exception:  # noqa: BLE001
+                log.exception("MLB TEST failed for %s", book)
+    except Exception:  # noqa: BLE001
+        log.exception("MLB TEST run failed entirely (tennis unaffected)")
+
+
 @tasks.loop(time=[datetime.time(hour=UNDERDOG_PREWARM_HOUR,
                                 minute=UNDERDOG_PREWARM_MINUTE, tzinfo=POD_TZINFO)])
 async def underdog_cache_prewarm():
@@ -4417,6 +4545,22 @@ async def on_ready():
                      UNDERDOG_HOUR, UNDERDOG_MINUTE)
         except Exception:
             log.exception("failed to start underdog pre-warm loop")
+    # MLB — separate sport, separate channels, separate database. Wrapped so a
+    # failure to start MLB can never prevent a tennis loop from starting.
+    if MLB_TASKS_ENABLED:
+        try:
+            if not mlb_daily_boards.is_running():
+                mlb_daily_boards.start()
+                log.info("MLB boards scheduled at %02d:%02d %s",
+                         MLB_BOARD_HOUR, MLB_BOARD_MINUTE, POD_TZINFO)
+            if not mlb_resolve_and_recap.is_running():
+                mlb_resolve_and_recap.start()
+                log.info("MLB resolve/recap every %dh", MLB_RESOLVE_EVERY_HOURS)
+            if MLB_TEST_RUN:
+                client.loop.create_task(_mlb_one_shot_test())
+                log.warning("MLB_TEST_RUN set — one-shot test scheduled")
+        except Exception:
+            log.exception("failed to start MLB loops (tennis unaffected)")
     # Cache pre-warm — 30 min before generation. Started SEPARATELY from the POTD
     # trigger so a pre-warm failure can never stop the picks from being posted.
     if not daily_cache_prewarm.is_running():

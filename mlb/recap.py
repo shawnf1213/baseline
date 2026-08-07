@@ -66,6 +66,35 @@ def resolve_pending(book: str = None) -> dict:
     return out
 
 
+def force_resolve_all(book: str, value: float, slate_date: str = None) -> dict:
+    """TEST ONLY — grade every pending pick with a FIXED value.
+
+    Exists so the store -> resolve -> recap chain can be exercised end to end
+    before real games settle. It writes fabricated results, so it must never run
+    on a slate whose numbers anyone will read as real: callers gate it behind an
+    explicit env flag and the rows it writes stay in the shadow MLB database,
+    never the tennis record.
+
+    Returns {graded, errors}.
+    """
+    out = {"graded": 0, "errors": 0, "value": value}
+    from . import board as _board
+    for row in store.pending(book):
+        if slate_date and row.get("slate_date") != slate_date:
+            continue
+        try:
+            grade = _board.grade(row.get("lean"), row.get("line"), value)
+            if store.update_result(row["id"], grade, value):
+                out["graded"] += 1
+            else:
+                out["errors"] += 1
+        except Exception as exc:  # noqa: BLE001
+            log.exception("mlb force_resolve row %s failed: %s", row.get("id"), exc)
+            out["errors"] += 1
+    log.warning("mlb FORCE-RESOLVE (%s) with test value %s: %s", book, value, out)
+    return out
+
+
 def build_recap_embed(book: str, slate_date: str, shadow: bool = True) -> dict:
     """One book's recap for one slate. Returns {} when there is nothing to show."""
     rows = store.board_for(book, slate_date)
