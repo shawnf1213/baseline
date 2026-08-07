@@ -1,5 +1,5 @@
 """
-MLB board posting — self-contained.
+MLB board posting — self-contained, one board per book.
 
 WHY THIS DUPLICATES SHAPE FROM discord-bot/bot.py RATHER THAN REUSING IT
 ------------------------------------------------------------------------
@@ -16,15 +16,20 @@ requires a byte-identical check against a cached tennis slate first. That fixtur
 does not exist yet.
 
 So this module is deliberately standalone: MLB posts its own embeds to its own
-channel, and nothing in tennis is touched. When the fixture exists, the generic
+channels, and nothing in tennis is touched. When the fixture exists, the generic
 half of build_board_embed() lifts into core and this file keeps only
 _stat_block(). That is a refactor, not a rewrite.
 
-SHADOW SEMANTICS: posting here goes to MLB_CHANNEL_ID, a channel Shawn keeps
-hidden from members. Rule 4's requirement is that no new prop is visible to
-members before review, which a hidden channel satisfies while still exercising
-the real posting path. Nothing here writes to the picks/results tables — Rule 3's
-sport-column gate is still unmet, so MLB persists nothing.
+BOOKS ARE SEPARATE, AND SO ARE THEIR CHANNELS. PrizePicks and Underdog each get
+their own board channel and their own Pick of the Day, exactly as tennis runs
+them. A PrizePicks 60% and an Underdog 60% are claims about different lines in
+different markets and must never share a board or a denominator.
+
+SHADOW SEMANTICS: every channel here is one Shawn keeps hidden from members.
+Rule 4 requires that no new prop is visible to members before review, which a
+hidden channel satisfies while still exercising the real posting path. Nothing
+here writes to the picks/results tables — Rule 3's sport-column gate is unmet, so
+MLB persists nothing.
 """
 
 import os
@@ -32,30 +37,50 @@ import logging
 
 log = logging.getLogger("baseline.mlb.post")
 
-# Separate channel from the tennis board. No default: without an explicit ID this
-# module refuses to post rather than guessing at a channel.
-MLB_CHANNEL_ID = int(os.getenv("MLB_CHANNEL_ID", "0") or 0)
+# ── Channels (MLB testing, hidden from members) ──────────────────────────────
+# Per book AND per purpose, mirroring the tennis split. No defaults: an unset
+# channel means this module refuses to post rather than guessing a destination.
+CHANNELS = {
+    ("prizepicks", "board"): int(os.getenv("MLB_PP_BOARD_CHANNEL_ID",
+                                           "1535163281768185926") or 0),
+    ("underdog",   "board"): int(os.getenv("MLB_UD_BOARD_CHANNEL_ID",
+                                           "1535164403383795734") or 0),
+    ("prizepicks", "recap"): int(os.getenv("MLB_PP_RECAP_CHANNEL_ID",
+                                           "1535164916154109992") or 0),
+    ("underdog",   "recap"): int(os.getenv("MLB_UD_RECAP_CHANNEL_ID",
+                                           "1535164961448263730") or 0),
+}
 
 COLOR = 0x1D428A          # MLB blue — visually distinct from the tennis boards
 MAX_PLAYS = 12            # same board size as tennis, for comparability
 
+BOOK_LABEL = {"prizepicks": "PrizePicks", "underdog": "Underdog"}
 
-def _fmt_line(row: dict) -> str:
-    """One play. Mirrors the tennis board's rhythm so the two are comparable at a
-    glance, but reads MLB fields only."""
-    proj = row.get("projection")
-    line = row.get("line")
-    lean = (row.get("lean") or "").upper()
-    dot = "🟢" if lean == "OVER" else "🔴" if lean == "UNDER" else "⚪"
-    head = f"**{row.get('pitcher', '?')}**"
-    if line is None:
-        # No book line fetched — projection only. Say so rather than implying a
-        # market we did not read.
-        return f"{head}\n⚪ **PROJ {proj:.1f} K** · vs {row.get('opponent', '?')}"
-    pct = row.get("p_over") if lean == "OVER" else row.get("p_under")
-    conf = f" · {pct * 100:.0f}%" if isinstance(pct, (int, float)) else ""
-    return (f"{head}\n{dot} **{lean} {line} K** · Proj {proj:.1f}{conf}\n"
-            f"_vs {row.get('opponent', '?')}_")
+
+def channel_for(book: str, kind: str = "board") -> int:
+    """Channel id for a (book, kind) pair. 0 when unset — callers must refuse."""
+    return CHANNELS.get((book, kind), 0)
+
+
+def _side_prob(row: dict):
+    """The model's probability on the side it actually leans."""
+    return row.get("p_over") if row.get("lean") == "OVER" else row.get("p_under")
+
+
+def select_potd(rows: list) -> dict:
+    """The single best play on a book's board, or {} if none qualifies.
+
+    Model probability on its OWN side, restricted to plays that matched a real
+    book line — a projection with no line has nothing to be confident against.
+    Deliberately simple: MLB has no graded history yet, so richer gating (tiers,
+    probation, edge floors) would be tuned on nothing. Tighten it once shadow
+    results exist.
+    """
+    priced = [r for r in rows if r.get("line") is not None]
+    if not priced:
+        return {}
+    best = max(priced, key=lambda r: _side_prob(r) or 0)
+    return best if (_side_prob(best) or 0) > 0.5 else {}
 
 
 def _stat_block(row: dict) -> str:
@@ -75,44 +100,96 @@ def _stat_block(row: dict) -> str:
     return " · ".join(bits)
 
 
-def build_board_embed(rows: list, date_label: str, shadow: bool = True) -> dict:
-    """Discord embed (as a plain dict) for an MLB board.
+def _fmt_line(row: dict) -> str:
+    """One play. Mirrors the tennis board's rhythm so the two are comparable at a
+    glance, but reads MLB fields only."""
+    proj = row.get("projection") or 0.0
+    line = row.get("line")
+    lean = (row.get("lean") or "").upper()
+    head = "**" + str(row.get("pitcher", "?")) + "**"
+    opp = "_vs " + str(row.get("opponent", "?")) + "_"
+    if line is None:
+        # No book line matched — projection only. Say so rather than implying a
+        # market we did not read.
+        return head + "\n" + f"⚪ **PROJ {proj:.1f} K** · no line" + "\n" + opp
+    dot = "🟢" if lean == "OVER" else "🔴"
+    pct = _side_prob(row)
+    conf = f" · {pct * 100:.0f}%" if isinstance(pct, (int, float)) else ""
+    mid = f"{dot} **{lean} {line} K** · Proj {proj:.1f}{conf}"
+    return head + "\n" + mid + "\n" + opp
+
+
+def build_potd_embed(row: dict, book: str, date_label: str,
+                     shadow: bool = True) -> dict:
+    """The starred pick for one book's board."""
+    side = _side_prob(row) or 0.0
+    edge = row.get("edge_vs_market")
+    edge_s = (f" · Edge {edge * 100:+.1f}pp vs market"
+              if isinstance(edge, (int, float)) else "")
+    dot = "🟢" if row.get("lean") == "OVER" else "🔴"
+    parts = [
+        "**" + str(row.get("pitcher", "?")) + "** vs **"
+        + str(row.get("opponent", "?")) + "**",
+        f"{dot} **{row.get('lean')} {row.get('line')} STRIKEOUTS**",
+        f"Proj {row.get('projection', 0):.1f} · {side * 100:.0f}%{edge_s}",
+        "_" + _stat_block(row) + "_",
+    ]
+    desc = "\n".join(parts)
+    if shadow:
+        desc = "⚠️ **SHADOW** — not a released pick.\n\n" + desc
+    label = BOOK_LABEL.get(book, book)
+    return {
+        "title": f"⭐ MLB PICK OF THE DAY — {label} · {date_label}",
+        "description": desc[:4000],
+        "color": COLOR,
+        "footer": {"text": f"Baseline MLB · {label}"
+                           + (" · shadow" if shadow else "")},
+    }
+
+
+def build_board_embed(rows: list, date_label: str, book: str = "underdog",
+                      shadow: bool = True, start_rank: int = 1) -> dict:
+    """Discord embed (as a plain dict) for one BOOK's MLB board.
 
     Returns a dict rather than a discord.Embed so this module never imports
     discord — it stays testable and importable outside the bot process.
     """
     rows = rows[:MAX_PLAYS]
-    body = "\n\n".join(f"**{i}. {_fmt_line(r)[2:]}" if False else
-                       f"**{i}.** {_fmt_line(r)}" for i, r in enumerate(rows, 1))
-    if not rows:
+    label = BOOK_LABEL.get(book, book)
+    if rows:
+        body = "\n\n".join(f"**{i}.** {_fmt_line(r)}"
+                           for i, r in enumerate(rows, start_rank))
+    else:
         body = "_No qualifying starters — every probable was below the sample floor._"
-    desc = body
     if shadow:
-        desc = ("⚠️ **SHADOW — not a released board.** Projections only, nothing "
-                "logged to the record.\n\n" + desc)
+        body = ("⚠️ **SHADOW — not a released board.** Projections only, "
+                "nothing logged to the record.\n\n" + body)
     return {
-        "title": f"⚾ {date_label} MLB Board — Strikeouts",
-        "description": desc[:4000],
+        "title": f"⚾ {date_label} {label} MLB Board — Strikeouts",
+        "description": body[:4000],
         "color": COLOR,
-        "footer": {"text": "Baseline MLB · shadow" if shadow else "Baseline MLB"},
+        "footer": {"text": f"Baseline MLB · {label}"
+                           + (" · shadow" if shadow else "")},
     }
 
 
-def build_detail_embed(row: dict) -> dict:
-    """Per-pitcher detail — the stat block behind one projection."""
-    return {
-        "title": f"⚾ {row.get('pitcher', '?')} — Strikeouts",
-        "description": (f"vs **{row.get('opponent', '?')}**\n"
-                        f"Projection **{row.get('projection')}** K\n\n"
-                        f"{_stat_block(row)}"),
-        "color": COLOR,
-        "footer": {"text": f"window: {row.get('window', '?')}"},
-    }
+def build_embeds(rows: list, date_label: str, book: str,
+                 shadow: bool = True) -> list:
+    """POTD first when one qualifies, then the rest of the board — the same shape
+    the tennis boards post in."""
+    potd = select_potd(rows)
+    if not potd:
+        return [build_board_embed(rows, date_label, book=book, shadow=shadow)]
+    rest = [r for r in rows if r is not potd]
+    return [build_potd_embed(potd, book, date_label, shadow=shadow),
+            build_board_embed(rest, date_label, book=book, shadow=shadow,
+                              start_rank=2)]
 
 
-def post_board(rows: list, date_label: str, token: str = None,
-               channel_id: int = None, shadow: bool = True) -> dict:
-    """POST the board to the MLB channel over Discord's REST API.
+def post_board(rows: list, date_label: str, book: str = "underdog",
+               token: str = None, channel_id: int = None,
+               shadow: bool = True) -> dict:
+    """POST one book's board to that book's MLB channel over Discord's REST API.
 
     Uses REST rather than a discord.py channel object so this module has no
     dependency on the bot's event loop and can be run standalone for testing.
@@ -121,27 +198,30 @@ def post_board(rows: list, date_label: str, token: str = None,
     posting failure cannot surface anywhere near the tennis pipeline.
     """
     import requests
-    cid = channel_id or MLB_CHANNEL_ID
+    cid = channel_id or channel_for(book, "board")
     tok = token or os.getenv("DISCORD_BOT_TOKEN", "")
     if not cid:
-        return {"ok": False, "reason": "MLB_CHANNEL_ID not set — refusing to guess"}
+        return {"ok": False, "book": book,
+                "reason": f"no board channel configured for {book!r}"}
     if not tok:
-        return {"ok": False, "reason": "no DISCORD_BOT_TOKEN"}
+        return {"ok": False, "book": book, "reason": "no DISCORD_BOT_TOKEN"}
     try:
         r = requests.post(
             f"https://discord.com/api/v10/channels/{cid}/messages",
             headers={"Authorization": f"Bot {tok}",
                      "Content-Type": "application/json"},
             # No @everyone, ever, from a shadow board.
-            json={"embeds": [build_board_embed(rows, date_label, shadow=shadow)],
+            json={"embeds": build_embeds(rows, date_label, book, shadow),
                   "allowed_mentions": {"parse": []}},
             timeout=30)
         ok = r.status_code < 300
         if not ok:
-            log.warning("mlb post failed %s: %s", r.status_code, r.text[:300])
-            return {"ok": False, "status": r.status_code, "reason": r.text[:300]}
-        return {"ok": True, "status": r.status_code,
-                "message_id": (r.json() or {}).get("id")}
+            log.warning("mlb post (%s) failed %s: %s", book, r.status_code,
+                        r.text[:300])
+            return {"ok": False, "book": book, "status": r.status_code,
+                    "reason": r.text[:300]}
+        return {"ok": True, "book": book, "status": r.status_code,
+                "channel_id": cid, "message_id": (r.json() or {}).get("id")}
     except Exception as exc:  # noqa: BLE001
-        log.exception("mlb post_board failed: %s", exc)
-        return {"ok": False, "reason": str(exc)[:200]}
+        log.exception("mlb post_board (%s) failed: %s", book, exc)
+        return {"ok": False, "book": book, "reason": str(exc)[:200]}
