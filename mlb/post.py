@@ -97,6 +97,17 @@ def _stat_block(row: dict) -> str:
         bits.append(f"opp K% **{row['opponent_k_rate'] * 100:.1f}**")
     if row.get("starts_in_window"):
         bits.append(f"n=**{row['starts_in_window']}**")
+    c = row.get("context") or {}
+    if isinstance(c.get("park_factor"), (int, float)):
+        bits.append(f"park **{c['park_factor']:.2f}**")
+    ha = c.get("home_away") or {}
+    if isinstance(ha.get("factor"), (int, float)):
+        bits.append(f"{ha.get('side','')} **{ha['factor']:.2f}**")
+    # Name the opponent basis so the board can never imply lineup-level
+    # precision it did not have — at a 9am post lineups are not out yet.
+    basis = row.get("opponent_basis")
+    if basis and basis != "team":
+        bits.append(f"_{basis}_")
     return " · ".join(bits)
 
 

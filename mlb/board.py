@@ -54,7 +54,10 @@ def scan_board(date: str = None, line_map: dict = None) -> list:
                 line = (line_map or {}).get(pid)
                 proj = strikeouts.project(
                     pid, g[opp_side].get("team_id"), line=line,
-                    team_batting=team_batting)
+                    team_batting=team_batting,
+                    game_pk=g.get("game_pk"),
+                    is_home=(side == "home"),
+                    home_team_id=(g.get("home") or {}).get("team_id"))
                 if not proj:
                     continue          # thin sample; strikeouts.project logged why
                 proj.update({

@@ -57,7 +57,7 @@ import logging
 import math
 import datetime as _dt
 
-from . import client
+from . import client, context as _ctx
 from core import odds as _odds
 
 log = logging.getLogger("baseline.mlb.strikeouts")
@@ -149,7 +149,8 @@ def pitcher_form(pitcher_id, as_of: _dt.date = None) -> dict:
 
 
 def project(pitcher_id, opponent_team_id, line=None, as_of: _dt.date = None,
-            team_batting: dict = None) -> dict:
+            team_batting: dict = None, game_pk=None, is_home: bool = None,
+            home_team_id=None, use_context: bool = True) -> dict:
     """Project a starter's strikeouts against one opponent.
 
         expected K = expected batters faced x k_rate x opponent factor
@@ -170,10 +171,45 @@ def project(pitcher_id, opponent_team_id, line=None, as_of: _dt.date = None,
         opp = (tb or {}).get(opponent_team_id) or {}
         opp_k = opp.get("k_rate")
         p_rate = form["k_rate"]
+        basis, ctx_detail, park, ha_factor = "team", {}, 1.0, 1.0
+
+        if use_context:
+            # ── OPPONENT: lineup > platoon > team (context.opponent_k_rate) ──
+            oc = _ctx.opponent_k_rate(pitcher_id, opponent_team_id,
+                                      game_pk=game_pk, is_home=is_home,
+                                      team_batting=tb, league_rate=lg)
+            if oc.get("opponent_rate") is not None:
+                opp_k = oc["opponent_rate"]
+            basis = oc.get("basis", "team")
+            ctx_detail = oc.get("detail") or {}
+
+            # ── PITCHER SIDE: home/away split, shrunk toward his overall rate ──
+            sp = _ctx.pitcher_splits(pitcher_id)
+            side = "home" if is_home else "away"
+            if is_home is not None and sp.get(side) is not None:
+                shrunk_side = _ctx._shrink(sp[side], sp.get(side + "_bf"),
+                                           p_rate, _ctx.SPLIT_PRIOR_BF)
+                ha_factor = (shrunk_side / p_rate) if p_rate else 1.0
+                ctx_detail["home_away"] = {"side": side,
+                                           "split_rate": round(sp[side], 4),
+                                           "factor": round(ha_factor, 3)}
+
+            # ── PARK: the venue is the HOME team's ──────────────────────────
+            pf = _ctx.park_factors()
+            venue_team = home_team_id if home_team_id is not None else (
+                opponent_team_id if is_home is False else None)
+            if venue_team is not None and venue_team in pf:
+                park = pf[venue_team]
+                ctx_detail["park_factor"] = round(park, 3)
+
         if isinstance(opp_k, (int, float)) and 0 < lg < 1:
             adj_rate = log5(p_rate, opp_k, lg)
         else:
             adj_rate = p_rate           # unknown opponent -> pitcher's own rate
+        # Environment multipliers apply to the RATE, not the volume: a K-friendly
+        # park changes how often a batter faced becomes a strikeout, it does not
+        # make the manager leave the starter in longer.
+        adj_rate = max(0.01, min(0.60, adj_rate * ha_factor * park))
         opp_factor = (adj_rate / p_rate) if p_rate else 1.0
 
         exp_bf = form["bf_per_start"]
@@ -195,6 +231,8 @@ def project(pitcher_id, opponent_team_id, line=None, as_of: _dt.date = None,
             "window": form["window"],
             "window_extended": form["window_extended"],
             "model": "negative-binomial (overdispersed count), NOT a scenario mixture",
+            "opponent_basis": basis,
+            "context": ctx_detail,
         }
         if isinstance(line, (int, float)):
             out.update(_over_under(mu, line))
