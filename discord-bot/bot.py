@@ -2767,22 +2767,44 @@ MLB_TASKS_ENABLED = os.getenv("MLB_TASKS_ENABLED", "true").strip().lower() in (
 
 
 def _mlb_import(module_name: str):
-    """Import an `mlb.*` submodule, making the repo root importable first.
+    """Import an `mlb.*` submodule, locating the package first.
 
-    The bot is launched as `python /app/discord-bot/bot.py`, so sys.path[0] is
-    discord-bot/ and the repo-root `mlb` package is NOT on the path. Without this
-    every MLB task would raise ImportError, have it swallowed by its own error
-    boundary, and silently never run — safe for tennis, but invisibly dead, which
-    is the worst of both. Mutating sys.path here rather than in start.sh keeps the
-    change inside the MLB block where it cannot affect how tennis is launched.
+    The container layout is NOT guaranteed. start.sh handles both
+    /app/discord-bot/bot.py (build root = repo root) and /app/bot.py (build root =
+    discord-bot/), and in the second case the repo-root `mlb` and `core` packages
+    are not deployed with the bot at all. The first attempt at this assumed the
+    former and produced ModuleNotFoundError, swallowed by the caller's error
+    boundary — MLB silently never ran.
+
+    So: try every plausible root, and if the package genuinely is not on disk say
+    so LOUDLY with the paths searched, because "not deployed" and "wrong path" need
+    different fixes and are indistinguishable from a bare ImportError.
     """
-    # sys is imported LOCALLY: bot.py has no module-level `import sys`, and
-    # adding one would be an edit to tennis's import block for MLB's benefit.
     import sys
     import importlib
-    _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    if _root not in sys.path:
-        sys.path.insert(0, _root)
+    here = os.path.dirname(os.path.abspath(__file__))
+    candidates = [
+        os.path.dirname(here),          # /app  when bot.py is /app/discord-bot/bot.py
+        here,                           # /app  when bot.py is /app/bot.py
+        os.getcwd(),
+        "/app",
+    ]
+    seen, found = [], None
+    for root in candidates:
+        if not root or root in seen:
+            continue
+        seen.append(root)
+        if os.path.isdir(os.path.join(root, "mlb")):
+            found = root
+            break
+    if found:
+        if found not in sys.path:
+            sys.path.insert(0, found)
+    else:
+        log.error("MLB package NOT FOUND on disk. Searched: %s. Contents of %s: %s. "
+                  "This means mlb/ was not deployed with the bot — check the Railway "
+                  "service Root Directory (it must be the repo root, not discord-bot/).",
+                  seen, here, sorted(os.listdir(here))[:25])
     return importlib.import_module(module_name)
 MLB_BOARD_HOUR = int(os.getenv("MLB_BOARD_HOUR", "9") or "9")      # 9:00 AM ET —
 MLB_BOARD_MINUTE = int(os.getenv("MLB_BOARD_MINUTE", "0") or "0")  # probables are up,
