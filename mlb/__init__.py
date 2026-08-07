@@ -35,4 +35,35 @@ MLB_SHADOW_LOG = os.getenv("MLB_SHADOW_LOG", "true").strip().lower() in (
 
 SPORT = "mlb"
 
-__all__ = ["MLB_ENABLED", "MLB_SHADOW_LOG", "SPORT"]
+# ── The common sport-module interface (NORTH_STAR.md) ────────────────────────
+# scan_board / project / resolve / grade re-exported at package level so a future
+# core dispatcher can treat this module as a black box: `mlb.scan_board(date)`
+# with no knowledge of baseball. Imported lazily inside the functions below so
+# importing `mlb` never triggers a network client import as a side effect.
+
+def scan_board(*a, **kw):
+    """See mlb.board.scan_board."""
+    from .board import scan_board as _f
+    return _f(*a, **kw)
+
+
+def project(*a, **kw):
+    """See mlb.board.project."""
+    from .board import project as _f
+    return _f(*a, **kw)
+
+
+def resolve(*a, **kw):
+    """See mlb.board.resolve."""
+    from .board import resolve as _f
+    return _f(*a, **kw)
+
+
+def grade(*a, **kw):
+    """See mlb.board.grade."""
+    from .board import grade as _f
+    return _f(*a, **kw)
+
+
+__all__ = ["MLB_ENABLED", "MLB_SHADOW_LOG", "SPORT",
+           "scan_board", "project", "resolve", "grade"]

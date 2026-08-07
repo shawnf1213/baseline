@@ -29,13 +29,28 @@ per the working rule that model-philosophy changes get recorded. The scenario
 machinery stays available for MLB props that genuinely are bimodal (a pitcher
 win, or anything conditioned on game outcome).
 
-LOOKBACK WINDOW
----------------
-52 weeks rolling from the scan date, matching tennis. Not obvious for a 27-week
-season — a 52-week window necessarily spans the offseason and reaches into the
-previous campaign. Tested by holdout (predict each starter's next 5 starts,
-n=21): season-only 3.72pp mean absolute error on K rate vs 52-week 3.52pp, 13
-pitchers better / 6 worse / 2 tied. The extra sample wins, modestly.
+LOOKBACK WINDOW — CURRENT SEASON, not 52 weeks
+----------------------------------------------
+Tennis uses a 52-week rolling window because tennis plays ~48 weeks a year, so 52
+weeks is one competitive cycle. MLB's regular season is ~27 weeks (2026: Mar 25 ->
+Sep 27, 186 days), so a 52-week window necessarily spans the offseason and drags
+in the previous campaign.
+
+An initial holdout on 21 pitchers from one slate favoured 52 weeks (3.52pp vs
+3.72pp mean absolute error on K rate) and this module shipped that way. The
+multi-season fit REVERSED it. On 59 qualified starters:
+
+    season-only   3.861 pp
+    52-week       4.020 pp        52wk better on only 11/59 pitchers (19%)
+
+The first result was small-sample noise. Pitchers change materially between
+seasons — role, health, pitch mix — and last year's tail is stale rather than
+extra signal. Season-only it is.
+
+EARLY-SEASON FALLBACK: in April a season-only window holds two or three starts,
+which is not a rate. Below MIN_STARTS the window extends into the prior season —
+accepting stale data is better than projecting off a sample too thin to speak,
+and the extension is reported in the output so it is never silent.
 """
 
 import logging
@@ -46,18 +61,22 @@ from . import client
 
 log = logging.getLogger("baseline.mlb.strikeouts")
 
-LOOKBACK_DAYS = 52 * 7            # matches tennis; see module docstring
 MIN_STARTS = 5                    # below this the rate is a rumour, not a stat
 
-# Measured 2026-08-07 on 416 starts. Variance/mean for a pitcher's K count.
-# 1.00 would be pure Poisson; the excess is real start-to-start variation in
-# length, opponent and pitch count that the point estimate cannot see.
-DISPERSION = 1.13
+# ── Fitted on 6,092 starts, all qualified starters 2023-2026 ─────────────────
+# Variance/mean for a pitcher's K count. 1.00 would be pure Poisson; the excess
+# is real start-to-start variation in length, opponent and pitch count that a
+# point estimate cannot see.
+#
+# NOT perfectly stable across seasons — 2023 1.131, 2024 1.029, 2025 1.134,
+# 2026 1.120 (spread 0.105, with 2024 the outlier at near-Poisson). Pooled 1.105
+# is used rather than the latest season so one anomalous year cannot swing it.
+DISPERSION = 1.105
 
-# Population anchors, same 416-start sample. Used only as fallbacks so a data
-# outage degrades to a league-average pitcher rather than a divide-by-zero.
-LEAGUE_BF_PER_START = 22.7
-LEAGUE_K_RATE = 0.226             # 5.14 K / 22.7 BF
+# Population anchors from the same pooled sample. Fallbacks only, so a data
+# outage degrades to a league-average starter rather than a divide-by-zero.
+LEAGUE_BF_PER_START = 23.73       # was 22.7 from a single slate — undercounted
+LEAGUE_K_RATE = 0.2348            # K per batter faced, pitching side
 LEAGUE_TEAM_K_RATE = 0.221        # K per plate appearance, batting side
 
 # How hard the opponent's contact profile moves the projection. 1.0 = fully
@@ -68,16 +87,9 @@ LEAGUE_TEAM_K_RATE = 0.221        # K per plate appearance, batting side
 OPP_WEIGHT = 1.0
 
 
-def _in_window(date_str: str, cutoff: _dt.date) -> bool:
-    try:
-        d = _dt.date(*map(int, str(date_str)[:10].split("-")))
-    except Exception:  # noqa: BLE001
-        return False
-    return d >= cutoff
-
-
 def pitcher_form(pitcher_id, as_of: _dt.date = None) -> dict:
-    """Rolling 52-week starting line for one pitcher.
+    """Current-season starting line for one pitcher (see module docstring on
+    why this is season-only rather than a 52-week roll).
 
     Rates are sum/sum — total strikeouts over total batters faced — never a mean
     of per-start rates. A mean-of-rates over-weights short starts, which is the
@@ -87,19 +99,24 @@ def pitcher_form(pitcher_id, as_of: _dt.date = None) -> dict:
     denominator behind it.
     """
     as_of = as_of or _dt.date.today()
-    cutoff = as_of - _dt.timedelta(days=LOOKBACK_DAYS)
-    rows = []
-    for season in (as_of.year, as_of.year - 1):
-        for r in client.get_pitcher_game_log(pitcher_id, season):
-            if not r.get("is_start"):
-                continue
-            if not isinstance(r.get("bf"), (int, float)) or not r["bf"]:
-                continue
-            if _in_window(r.get("date"), cutoff):
-                rows.append(r)
+
+    def _starts(season):
+        return [r for r in client.get_pitcher_game_log(pitcher_id, season)
+                if r.get("is_start")
+                and isinstance(r.get("bf"), (int, float)) and r["bf"]]
+
+    rows = _starts(as_of.year)
+    extended = False
     if len(rows) < MIN_STARTS:
-        log.info("mlb strikeouts: pitcher %s has %d starts in window (< %d) — "
-                 "no projection", pitcher_id, len(rows), MIN_STARTS)
+        # Early-season fallback: a two-start sample is not a rate. Reach back
+        # rather than project off nothing — and SAY SO in the output.
+        prior = _starts(as_of.year - 1)
+        if prior:
+            rows = rows + prior
+            extended = True
+    if len(rows) < MIN_STARTS:
+        log.info("mlb strikeouts: pitcher %s has %d starts (< %d) — no projection",
+                 pitcher_id, len(rows), MIN_STARTS)
         return {}
     bf = sum(r["bf"] for r in rows)
     k = sum(r.get("k") or 0 for r in rows)
@@ -112,8 +129,9 @@ def pitcher_form(pitcher_id, as_of: _dt.date = None) -> dict:
         "innings": round(ip, 1),
         "k_rate": k / bf,
         "bf_per_start": bf / len(rows),
-        "window_days": LOOKBACK_DAYS,
-        "window_from": cutoff.isoformat(),
+        "window": ("current season + prior (extended: thin sample)" if extended
+                   else "current season"),
+        "window_extended": extended,
     }
 
 
@@ -158,7 +176,8 @@ def project(pitcher_id, opponent_team_id, line=None, as_of: _dt.date = None,
             "league_k_rate": round(lg, 4),
             "opponent_factor": round(opp_factor, 3),
             "starts_in_window": form["starts"],
-            "window_from": form["window_from"],
+            "window": form["window"],
+            "window_extended": form["window_extended"],
             "model": "negative-binomial (overdispersed count), NOT a scenario mixture",
         }
         if isinstance(line, (int, float)):

@@ -93,20 +93,36 @@ for the mean to fall into.
 dispersion. The scenario machinery remains available for MLB props that genuinely
 are bimodal (pitcher win, or anything conditioned on game outcome).
 
-### 2026-08-07 — MLB lookback window is 52 weeks, matching tennis
+### 2026-08-07 — MLB lookback window is CURRENT SEASON (supersedes the 52-week decision made earlier the same day)
 
-Not obvious: the MLB regular season is only ~27 weeks (2026: Mar 25 → Sep 27, 186
-days; 2025: 194 days), so a 52-week window necessarily spans the offseason and
-reaches into the previous campaign. Settled by holdout — predict each starter's
-next 5 starts, n=21 pitchers:
+The MLB regular season is ~27 weeks (2026: Mar 25 → Sep 27, 186 days; 2025: 194
+days), so a 52-week window necessarily spans the offseason and drags in the
+previous campaign.
+
+**First call (WRONG):** a holdout on 21 pitchers from a single slate favoured 52
+weeks — 3.52pp vs 3.72pp mean absolute error on K rate — and the module shipped
+that way.
+
+**Multi-season fit reversed it.** Same holdout design on all 59 qualified 2026
+starters:
 
 | lookback | mean abs error on K rate |
 |---|---|
-| season-only (≈27wk) | 3.72 pp |
-| **52-week rolling** | **3.52 pp** |
+| **current season** | **3.861 pp** |
+| 52-week rolling | 4.020 pp |
 
-13 pitchers better, 6 worse, 2 tied. The extra ~4 starts from the prior season's
-tail reduce error, modestly. Revisit if a multi-season fit contradicts it.
+52 weeks was better on only **11 of 59** pitchers (19%). The first result was
+small-sample noise. Pitchers change materially between seasons — role, health,
+pitch mix — so last year's tail is stale rather than extra signal.
+
+**Early-season fallback:** below `MIN_STARTS` (5) the window extends into the
+prior season, because a two-start sample is not a rate. The extension is reported
+in the projection output (`window_extended`) so it is never silent.
+
+*Lesson worth keeping: a 21-pitcher holdout off one slate produced a confident and
+wrong answer. This is the third time in two days a small sample has done that on
+this project — see also the contaminated 590-match tennis sample and the bp_saved
+window artifact.*
 
 ### 2026-08-07 — Sport-column-before-MLB-writes gate (STANDING, not yet satisfied)
 
