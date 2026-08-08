@@ -67,14 +67,52 @@ def get_schedule(date: str = None) -> list:
                     "pitcher_id": pp.get("id"),
                     "pitcher": pp.get("fullName"),
                 }
+            st = g.get("status") or {}
             out.append({
                 "game_pk": g.get("gamePk"),
                 "game_date": g.get("gameDate"),
-                "status": ((g.get("status") or {}).get("detailedState")),
+                "status": st.get("detailedState"),
+                # "Preview" | "Live" | "Final". Coarser than detailedState and
+                # therefore the safe thing to gate on: detailedState has a long
+                # tail ("Manager challenge", "Warmup", "Delayed Start: Rain")
+                # that a status allow-list would keep getting wrong.
+                "abstract_state": st.get("abstractGameState"),
                 "away": _side("away"),
                 "home": _side("home"),
             })
     log.info("mlb schedule %s: %d games", date, len(out))
+    return out
+
+
+def get_slate_lineups(date: str = None) -> dict:
+    """Every posted lineup on a slate in ONE request:
+    {game_pk: {"home": [{id, name}], "away": [...]}}.
+
+    context.get_lineup() fetches one game-side at a time and looks up each
+    player's handedness, which is right for a single matchup and far too slow for
+    a whole board — thirty schedule calls plus a couple of hundred people calls.
+    The schedule endpoint hydrates every lineup at once, so this is one call, and
+    handedness is left to the caller to fetch only for batters it actually
+    prices.
+
+    {} when nothing is posted, which at a morning board time is the normal case.
+    """
+    if not date:
+        date = _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=-4))).strftime("%Y-%m-%d")
+    data = _get("/schedule", sportId=SPORT_ID, date=date, hydrate="lineups")
+    out = {}
+    for day in (data.get("dates") or []):
+        for g in (day.get("games") or []):
+            lu = g.get("lineups") or {}
+            sides = {}
+            for side, key in (("home", "homePlayers"), ("away", "awayPlayers")):
+                players = lu.get(key) or []
+                if players:
+                    sides[side] = [{"id": p.get("id"), "name": p.get("fullName")}
+                                   for p in players if p.get("id")]
+            if sides:
+                out[g.get("gamePk")] = sides
+    log.info("mlb lineups %s: %d game(s) with a posted lineup", date, len(out))
     return out
 
 

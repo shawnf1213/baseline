@@ -2811,19 +2811,37 @@ MLB_BOARD_MINUTE = int(os.getenv("MLB_BOARD_MINUTE", "0") or "0")  # probables a
                                                                    # ahead of every slate
 MLB_RESOLVE_EVERY_HOURS = int(os.getenv("MLB_RESOLVE_EVERY_HOURS", "2") or "2")
 
+# ── TWO BOARDS, BECAUSE THE INPUTS ARRIVE AT DIFFERENT TIMES ─────────────────
+# Pitcher props need only the probable starters, which are announced the night
+# before — so they post in the morning.
+#
+# Batter props need a POSTED LINEUP, and lineups do not exist at 9am. A batter
+# board at the morning slot is not merely weaker, it is empty: the scan withholds
+# every batter prop because an unconfirmed hitter may be rested, and a rested
+# hitter's prop voids rather than losing. Teams post lineups roughly three hours
+# before first pitch, so the afternoon slot is the earliest one that has them for
+# the evening games that make up most of a slate.
+MLB_BATTER_BOARD_HOUR = int(os.getenv("MLB_BATTER_BOARD_HOUR", "16") or "16")
+MLB_BATTER_BOARD_MINUTE = int(os.getenv("MLB_BATTER_BOARD_MINUTE", "30") or "30")
+# Off by default: batter props are new and unproven, and Rule 4 says a new prop
+# ships dark until it has been reviewed. Set MLB_BATTER_BOARD=true to enable.
+MLB_BATTER_BOARD = os.getenv("MLB_BATTER_BOARD", "false").strip().lower() in (
+    "1", "true", "yes", "on")
+
 
 @tasks.loop(time=[datetime.time(hour=MLB_BOARD_HOUR, minute=MLB_BOARD_MINUTE,
                                 tzinfo=POD_TZINFO)])
 async def mlb_daily_boards():
-    """Post both MLB books' boards, then persist them. Shadow — hidden channels."""
+    """Post both MLB books' PITCHER boards, then persist them. Shadow channels."""
     if not MLB_TASKS_ENABLED:
         return
     try:
         mlb_board = _mlb_import("mlb.board")
         for book in ("prizepicks", "underdog"):
             try:
-                res = await asyncio.to_thread(mlb_board.run_daily, book)
-                log.info("MLB board (%s): %s", book, res)
+                res = await asyncio.to_thread(mlb_board.run_daily, book,
+                                              None, True, True, "pitcher")
+                log.info("MLB pitcher board (%s): %s", book, res)
             except Exception:  # noqa: BLE001 — one book must not stop the other
                 log.exception("MLB board failed for %s", book)
     except Exception:  # noqa: BLE001 — MLB must never reach tennis
@@ -2832,6 +2850,37 @@ async def mlb_daily_boards():
 
 @mlb_daily_boards.before_loop
 async def _before_mlb_boards():
+    await client.wait_until_ready()
+
+
+@tasks.loop(time=[datetime.time(hour=MLB_BATTER_BOARD_HOUR,
+                                minute=MLB_BATTER_BOARD_MINUTE,
+                                tzinfo=POD_TZINFO)])
+async def mlb_batter_boards():
+    """Post both books' BATTER boards once lineups are out. Shadow channels.
+
+    Separate loop rather than a second call inside mlb_daily_boards: the two
+    boards run at different times, and a failure in one must not affect the
+    other. Games whose lineup still is not posted are simply absent — the scan
+    withholds them rather than guessing that a regular is playing.
+    """
+    if not (MLB_TASKS_ENABLED and MLB_BATTER_BOARD):
+        return
+    try:
+        mlb_board = _mlb_import("mlb.board")
+        for book in ("prizepicks", "underdog"):
+            try:
+                res = await asyncio.to_thread(mlb_board.run_daily, book,
+                                              None, True, True, "batter")
+                log.info("MLB batter board (%s): %s", book, res)
+            except Exception:  # noqa: BLE001
+                log.exception("MLB batter board failed for %s", book)
+    except Exception:  # noqa: BLE001
+        log.exception("MLB batter board task failed entirely (tennis unaffected)")
+
+
+@mlb_batter_boards.before_loop
+async def _before_mlb_batter_boards():
     await client.wait_until_ready()
 
 
@@ -4619,6 +4668,17 @@ async def on_ready():
                             MLB_BOARD_HOUR, MLB_BOARD_MINUTE, POD_TZINFO)
         except Exception:
             log.exception("failed to start MLB board loop (tennis unaffected)")
+        try:
+            if MLB_BATTER_BOARD and not mlb_batter_boards.is_running():
+                mlb_batter_boards.start()
+                log.warning("MLB batter board scheduled at %02d:%02d %s",
+                            MLB_BATTER_BOARD_HOUR, MLB_BATTER_BOARD_MINUTE,
+                            POD_TZINFO)
+            elif not MLB_BATTER_BOARD:
+                log.warning("MLB batter board OFF (set MLB_BATTER_BOARD=true; "
+                            "needs posted lineups, so it runs in the afternoon)")
+        except Exception:
+            log.exception("failed to start MLB batter loop (tennis unaffected)")
         try:
             if not mlb_resolve_and_recap.is_running():
                 mlb_resolve_and_recap.start()

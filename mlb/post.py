@@ -56,6 +56,38 @@ MAX_PLAYS = 12            # same board size as tennis, for comparability
 
 BOOK_LABEL = {"prizepicks": "PrizePicks", "underdog": "Underdog"}
 
+# Canonical prop -> (short unit for a board line, full name for the POTD).
+# Short units keep a 12-play board readable; the POTD spells the prop out.
+PROP_LABEL = {
+    "strikeouts":            ("K",     "STRIKEOUTS"),
+    "pitching_outs":         ("OUTS",  "PITCHING OUTS"),
+    "hits_allowed":          ("HA",    "HITS ALLOWED"),
+    "walks_allowed":         ("BBA",   "WALKS ALLOWED"),
+    "earned_runs":           ("ER",    "EARNED RUNS"),
+    "pitcher_fantasy_score": ("FS",    "PITCHER FANTASY SCORE"),
+    "hits":                  ("H",     "HITS"),
+    "total_bases":           ("TB",    "TOTAL BASES"),
+    "hitter_strikeouts":     ("K",     "HITTER STRIKEOUTS"),
+    "walks":                 ("BB",    "WALKS"),
+    "home_runs":             ("HR",    "HOME RUNS"),
+    "doubles":               ("2B",    "DOUBLES"),
+    "triples":               ("3B",    "TRIPLES"),
+    "singles":               ("1B",    "SINGLES"),
+    "runs":                  ("R",     "RUNS"),
+    "rbis":                  ("RBI",   "RBIS"),
+    "stolen_bases":          ("SB",    "STOLEN BASES"),
+    "hits_runs_rbis":        ("H+R+RBI", "HITS + RUNS + RBIS"),
+    "hitter_fantasy_score":  ("FS",    "HITTER FANTASY SCORE"),
+}
+
+
+def _labels(row: dict):
+    return PROP_LABEL.get(row.get("prop") or "strikeouts", ("", "PROP"))
+
+
+def _who(row: dict) -> str:
+    return str(row.get("player") or row.get("pitcher") or "?")
+
 
 def channel_for(book: str, kind: str = "board") -> int:
     """Channel id for a (book, kind) pair. 0 when unset — callers must refuse."""
@@ -95,8 +127,17 @@ def _stat_block(row: dict) -> str:
         bits.append(f"BF/start **{row['expected_bf']:.1f}**")
     if isinstance(row.get("opponent_k_rate"), (int, float)):
         bits.append(f"opp K% **{row['opponent_k_rate'] * 100:.1f}**")
+    if isinstance(row.get("pa_per_game"), (int, float)):
+        bits.append(f"PA/g **{row['pa_per_game']:.1f}**")
+    if row.get("lineup_slot"):
+        bits.append(f"bat **{row['lineup_slot']}**"
+                    + (f"{row.get('bat')}" if row.get("bat") else ""))
+    if isinstance(row.get("sd"), (int, float)):
+        bits.append(f"sd **{row['sd']:.1f}**")
     if row.get("starts_in_window"):
         bits.append(f"n=**{row['starts_in_window']}**")
+    elif row.get("games_in_window"):
+        bits.append(f"n=**{row['games_in_window']}**")
     c = row.get("context") or {}
     if isinstance(c.get("park_factor"), (int, float)):
         bits.append(f"park **{c['park_factor']:.2f}**")
@@ -108,6 +149,11 @@ def _stat_block(row: dict) -> str:
     basis = row.get("opponent_basis")
     if basis and basis != "team":
         bits.append(f"_{basis}_")
+    # Teammate-dependent props are marked ON THE BOARD, not only in code. Runs
+    # and RBIs are mostly a function of who bats around him, so the number is a
+    # weaker claim than a hit rate and should not read like one.
+    if row.get("teammate_dependent"):
+        bits.append("_teammate-dep_")
     return " · ".join(bits)
 
 
@@ -117,16 +163,17 @@ def _fmt_line(row: dict) -> str:
     proj = row.get("projection") or 0.0
     line = row.get("line")
     lean = (row.get("lean") or "").upper()
-    head = "**" + str(row.get("pitcher", "?")) + "**"
+    unit = _labels(row)[0]
+    head = "**" + _who(row) + "**"
     opp = "_vs " + str(row.get("opponent", "?")) + "_"
     if line is None:
         # No book line matched — projection only. Say so rather than implying a
         # market we did not read.
-        return head + "\n" + f"⚪ **PROJ {proj:.1f} K** · no line" + "\n" + opp
+        return head + "\n" + f"⚪ **PROJ {proj:.1f} {unit}** · no line" + "\n" + opp
     dot = "🟢" if lean == "OVER" else "🔴"
     pct = _side_prob(row)
     conf = f" · {pct * 100:.0f}%" if isinstance(pct, (int, float)) else ""
-    mid = f"{dot} **{lean} {line} K** · Proj {proj:.1f}{conf}"
+    mid = f"{dot} **{lean} {line} {unit}** · Proj {proj:.1f}{conf}"
     return head + "\n" + mid + "\n" + opp
 
 
@@ -139,9 +186,8 @@ def build_potd_embed(row: dict, book: str, date_label: str,
               if isinstance(edge, (int, float)) else "")
     dot = "🟢" if row.get("lean") == "OVER" else "🔴"
     parts = [
-        "**" + str(row.get("pitcher", "?")) + "** vs **"
-        + str(row.get("opponent", "?")) + "**",
-        f"{dot} **{row.get('lean')} {row.get('line')} STRIKEOUTS**",
+        "**" + _who(row) + "** vs **" + str(row.get("opponent", "?")) + "**",
+        f"{dot} **{row.get('lean')} {row.get('line')} {_labels(row)[1]}**",
         f"Proj {row.get('projection', 0):.1f} · {side * 100:.0f}%{edge_s}",
         "_" + _stat_block(row) + "_",
     ]
@@ -171,13 +217,22 @@ def build_board_embed(rows: list, date_label: str, book: str = "underdog",
         body = "\n\n".join(f"**{i}.** {_fmt_line(r)}"
                            for i, r in enumerate(rows, start_rank))
     else:
-        body = ("_No priced plays — no starter on this slate matched a "
+        body = ("_No priced plays — nothing on this slate matched a "
                 "straight two-way line on this book._")
     if shadow:
         body = ("⚠️ **SHADOW — not a released board.** Projections only, "
                 "nothing logged to the record.\n\n" + body)
+    # Name the prop types actually on the board rather than a fixed "Strikeouts",
+    # which stopped being true the moment the board carried more than one prop.
+    kinds = []
+    for r in rows:
+        u = _labels(r)[0]
+        if u and u not in kinds:
+            kinds.append(u)
+    sub = (" — " + " · ".join(kinds[:6]) + ("…" if len(kinds) > 6 else "")
+           if kinds else "")
     return {
-        "title": f"⚾ {date_label} {label} MLB Board — Strikeouts",
+        "title": f"⚾ {date_label} {label} MLB Board{sub}",
         "description": body[:4000],
         "color": COLOR,
         "footer": {"text": f"Baseline MLB · {label}"
@@ -195,33 +250,48 @@ def dedupe_by_game(rows: list) -> list:
     concentrates risk while looking like diversification. Exactly the reasoning
     behind the tennis one-play-per-match rule.
 
+    WITH MULTIPLE PROP TYPES THIS MATTERS MORE, not less. One game can now offer
+    a starter's strikeouts, his outs, his earned runs and nine batters' hits —
+    all driven by the same few hours of baseball. A short start pushes the
+    pitcher unders AND the opposing batters' overs together. Deduping by game
+    keeps a board of twelve plays from being three games wearing twelve hats.
+
     Rows must already be sorted best-first; the first sighting of a game_pk wins.
-    A row without a game_pk keys on its own pitcher and is never merged.
+    A row without a game_pk keys on its own player and is never merged.
     """
     seen, kept = set(), []
     for r in rows:
-        key = r.get("game_pk") or ("solo", r.get("pitcher"))
+        key = r.get("game_pk") or ("solo", _who(r))
         if key in seen:
-            log.info("mlb dedupe: dropped %s — same game as a stronger play",
-                     r.get("pitcher"))
+            log.info("mlb dedupe: dropped %s %s — same game as a stronger play",
+                     _who(r), r.get("prop"))
             continue
         seen.add(key)
         kept.append(r)
     return kept
 
 
-def build_embeds(rows: list, date_label: str, book: str,
-                 shadow: bool = True) -> list:
-    """POTD first when one qualifies, then the rest of the board — the same shape
-    the tennis boards post in.
+def postable(rows: list) -> list:
+    """Exactly the rows a board will show, in board order.
+
+    ONE FUNCTION, so the POTD, the board body and the stored record can never
+    disagree about what the board contained. Choosing a star from the unfiltered
+    list is how tennis once posted a Pick of the Day that was not on the board
+    at all.
 
     PRICED PLAYS ONLY. A projection with no book line is not actionable: there is
     nothing to be over or under, nothing to grade, and nothing to store. Showing
     them padded the board with "no line" rows that occupied slots a real play
-    could have used. They are filtered here so no display path can reach them.
+    could have used.
     """
-    rows = [r for r in rows if r.get("line") is not None]
-    rows = dedupe_by_game(rows)
+    return dedupe_by_game([r for r in rows if r.get("line") is not None])
+
+
+def build_embeds(rows: list, date_label: str, book: str,
+                 shadow: bool = True) -> list:
+    """POTD first when one qualifies, then the rest of the board — the same shape
+    the tennis boards post in."""
+    rows = postable(rows)
     potd = select_potd(rows)
     if not potd:
         return [build_board_embed(rows, date_label, book=book, shadow=shadow)]

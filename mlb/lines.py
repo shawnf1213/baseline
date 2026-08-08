@@ -1,5 +1,5 @@
 """
-MLB book lines — PrizePicks and Underdog.
+MLB book lines — PrizePicks and Underdog, all prop types.
 
 Both books are scanned and kept SEPARATE, mirroring how tennis runs a PrizePicks
 board and an Underdog board with their own records. A line is always labelled with
@@ -16,6 +16,35 @@ one cheap HTTP call on a shadow board.
 
 Satisfies Rule 6 (market anchor where odds exist): the projection is compared
 against a real posted line, not an invented one.
+
+THE TWO BOOKS DO NOT AGREE ON PROP NAMES, so there are two maps, not one:
+
+    canonical prop      PrizePicks stat_type      Underdog display_stat
+    strikeouts          "Pitcher Strikeouts"      "Strikeouts"      <- ambiguous
+    hitter_strikeouts   "Hitter Strikeouts"       (not offered)
+    hits_runs_rbis      "Hits+Runs+RBIs"          "Hits + Runs + RBIs"
+    walks               "Walks"                   "Batter Walks"
+
+Mapping either book's strings onto the other would mislabel props. Observed live
+2026-08-07.
+
+ROLE, NOT STRING, DISAMBIGUATES A BARE "Strikeouts"
+---------------------------------------------------
+Underdog posts "Strikeouts" with no Pitcher/Hitter qualifier. Pricing a batter
+with the pitcher model would be silent and catastrophic — the same failure mode
+"Hitter Strikeouts" already nearly caused on PrizePicks.
+
+It is tempting to infer from counts (2 "Strikeouts" lines against 18 of every
+batter prop, so it must be pitchers). That is an inference from one small
+snapshot, and small snapshots have been wrong repeatedly here. So the ambiguity
+is resolved by ROLE instead: the schedule already names every probable starter,
+and callers pass that set in. A name in it gets the pitcher prop; a name not in
+it gets the hitter prop. No guessing, and it stays correct if Underdog adds a
+hitter strikeout market tomorrow.
+
+UNMAPPED STRINGS ARE LOGGED, NOT DROPPED SILENTLY. A book renaming a prop, or
+adding one we could price, should show up in the logs rather than quietly
+shrinking the board.
 """
 
 import logging
@@ -37,21 +66,92 @@ _HEADERS = {
     "Accept": "application/json",
 }
 
-# Underdog display_stat -> Baseline MLB prop. Strikeouts first, per the North Star.
-PROP_MAP = {"Strikeouts": "strikeouts"}
+# Sentinels resolved by role at fetch time — never returned to a caller.
+_AMBIG_K = "_strikeouts_by_role"
+_AMBIG_FS = "_fantasy_by_role"
 
-# PrizePicks stat_type -> Baseline MLB prop.
-# CRITICAL: PrizePicks lists BOTH "Pitcher Strikeouts" (159 lines, the pitcher
-# prop we model) and "Hitter Strikeouts" (333 lines, a BATTER prop — how often a
-# hitter strikes out). Mapping the wrong one would silently price batters with a
-# pitcher model. Only the pitcher prop is mapped, by exact string.
-PP_PROP_MAP = {"Pitcher Strikeouts": "strikeouts"}
+# Underdog display_stat -> canonical prop. Observed live 2026-08-07.
+PROP_MAP = {
+    "Strikeouts":          _AMBIG_K,        # no Pitcher/Hitter qualifier
+    "Fantasy Score":       _AMBIG_FS,
+    "Fantasy Points":      _AMBIG_FS,
+    "Pitching Outs":       "pitching_outs",
+    "Hits Allowed":        "hits_allowed",
+    "Earned Runs Allowed": "earned_runs",
+    "Walks Allowed":       "walks_allowed",
+    "Hits":                "hits",
+    "Total Bases":         "total_bases",
+    "Home Runs":           "home_runs",
+    "Runs":                "runs",
+    "RBIs":                "rbis",
+    "Batter Walks":        "walks",
+    "Stolen Bases":        "stolen_bases",
+    "Doubles":             "doubles",
+    "Triples":             "triples",
+    "Singles":             "singles",
+    "Hits + Runs + RBIs":  "hits_runs_rbis",
+}
+
+# PrizePicks stat_type -> canonical prop. Observed live 2026-08-07.
+# CRITICAL: PrizePicks lists BOTH "Pitcher Strikeouts" and "Hitter Strikeouts"
+# (a BATTER prop — how often a hitter strikes out). They are mapped to different
+# canonical props by exact string; neither is ever matched by prefix.
+PP_PROP_MAP = {
+    "Pitcher Strikeouts":    "strikeouts",
+    "Hitter Strikeouts":     "hitter_strikeouts",
+    "Pitcher Fantasy Score": "pitcher_fantasy_score",
+    "Hitter Fantasy Score":  "hitter_fantasy_score",
+    "Pitching Outs":         "pitching_outs",
+    "Hits Allowed":          "hits_allowed",
+    "Earned Runs Allowed":   "earned_runs",
+    "Walks Allowed":         "walks_allowed",
+    "Hits":                  "hits",
+    "Total Bases":           "total_bases",
+    "Home Runs":             "home_runs",
+    "Runs":                  "runs",
+    "RBIs":                  "rbis",
+    "Walks":                 "walks",
+    "Stolen Bases":          "stolen_bases",
+    "Doubles":               "doubles",
+    "Triples":               "triples",
+    "Singles":               "singles",
+    "Hits+Runs+RBIs":        "hits_runs_rbis",
+}
+
+# Which engine prices each canonical prop. The board dispatches on this rather
+# than on a string prefix, so a prop can never reach the wrong model.
+PITCHER_PROPS = ("strikeouts", "pitching_outs", "hits_allowed",
+                 "walks_allowed", "earned_runs", "pitcher_fantasy_score")
+BATTER_PROPS = ("hits", "total_bases", "hitter_strikeouts", "walks",
+                "home_runs", "doubles", "triples", "singles", "runs",
+                "rbis", "stolen_bases", "hits_runs_rbis",
+                "hitter_fantasy_score")
 
 
 def _norm(s: str) -> str:
     s = "".join(c for c in unicodedata.normalize("NFKD", s or "")
                 if not unicodedata.combining(c))
     return re.sub(r"[^a-z ]", " ", s.lower()).strip()
+
+
+def _resolve(prop: str, norm_name: str, pitcher_names) -> str:
+    """Turn an ambiguous prop into a concrete one using the player's ROLE.
+
+    `pitcher_names` is the set of normalised probable starters for the slate.
+    When it is None the caller did not supply the schedule, and a bare
+    "Strikeouts" falls back to the pitcher prop — the historical behaviour that
+    the working strikeout board relies on. That fallback is logged.
+    """
+    if prop == _AMBIG_K:
+        if pitcher_names is None:
+            return "strikeouts"
+        return "strikeouts" if norm_name in pitcher_names else "hitter_strikeouts"
+    if prop == _AMBIG_FS:
+        if pitcher_names is None:
+            return "hitter_fantasy_score"
+        return ("pitcher_fantasy_score" if norm_name in pitcher_names
+                else "hitter_fantasy_score")
+    return prop
 
 
 def _is_straight(ln: dict) -> bool:
@@ -72,8 +172,8 @@ def _is_straight(ln: dict) -> bool:
     return True
 
 
-def fetch_prizepicks_lines() -> dict:
-    """PrizePicks Pitcher Strikeouts -> {normalised name: {line, ...}}.
+def fetch_prizepicks_lines(pitcher_names=None) -> dict:
+    """PrizePicks MLB lines -> {(normalised name, prop): {...}}.
 
     Standard lines only: a "demon"/"goblin" line is a different payout structure,
     the same reason the tennis board filters on odds_type. PrizePicks posts no
@@ -89,7 +189,7 @@ def fetch_prizepicks_lines() -> dict:
         return {}
     try:
         inc = {(i.get("type"), i.get("id")): i for i in (board.get("included") or [])}
-        out, skipped = {}, 0
+        out, skipped, unmapped = {}, 0, {}
         for proj in (board.get("data") or []):
             a = proj.get("attributes") or {}
             rel = proj.get("relationships") or {}
@@ -98,7 +198,10 @@ def fetch_prizepicks_lines() -> dict:
                      .get("attributes", {}).get("name") or "")
             if lname.upper() != "MLB":
                 continue
-            if PP_PROP_MAP.get((a.get("stat_type") or "").strip()) != "strikeouts":
+            stat = (a.get("stat_type") or "").strip()
+            prop = PP_PROP_MAP.get(stat)
+            if not prop:
+                unmapped[stat] = unmapped.get(stat, 0) + 1
                 continue
             if (a.get("odds_type") or "standard").lower() != "standard":
                 skipped += 1
@@ -114,36 +217,30 @@ def fetch_prizepicks_lines() -> dict:
                 line = float(a["line_score"])
             except (TypeError, ValueError):
                 continue
-            out[_norm(name)] = {"pitcher": name, "line": line,
-                                "over_price": None, "under_price": None,
-                                "book": "prizepicks"}
+            nn = _norm(name)
+            out[(nn, _resolve(prop, nn, pitcher_names))] = {
+                "player": name, "line": line, "prop": prop,
+                "over_price": None, "under_price": None, "book": "prizepicks"}
         if skipped:
             log.info("mlb prizepicks: skipped %d non-standard (demon/goblin) line(s)",
                      skipped)
-        log.info("mlb prizepicks: %d standard pitcher-strikeout lines", len(out))
+        if unmapped:
+            log.info("mlb prizepicks: %d unmapped stat_type(s): %s",
+                     len(unmapped), dict(sorted(unmapped.items(),
+                                                key=lambda kv: -kv[1])[:12]))
+        log.info("mlb prizepicks: %d standard lines across %d prop type(s)",
+                 len(out), len({p for _, p in out}))
         return out
     except Exception as exc:  # noqa: BLE001
         log.exception("mlb prizepicks parse failed: %s", exc)
         return {}
 
 
-def fetch_lines(book: str) -> dict:
-    """Dispatch to a book. {} for an unknown book — never a silent fallback to
-    the other one, which would mislabel where a line came from."""
-    if book == "underdog":
-        return fetch_strikeout_lines()
-    if book == "prizepicks":
-        return fetch_prizepicks_lines()
-    log.warning("mlb lines: unknown book %r", book)
-    return {}
+def fetch_underdog_lines(pitcher_names=None) -> dict:
+    """Underdog straight two-way MLB lines -> {(normalised name, prop): {...}}.
 
-
-def fetch_strikeout_lines() -> dict:
-    """Underdog straight two-way strikeout lines.
-    {normalised pitcher name: {line, over_price, under_price}}.
-
-    {} on any failure — a missing line feed means the board posts
-    projection-only, never a guessed number.
+    {} on any failure — a missing line feed means the board posts nothing for
+    that book, never a guessed number.
     """
     try:
         r = requests.get(BOARD_URL, headers=_HEADERS, timeout=TIMEOUT)
@@ -157,14 +254,16 @@ def fetch_strikeout_lines() -> dict:
                    if str(p.get("sport_id", "")).upper() == "MLB"}
         apps = {a.get("id"): a for a in (board.get("appearances") or [])
                 if a.get("player_id") in players}
-        out = {}
-        skipped_mult = 0
+        out, skipped_mult, unmapped = {}, 0, {}
         for ln in (board.get("over_under_lines") or []):
             st = (ln.get("over_under") or {}).get("appearance_stat") or {}
             app = apps.get(st.get("appearance_id"))
             if not app:
                 continue
-            if PROP_MAP.get(st.get("display_stat")) != "strikeouts":
+            stat = st.get("display_stat") or ""
+            prop = PROP_MAP.get(stat)
+            if not prop:
+                unmapped[stat] = unmapped.get(stat, 0) + 1
                 continue
             if not _is_straight(ln):
                 skipped_mult += 1
@@ -183,49 +282,95 @@ def fetch_strikeout_lines() -> dict:
                     over_px = o.get("american_price")
                 elif o.get("choice") == "lower":
                     under_px = o.get("american_price")
-            out[_norm(name)] = {"pitcher": name, "line": line,
-                                "over_price": over_px, "under_price": under_px,
-                                "book": "underdog"}
+            nn = _norm(name)
+            resolved = _resolve(prop, nn, pitcher_names)
+            if prop in (_AMBIG_K, _AMBIG_FS) and pitcher_names is None:
+                log.info("mlb underdog: %r for %s resolved to %s by FALLBACK "
+                         "(no schedule supplied)", stat, name, resolved)
+            out[(nn, resolved)] = {
+                "player": name, "line": line, "prop": resolved,
+                "over_price": over_px, "under_price": under_px,
+                "book": "underdog"}
         if skipped_mult:
-            log.info("mlb lines: skipped %d multiplier/one-sided strikeout line(s)",
+            log.info("mlb lines: skipped %d multiplier/one-sided line(s)",
                      skipped_mult)
-        log.info("mlb lines: %d straight strikeout lines", len(out))
+        if unmapped:
+            log.info("mlb underdog: %d unmapped display_stat(s): %s",
+                     len(unmapped), dict(sorted(unmapped.items(),
+                                                key=lambda kv: -kv[1])[:12]))
+        log.info("mlb underdog: %d straight lines across %d prop type(s)",
+                 len(out), len({p for _, p in out}))
         return out
     except Exception as exc:  # noqa: BLE001
         log.exception("mlb lines parse failed: %s", exc)
         return {}
 
 
-def attach(rows: list, lines: dict = None, book: str = "underdog") -> list:
-    """Attach book lines to projection rows, matched on normalised pitcher name.
+# Kept under its original name: the strikeout board and its tests call this.
+fetch_strikeout_lines = fetch_underdog_lines
 
-    A row with no matching line keeps `line=None` and posts projection-only. The
-    market probability is de-vigged through core so an MLB market probability
-    means exactly what a tennis one does.
+
+def fetch_lines(book: str, pitcher_names=None) -> dict:
+    """Dispatch to a book. {} for an unknown book — never a silent fallback to
+    the other one, which would mislabel where a line came from.
+
+    `pitcher_names`: normalised names of the slate's probable starters, used to
+    resolve props whose book string does not say whether it is a pitcher or a
+    hitter market. See the module docstring.
+    """
+    if book == "underdog":
+        return fetch_underdog_lines(pitcher_names)
+    if book == "prizepicks":
+        return fetch_prizepicks_lines(pitcher_names)
+    log.warning("mlb lines: unknown book %r", book)
+    return {}
+
+
+def price(row: dict, match: dict) -> dict:
+    """Attach one book line to one projection row and compute the market edge.
+
+    Split out of attach() so the multi-prop board can price a row it built
+    itself. The over/under probabilities already live on the row — each prop
+    engine computes them with ITS OWN dispersion — so this never recomputes
+    them with a strikeout dispersion, which is what the old single-prop path
+    did and would now be wrong for four of the five pitcher props.
+    """
+    from core import odds as _odds
+    row["line"] = match["line"]
+    row["book"] = match.get("book")
+    po, pu = _odds.devig_two_way(match.get("over_price"), match.get("under_price"))
+    if po is not None:
+        row["market_p_over"] = round(po, 4)
+        row["market_p_under"] = round(pu, 4)
+        # Model minus market, on the model's own side. The number that says
+        # whether we disagree with the book and by how much.
+        side = row.get("p_over") if row.get("lean") == "OVER" else row.get("p_under")
+        mkt = po if row.get("lean") == "OVER" else pu
+        if isinstance(side, (int, float)):
+            row["edge_vs_market"] = round(side - mkt, 4)
+    return row
+
+
+def attach(rows: list, lines: dict = None, book: str = "underdog") -> list:
+    """Attach book lines to STRIKEOUT projection rows, matched on player name.
+
+    The legacy single-prop path, still used by the strikeouts-only scan. Rows
+    carry no prop key, so this looks up the strikeout entry specifically. The
+    multi-prop board uses price() instead.
     """
     lines = lines if lines is not None else fetch_lines(book)
     if not lines:
         return rows
-    from core import odds as _odds
     from . import strikeouts as _so
     hit = 0
     for r in rows:
-        m = lines.get(_norm(r.get("pitcher") or ""))
+        nn = _norm(r.get("pitcher") or "")
+        m = lines.get((nn, "strikeouts"))
         if not m:
             continue
         hit += 1
-        r["line"] = m["line"]
-        r["book"] = m.get("book", book)
         r.update(_so._over_under(r["projection"], m["line"]))
-        po, pu = _odds.devig_two_way(m.get("over_price"), m.get("under_price"))
-        if po is not None:
-            r["market_p_over"] = round(po, 4)
-            r["market_p_under"] = round(pu, 4)
-            # Model minus market, on the model's own side. The number that says
-            # whether we disagree with the book and by how much.
-            side = r.get("p_over") if r.get("lean") == "OVER" else r.get("p_under")
-            mkt = po if r.get("lean") == "OVER" else pu
-            if isinstance(side, (int, float)):
-                r["edge_vs_market"] = round(side - mkt, 4)
-    log.info("mlb lines: %s matched %d/%d projections", book, hit, len(rows))
+        price(r, m)
+    log.info("mlb lines: %s matched %d/%d strikeout projections", book, hit,
+             len(rows))
     return rows

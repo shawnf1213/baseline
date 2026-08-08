@@ -44,8 +44,12 @@ def resolve_pending(book: str = None) -> dict:
     out = {"graded": 0, "still_pending": 0, "errors": 0}
     for row in store.pending(book):
         try:
+            # THE PROP MUST BE PASSED. Defaulting to strikeouts would settle an
+            # earned-runs pick against the pitcher's K count — a silent misgrade
+            # that looks like a real result.
             r = _board.resolve(row.get("pitcher_id"),
-                               game_date=row.get("slate_date"))
+                               game_date=row.get("slate_date"),
+                               prop=row.get("prop_type") or "strikeouts")
             if r.get("result") != "OK":
                 out["still_pending"] += 1
                 continue
@@ -106,13 +110,17 @@ def build_recap_embed(book: str, slate_date: str, shadow: bool = True) -> dict:
         res = (r.get("result") or "PENDING").upper()
         mark = _MARK.get(res, "⏳")
         val = r.get("result_value")
+        # Unit comes from the row's own prop — a recap that labels every result
+        # "K" is wrong the moment the board carries more than strikeouts.
+        from .post import PROP_LABEL
+        unit = PROP_LABEL.get(r.get("prop_type") or "strikeouts", ("", ""))[0]
         tail = ""
         if res in ("W", "L", "PUSH") and isinstance(val, (int, float)):
-            tail = f"  →  **{val:g} K**"
+            tail = f"  →  **{val:g} {unit}**"
         elif res == "VOID":
             tail = "  —  **DNP**"
         lines.append(f"{mark} **{r.get('pitcher')}** "
-                     f"{r.get('lean')} {r.get('line')}{tail}")
+                     f"{r.get('lean')} {r.get('line')} {unit}{tail}")
     w = sum(1 for r in rows if (r.get("result") or "") in ("W", "PUSH"))
     l = sum(1 for r in rows if (r.get("result") or "") == "L")
     v = sum(1 for r in rows if (r.get("result") or "") == "VOID")

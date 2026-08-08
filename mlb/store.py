@@ -119,9 +119,13 @@ def log_board(rows: list, book: str, slate_date: str, potd_key=None,
     nothing to grade against, and storing it would pad the denominator with
     picks that were never actionable.
 
-    Idempotent per (book, slate_date, pitcher): re-posting a board updates the
-    existing row rather than double-counting it, which is the failure that hit
-    the tennis record when a board was posted twice.
+    Idempotent per (book, slate_date, player, prop_type): re-posting a board
+    updates the existing row rather than double-counting it, which is the failure
+    that hit the tennis record when a board was posted twice.
+
+    PROP_TYPE IS PART OF THE KEY, not decoration. One pitcher now carries up to
+    five props on the same slate; keying on the player alone would make each
+    prop overwrite the last and store one row where five were posted.
     """
     if not _init():
         return 0
@@ -132,21 +136,26 @@ def log_board(rows: list, book: str, slate_date: str, potd_key=None,
             for r in rows:
                 if r.get("line") is None:
                     continue
+                # Batter rows carry `player`; the pitcher path carries `pitcher`.
+                # The column is named `pitcher` for history and now holds either.
+                who = r.get("player") or r.get("pitcher")
+                prop = r.get("prop") or "strikeouts"
                 existing = (s.query(_MlbPick)
                             .filter_by(book=book, slate_date=slate_date,
-                                       pitcher=r.get("pitcher"))
+                                       pitcher=who, prop_type=prop)
                             .one_or_none())
                 vals = dict(
                     sport="mlb", book=book, slate_date=slate_date,
-                    pitcher=r.get("pitcher"), pitcher_id=r.get("pitcher_id"),
-                    opponent=r.get("opponent", ""), prop_type="strikeouts",
+                    pitcher=who,
+                    pitcher_id=r.get("pitcher_id") or r.get("batter_id"),
+                    opponent=r.get("opponent", ""), prop_type=prop,
                     line=r.get("line"), projection=r.get("projection"),
                     lean=r.get("lean"), probability=_side_prob(r),
                     market_prob=(r.get("market_p_over")
                                  if r.get("lean") == "OVER"
                                  else r.get("market_p_under")),
                     edge_vs_market=r.get("edge_vs_market"),
-                    is_potd=1 if (potd_key and r.get("pitcher") == potd_key) else 0,
+                    is_potd=1 if (potd_key and (who, prop) == potd_key) else 0,
                     shadow=1 if shadow else 0, game_pk=r.get("game_pk"),
                 )
                 if existing:
