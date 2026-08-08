@@ -88,8 +88,12 @@ def main() -> int:
                    help="restrict the prop family (default: everything)")
     p.add_argument("--post", action="store_true",
                    help="actually post to the MLB channels (default: dry run)")
-    p.add_argument("--store", action="store_true",
-                   help="persist the board; implied by --post")
+    p.add_argument("--store-only", action="store_true", dest="store_only",
+                   help="persist the board WITHOUT posting. For repairing a run "
+                        "that posted but could not reach the database — an "
+                        "unstored board has nothing to grade and produces no "
+                        "recap. Re-scans, so lines may have moved slightly "
+                        "since the post; that is reported.")
     p.add_argument("-v", "--verbose", action="store_true")
     a = p.parse_args()
 
@@ -112,6 +116,26 @@ def main() -> int:
 
     failures = 0
     for bk in books:
+        if a.store_only:
+            from mlb import post as _post, store as _store
+            if not _store.available():
+                print(f"\n  {bk}: STORE UNAVAILABLE — check MLB_DATABASE_URL "
+                      f"and that SQLAlchemy is installed", file=sys.stderr)
+                failures += 1
+                continue
+            rows = board.scan_all_props(slate, book=bk, only=a.only)
+            rows.sort(key=lambda r: -((r.get("p_over") if r.get("lean") == "OVER"
+                                       else r.get("p_under")) or 0))
+            keep = _post.postable(rows)
+            potd = _post.select_potd(keep)
+            n = _store.log_board(
+                keep, bk, slate,
+                potd_key=((potd.get("player") or potd.get("pitcher"),
+                           potd.get("prop")) if potd else None),
+                shadow=True)
+            print(f"\n### {bk.upper()}  stored={n} of {len(keep)} board rows "
+                  f"(not posted)")
+            continue
         if a.post:
             # run_daily scans, posts, then persists — and only persists after a
             # successful send, so an unposted board is never recorded as one.
@@ -129,7 +153,7 @@ def main() -> int:
                                        else r.get("p_under")) or 0))
             show(rows, bk)
 
-    if not a.post:
+    if not (a.post or a.store_only):
         print("\n  dry run — nothing posted, nothing stored. Add --post to send.")
     return 1 if failures else 0
 
