@@ -2933,6 +2933,64 @@ MLB_TEST_VALUE = float(os.getenv("MLB_TEST_VALUE", "1") or 1)
 # a heuristic would eventually delete a real pick. Unset it after use.
 MLB_PURGE_SLATE = (os.getenv("MLB_PURGE_SLATE", "") or "").strip()
 
+# ── MLB_RUN_NOW: post the boards once, right now ─────────────────────────────
+# Distinct from MLB_TEST_RUN, which force-grades every pending pick with a
+# FABRICATED value and posts recaps. This one only scans and posts a board —
+# no grading, no recap, no invented results. It is what you want when the books
+# have just put a slate up and you want to see the board before the 9am loop.
+#
+# MLB_RUN_NOW_ONLY=pitcher|batter restricts the prop family.
+# MLB_RUN_NOW_DATE=YYYY-MM-DD targets an explicit slate.
+MLB_RUN_NOW = os.getenv("MLB_RUN_NOW", "").strip().lower() in (
+    "1", "true", "yes", "on")
+MLB_RUN_NOW_ONLY = (os.getenv("MLB_RUN_NOW_ONLY", "") or "").strip() or None
+MLB_RUN_NOW_DATE = (os.getenv("MLB_RUN_NOW_DATE", "") or "").strip() or None
+
+
+def _mlb_target_slate():
+    """Which slate a manual run should board.
+
+    Rolls to TOMORROW when every game today has already started. Both books put
+    the next day's lines up late in the evening, so a manual run at 11pm means
+    "board the slate that just went up", not "board the fifteen games that are
+    already final". The scheduled 9am loop is unaffected — at 9am today's games
+    have not started, so this returns today.
+    """
+    try:
+        mlb_client = _mlb_import("mlb.client")
+        import datetime as _d
+        et = _d.datetime.now(POD_TZINFO)
+        today = et.strftime("%Y-%m-%d")
+        games = mlb_client.get_schedule(today)
+        if games and not any(g.get("abstract_state") in (None, "Preview")
+                             for g in games):
+            tomorrow = (et + _d.timedelta(days=1)).strftime("%Y-%m-%d")
+            log.warning("MLB RUN NOW: all %d game(s) on %s have started — "
+                        "boarding %s instead", len(games), today, tomorrow)
+            return tomorrow
+        return today
+    except Exception:  # noqa: BLE001
+        log.exception("MLB slate selection failed; using default")
+        return None
+
+
+async def _mlb_run_now():
+    """Runs once at startup when MLB_RUN_NOW is set. Boards only. Never raises."""
+    try:
+        mlb_board = _mlb_import("mlb.board")
+        slate = MLB_RUN_NOW_DATE or _mlb_target_slate()
+        log.warning("MLB RUN NOW: boarding slate=%s only=%s (no grading, "
+                    "no recap)", slate, MLB_RUN_NOW_ONLY or "all props")
+        for book in ("prizepicks", "underdog"):
+            try:
+                res = await asyncio.to_thread(mlb_board.run_daily, book, slate,
+                                              True, True, MLB_RUN_NOW_ONLY)
+                log.warning("MLB RUN NOW board (%s): %s", book, res)
+            except Exception:  # noqa: BLE001 — one book must not stop the other
+                log.exception("MLB RUN NOW failed for %s", book)
+    except Exception:  # noqa: BLE001
+        log.exception("MLB RUN NOW failed entirely (tennis unaffected)")
+
 
 async def _mlb_purge_once():
     """Runs once at startup when MLB_PURGE_SLATE is set. Never raises."""
@@ -4692,6 +4750,13 @@ async def on_ready():
                             MLB_PURGE_SLATE)
         except Exception:
             log.exception("failed to schedule MLB purge (tennis unaffected)")
+        try:
+            if MLB_RUN_NOW:
+                asyncio.create_task(_mlb_run_now())
+                log.warning("MLB_RUN_NOW set — one-shot board scheduled "
+                            "(boards only, no grading, no recap)")
+        except Exception:
+            log.exception("failed to schedule MLB run-now (tennis unaffected)")
         try:
             if MLB_TEST_RUN:
                 # asyncio.create_task, NOT client.loop.create_task: in discord.py
