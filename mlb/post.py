@@ -185,6 +185,31 @@ def build_board_embed(rows: list, date_label: str, book: str = "underdog",
     }
 
 
+def dedupe_by_game(rows: list) -> list:
+    """One play per GAME, keeping the strongest.
+
+    Both starters in a matchup are projectable, so a board could carry Wheeler
+    AND the arm opposing him — one game represented twice. Worse than cosmetic:
+    the two are negatively correlated through game length. A game that turns into
+    a bullpen day suppresses BOTH starters' strikeouts, so carrying both sides
+    concentrates risk while looking like diversification. Exactly the reasoning
+    behind the tennis one-play-per-match rule.
+
+    Rows must already be sorted best-first; the first sighting of a game_pk wins.
+    A row without a game_pk keys on its own pitcher and is never merged.
+    """
+    seen, kept = set(), []
+    for r in rows:
+        key = r.get("game_pk") or ("solo", r.get("pitcher"))
+        if key in seen:
+            log.info("mlb dedupe: dropped %s — same game as a stronger play",
+                     r.get("pitcher"))
+            continue
+        seen.add(key)
+        kept.append(r)
+    return kept
+
+
 def build_embeds(rows: list, date_label: str, book: str,
                  shadow: bool = True) -> list:
     """POTD first when one qualifies, then the rest of the board — the same shape
@@ -196,6 +221,7 @@ def build_embeds(rows: list, date_label: str, book: str,
     could have used. They are filtered here so no display path can reach them.
     """
     rows = [r for r in rows if r.get("line") is not None]
+    rows = dedupe_by_game(rows)
     potd = select_potd(rows)
     if not potd:
         return [build_board_embed(rows, date_label, book=book, shadow=shadow)]
