@@ -2899,7 +2899,12 @@ async def mlb_resolve_and_recap():
             try:
                 graded = await asyncio.to_thread(mlb_recap.resolve_pending, book)
                 log.info("MLB resolve (%s): %s", book, graded)
-                res = await asyncio.to_thread(mlb_recap.post_recap, book)
+                # post_ready_recap, NOT post_recap: the latter defaults to
+                # TODAY's slate, so a recap held past midnight became
+                # unreachable — the board it wanted was yesterday's and "today"
+                # had no board at all. This picks the oldest settled, unposted
+                # slate in the last few days.
+                res = await asyncio.to_thread(mlb_recap.post_ready_recap, book)
                 if res.get("ok"):
                     log.info("MLB recap posted (%s)", book)
                 else:

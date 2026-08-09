@@ -18,7 +18,7 @@ import os
 import logging
 import datetime as _dt
 
-from . import store, post as _post
+from . import store, post as _post, client
 from .post import BOOK_LABEL, COLOR
 
 log = logging.getLogger("baseline.mlb.recap")
@@ -39,9 +39,31 @@ def resolve_pending(book: str = None) -> dict:
     logic lives with the sport. A start that cannot be found stays PENDING rather
     than being graded as a zero — the tennis resolver produced four misgrades in
     a week by treating absent data as a real result, and that lesson transfers.
+
+    EXCEPT ONCE THE GAME IS FINAL. A pitcher who was scratched will NEVER produce
+    a game log, so "stays pending" means pending forever, and one such pick holds
+    its whole slate's recap hostage — which is exactly what happened to 8/8. When
+    the game has finished and the player still has no line in it, he did not
+    play: that is a VOID, the same thing the book does, not an unknown.
     """
     from . import board as _board
-    out = {"graded": 0, "still_pending": 0, "errors": 0}
+    out = {"graded": 0, "still_pending": 0, "voided": 0, "errors": 0}
+    _final_cache = {}
+
+    def _game_is_final(slate_date, game_pk) -> bool:
+        """True when this pick's game has finished. Unknown -> False, so a
+        missing schedule can never manufacture a void."""
+        if not game_pk or not slate_date:
+            return False
+        if slate_date not in _final_cache:
+            try:
+                _final_cache[slate_date] = {
+                    g.get("game_pk"): g.get("abstract_state")
+                    for g in client.get_schedule(slate_date)}
+            except Exception:  # noqa: BLE001
+                _final_cache[slate_date] = {}
+        return _final_cache[slate_date].get(game_pk) == "Final"
+
     for row in store.pending(book):
         try:
             # THE PROP MUST BE PASSED. Defaulting to strikeouts would settle an
@@ -51,6 +73,16 @@ def resolve_pending(book: str = None) -> dict:
                                game_date=row.get("slate_date"),
                                prop=row.get("prop_type") or "strikeouts")
             if r.get("result") != "OK":
+                if _game_is_final(row.get("slate_date"), row.get("game_pk")):
+                    if store.update_result(row["id"], "VOID", None):
+                        out["voided"] += 1
+                        log.info("mlb resolve: VOID %s %s (%s) — game final, "
+                                 "no appearance: %s", row.get("pitcher"),
+                                 row.get("prop_type"), row.get("slate_date"),
+                                 r.get("reason"))
+                    else:
+                        out["errors"] += 1
+                    continue
                 out["still_pending"] += 1
                 continue
             value = r.get("value")
@@ -149,7 +181,7 @@ def build_recap_embed(book: str, slate_date: str, shadow: bool = True) -> dict:
     except Exception:  # noqa: BLE001
         _label_date = slate_date
     return {
-        "title": f"📊 {_label_date} {label} MLB Recap — Strikeouts",
+        "title": f"📊 {_label_date} {label} MLB Recap",
         "description": desc[:4000],
         "color": COLOR,
         "footer": {"text": f"Baseline MLB · {label}"
@@ -196,6 +228,51 @@ def already_posted(book: str, slate_date: str, token: str = None) -> bool:
         return True
 
 
+LOOKBACK_DAYS = 3
+
+
+def pending_slates(book: str, days: int = LOOKBACK_DAYS) -> list:
+    """Stored slates for this book over the last `days`, OLDEST FIRST.
+
+    A recap covers the slate that FINISHED, not the one in progress. Defaulting
+    to today was the bug that swallowed the 8/8 recap: at 22:21 ET the 8/8 board
+    was found but one pick was still pending, so it held — and by 00:21 ET
+    "today" had rolled to 8/9, which has no stored board yet. The day became
+    unreachable, and every later pass reported "no stored board for that slate"
+    as though nothing had ever been boarded.
+
+    Looking back several days, oldest first, also recovers a slate held up by a
+    late finish: it posts as soon as it settles instead of being skipped.
+    """
+    out = []
+    today = _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=-4)))
+    for back in range(days, -1, -1):
+        d = (today - _dt.timedelta(days=back)).strftime("%Y-%m-%d")
+        if store.board_for(book, d):
+            out.append(d)
+    return out
+
+
+def post_ready_recap(book: str, token: str = None, shadow: bool = True) -> dict:
+    """Post the oldest stored slate that is fully settled and not yet posted.
+
+    This is what the scheduled loop should call. post_recap() targets ONE slate;
+    this picks the right one.
+    """
+    slates = pending_slates(book)
+    if not slates:
+        return {"ok": False, "book": book, "reason": "no stored board in the "
+                f"last {LOOKBACK_DAYS} days"}
+    last = {"ok": False, "book": book, "reason": "nothing ready"}
+    for d in slates:
+        res = post_recap(book, d, token=token, shadow=shadow)
+        if res.get("ok"):
+            return res
+        last = res
+        last["slate"] = d
+    return last
+
+
 def post_recap(book: str, slate_date: str = None, token: str = None,
                shadow: bool = True, require_settled: bool = True,
                force: bool = False) -> dict:
@@ -203,6 +280,9 @@ def post_recap(book: str, slate_date: str = None, token: str = None,
 
     require_settled mirrors the tennis rule: a day posts only once every pick on
     it is settled. An incomplete recap is worse than a late one. Never raises.
+
+    Callers wanting "whichever day is ready" should use post_ready_recap();
+    this one recaps exactly the slate it is given.
     """
     import requests
     slate_date = slate_date or et_today()
