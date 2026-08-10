@@ -2914,6 +2914,32 @@ async def _before_mlb_second_boards():
     await client.wait_until_ready()
 
 
+# ── MLB line movement — one channel, BOTH books, every alert labelled ────────
+# PrizePicks and Underdog post different lines on the same pitcher and share
+# this channel, so an unlabelled alert is a real number attached to a market it
+# may not belong to. mlb/line_monitor.py groups every alert under its book.
+MLB_LINE_CHECK_MINUTES = int(os.getenv("MLB_LINE_CHECK_MINUTES", "30") or "30")
+
+
+@tasks.loop(minutes=MLB_LINE_CHECK_MINUTES)
+async def mlb_line_watch():
+    """Re-check both books' lines against every unsettled MLB play."""
+    if not MLB_TASKS_ENABLED:
+        return
+    try:
+        mlb_lines = _mlb_import("mlb.line_monitor")
+        res = await asyncio.to_thread(mlb_lines.check_and_post)
+        if res.get("moves"):
+            log.info("MLB line movement: %s", res)
+    except Exception:  # noqa: BLE001 — must never reach tennis
+        log.exception("MLB line watch failed (tennis unaffected)")
+
+
+@mlb_line_watch.before_loop
+async def _before_mlb_line_watch():
+    await client.wait_until_ready()
+
+
 @tasks.loop(time=[datetime.time(hour=MLB_BATTER_BOARD_HOUR,
                                 minute=MLB_BATTER_BOARD_MINUTE,
                                 tzinfo=POD_TZINFO)])
@@ -4885,6 +4911,15 @@ async def on_ready():
                             MLB_BOARD2_HOUR, MLB_BOARD2_MINUTE, POD_TZINFO)
         except Exception:
             log.exception("failed to start MLB second board loop (tennis unaffected)")
+        try:
+            if not mlb_line_watch.is_running():
+                mlb_line_watch.start()
+                log.warning("MLB line watch every %dm -> channel %s",
+                            MLB_LINE_CHECK_MINUTES,
+                            os.getenv("MLB_LINE_CHANGE_CHANNEL_ID",
+                                      "1536214940288024587"))
+        except Exception:
+            log.exception("failed to start MLB line watch (tennis unaffected)")
         try:
             if MLB_BATTER_BOARD and not mlb_batter_boards.is_running():
                 mlb_batter_boards.start()
