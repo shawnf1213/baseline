@@ -1685,9 +1685,12 @@ POD_EXTRA_RUN_MINUTE = int(os.getenv("POD_EXTRA_RUN_MINUTE", "40") or "40")
 # Optional one-shot post on startup for verifying a deploy (off by default).
 POD_POST_ON_START = (os.getenv("POD_POST_ON_START", "0") or "0") not in ("0", "false", "False")
 _pod_startup_done = False
-# Optional one-shot post on startup for verifying a deploy (off by default).
-POD_POST_ON_START = (os.getenv("POD_POST_ON_START", "0") or "0") not in ("0", "false", "False")
-_pod_startup_done = False
+
+# Underdog equivalent, for reposting its board after a channel change without
+# waiting for 10:30 PM. Off by default; unset it again once it has fired.
+UNDERDOG_POST_ON_START = (os.getenv("UNDERDOG_POST_ON_START", "0")
+                          or "0") not in ("0", "false", "False")
+_ud_startup_done = False
 
 # Feature 4 — daily Slate auto-post to the 📋・slate channel, at midnight ET
 # alongside the Pick of the Day.
@@ -4977,6 +4980,30 @@ async def on_ready():
                           POD_CHANNEL_ID)
             except Exception:
                 log.exception("POD startup test post failed")
+
+    # One-shot Underdog board on startup — the Underdog equivalent of
+    # POD_POST_ON_START, for reposting after a channel change without waiting
+    # for 10:30 PM. track=True because this IS the day's board, not a test: an
+    # untracked post would show plays that never enter the record and can never
+    # be graded. Unset UNDERDOG_POST_ON_START after it fires, or every restart
+    # re-posts.
+    global _ud_startup_done
+    if UNDERDOG_POST_ON_START and UNDERDOG_CHANNEL_ID and not _ud_startup_done:
+        _ud_startup_done = True
+        ch = client.get_channel(UNDERDOG_CHANNEL_ID)
+        if ch is None:
+            log.warning("UD startup post: channel %s not found / not visible "
+                        "to the bot", UNDERDOG_CHANNEL_ID)
+        else:
+            try:
+                status = await _post_underdog_board(ch, track=True)
+                log.warning("UD startup post -> %s (channel %s)", status,
+                            UNDERDOG_CHANNEL_ID)
+            except discord.Forbidden:
+                log.error("UD startup post: missing Send Messages / Embed Links "
+                          "in channel %s", UNDERDOG_CHANNEL_ID)
+            except Exception:
+                log.exception("UD startup post failed")
 
     log.info("Logged in as %s (id=%s) — API=%s", client.user, client.user.id, API_BASE)
 
