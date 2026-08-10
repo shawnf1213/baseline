@@ -39,6 +39,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 ET = dt.timezone(dt.timedelta(hours=-4))          # America/New_York, MLB's day
 
 
+def _shadow() -> bool:
+    """Whether output is labelled shadow. Derived from MLB_ENABLED, never a
+    literal — hardcoding it here is how boards kept printing SHADOW after MLB
+    went live."""
+    from mlb import SHADOW
+    return SHADOW
+
+
 def target_slate(explicit=None) -> str:
     """The slate to board. See the module docstring on why this rolls forward."""
     from mlb import client
@@ -132,14 +140,14 @@ def main() -> int:
                 keep, bk, slate,
                 potd_key=((potd.get("player") or potd.get("pitcher"),
                            potd.get("prop")) if potd else None),
-                shadow=True)
+                shadow=_shadow())
             print(f"\n### {bk.upper()}  stored={n} of {len(keep)} board rows "
                   f"(not posted)")
             continue
         if a.post:
             # run_daily scans, posts, then persists — and only persists after a
             # successful send, so an unposted board is never recorded as one.
-            res = board.run_daily(bk, slate, True, True, a.only)
+            res = board.run_daily(bk, slate, None, True, a.only)
             ok = res.get("posted")
             print(f"\n### {bk.upper()}  projected={res.get('projections')} "
                   f"priced={res.get('priced')} posted={ok} "

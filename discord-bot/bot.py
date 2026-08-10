@@ -2840,7 +2840,7 @@ async def mlb_daily_boards():
         for book in ("prizepicks", "underdog"):
             try:
                 res = await asyncio.to_thread(mlb_board.run_daily, book,
-                                              None, True, True, "pitcher")
+                                              None, None, True, "pitcher")
                 log.info("MLB pitcher board (%s): %s", book, res)
             except Exception:  # noqa: BLE001 — one book must not stop the other
                 log.exception("MLB board failed for %s", book)
@@ -2871,7 +2871,7 @@ async def mlb_batter_boards():
         for book in ("prizepicks", "underdog"):
             try:
                 res = await asyncio.to_thread(mlb_board.run_daily, book,
-                                              None, True, True, "batter")
+                                              None, None, True, "batter")
                 log.info("MLB batter board (%s): %s", book, res)
             except Exception:  # noqa: BLE001
                 log.exception("MLB batter board failed for %s", book)
@@ -2989,7 +2989,7 @@ async def _mlb_run_now():
         for book in ("prizepicks", "underdog"):
             try:
                 res = await asyncio.to_thread(mlb_board.run_daily, book, slate,
-                                              True, True, MLB_RUN_NOW_ONLY)
+                                              None, True, MLB_RUN_NOW_ONLY)
                 log.warning("MLB RUN NOW board (%s): %s", book, res)
             except Exception:  # noqa: BLE001 — one book must not stop the other
                 log.exception("MLB RUN NOW failed for %s", book)

@@ -33,6 +33,12 @@ MLB_ENABLED = os.getenv("MLB_ENABLED", "false").strip().lower() in (
 MLB_SHADOW_LOG = os.getenv("MLB_SHADOW_LOG", "true").strip().lower() in (
     "1", "true", "yes", "on")
 
+# THE single source of truth for whether posted output is labelled as shadow.
+# Callers must derive from this rather than passing a literal — the bot and the
+# CLI both hardcoded shadow=True, so flipping MLB_ENABLED changed nothing and
+# every board still carried a SHADOW banner while claiming to be live.
+SHADOW = not MLB_ENABLED
+
 SPORT = "mlb"
 
 # ── The common sport-module interface (NORTH_STAR.md) ────────────────────────

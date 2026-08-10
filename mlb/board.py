@@ -320,7 +320,7 @@ def scan_board(date: str = None, line_map: dict = None) -> list:
         return []
 
 
-def run_daily(book: str, date: str = None, shadow: bool = True,
+def run_daily(book: str, date: str = None, shadow: bool = None,
               post_it: bool = True, only: str = None) -> dict:
     """Full daily cycle for ONE book: scan -> attach that book's lines -> post ->
     persist.
@@ -333,9 +333,12 @@ def run_daily(book: str, date: str = None, shadow: bool = True,
     Books run independently. One book failing does not stop the other, and
     neither can reach tennis. Never raises.
     """
-    from . import post as _post, store as _store, recap as _recap
+    from . import post as _post, store as _store, recap as _recap, SHADOW
+    # None means "ask the flag" — callers that pass a literal here are how a
+    # board kept printing SHADOW after MLB went live.
+    shadow = SHADOW if shadow is None else shadow
     out = {"book": book, "projections": 0, "priced": 0,
-           "posted": False, "stored": 0}
+           "posted": False, "stored": 0, "shadow": shadow}
     try:
         rows = scan_all_props(date, book=book, only=only)
         out["only"] = only

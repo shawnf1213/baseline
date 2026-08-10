@@ -18,7 +18,7 @@ import os
 import logging
 import datetime as _dt
 
-from . import store, post as _post, client
+from . import store, post as _post, client, SHADOW
 from .post import BOOK_LABEL, COLOR
 
 log = logging.getLogger("baseline.mlb.recap")
@@ -131,8 +131,9 @@ def force_resolve_all(book: str, value: float, slate_date: str = None) -> dict:
     return out
 
 
-def build_recap_embed(book: str, slate_date: str, shadow: bool = True) -> dict:
+def build_recap_embed(book: str, slate_date: str, shadow: bool = None) -> dict:
     """One book's recap for one slate. Returns {} when there is nothing to show."""
+    shadow = SHADOW if shadow is None else shadow
     rows = store.board_for(book, slate_date)
     if not rows:
         return {}
@@ -253,7 +254,7 @@ def pending_slates(book: str, days: int = LOOKBACK_DAYS) -> list:
     return out
 
 
-def post_ready_recap(book: str, token: str = None, shadow: bool = True) -> dict:
+def post_ready_recap(book: str, token: str = None, shadow: bool = None) -> dict:
     """Post the oldest stored slate that is fully settled and not yet posted.
 
     This is what the scheduled loop should call. post_recap() targets ONE slate;
@@ -274,7 +275,7 @@ def post_ready_recap(book: str, token: str = None, shadow: bool = True) -> dict:
 
 
 def post_recap(book: str, slate_date: str = None, token: str = None,
-               shadow: bool = True, require_settled: bool = True,
+               shadow: bool = None, require_settled: bool = True,
                force: bool = False) -> dict:
     """POST one book's recap to that book's MLB recap channel.
 
@@ -286,6 +287,7 @@ def post_recap(book: str, slate_date: str = None, token: str = None,
     """
     import requests
     slate_date = slate_date or et_today()
+    shadow = SHADOW if shadow is None else shadow
     cid = _post.channel_for(book, "recap")
     tok = token or os.getenv("DISCORD_BOT_TOKEN", "")
     if not cid:

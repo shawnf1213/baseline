@@ -25,11 +25,15 @@ their own board channel and their own Pick of the Day, exactly as tennis runs
 them. A PrizePicks 60% and an Underdog 60% are claims about different lines in
 different markets and must never share a board or a denominator.
 
-SHADOW SEMANTICS: every channel here is one Shawn keeps hidden from members.
-Rule 4 requires that no new prop is visible to members before review, which a
-hidden channel satisfies while still exercising the real posting path. Nothing
-here writes to the picks/results tables — Rule 3's sport-column gate is unmet, so
-MLB persists nothing.
+SHADOW SEMANTICS: derived from MLB_ENABLED, never passed as a literal. Every
+builder here takes shadow=None meaning "ask the flag". That is deliberate — the
+bot and the CLI both used to hardcode shadow=True, so flipping MLB_ENABLED
+changed nothing and boards kept carrying a SHADOW banner while claiming to be
+live. A caller should only pass an explicit value to override for a one-off.
+
+MLB now persists to mlb_picks (its OWN database, not tennis's) and posts for
+real. Rule 3 holds through separation of stores rather than a shared sport
+column.
 """
 
 import os
@@ -116,44 +120,54 @@ def select_potd(rows: list) -> dict:
 
 
 def _stat_block(row: dict) -> str:
-    """The MLB equivalent of the tennis per-prop stat block. This is the part
-    that stays sport-specific after the core refactor."""
+    """The short "why" line under a pick. Reader-facing only.
+
+    WHAT EARNS A PLACE HERE: the few numbers that explain the projection to
+    someone deciding whether to play it — how much volume the pitcher gets, his
+    own rate, the matchup, and how much history is behind it.
+
+    WHAT WAS REMOVED, and why it was noise rather than information:
+      adj / park / home factor  — intermediate multipliers. They are already
+                                  inside the projection, so printing them shows
+                                  the arithmetic twice and invites double-counting
+                                  by eye.
+      sd                        — a model internal; nobody bets on a standard
+                                  deviation, and the confidence % already carries it.
+      opponent_basis            — "team+platoon" is our jargon for which data
+                                  tier the opponent rate came from. It leaked
+                                  implementation detail onto a public board.
+
+    NO NESTED UNDERSCORES. Callers wrap this whole string in italics, so an
+    italic segment inside it produced the literal `_team+platoon__` visible on
+    the 8/9 board. Emphasis belongs to the caller; this returns plain text.
+    """
     bits = []
-    if isinstance(row.get("k_rate"), (int, float)):
-        bits.append(f"K% **{row['k_rate'] * 100:.1f}**")
-    if isinstance(row.get("adjusted_k_rate"), (int, float)):
-        bits.append(f"adj **{row['adjusted_k_rate'] * 100:.1f}**")
+    # Volume first — it is the single biggest driver of every pitcher prop and
+    # the thing that broke the early boards when a starter was pulled short.
     if isinstance(row.get("expected_bf"), (int, float)):
-        bits.append(f"BF/start **{row['expected_bf']:.1f}**")
+        bits.append(f"{row['expected_bf']:.0f} batters faced/start")
+    # The rate the projection actually used, stated once.
+    rate = row.get("adjusted_k_rate")
+    if not isinstance(rate, (int, float)):
+        rate = row.get("k_rate")
+    if isinstance(rate, (int, float)):
+        bits.append(f"{rate * 100:.0f}% K rate")
     if isinstance(row.get("opponent_k_rate"), (int, float)):
-        bits.append(f"opp K% **{row['opponent_k_rate'] * 100:.1f}**")
+        bits.append(f"opponent {row['opponent_k_rate'] * 100:.0f}%")
+    # Batter-side equivalents.
     if isinstance(row.get("pa_per_game"), (int, float)):
-        bits.append(f"PA/g **{row['pa_per_game']:.1f}**")
+        bits.append(f"{row['pa_per_game']:.1f} PA/game")
     if row.get("lineup_slot"):
-        bits.append(f"bat **{row['lineup_slot']}**"
-                    + (f"{row.get('bat')}" if row.get("bat") else ""))
-    if isinstance(row.get("sd"), (int, float)):
-        bits.append(f"sd **{row['sd']:.1f}**")
-    if row.get("starts_in_window"):
-        bits.append(f"n=**{row['starts_in_window']}**")
-    elif row.get("games_in_window"):
-        bits.append(f"n=**{row['games_in_window']}**")
-    c = row.get("context") or {}
-    if isinstance(c.get("park_factor"), (int, float)):
-        bits.append(f"park **{c['park_factor']:.2f}**")
-    ha = c.get("home_away") or {}
-    if isinstance(ha.get("factor"), (int, float)):
-        bits.append(f"{ha.get('side','')} **{ha['factor']:.2f}**")
-    # Name the opponent basis so the board can never imply lineup-level
-    # precision it did not have — at a 9am post lineups are not out yet.
-    basis = row.get("opponent_basis")
-    if basis and basis != "team":
-        bits.append(f"_{basis}_")
-    # Teammate-dependent props are marked ON THE BOARD, not only in code. Runs
-    # and RBIs are mostly a function of who bats around him, so the number is a
-    # weaker claim than a hit rate and should not read like one.
+        bits.append(f"batting {row['lineup_slot']}")
+    n = row.get("starts_in_window") or row.get("games_in_window")
+    if n:
+        unit = "starts" if row.get("starts_in_window") else "games"
+        bits.append(f"{n} {unit}")
+    # Teammate-dependent props stay marked: runs and RBIs mostly reflect who
+    # bats around him, so the number is a weaker claim than a hit rate and must
+    # not read like one. Plain text, no nested emphasis.
     if row.get("teammate_dependent"):
-        bits.append("_teammate-dep_")
+        bits.append("depends on teammates")
     return " · ".join(bits)
 
 
@@ -178,19 +192,32 @@ def _fmt_line(row: dict) -> str:
 
 
 def build_potd_embed(row: dict, book: str, date_label: str,
-                     shadow: bool = True) -> dict:
-    """The starred pick for one book's board."""
+                     shadow: bool = None) -> dict:
+    """The starred pick for one book's board.
+
+    Reads top-down as a pick, not a data dump: who and against whom, the play,
+    then the numbers behind it. "Proj" was spelled out to "Projected" — the
+    abbreviation saved four characters on the one line people actually read.
+    """
+    from . import SHADOW
+    shadow = SHADOW if shadow is None else shadow
     side = _side_prob(row) or 0.0
     edge = row.get("edge_vs_market")
-    edge_s = (f" · Edge {edge * 100:+.1f}pp vs market"
+    # Only shown where the book prices two-way. PrizePicks posts no opposing
+    # price, so there is no market probability to disagree with and the line is
+    # omitted rather than filled with an invented 50/50.
+    edge_s = (f" · {edge * 100:+.0f}pp vs the book"
               if isinstance(edge, (int, float)) else "")
     dot = "🟢" if row.get("lean") == "OVER" else "🔴"
+    why = _stat_block(row)
     parts = [
-        "**" + _who(row) + "** vs **" + str(row.get("opponent", "?")) + "**",
+        "**" + _who(row) + "** vs " + str(row.get("opponent", "?")),
         f"{dot} **{row.get('lean')} {row.get('line')} {_labels(row)[1]}**",
-        f"Proj {row.get('projection', 0):.1f} · {side * 100:.0f}%{edge_s}",
-        "_" + _stat_block(row) + "_",
+        f"Projected **{row.get('projection', 0):.1f}** · "
+        f"**{side * 100:.0f}%** confidence{edge_s}",
     ]
+    if why:
+        parts.append("_" + why + "_")
     desc = "\n".join(parts)
     if shadow:
         desc = "⚠️ **SHADOW** — not a released pick.\n\n" + desc
@@ -205,12 +232,14 @@ def build_potd_embed(row: dict, book: str, date_label: str,
 
 
 def build_board_embed(rows: list, date_label: str, book: str = "underdog",
-                      shadow: bool = True, start_rank: int = 1) -> dict:
+                      shadow: bool = None, start_rank: int = 1) -> dict:
     """Discord embed (as a plain dict) for one BOOK's MLB board.
 
     Returns a dict rather than a discord.Embed so this module never imports
     discord — it stays testable and importable outside the bot process.
     """
+    from . import SHADOW
+    shadow = SHADOW if shadow is None else shadow
     rows = rows[:MAX_PLAYS]
     label = BOOK_LABEL.get(book, book)
     if rows:
@@ -222,17 +251,12 @@ def build_board_embed(rows: list, date_label: str, book: str = "underdog",
     if shadow:
         body = ("⚠️ **SHADOW — not a released board.** Projections only, "
                 "nothing logged to the record.\n\n" + body)
-    # Name the prop types actually on the board rather than a fixed "Strikeouts",
-    # which stopped being true the moment the board carried more than one prop.
-    kinds = []
-    for r in rows:
-        u = _labels(r)[0]
-        if u and u not in kinds:
-            kinds.append(u)
-    sub = (" — " + " · ".join(kinds[:6]) + ("…" if len(kinds) > 6 else "")
-           if kinds else "")
+    # No prop-type subtitle. It listed only the props of the rows in THIS embed,
+    # and the POTD is pulled into its own embed first — so a board whose best
+    # play was a strikeout advertised itself as "— HA". Every line already names
+    # its own unit, which is where a reader looks anyway.
     return {
-        "title": f"⚾ {date_label} {label} MLB Board{sub}",
+        "title": f"⚾ {date_label} {label} MLB Board",
         "description": body[:4000],
         "color": COLOR,
         "footer": {"text": f"Baseline MLB · {label}"
@@ -302,7 +326,7 @@ def postable(rows: list) -> list:
 
 
 def build_embeds(rows: list, date_label: str, book: str,
-                 shadow: bool = True) -> list:
+                 shadow: bool = None) -> list:
     """POTD first when one qualifies, then the rest of the board — the same shape
     the tennis boards post in."""
     rows = postable(rows)
@@ -317,7 +341,7 @@ def build_embeds(rows: list, date_label: str, book: str,
 
 def post_board(rows: list, date_label: str, book: str = "underdog",
                token: str = None, channel_id: int = None,
-               shadow: bool = True) -> dict:
+               shadow: bool = None) -> dict:
     """POST one book's board to that book's MLB channel over Discord's REST API.
 
     Uses REST rather than a discord.py channel object so this module has no
