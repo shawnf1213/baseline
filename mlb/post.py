@@ -49,10 +49,19 @@ CHANNELS = {
                                            "1535163281768185926") or 0),
     ("underdog",   "board"): int(os.getenv("MLB_UD_BOARD_CHANNEL_ID",
                                            "1535164403383795734") or 0),
+    # BOTH MLB RECAPS GO TO THE TENNIS TRACK-RECORD CHANNEL (2026-08-10, user).
+    # One public place for every result, tennis and MLB together.
+    #
+    # Safe to share, and it was checked rather than assumed. The two duplicate
+    # guards match on embed title, and the titles cannot collide: MLB posts
+    # "8/10 Underdog MLB Recap" while tennis looks for "8/10 Underdog Recap",
+    # which is not a substring of it. Neither guard can suppress the other's
+    # recap. Both scan well past a day's traffic (40 and 50 messages against
+    # ~4 recaps a day), so the extra volume does not push either out of range.
     ("prizepicks", "recap"): int(os.getenv("MLB_PP_RECAP_CHANNEL_ID",
-                                           "1535164916154109992") or 0),
+                                           "1532142615435284721") or 0),
     ("underdog",   "recap"): int(os.getenv("MLB_UD_RECAP_CHANNEL_ID",
-                                           "1535164961448263730") or 0),
+                                           "1532142615435284721") or 0),
 }
 
 COLOR = 0x1D428A          # MLB blue — visually distinct from the tennis boards

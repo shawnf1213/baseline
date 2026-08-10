@@ -2942,6 +2942,140 @@ async def _before_mlb_line_watch():
     await client.wait_until_ready()
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# MLB slash commands — the /prop equivalent, in the MLB projections channel
+# ══════════════════════════════════════════════════════════════════════════════
+# Same shape as the tennis commands: choices for the prop, autocomplete on the
+# player, ephemeral reply, cooldown, and every failure returned as a specific
+# message rather than a generic error. Every MLB import is lazy and inside a
+# try/except, so a broken MLB module cannot take a tennis command down with it.
+MLB_PROJECTIONS_CHANNEL_ID = int(
+    os.getenv("MLB_PROJECTIONS_CHANNEL_ID", "1536401640180154448") or 0)
+
+# Built once at import from the MLB module's own list, so adding a prop engine
+# there puts it in the picker without touching this file. Falls back to an empty
+# list if MLB is unavailable — the command then reports that plainly instead of
+# failing to register and taking the whole command tree with it.
+try:
+    _mlb_proj_mod = _mlb_import("mlb.projections")
+    MLB_PROP_CHOICES = [app_commands.Choice(name=label, value=value)
+                        for value, label in _mlb_proj_mod.ALL_PROPS][:25]
+except Exception:  # noqa: BLE001
+    log.exception("MLB projections module unavailable — /mlbprop will report it")
+    MLB_PROP_CHOICES = [app_commands.Choice(name="Pitcher Strikeouts",
+                                            value="strikeouts")]
+
+
+async def mlb_player_autocomplete(interaction: discord.Interaction, current: str):
+    """Suggest MLB players by name. Never raises — an autocomplete that throws
+    leaves the user staring at a spinner."""
+    try:
+        if len((current or "").strip()) < 2:
+            return []
+        mod = _mlb_import("mlb.projections")
+        hits = await asyncio.to_thread(mod.search_players, current, 20)
+        out = []
+        for h in hits[:25]:
+            if not h.get("name"):
+                continue
+            # Position and team disambiguate the several players who share a
+            # name — there are two Luis Garcías, and picking the wrong one
+            # silently projects the wrong player.
+            extra = " · ".join(x for x in (h.get("position"), h.get("team")) if x)
+            label = f"{h['name']}" + (f" ({extra})" if extra else "")
+            out.append(app_commands.Choice(name=label[:100], value=h["name"][:100]))
+        return out
+    except Exception:  # noqa: BLE001
+        log.exception("mlb autocomplete failed")
+        return []
+
+
+def _mlb_prop_embed(r: dict) -> discord.Embed:
+    """Result embed for /mlbprop. Mirrors the MLB board's own wording so a
+    command answer and a posted play read the same."""
+    lean = (r.get("lean") or "NEUTRAL").upper()
+    side = r.get("p_over") if lean == "OVER" else r.get("p_under")
+    color = (COLOR_OVER if lean == "OVER"
+             else COLOR_UNDER if lean == "UNDER" else COLOR_NEUTRAL)
+    dot = "🟢" if lean == "OVER" else "🔴" if lean == "UNDER" else "⚪"
+    proj = r.get("projection")
+    line = r.get("line")
+
+    head = f"**{r.get('player')}**"
+    if r.get("opponent"):
+        head += f" vs {r['opponent']}"
+    parts = [head]
+    if line is not None:
+        parts.append(f"{dot} **{lean} {line:g} {r.get('prop_label','').upper()}**")
+        conf = f" · **{side * 100:.0f}%** confidence" if isinstance(side, (int, float)) else ""
+        parts.append(f"Projected **{proj:.2f}**{conf}")
+    else:
+        parts.append(f"Projected **{proj:.2f}** {r.get('prop_label')}")
+        parts.append("_No line given — add one for a lean and a confidence._")
+
+    why = []
+    if isinstance(r.get("expected_bf"), (int, float)):
+        why.append(f"{r['expected_bf']:.0f} batters faced/start")
+    if isinstance(r.get("pa_per_game"), (int, float)):
+        why.append(f"{r['pa_per_game']:.1f} PA/game")
+    n = r.get("starts_in_window") or r.get("games_in_window")
+    if n:
+        why.append(f"{n} {'starts' if r.get('starts_in_window') else 'games'}")
+    if why:
+        parts.append("_" + " · ".join(why) + "_")
+
+    # Say when a term is MISSING rather than letting the number imply it was
+    # included. Only meaningful for pitcher props — the batter engine has no
+    # opponent term at all, so flagging it there would invent a caveat.
+    if r.get("is_pitcher_prop") and not r.get("opponent_known"):
+        parts.append("⚠️ _No scheduled start found in the next two days — "
+                     "projected without an opponent adjustment._")
+    if r.get("teammate_dependent"):
+        parts.append("⚠️ _Runs and RBIs depend heavily on the teammates around "
+                     "him, so this is a weaker estimate than a hit rate._")
+
+    e = discord.Embed(description="\n".join(parts), color=color)
+    e.set_footer(text=FOOTER_PROJECTION)
+    return e
+
+
+@client.tree.command(name="mlbprop",
+                     description="Get a Baseline MLB prop projection")
+@app_commands.describe(
+    player="Pitcher or batter — type to search",
+    prop="Which prop to project",
+    line="The book line (e.g. 5.5). Optional — omit for a raw projection.",
+)
+@app_commands.choices(prop=MLB_PROP_CHOICES)
+@app_commands.autocomplete(player=mlb_player_autocomplete)
+@app_commands.checks.cooldown(1, 5.0, key=lambda i: i.user.id)
+async def mlbprop(interaction: discord.Interaction, player: str,
+                  prop: app_commands.Choice[str], line: float = None):
+    if (MLB_PROJECTIONS_CHANNEL_ID
+            and interaction.channel_id != MLB_PROJECTIONS_CHANNEL_ID):
+        await _send_error(interaction,
+                          f"Use MLB commands in <#{MLB_PROJECTIONS_CHANNEL_ID}>.")
+        return
+    try:
+        await _enter_queue(interaction)
+    except _QueueBusy:
+        return
+    log.info("CMD /mlbprop | user=%s | %s | %s | line=%s",
+             interaction.user.id, player, prop.value, line)
+    try:
+        mod = _mlb_import("mlb.projections")
+        r = await asyncio.to_thread(mod.project, player, prop.value, line)
+        if not r.get("ok"):
+            await _send_error(interaction, r.get("error") or MSG_GENERIC)
+            return
+        await interaction.followup.send(embed=_mlb_prop_embed(r), ephemeral=True)
+    except Exception:  # noqa: BLE001 — never let a command crash the process
+        log.exception("UNHANDLED /mlbprop error")
+        await _send_error(interaction, MSG_GENERIC)
+    finally:
+        _leave_queue()
+
+
 @tasks.loop(time=[datetime.time(hour=MLB_BATTER_BOARD_HOUR,
                                 minute=MLB_BATTER_BOARD_MINUTE,
                                 tzinfo=POD_TZINFO)])
