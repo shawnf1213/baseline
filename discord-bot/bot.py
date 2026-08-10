@@ -2695,6 +2695,23 @@ UNDERDOG_MINUTE = int(os.getenv("UNDERDOG_MINUTE", "30") or "30")
 UNDERDOG_PREWARM_HOUR = int(os.getenv("UNDERDOG_PREWARM_HOUR", "22") or "22")
 UNDERDOG_PREWARM_MINUTE = int(os.getenv("UNDERDOG_PREWARM_MINUTE", "15") or "15")
 
+# ── Underdog gets its OWN channel (2026-08-09, user) ─────────────────────────
+# PrizePicks keeps POD_CHANNEL_ID; Underdog posts here. Hardcoded with an env
+# override, the same pattern TRACK_RECORD_CHANNEL_ID uses.
+#
+# Falls back to POD_CHANNEL_ID if this is ever cleared, so a blanked variable
+# degrades to "both books in one channel" rather than to silence — an Underdog
+# board that posts nowhere looks identical to a scan that found no plays.
+UNDERDOG_CHANNEL_ID = int(os.getenv("UNDERDOG_CHANNEL_ID",
+                                    "1536206878856585236") or 0) or POD_CHANNEL_ID
+
+# Second Underdog drop, 7:30 AM ET (2026-08-09, user). The 10:30 PM board is
+# built off the lines posted the night before; by morning Underdog has put up the
+# rest of the day's card, so a morning scan reaches props that did not exist at
+# 10:30 PM. Mirrors the PrizePicks second wave at 8:00 AM.
+UNDERDOG_AM_HOUR = int(os.getenv("UNDERDOG_AM_HOUR", "7") or "7")
+UNDERDOG_AM_MINUTE = int(os.getenv("UNDERDOG_AM_MINUTE", "30") or "30")
+
 
 async def _post_underdog_board(channel, track: bool = True) -> str:
     """Scan Underdog's board and post it. Never raises."""
@@ -3113,12 +3130,13 @@ async def _before_underdog_prewarm():
                                 tzinfo=POD_TZINFO)])
 async def daily_underdog_board():
     """The Underdog board trigger — 10:30 PM ET, half an hour after PrizePicks."""
-    if not POD_CHANNEL_ID:
+    if not UNDERDOG_CHANNEL_ID:
         return
     try:
-        channel = client.get_channel(POD_CHANNEL_ID)
+        channel = client.get_channel(UNDERDOG_CHANNEL_ID)
         if channel is None:
-            log.warning("underdog board: channel %s not found", POD_CHANNEL_ID)
+            log.warning("underdog board: channel %s not found",
+                        UNDERDOG_CHANNEL_ID)
             return
         # Same duplicate guard as the PrizePicks board, scoped to THIS book: one
         # Underdog board per card, compared on slate date rather than calendar day.
@@ -3144,6 +3162,42 @@ async def daily_underdog_board():
 
 @daily_underdog_board.before_loop
 async def _before_underdog_board():
+    await client.wait_until_ready()
+
+
+@tasks.loop(time=[datetime.time(hour=UNDERDOG_AM_HOUR,
+                                minute=UNDERDOG_AM_MINUTE, tzinfo=POD_TZINFO)])
+async def underdog_morning_board():
+    """Second Underdog drop — 7:30 AM ET.
+
+    DELIBERATELY WITHOUT the once-per-card guard that daily_underdog_board
+    carries. That guard exists to stop the 10:30 PM trigger firing twice for the
+    same card; applying it here would make this task a no-op every single day,
+    because by morning the night board has already logged picks against exactly
+    this card.
+
+    Re-posting is prevented by a better mechanism that _post_underdog_board
+    already applies: it drops any play still open and ungraded, whichever book it
+    came from. So this reaches only props the night scan could not — lines
+    Underdog had not posted yet at 10:30 PM — and cannot repeat a live play.
+    """
+    if not (AUTOPOST_ENABLED and UNDERDOG_CHANNEL_ID):
+        return
+    try:
+        channel = client.get_channel(UNDERDOG_CHANNEL_ID)
+        if channel is None:
+            log.warning("underdog morning board: channel %s not found",
+                        UNDERDOG_CHANNEL_ID)
+            return
+        status = await _post_underdog_board(channel, track=True)
+        log.info("underdog morning board (%02d:%02d): %s",
+                 UNDERDOG_AM_HOUR, UNDERDOG_AM_MINUTE, status)
+    except Exception:  # noqa: BLE001
+        log.exception("underdog morning board failed")
+
+
+@underdog_morning_board.before_loop
+async def _before_underdog_morning_board():
     await client.wait_until_ready()
 
 
@@ -4738,13 +4792,24 @@ async def on_ready():
     # Underdog board — a SECOND book on its own 10:30 PM schedule, scored
     # separately. Started independently so a failure here can never affect the
     # PrizePicks board or its record.
-    if POD_CHANNEL_ID and not daily_underdog_board.is_running():
+    if UNDERDOG_CHANNEL_ID and not daily_underdog_board.is_running():
         try:
             daily_underdog_board.start()
             log.info("Underdog board scheduled at %02d:%02d %s -> channel %s",
-                     UNDERDOG_HOUR, UNDERDOG_MINUTE, POD_TZINFO, POD_CHANNEL_ID)
+                     UNDERDOG_HOUR, UNDERDOG_MINUTE, POD_TZINFO,
+                     UNDERDOG_CHANNEL_ID)
         except Exception:
             log.exception("failed to start underdog board loop")
+    # Second Underdog drop at 7:30 AM. Its own boundary: a failure here must not
+    # stop the 10:30 PM board, which is the primary one.
+    if UNDERDOG_CHANNEL_ID and not underdog_morning_board.is_running():
+        try:
+            underdog_morning_board.start()
+            log.info("Underdog MORNING board scheduled at %02d:%02d %s -> channel %s",
+                     UNDERDOG_AM_HOUR, UNDERDOG_AM_MINUTE, POD_TZINFO,
+                     UNDERDOG_CHANNEL_ID)
+        except Exception:
+            log.exception("failed to start underdog morning board loop")
     # Underdog pre-warm — 15 min before the Underdog board. Started separately
     # from the board itself so a pre-warm failure can never stop the board.
     if POD_CHANNEL_ID and not underdog_cache_prewarm.is_running():
