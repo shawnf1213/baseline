@@ -321,7 +321,8 @@ def scan_board(date: str = None, line_map: dict = None) -> list:
 
 
 def run_daily(book: str, date: str = None, shadow: bool = None,
-              post_it: bool = True, only: str = None) -> dict:
+              post_it: bool = True, only: str = None,
+              exclude_posted: bool = True) -> dict:
     """Full daily cycle for ONE book: scan -> attach that book's lines -> post ->
     persist.
 
@@ -349,6 +350,26 @@ def run_daily(book: str, date: str = None, shadow: bool = None,
         out["props"] = sorted({r.get("prop") for r in rows if r.get("prop")})
 
         slate = date or _recap.et_today()
+
+        # A LATER SCAN ON THE SAME CARD POSTS ONLY WHAT THE EARLIER ONE COULD
+        # NOT. Two boards run per slate (11:30 PM and 9 AM); without this the
+        # morning one repeats most of the night one — the store would dedupe the
+        # rows, but Discord would show every play twice. Same rule tennis
+        # applies: a play already live is never re-posted.
+        if exclude_posted:
+            already = _store.posted_keys(book, slate)
+            if already:
+                before = len(rows)
+                rows = [r for r in rows
+                        if ((r.get("player") or r.get("pitcher")),
+                            r.get("prop")) not in already]
+                out["skipped_already_posted"] = before - len(rows)
+                log.info("mlb run_daily (%s): %d play(s) already on the %s "
+                         "board — posting the %d that are new", book,
+                         before - len(rows), slate, len(rows))
+            if not rows:
+                out["post_reason"] = "every qualifying play is already posted"
+                return out
         label = f"{int(slate[5:7])}/{int(slate[8:10])}"
         # POTD is chosen from what will actually be POSTED, so the star can never
         # name a play the board dropped in dedupe — the bug that put Zizou up as

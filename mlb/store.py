@@ -296,6 +296,31 @@ def purge_slate(slate_date: str, book: str = None) -> int:
         return 0
 
 
+def posted_keys(book: str, slate_date: str) -> set:
+    """{(player, prop)} already on the board for this book and slate.
+
+    Lets a later scan on the same card post ONLY what the earlier one could not
+    — newly announced starters, lines the book had not put up yet. Without it the
+    9 AM board would repeat most of the 11:30 PM board: the store would dedupe
+    the rows, but Discord would show every play twice.
+
+    Mirrors the tennis rule that a play already live is never re-posted.
+    """
+    if not _init():
+        return set()
+    try:
+        s = _Session()
+        try:
+            return {(r.pitcher, r.prop_type)
+                    for r in s.query(_MlbPick)
+                             .filter_by(book=book, slate_date=slate_date).all()}
+        finally:
+            s.close()
+    except Exception as exc:  # noqa: BLE001
+        log.exception("mlb store posted_keys failed: %s", exc)
+        return set()
+
+
 def purge_all(confirm: str = "") -> int:
     """Delete EVERY row in mlb_picks. Returns rows removed.
 

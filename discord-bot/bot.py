@@ -2826,9 +2826,20 @@ def _mlb_import(module_name: str):
                   "service Root Directory (it must be the repo root, not discord-bot/).",
                   seen, here, sorted(os.listdir(here))[:25])
     return importlib.import_module(module_name)
-MLB_BOARD_HOUR = int(os.getenv("MLB_BOARD_HOUR", "9") or "9")      # 9:00 AM ET —
-MLB_BOARD_MINUTE = int(os.getenv("MLB_BOARD_MINUTE", "0") or "0")  # probables are up,
-                                                                   # ahead of every slate
+# ── TWO MLB BOARDS PER CARD (2026-08-09, user) ───────────────────────────────
+# 11:30 PM ET is the primary: both books put the next day's lines up late in the
+# evening, so this is the first moment a full card is priced. It necessarily
+# boards TOMORROW — every game "today" is already final at 11:30 PM — which is
+# why both tasks go through _mlb_target_slate() instead of defaulting to today.
+#
+# 9:00 AM ET is the follow-up, and it posts ONLY what the night scan could not:
+# starters announced overnight and lines the books had not put up yet. run_daily
+# excludes anything already on that slate's board, so the two never duplicate.
+MLB_BOARD_HOUR = int(os.getenv("MLB_BOARD_HOUR", "23") or "23")
+MLB_BOARD_MINUTE = int(os.getenv("MLB_BOARD_MINUTE", "30") or "30")
+MLB_BOARD2_HOUR = int(os.getenv("MLB_BOARD2_HOUR", "9") or "9")
+MLB_BOARD2_MINUTE = int(os.getenv("MLB_BOARD2_MINUTE", "0") or "0")
+
 MLB_RESOLVE_EVERY_HOURS = int(os.getenv("MLB_RESOLVE_EVERY_HOURS", "2") or "2")
 
 # ── TWO BOARDS, BECAUSE THE INPUTS ARRIVE AT DIFFERENT TIMES ─────────────────
@@ -2849,27 +2860,57 @@ MLB_BATTER_BOARD = os.getenv("MLB_BATTER_BOARD", "false").strip().lower() in (
     "1", "true", "yes", "on")
 
 
-@tasks.loop(time=[datetime.time(hour=MLB_BOARD_HOUR, minute=MLB_BOARD_MINUTE,
-                                tzinfo=POD_TZINFO)])
-async def mlb_daily_boards():
-    """Post both MLB books' PITCHER boards, then persist them. Shadow channels."""
+async def _mlb_run_boards(label: str) -> None:
+    """Post both books' PITCHER boards for the right slate. Never raises.
+
+    Shared by the 11:30 PM and 9:00 AM triggers so the two can never drift in
+    what they do — only in when they run and, consequently, in how much of the
+    card already exists.
+    """
     if not MLB_TASKS_ENABLED:
         return
     try:
         mlb_board = _mlb_import("mlb.board")
+        slate = _mlb_target_slate()
         for book in ("prizepicks", "underdog"):
             try:
                 res = await asyncio.to_thread(mlb_board.run_daily, book,
-                                              None, None, True, "pitcher")
-                log.info("MLB pitcher board (%s): %s", book, res)
+                                              slate, None, True, "pitcher")
+                log.info("MLB %s board (%s) slate=%s: %s", label, book, slate, res)
             except Exception:  # noqa: BLE001 — one book must not stop the other
-                log.exception("MLB board failed for %s", book)
+                log.exception("MLB %s board failed for %s", label, book)
     except Exception:  # noqa: BLE001 — MLB must never reach tennis
-        log.exception("MLB board task failed entirely (tennis unaffected)")
+        log.exception("MLB %s board task failed entirely (tennis unaffected)",
+                      label)
+
+
+@tasks.loop(time=[datetime.time(hour=MLB_BOARD_HOUR, minute=MLB_BOARD_MINUTE,
+                                tzinfo=POD_TZINFO)])
+async def mlb_daily_boards():
+    """Primary MLB board — 11:30 PM ET, on the next day's card."""
+    await _mlb_run_boards("primary")
 
 
 @mlb_daily_boards.before_loop
 async def _before_mlb_boards():
+    await client.wait_until_ready()
+
+
+@tasks.loop(time=[datetime.time(hour=MLB_BOARD2_HOUR, minute=MLB_BOARD2_MINUTE,
+                                tzinfo=POD_TZINFO)])
+async def mlb_second_boards():
+    """Follow-up MLB board — 9:00 AM ET, same card as the 11:30 PM run.
+
+    Posts only what the night scan could not reach: starters announced overnight
+    and lines the books had not yet put up. run_daily drops anything already on
+    that slate's board, so this adds to the card rather than repeating it, and
+    posts nothing at all on a day the night board already covered everything.
+    """
+    await _mlb_run_boards("second")
+
+
+@mlb_second_boards.before_loop
+async def _before_mlb_second_boards():
     await client.wait_until_ready()
 
 
@@ -4837,6 +4878,13 @@ async def on_ready():
                             MLB_BOARD_HOUR, MLB_BOARD_MINUTE, POD_TZINFO)
         except Exception:
             log.exception("failed to start MLB board loop (tennis unaffected)")
+        try:
+            if not mlb_second_boards.is_running():
+                mlb_second_boards.start()
+                log.warning("MLB second board scheduled at %02d:%02d %s",
+                            MLB_BOARD2_HOUR, MLB_BOARD2_MINUTE, POD_TZINFO)
+        except Exception:
+            log.exception("failed to start MLB second board loop (tennis unaffected)")
         try:
             if MLB_BATTER_BOARD and not mlb_batter_boards.is_running():
                 mlb_batter_boards.start()
