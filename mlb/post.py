@@ -240,33 +240,47 @@ def build_board_embed(rows: list, date_label: str, book: str = "underdog",
     }
 
 
-def dedupe_by_game(rows: list) -> list:
-    """One play per GAME, keeping the strongest.
+# How many DIFFERENT players one game may contribute to a board. One is the
+# safest for correlation; two keeps a board from collapsing to three plays on a
+# light slate. Never more than one prop from the SAME player regardless.
+MAX_PER_GAME = int(os.getenv("MLB_MAX_PER_GAME", "2") or "2")
 
-    Both starters in a matchup are projectable, so a board could carry Wheeler
-    AND the arm opposing him — one game represented twice. Worse than cosmetic:
-    the two are negatively correlated through game length. A game that turns into
-    a bullpen day suppresses BOTH starters' strikeouts, so carrying both sides
-    concentrates risk while looking like diversification. Exactly the reasoning
-    behind the tennis one-play-per-match rule.
 
-    WITH MULTIPLE PROP TYPES THIS MATTERS MORE, not less. One game can now offer
-    a starter's strikeouts, his outs, his earned runs and nine batters' hits —
-    all driven by the same few hours of baseball. A short start pushes the
-    pitcher unders AND the opposing batters' overs together. Deduping by game
-    keeps a board of twelve plays from being three games wearing twelve hats.
+def dedupe_by_game(rows: list, max_per_game: int = None) -> list:
+    """At most `max_per_game` DIFFERENT players per game, one prop each.
 
-    Rows must already be sorted best-first; the first sighting of a game_pk wins.
-    A row without a game_pk keys on its own player and is never merged.
+    Two separate rules, and the player rule is the strict one:
+
+      - ONE PROP PER PLAYER, ALWAYS. A starter's strikeouts, his outs and his
+        earned runs are three views of the same six innings. Boarding them as
+        three plays is not diversification, it is the same bet at triple stake —
+        and if he is pulled in the third, all three lose together.
+
+      - AT MOST TWO PLAYERS PER GAME. Same reasoning one level out, but weaker:
+        two different players in one game share the weather, the park, the
+        umpire and the game script, so they are correlated but not identical.
+        One per game was too strict on a light slate, where it collapsed a
+        fourteen-play board to three.
+
+    Rows must already be sorted best-first; the strongest play for a player and
+    the strongest players in a game win. A row without a game_pk keys on its own
+    player and is never merged into another game.
     """
-    seen, kept = set(), []
+    limit = MAX_PER_GAME if max_per_game is None else max_per_game
+    per_game, seen_players, kept = {}, set(), []
     for r in rows:
-        key = r.get("game_pk") or ("solo", _who(r))
-        if key in seen:
-            log.info("mlb dedupe: dropped %s %s — same game as a stronger play",
-                     _who(r), r.get("prop"))
+        who = _who(r)
+        if who in seen_players:
+            log.info("mlb dedupe: dropped %s %s — already boarded on another "
+                     "prop", who, r.get("prop"))
             continue
-        seen.add(key)
+        key = r.get("game_pk") or ("solo", who)
+        if per_game.get(key, 0) >= limit:
+            log.info("mlb dedupe: dropped %s %s — game already has %d player(s)",
+                     who, r.get("prop"), limit)
+            continue
+        per_game[key] = per_game.get(key, 0) + 1
+        seen_players.add(who)
         kept.append(r)
     return kept
 

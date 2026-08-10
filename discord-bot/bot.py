@@ -3007,6 +3007,32 @@ async def _mlb_purge_once():
         log.exception("MLB purge failed (tennis unaffected)")
 
 
+# MLB_PURGE_ALL wipes the ENTIRE MLB record — every board, every graded result,
+# and the rolling 30-day figures derived from them. Irreversible, so it takes the
+# literal phrase rather than a truthy value: a stray "true" on the wrong variable
+# should not be able to erase a season. Unset it immediately after it fires, or
+# every restart re-wipes.
+MLB_PURGE_ALL = (os.getenv("MLB_PURGE_ALL", "") or "").strip()
+
+
+async def _mlb_purge_all_once():
+    """Runs once at startup when MLB_PURGE_ALL holds the confirmation phrase.
+
+    Logs the record's contents BEFORE deleting, so the wipe leaves evidence of
+    what it removed rather than only a count.
+    """
+    try:
+        mlb_store = _mlb_import("mlb.store")
+        before = await asyncio.to_thread(mlb_store.summary)
+        log.warning("MLB PURGE ALL: record before wipe = %s", before)
+        n = await asyncio.to_thread(mlb_store.purge_all, MLB_PURGE_ALL)
+        after = await asyncio.to_thread(mlb_store.summary)
+        log.warning("MLB PURGE ALL: deleted %d row(s); record after = %s",
+                    n, after)
+    except Exception:  # noqa: BLE001
+        log.exception("MLB purge-all failed (tennis unaffected)")
+
+
 async def _mlb_one_shot_test():
     """Runs once at startup when MLB_TEST_RUN is set. Never raises."""
     try:
@@ -4767,6 +4793,12 @@ async def on_ready():
                             MLB_PURGE_SLATE)
         except Exception:
             log.exception("failed to schedule MLB purge (tennis unaffected)")
+        try:
+            if MLB_PURGE_ALL:
+                asyncio.create_task(_mlb_purge_all_once())
+                log.warning("MLB_PURGE_ALL set — FULL record wipe scheduled")
+        except Exception:
+            log.exception("failed to schedule MLB purge-all (tennis unaffected)")
         try:
             if MLB_RUN_NOW:
                 asyncio.create_task(_mlb_run_now())

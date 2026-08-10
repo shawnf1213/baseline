@@ -296,5 +296,66 @@ def purge_slate(slate_date: str, book: str = None) -> int:
         return 0
 
 
+def purge_all(confirm: str = "") -> int:
+    """Delete EVERY row in mlb_picks. Returns rows removed.
+
+    Wipes the whole MLB record — board history, graded results, and the rolling
+    30-day figures that are computed from them. Irreversible.
+
+    Requires confirm="DELETE ALL MLB HISTORY" so it cannot fire from a stray call
+    or a mistyped env var. purge_slate() remains the right tool for clearing one
+    day; this exists for resetting the record before a real launch, when the
+    stored history is test data and its win rate is meaningless.
+
+    ONLY TOUCHES mlb_picks. It is a table-scoped delete on the MLB model, so it
+    cannot reach a tennis table even though it is unfiltered — and MLB_DATABASE_URL
+    points at MLB's own database in any case.
+    """
+    if confirm != "DELETE ALL MLB HISTORY":
+        log.warning("mlb store: purge_all called without confirmation — refusing")
+        return 0
+    if not _init():
+        return 0
+    try:
+        s = _Session()
+        try:
+            n = s.query(_MlbPick).count()
+            s.query(_MlbPick).delete(synchronize_session=False)
+            s.commit()
+            log.warning("mlb store: PURGED ALL — %d row(s) deleted from "
+                        "mlb_picks; the MLB record is now empty", n)
+            return n
+        finally:
+            s.close()
+    except Exception as exc:  # noqa: BLE001
+        log.exception("mlb store purge_all failed: %s", exc)
+        return 0
+
+
+def summary() -> dict:
+    """Row counts by book and result — for confirming what a purge would remove
+    BEFORE removing it, and what it removed after."""
+    if not _init():
+        return {}
+    try:
+        s = _Session()
+        try:
+            rows = s.query(_MlbPick).all()
+            out = {"total": len(rows)}
+            for r in rows:
+                b = r.book or "?"
+                out.setdefault(b, {})
+                k = (r.result or "PENDING")
+                out[b][k] = out[b].get(k, 0) + 1
+            slates = sorted({r.slate_date for r in rows if r.slate_date})
+            out["slates"] = slates
+            return out
+        finally:
+            s.close()
+    except Exception as exc:  # noqa: BLE001
+        log.exception("mlb store summary failed: %s", exc)
+        return {}
+
+
 def _to_dict(r) -> dict:
     return {c.name: getattr(r, c.name) for c in r.__table__.columns}
