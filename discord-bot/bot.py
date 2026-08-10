@@ -4328,6 +4328,18 @@ async def _maybe_post_ready_recap():
     chan_id = TRACK_RECORD_CHANNEL_ID
     if not chan_id or not AUTOPOST_ENABLED:
         return
+    # RESULTS_SKIP_DATE is checked HERE, not only in daily_results_post, because
+    # this function is the one that actually posts and it has a second caller:
+    # daily_resolve_results runs every 2 hours AND on startup. Guarding only the
+    # midnight job meant setting the switch did not stop a recap — the resolve
+    # loop posted it anyway a couple of hours later. The name promises "no recap
+    # today"; now every path honours that.
+    if (RESULTS_SKIP_DATE
+            and datetime.datetime.now(POD_TZINFO).strftime("%Y-%m-%d")
+            == RESULTS_SKIP_DATE):
+        log.info("recap: skip-date %s — not posting any book's recap today",
+                 RESULTS_SKIP_DATE)
+        return
     channel = client.get_channel(chan_id)
     if channel is None:
         log.warning("recap: channel %s not found", chan_id)
