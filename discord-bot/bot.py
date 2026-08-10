@@ -2860,12 +2860,12 @@ MLB_BATTER_BOARD = os.getenv("MLB_BATTER_BOARD", "false").strip().lower() in (
     "1", "true", "yes", "on")
 
 
-async def _mlb_run_boards(label: str) -> None:
+async def _mlb_run_boards(label: str, additional: bool = False) -> None:
     """Post both books' PITCHER boards for the right slate. Never raises.
 
     Shared by the 11:30 PM and 9:00 AM triggers so the two can never drift in
-    what they do — only in when they run and, consequently, in how much of the
-    card already exists.
+    what they do — only in when they run and, with `additional`, in whether the
+    result is a full board or a top-up.
     """
     if not MLB_TASKS_ENABLED:
         return
@@ -2875,7 +2875,8 @@ async def _mlb_run_boards(label: str) -> None:
         for book in ("prizepicks", "underdog"):
             try:
                 res = await asyncio.to_thread(mlb_board.run_daily, book,
-                                              slate, None, True, "pitcher")
+                                              slate, None, True, "pitcher",
+                                              True, additional)
                 log.info("MLB %s board (%s) slate=%s: %s", label, book, slate, res)
             except Exception:  # noqa: BLE001 — one book must not stop the other
                 log.exception("MLB %s board failed for %s", label, book)
@@ -2899,14 +2900,15 @@ async def _before_mlb_boards():
 @tasks.loop(time=[datetime.time(hour=MLB_BOARD2_HOUR, minute=MLB_BOARD2_MINUTE,
                                 tzinfo=POD_TZINFO)])
 async def mlb_second_boards():
-    """Follow-up MLB board — 9:00 AM ET, same card as the 11:30 PM run.
+    """Additional Plays — 9:00 AM ET, same card as the 11:30 PM board.
 
-    Posts only what the night scan could not reach: starters announced overnight
-    and lines the books had not yet put up. run_daily drops anything already on
-    that slate's board, so this adds to the card rather than repeating it, and
-    posts nothing at all on a day the night board already covered everything.
+    A TOP-UP, not a second board: at most MLB_SECOND_MAX (6) plays, no Pick of
+    the Day, titled "Additional Plays". Exactly the tennis second wave. It posts
+    only what the night scan could not reach — starters announced overnight and
+    lines the books had not yet put up — and posts nothing at all on a day the
+    night board already covered everything.
     """
-    await _mlb_run_boards("second")
+    await _mlb_run_boards("additional", additional=True)
 
 
 @mlb_second_boards.before_loop

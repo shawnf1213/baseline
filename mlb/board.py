@@ -322,7 +322,7 @@ def scan_board(date: str = None, line_map: dict = None) -> list:
 
 def run_daily(book: str, date: str = None, shadow: bool = None,
               post_it: bool = True, only: str = None,
-              exclude_posted: bool = True) -> dict:
+              exclude_posted: bool = True, additional: bool = False) -> dict:
     """Full daily cycle for ONE book: scan -> attach that book's lines -> post ->
     persist.
 
@@ -375,10 +375,16 @@ def run_daily(book: str, date: str = None, shadow: bool = None,
         # name a play the board dropped in dedupe — the bug that put Zizou up as
         # tennis POTD when he was not on the Underdog board at all.
         posted_rows = _post.postable(rows)
-        potd = _post.select_potd(posted_rows)
+        if additional:
+            # A top-up posts at most SECOND_MAX and carries no star, so the
+            # stored rows must match — otherwise the record would contain plays
+            # the board never showed, and a POTD nobody saw.
+            posted_rows = posted_rows[:_post.SECOND_MAX]
+        potd = {} if additional else _post.select_potd(posted_rows)
 
         if post_it:
-            res = _post.post_board(rows, label, book=book, shadow=shadow)
+            res = _post.post_board(rows, label, book=book, shadow=shadow,
+                                   additional=additional)
             out["posted"] = bool(res.get("ok"))
             out["post_reason"] = res.get("reason")
             # Log ONLY after a successful send, the same rule the tennis board

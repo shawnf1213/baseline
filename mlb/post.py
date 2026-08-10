@@ -58,6 +58,12 @@ CHANNELS = {
 COLOR = 0x1D428A          # MLB blue — visually distinct from the tennis boards
 MAX_PLAYS = 12            # same board size as tennis, for comparability
 
+# The follow-up run is a TOP-UP, not a second board — same as the tennis second
+# wave, which caps at SECOND_WAVE_MAX=6 and titles itself "Additional Plays".
+# Without this the 9 AM run posted a full twelve-play board with its own star,
+# so a single card produced two competing "Pick of the Day" posts.
+SECOND_MAX = int(os.getenv("MLB_SECOND_MAX", "6") or "6")
+
 BOOK_LABEL = {"prizepicks": "PrizePicks", "underdog": "Underdog"}
 
 # Canonical prop -> (short unit for a board line, full name for the POTD).
@@ -232,7 +238,8 @@ def build_potd_embed(row: dict, book: str, date_label: str,
 
 
 def build_board_embed(rows: list, date_label: str, book: str = "underdog",
-                      shadow: bool = None, start_rank: int = 1) -> dict:
+                      shadow: bool = None, start_rank: int = 1,
+                      title_override: str = None) -> dict:
     """Discord embed (as a plain dict) for one BOOK's MLB board.
 
     Returns a dict rather than a discord.Embed so this module never imports
@@ -256,7 +263,7 @@ def build_board_embed(rows: list, date_label: str, book: str = "underdog",
     # play was a strikeout advertised itself as "— HA". Every line already names
     # its own unit, which is where a reader looks anyway.
     return {
-        "title": f"⚾ {date_label} {label} MLB Board",
+        "title": title_override or f"⚾ {date_label} {label} MLB Board",
         "description": body[:4000],
         "color": COLOR,
         "footer": {"text": f"Baseline MLB · {label}"
@@ -326,10 +333,20 @@ def postable(rows: list) -> list:
 
 
 def build_embeds(rows: list, date_label: str, book: str,
-                 shadow: bool = None) -> list:
+                 shadow: bool = None, additional: bool = False) -> list:
     """POTD first when one qualifies, then the rest of the board — the same shape
-    the tennis boards post in."""
+    the tennis boards post in.
+
+    `additional` renders the follow-up run as a TOP-UP rather than a second
+    board: capped at SECOND_MAX, no star, titled "Additional Plays". Copies the
+    tennis second wave exactly. Without it the 9 AM run posted a full board with
+    its own Pick of the Day, so one card produced two competing stars.
+    """
     rows = postable(rows)
+    if additional:
+        rows = rows[:SECOND_MAX]
+        return [build_board_embed(rows, date_label, book=book, shadow=shadow,
+                                  title_override="⚾ Additional Plays")]
     potd = select_potd(rows)
     if not potd:
         return [build_board_embed(rows, date_label, book=book, shadow=shadow)]
@@ -341,7 +358,7 @@ def build_embeds(rows: list, date_label: str, book: str,
 
 def post_board(rows: list, date_label: str, book: str = "underdog",
                token: str = None, channel_id: int = None,
-               shadow: bool = None) -> dict:
+               shadow: bool = None, additional: bool = False) -> dict:
     """POST one book's board to that book's MLB channel over Discord's REST API.
 
     Uses REST rather than a discord.py channel object so this module has no
@@ -364,7 +381,8 @@ def post_board(rows: list, date_label: str, book: str = "underdog",
             headers={"Authorization": f"Bot {tok}",
                      "Content-Type": "application/json"},
             # No @everyone, ever, from a shadow board.
-            json={"embeds": build_embeds(rows, date_label, book, shadow),
+            json={"embeds": build_embeds(rows, date_label, book, shadow,
+                                         additional=additional),
                   "allowed_mentions": {"parse": []}},
             timeout=30)
         ok = r.status_code < 300
