@@ -2716,8 +2716,15 @@ UNDERDOG_AM_HOUR = int(os.getenv("UNDERDOG_AM_HOUR", "7") or "7")
 UNDERDOG_AM_MINUTE = int(os.getenv("UNDERDOG_AM_MINUTE", "30") or "30")
 
 
-async def _post_underdog_board(channel, track: bool = True) -> str:
-    """Scan Underdog's board and post it. Never raises."""
+async def _post_underdog_board(channel, track: bool = True,
+                               additional: bool = False) -> str:
+    """Scan Underdog's board and post it. Never raises.
+
+    `additional` makes it a TOP-UP rather than a second full board — capped at
+    SECOND_WAVE_MAX, no ⭐, titled "Underdog Additional Plays". Exactly what
+    _post_second_wave does for PrizePicks. Without it the 7:30 AM run posted a
+    twelve-play board titled "M/D Underdog Board" with its own star, so one card
+    produced two competing boards."""
     if not AUTOPOST_ENABLED:
         log.info("underdog board: automated posting DISABLED (AUTOPOST_ENABLED off)")
         return "autopost disabled"
@@ -2746,18 +2753,28 @@ async def _post_underdog_board(channel, track: bool = True) -> str:
         log.info("underdog board: every qualifying play is already live")
         return "all plays already open"
 
-    ranked = ordered[:pick_of_day.MAX_RANKED_PLAYS]
-    ranked, has_star = pick_of_day._promote_star(ranked)
-    await _annotate_form_alerts(ranked)
-
-    slate = _slate_date(ranked)
-    title = f"🎾 {slate.month}/{slate.day} Underdog Board"
-    if has_star:
-        embeds = [potd_embed(ranked[0])] + ranked_embeds(
-            ranked[1:], start_rank=2, total=len(ranked), title_override=title)
-    else:
+    if additional:
+        # Top-up: same cap and shape as the PrizePicks second wave. No star —
+        # the day has ONE Pick of the Day, from the 10:30 PM board.
+        ranked = ordered[:SECOND_WAVE_MAX]
+        has_star = False
+        await _annotate_form_alerts(ranked)
         embeds = ranked_embeds(ranked, start_rank=1, total=len(ranked),
-                               title_override=title)
+                               title_override="🎾 Underdog Additional Plays",
+                               suppress_correlation_note=True)
+    else:
+        ranked = ordered[:pick_of_day.MAX_RANKED_PLAYS]
+        ranked, has_star = pick_of_day._promote_star(ranked)
+        await _annotate_form_alerts(ranked)
+
+        slate = _slate_date(ranked)
+        title = f"🎾 {slate.month}/{slate.day} Underdog Board"
+        if has_star:
+            embeds = [potd_embed(ranked[0])] + ranked_embeds(
+                ranked[1:], start_rank=2, total=len(ranked), title_override=title)
+        else:
+            embeds = ranked_embeds(ranked, start_rank=1, total=len(ranked),
+                                   title_override=title)
     await channel.send(content=("@everyone" if track else None),
                        embeds=embeds[:10], allowed_mentions=EVERYONE_MENTION)
     for i in range(10, len(embeds), 10):
@@ -2768,7 +2785,9 @@ async def _post_underdog_board(channel, track: bool = True) -> str:
     # entirely separate from PrizePicks (see database.pick_source).
     if track:
         await _log_picks_pending(ranked, group="underdog")
-    return "posted %d underdog plays%s" % (len(ranked), " (with ⭐)" if has_star else "")
+    return "posted %d underdog %s%s" % (
+        len(ranked), "additional plays" if additional else "plays",
+        " (with ⭐)" if has_star else "")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -3430,7 +3449,8 @@ async def underdog_morning_board():
             log.warning("underdog morning board: channel %s not found",
                         UNDERDOG_CHANNEL_ID)
             return
-        status = await _post_underdog_board(channel, track=True)
+        status = await _post_underdog_board(channel, track=True,
+                                            additional=True)
         log.info("underdog morning board (%02d:%02d): %s",
                  UNDERDOG_AM_HOUR, UNDERDOG_AM_MINUTE, status)
     except Exception:  # noqa: BLE001

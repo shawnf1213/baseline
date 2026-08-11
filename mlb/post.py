@@ -377,8 +377,12 @@ def build_embeds(rows: list, date_label: str, book: str,
     rows = postable(rows)
     if additional:
         rows = rows[:SECOND_MAX]
-        return [build_board_embed(rows, date_label, book=book, shadow=shadow,
-                                  title_override="⚾ Additional Plays")]
+        # Name the book, as the main board title does. Both books post
+        # top-ups and an unlabelled one is ambiguous the moment they are read
+        # side by side.
+        return [build_board_embed(
+            rows, date_label, book=book, shadow=shadow,
+            title_override=f"⚾ {BOOK_LABEL.get(book, book)} Additional Plays")]
     potd = select_potd(rows)
     if not potd:
         return [build_board_embed(rows, date_label, book=book, shadow=shadow)]
