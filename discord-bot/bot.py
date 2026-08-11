@@ -4414,63 +4414,6 @@ async def history(interaction: discord.Interaction, player: str,
         _leave_queue()
 
 
-# ════════════════════════════════════════════════════════════════════════════
-# Feature 7 — /courtreport (public) + Monday 9am auto-post
-# ════════════════════════════════════════════════════════════════════════════
-def courtreport_embed(data: dict) -> discord.Embed:
-    name = data.get("tournament", "Tournament")
-    if not data or not data.get("available"):
-        e = discord.Embed(title=f"🏟️ Court Report — {name}", color=COLOR_NEUTRAL,
-                           description="Court data unavailable for that tournament.")
-        e.set_footer(text=FOOTER_GENERIC)
-        return e
-    cpi, tier = data.get("cpi"), data.get("speed_tier", "")
-    e = discord.Embed(title=f"🏟️ Court Report — {name}", color=COLOR_NEUTRAL)
-    cond = [f"**Surface:** {data.get('surface') or '—'}",
-            f"**ST Pace Index:** {cpi:g} ({tier})" if isinstance(cpi, (int, float)) else "**ST Pace Index:** —"]
-    yoy = data.get("yoy")
-    if yoy:
-        cond.append(f"**YoY change:** {yoy['previous']:g} → {yoy['current']:g} "
-                    f"({'+' if yoy['delta'] >= 0 else ''}{yoy['delta']:g}, {yoy['direction']})")
-    e.add_field(name="🎾 Surface Conditions", value="\n".join(cond), inline=False)
-    outlook = [data.get("ace_note", ""), data.get("bp_note", "")]
-    rel = data.get("reliable_props") or []
-    if rel:
-        outlook.append("**Most reliable here:** " + ", ".join(rel))
-    e.add_field(name="📊 Prop Outlook", value="\n".join(x for x in outlook if x), inline=False)
-    watch = data.get("players_to_watch") or []
-    if watch:
-        e.add_field(name="👀 Players to Watch", value="\n".join(f"• {w}" for w in watch), inline=False)
-    e.set_footer(text=FOOTER_GENERIC)
-    return e
-
-
-@client.tree.command(name="courtreport", description="Pre-tournament conditions & prop outlook for an event")
-@app_commands.describe(tournament="Tournament / court", tour="Tour (for WTA/ATP variants)")
-@app_commands.autocomplete(tournament=court_autocomplete)
-@app_commands.choices(tour=[app_commands.Choice(name="ATP", value="ATP"),
-                            app_commands.Choice(name="WTA", value="WTA")])
-async def courtreport(interaction: discord.Interaction, tournament: str,
-                      tour: app_commands.Choice[str] = None):
-    try:
-        await _enter_queue(interaction)
-    except _QueueBusy:
-        return
-    try:
-        tval = tour.value if tour else "ATP"
-        # The bot knows each autocompleted court's surface — pass it so the
-        # report always shows a surface even for courts not in the backend map.
-        shint = surface_for_court(tournament) or ""
-        data = await backend_get("/api/courtreport",
-                                 {"tournament": tournament, "tour": tval, "surface": shint}, 75)
-        await interaction.followup.send(embed=courtreport_embed(data), ephemeral=True)
-    except Exception:  # noqa: BLE001
-        log.exception("/courtreport failed")
-        await interaction.followup.send(embed=courtreport_embed({"tournament": tournament}), ephemeral=True)
-    finally:
-        _leave_queue()
-
-
 # ── Feature 1 — 11pm EST auto-resolution job ─────────────────────────────────
 RESOLVE_EVERY_HOURS = int(os.getenv("RESOLVE_EVERY_HOURS", "2") or "2")
 RESOLVE_GIVEUP_HOURS = 36     # after this long unresolved → NEEDS REVIEW
@@ -4880,47 +4823,6 @@ async def _before_calibration_log():
     await client.wait_until_ready()
 
 
-# ── Feature 7 — Monday 9am EST court-report auto-post ────────────────────────
-COURTREPORT_CHANNEL_ID = int(os.getenv("COURTREPORT_CHANNEL_ID", str(POD_CHANNEL_ID or 0)) or "0")
-
-
-@tasks.loop(time=datetime.time(hour=9, minute=0, tzinfo=POD_TZINFO))
-async def weekly_court_report():
-    # tasks.loop with a single time fires daily; gate to Mondays only.
-    if datetime.datetime.now(POD_TZINFO).weekday() != 0:
-        return
-    chan_id = COURTREPORT_CHANNEL_ID or POD_CHANNEL_ID
-    if not chan_id:
-        return
-    try:
-        channel = client.get_channel(chan_id)
-        if channel is None:
-            log.warning("weekly court report: channel %s not found", chan_id)
-            return
-        slate = await backend_get("/api/slate/today", {}, GENERIC_TIMEOUT)
-        seen, posted = set(), 0
-        for m in (slate.get("atp", []) + slate.get("wta", [])):
-            t = (m.get("tournament") or "").strip()
-            tour = m.get("tour", "ATP")
-            key = t.lower()
-            if not t or key in seen:
-                continue
-            seen.add(key)
-            data = await backend_get("/api/courtreport", {"tournament": t, "tour": tour}, GENERIC_TIMEOUT)
-            if data and data.get("available"):
-                await channel.send(embed=courtreport_embed(data))
-                posted += 1
-            if posted >= 4:                 # cap weekly volume
-                break
-        log.info("weekly court report: posted %d reports", posted)
-    except Exception:  # noqa: BLE001
-        log.exception("weekly_court_report failed")
-
-
-@weekly_court_report.before_loop
-async def _before_weekly_report():
-    await client.wait_until_ready()
-
 
 # ── Global error handling — nothing should ever crash the process ───────────────
 @client.tree.error
@@ -5159,15 +5061,6 @@ async def on_ready():
                      SLATE_HOUR, SLATE_MINUTE, POD_TZINFO, SLATE_CHANNEL_ID)
         except Exception:
             log.exception("failed to start daily slate loop")
-
-    # Feature 7 — Monday 9am court-report auto-post (only if a channel is set).
-    if (COURTREPORT_CHANNEL_ID or POD_CHANNEL_ID) and not weekly_court_report.is_running():
-        try:
-            weekly_court_report.start()
-            log.info("Weekly court report scheduled Mon 09:00 %s -> channel %s",
-                     POD_TZINFO, COURTREPORT_CHANNEL_ID or POD_CHANNEL_ID)
-        except Exception:
-            log.exception("failed to start weekly court report loop")
 
     # PART 5 — weekly confidence-calibration log (Railway logs only).
     if not weekly_calibration_log.is_running():

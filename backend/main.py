@@ -401,21 +401,6 @@ async def history(player_id: str = "", tour: str = "ATP", prop: str = "",
         return {}
 
 
-@app.get("/api/courtreport")
-async def courtreport(tournament: str = "", tour: str = "ATP", surface: str = ""):
-    """Feature 7 — pre-tournament conditions summary for prop betting."""
-    if not tournament:
-        return {"available": False}
-    from src import features
-    loop = asyncio.get_event_loop()
-    try:
-        return await asyncio.wait_for(loop.run_in_executor(
-            None, features.get_court_report, tournament, tour, surface), timeout=70.0)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("courtreport endpoint error: %s", exc)
-        return {"available": False, "tournament": tournament}
-
-
 @app.get("/")
 async def root():
     return {"status": "ok", "service": "Baseline Tennis API"}
