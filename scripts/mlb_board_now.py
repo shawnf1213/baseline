@@ -102,6 +102,12 @@ def main() -> int:
                         "unstored board has nothing to grade and produces no "
                         "recap. Re-scans, so lines may have moved slightly "
                         "since the post; that is reported.")
+    p.add_argument("--fresh", action="store_true",
+                   help="ignore what is already on this slate's board and build "
+                        "it from scratch. Normally a later run only adds what "
+                        "the earlier one could not reach; --fresh re-boards the "
+                        "whole card, which is what you want after a model or "
+                        "dedupe fix.")
     p.add_argument("-v", "--verbose", action="store_true")
     a = p.parse_args()
 
@@ -147,7 +153,8 @@ def main() -> int:
         if a.post:
             # run_daily scans, posts, then persists — and only persists after a
             # successful send, so an unposted board is never recorded as one.
-            res = board.run_daily(bk, slate, None, True, a.only)
+            res = board.run_daily(bk, slate, None, True, a.only,
+                                  exclude_posted=not a.fresh)
             ok = res.get("posted")
             print(f"\n### {bk.upper()}  projected={res.get('projections')} "
                   f"priced={res.get('priced')} posted={ok} "

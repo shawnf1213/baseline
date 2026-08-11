@@ -3238,6 +3238,41 @@ async def _mlb_purge_once():
 MLB_PURGE_ALL = (os.getenv("MLB_PURGE_ALL", "") or "").strip()
 
 
+# MLB_STORE_NOW persists the current board WITHOUT posting it.
+#
+# Exists because `railway run` executes LOCALLY with injected variables: it can
+# post (Discord is a public API) but cannot reach postgres.railway.internal, so
+# a manual board lands in the channel with stored=0 — visible, ungradeable, and
+# absent from every future recap. This runs the same scan inside Railway, where
+# the internal host resolves, and writes the rows the board is showing.
+#
+# Set to a slate date (YYYY-MM-DD) or "1" for the auto-selected slate. It
+# re-scans, so lines may have moved slightly since the post. Unset after use.
+MLB_STORE_NOW = (os.getenv("MLB_STORE_NOW", "") or "").strip()
+
+
+async def _mlb_store_now_once():
+    """Runs once at startup when MLB_STORE_NOW is set. Stores, never posts."""
+    try:
+        mlb_board = _mlb_import("mlb.board")
+        slate = (MLB_STORE_NOW if MLB_STORE_NOW not in ("1", "true", "yes", "on")
+                 else _mlb_target_slate())
+        log.warning("MLB STORE NOW: persisting slate=%s without posting", slate)
+        for book in ("prizepicks", "underdog"):
+            try:
+                # post_it=False -> run_daily skips the send and goes straight to
+                # log_board. exclude_posted=False so it stores the whole board,
+                # not just what a previous run missed.
+                res = await asyncio.to_thread(
+                    mlb_board.run_daily, book, slate, None, False, "pitcher",
+                    False)
+                log.warning("MLB STORE NOW (%s): %s", book, res)
+            except Exception:  # noqa: BLE001
+                log.exception("MLB STORE NOW failed for %s", book)
+    except Exception:  # noqa: BLE001
+        log.exception("MLB STORE NOW failed entirely (tennis unaffected)")
+
+
 async def _mlb_purge_all_once():
     """Runs once at startup when MLB_PURGE_ALL holds the confirmation phrase.
 
@@ -4982,6 +5017,13 @@ async def on_ready():
                             MLB_PURGE_SLATE)
         except Exception:
             log.exception("failed to schedule MLB purge (tennis unaffected)")
+        try:
+            if MLB_STORE_NOW:
+                asyncio.create_task(_mlb_store_now_once())
+                log.warning("MLB_STORE_NOW=%s — one-shot persist scheduled "
+                            "(no posting)", MLB_STORE_NOW)
+        except Exception:
+            log.exception("failed to schedule MLB store-now (tennis unaffected)")
         try:
             if MLB_PURGE_ALL:
                 asyncio.create_task(_mlb_purge_all_once())
