@@ -296,29 +296,40 @@ def purge_slate(slate_date: str, book: str = None) -> int:
         return 0
 
 
-def posted_keys(book: str, slate_date: str) -> set:
-    """{(player, prop)} already on the board for this book and slate.
+def board_state(book: str, slate_date: str) -> dict:
+    """What this book's board ALREADY contains for a slate.
 
-    Lets a later scan on the same card post ONLY what the earlier one could not
-    — newly announced starters, lines the book had not put up yet. Without it the
-    9 AM board would repeat most of the 11:30 PM board: the store would dedupe
-    the rows, but Discord would show every play twice.
+    {"players": {name, ...}, "games": {game_pk: count}}
 
-    Mirrors the tennis rule that a play already live is never re-posted.
+    KEYED ON THE PLAYER, NOT (player, prop). Keying on the pair was the bug that
+    filled the 8/10 recap with plays nobody saw on a board: the 11:30 PM run
+    boarded Andrew Painter's earned runs, and because ("Painter","earned_runs")
+    was taken but "Painter" was not, the 9 AM run boarded his Fantasy Score as
+    though it were a different play. It is not — it is the same six innings
+    priced twice, which is exactly what the one-prop-per-player rule exists to
+    stop. Across two runs a 13-play card became 32 stored rows.
+
+    Game counts come back too, so the two-players-per-game cap survives across
+    runs instead of resetting each time.
     """
+    out = {"players": set(), "games": {}}
     if not _init():
-        return set()
+        return out
     try:
         s = _Session()
         try:
-            return {(r.pitcher, r.prop_type)
-                    for r in s.query(_MlbPick)
-                             .filter_by(book=book, slate_date=slate_date).all()}
+            for r in (s.query(_MlbPick)
+                       .filter_by(book=book, slate_date=slate_date).all()):
+                if r.pitcher:
+                    out["players"].add(r.pitcher)
+                if r.game_pk:
+                    out["games"][r.game_pk] = out["games"].get(r.game_pk, 0) + 1
+            return out
         finally:
             s.close()
     except Exception as exc:  # noqa: BLE001
-        log.exception("mlb store posted_keys failed: %s", exc)
-        return set()
+        log.exception("mlb store board_state failed: %s", exc)
+        return out
 
 
 def purge_all(confirm: str = "") -> int:

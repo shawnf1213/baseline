@@ -356,25 +356,31 @@ def run_daily(book: str, date: str = None, shadow: bool = None,
         # morning one repeats most of the night one — the store would dedupe the
         # rows, but Discord would show every play twice. Same rule tennis
         # applies: a play already live is never re-posted.
-        if exclude_posted:
-            already = _store.posted_keys(book, slate)
-            if already:
-                before = len(rows)
-                rows = [r for r in rows
-                        if ((r.get("player") or r.get("pitcher")),
-                            r.get("prop")) not in already]
-                out["skipped_already_posted"] = before - len(rows)
-                log.info("mlb run_daily (%s): %d play(s) already on the %s "
-                         "board — posting the %d that are new", book,
-                         before - len(rows), slate, len(rows))
-            if not rows:
-                out["post_reason"] = "every qualifying play is already posted"
-                return out
+        state = _store.board_state(book, slate) if exclude_posted else {}
+        if state.get("players"):
+            before = len(rows)
+            # EXCLUDE BY PLAYER, not (player, prop). A pitcher already on the
+            # board must not come back on a second prop — his strikeouts and his
+            # earned runs are the same six innings, and boarding both is the
+            # thing one-prop-per-player forbids.
+            rows = [r for r in rows
+                    if (r.get("player") or r.get("pitcher")) not in state["players"]]
+            out["skipped_already_posted"] = before - len(rows)
+            log.info("mlb run_daily (%s): %d play(s) whose player is already on "
+                     "the %s board — posting the %d that are new", book,
+                     before - len(rows), slate, len(rows))
+        if not rows:
+            out["post_reason"] = "every qualifying play is already posted"
+            return out
         label = f"{int(slate[5:7])}/{int(slate[8:10])}"
         # POTD is chosen from what will actually be POSTED, so the star can never
         # name a play the board dropped in dedupe — the bug that put Zizou up as
         # tennis POTD when he was not on the Underdog board at all.
-        posted_rows = _post.postable(rows)
+        # Seeded with what the board already holds, so both dedupe rules span
+        # the day's two runs rather than resetting on each.
+        posted_rows = _post.postable(rows,
+                                     seen_players=state.get("players"),
+                                     game_counts=state.get("games"))
         if additional:
             # A top-up posts at most SECOND_MAX and carries no star, so the
             # stored rows must match — otherwise the record would contain plays

@@ -256,7 +256,8 @@ def build_board_embed(rows: list, date_label: str, book: str = "underdog",
     """
     from . import SHADOW
     shadow = SHADOW if shadow is None else shadow
-    rows = rows[:MAX_PLAYS]
+    # No cap here — postable() already trimmed to the board size. Capping in
+    # two places is what let the store hold rows the board never showed.
     label = BOOK_LABEL.get(book, book)
     if rows:
         body = "\n\n".join(f"**{i}.** {_fmt_line(r)}"
@@ -286,7 +287,8 @@ def build_board_embed(rows: list, date_label: str, book: str = "underdog",
 MAX_PER_GAME = int(os.getenv("MLB_MAX_PER_GAME", "2") or "2")
 
 
-def dedupe_by_game(rows: list, max_per_game: int = None) -> list:
+def dedupe_by_game(rows: list, max_per_game: int = None,
+                   seen_players: set = None, game_counts: dict = None) -> list:
     """At most `max_per_game` DIFFERENT players per game, one prop each.
 
     Two separate rules, and the player rule is the strict one:
@@ -305,9 +307,16 @@ def dedupe_by_game(rows: list, max_per_game: int = None) -> list:
     Rows must already be sorted best-first; the strongest play for a player and
     the strongest players in a game win. A row without a game_pk keys on its own
     player and is never merged into another game.
+
+    `seen_players` / `game_counts` SEED the state from what is already on the
+    board for this slate. Both rules have to hold across the day's two runs, not
+    just within one scan — without the seed the 9 AM top-up re-boarded pitchers
+    the 11:30 PM board already used, on a second prop.
     """
     limit = MAX_PER_GAME if max_per_game is None else max_per_game
-    per_game, seen_players, kept = {}, set(), []
+    per_game = dict(game_counts or {})
+    seen_players = set(seen_players or ())
+    kept = []
     for r in rows:
         who = _who(r)
         if who in seen_players:
@@ -325,7 +334,8 @@ def dedupe_by_game(rows: list, max_per_game: int = None) -> list:
     return kept
 
 
-def postable(rows: list) -> list:
+def postable(rows: list, seen_players: set = None,
+             game_counts: dict = None) -> list:
     """Exactly the rows a board will show, in board order.
 
     ONE FUNCTION, so the POTD, the board body and the stored record can never
@@ -337,8 +347,21 @@ def postable(rows: list) -> list:
     nothing to be over or under, nothing to grade, and nothing to store. Showing
     them padded the board with "no line" rows that occupied slots a real play
     could have used.
+
+    AND IT IS CAPPED HERE, at the number the board can actually display.
+    build_board_embed used to truncate to MAX_PLAYS on its own while this
+    returned everything, so the store received rows the board never rendered —
+    "stored 14" against a board that shows 13. Those extra rows were graded and
+    counted in the record despite never being posted. MAX_PLAYS now means the
+    whole board INCLUDING the Pick of the Day, and this is the only place it is
+    enforced.
     """
-    return dedupe_by_game([r for r in rows if r.get("line") is not None])
+    kept = dedupe_by_game([r for r in rows if r.get("line") is not None],
+                          seen_players=seen_players, game_counts=game_counts)
+    if len(kept) > MAX_PLAYS:
+        log.info("mlb postable: trimmed %d play(s) beyond the %d-play board",
+                 len(kept) - MAX_PLAYS, MAX_PLAYS)
+    return kept[:MAX_PLAYS]
 
 
 def build_embeds(rows: list, date_label: str, book: str,
