@@ -88,7 +88,9 @@ def _start_rows(pitcher_id, as_of=None):
                 if not outs:
                     continue
                 out.append({
-                    "date": s.get("date"), "outs": outs,
+                    "date": s.get("date"),
+                    "game_pk": (s.get("game") or {}).get("gamePk"),
+                    "outs": outs,
                     "bf": st.get("battersFaced") or 0,
                     "k": st.get("strikeOuts") or 0,
                     "h": st.get("hits") or 0,

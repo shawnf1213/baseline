@@ -93,7 +93,9 @@ def _game_rows(batter_id, season=None) -> list:
                 t3 = st.get("triples") or 0
                 hr = st.get("homeRuns") or 0
                 rows.append({
-                    "date": s.get("date"), "pa": pa, "h": h,
+                    "date": s.get("date"),
+                    "game_pk": (s.get("game") or {}).get("gamePk"),
+                    "pa": pa, "h": h,
                     "1b": max(0, h - d2 - t3 - hr), "2b": d2, "3b": t3, "hr": hr,
                     "tb": st.get("totalBases") or (h + d2 + 2 * t3 + 3 * hr),
                     "r": st.get("runs") or 0, "rbi": st.get("rbi") or 0,

@@ -447,11 +447,12 @@ def resolve(pitcher_id, game_pk=None, game_date: str = None,
 
         from . import lines as _lines
         if prop in _lines.BATTER_PROPS:
-            return _resolve_batter(pitcher_id, prop, season, game_date)
+            return _resolve_batter(pitcher_id, prop, season, game_date,
+                                   game_pk=game_pk)
 
         from . import pitcher_props as _pp
         for r in _pp._start_rows(pitcher_id, _dt.date(season, 7, 1)):
-            if game_date and str(r.get("date"))[:10] != str(game_date)[:10]:
+            if not _same_game(r, game_pk, game_date):
                 continue
             field = {"strikeouts": "k", "pitching_outs": "outs",
                      "hits_allowed": "h", "walks_allowed": "bb",
@@ -469,11 +470,29 @@ def resolve(pitcher_id, game_pk=None, game_date: str = None,
         return {"result": "NEEDS REVIEW", "reason": "resolver error"}
 
 
-def _resolve_batter(batter_id, prop: str, season: int, game_date: str) -> dict:
+def _same_game(row: dict, game_pk, game_date) -> bool:
+    """Does this game-log row belong to the game we are settling?
+
+    GAME_PK WINS WHEN BOTH SIDES HAVE ONE. Matching on the date alone is wrong in
+    two real cases: a doubleheader puts two games on one date, and MLB's calendar
+    date for a late game can differ from the slate the board filed it under —
+    Zac Thornton's 8/12 start was logged under a date the 8/11 board would not
+    have matched. The date is only a fallback for rows stored before game_pk was
+    captured.
+    """
+    if game_pk and row.get("game_pk"):
+        return row["game_pk"] == game_pk
+    if game_date:
+        return str(row.get("date"))[:10] == str(game_date)[:10]
+    return True
+
+
+def _resolve_batter(batter_id, prop: str, season: int, game_date: str,
+                    game_pk=None) -> dict:
     """Settled value for one batter prop from a completed game."""
     from . import batter_props as _bp
     for r in _bp._game_rows(batter_id, season):
-        if game_date and str(r.get("date"))[:10] != str(game_date)[:10]:
+        if not _same_game(r, game_pk, game_date):
             continue
         if prop == "hitter_fantasy_score":
             val = _bp._fs_of(r)

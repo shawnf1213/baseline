@@ -332,6 +332,44 @@ def board_state(book: str, slate_date: str) -> dict:
         return out
 
 
+def reset_slate(slate_date: str, book: str = None) -> int:
+    """Set every graded row on a slate back to PENDING so it re-settles.
+
+    A repair, not a purge: the picks stay exactly as posted — player, prop, line,
+    lean, projection — and only the RESULT is cleared. The next resolve pass then
+    grades them against final stats.
+
+    Needed because results graded before the finality gate may have been settled
+    on a live, partial game log: Zac Thornton was recorded a WIN on 2 earned runs
+    in the 6th and finished with 3. Those rows carry real-looking numbers, so
+    there is no way to spot them by inspection — the whole slate has to re-settle.
+    """
+    if not _init():
+        return 0
+    try:
+        s = _Session()
+        try:
+            q = s.query(_MlbPick).filter_by(slate_date=slate_date)
+            if book:
+                q = q.filter_by(book=book)
+            rows = [r for r in q.all()
+                    if (r.result or "PENDING") != "PENDING"]
+            for r in rows:
+                r.result = "PENDING"
+                r.result_value = None
+                r.resolved_at = None
+            s.commit()
+            log.warning("mlb store: RESET %d graded row(s) on %s%s — they will "
+                        "re-settle against final stats", len(rows), slate_date,
+                        f" (book={book})" if book else "")
+            return len(rows)
+        finally:
+            s.close()
+    except Exception as exc:  # noqa: BLE001
+        log.exception("mlb store reset_slate failed: %s", exc)
+        return 0
+
+
 def purge_all(confirm: str = "") -> int:
     """Delete EVERY row in mlb_picks. Returns rows removed.
 

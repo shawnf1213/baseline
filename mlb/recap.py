@@ -66,14 +66,33 @@ def resolve_pending(book: str = None) -> dict:
 
     for row in store.pending(book):
         try:
+            # ── NOTHING IS GRADED UNTIL THE GAME IS FINAL ────────────────────
+            # The MLB API serves LIVE game logs. A pick checked while its game is
+            # in progress reads whatever has happened so far and grades it as the
+            # final line. Zac Thornton was settled a WIN on 2 earned runs in the
+            # 6th; he finished with 3 and the play lost. The number was real,
+            # which is what made it dangerous — a partial stat looks exactly like
+            # a settled one.
+            #
+            # This gate covers grading as well as the void path. Previously only
+            # the void path consulted it, so the OK path happily settled live
+            # games.
+            final = _game_is_final(row.get("slate_date"), row.get("game_pk"))
             # THE PROP MUST BE PASSED. Defaulting to strikeouts would settle an
             # earned-runs pick against the pitcher's K count — a silent misgrade
             # that looks like a real result.
             r = _board.resolve(row.get("pitcher_id"),
+                               game_pk=row.get("game_pk"),
                                game_date=row.get("slate_date"),
                                prop=row.get("prop_type") or "strikeouts")
+            if r.get("result") == "OK" and not final:
+                out["still_pending"] += 1
+                log.info("mlb resolve: holding %s %s — game not final yet "
+                         "(live value %s is not a result)", row.get("pitcher"),
+                         row.get("prop_type"), r.get("value"))
+                continue
             if r.get("result") != "OK":
-                if _game_is_final(row.get("slate_date"), row.get("game_pk")):
+                if final:
                     if store.update_result(row["id"], "VOID", None):
                         out["voided"] += 1
                         log.info("mlb resolve: VOID %s %s (%s) — game final, "

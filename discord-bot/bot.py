@@ -3269,6 +3269,30 @@ MLB_PURGE_ALL = (os.getenv("MLB_PURGE_ALL", "") or "").strip()
 # re-scans, so lines may have moved slightly since the post. Unset after use.
 MLB_STORE_NOW = (os.getenv("MLB_STORE_NOW", "") or "").strip()
 
+# MLB_REGRADE_SLATE=YYYY-MM-DD[,YYYY-MM-DD...] clears the RESULT on every graded
+# row for those slates so they re-settle against final stats. The picks are
+# untouched — only W/L/PUSH/VOID and the settled value are cleared.
+#
+# For repairing results graded before the finality gate existed, when a pick
+# checked mid-game was settled on a partial line that looked exactly like a
+# final one. Unset after use.
+MLB_REGRADE_SLATE = (os.getenv("MLB_REGRADE_SLATE", "") or "").strip()
+
+
+async def _mlb_regrade_once():
+    """Runs once at startup when MLB_REGRADE_SLATE is set. Never raises."""
+    try:
+        mlb_store = _mlb_import("mlb.store")
+        mlb_recap = _mlb_import("mlb.recap")
+        for slate in [d.strip() for d in MLB_REGRADE_SLATE.split(",") if d.strip()]:
+            n = await asyncio.to_thread(mlb_store.reset_slate, slate)
+            log.warning("MLB REGRADE: reset %d graded row(s) on %s", n, slate)
+        for book in ("prizepicks", "underdog"):
+            res = await asyncio.to_thread(mlb_recap.resolve_pending, book)
+            log.warning("MLB REGRADE re-settle (%s): %s", book, res)
+    except Exception:  # noqa: BLE001
+        log.exception("MLB regrade failed (tennis unaffected)")
+
 
 async def _mlb_store_now_once():
     """Runs once at startup when MLB_STORE_NOW is set. Stores, never posts."""
@@ -5037,6 +5061,13 @@ async def on_ready():
                             MLB_PURGE_SLATE)
         except Exception:
             log.exception("failed to schedule MLB purge (tennis unaffected)")
+        try:
+            if MLB_REGRADE_SLATE:
+                asyncio.create_task(_mlb_regrade_once())
+                log.warning("MLB_REGRADE_SLATE=%s — one-shot re-grade scheduled",
+                            MLB_REGRADE_SLATE)
+        except Exception:
+            log.exception("failed to schedule MLB regrade (tennis unaffected)")
         try:
             if MLB_STORE_NOW:
                 asyncio.create_task(_mlb_store_now_once())
