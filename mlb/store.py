@@ -332,6 +332,89 @@ def board_state(book: str, slate_date: str) -> dict:
         return out
 
 
+def dedupe_record(slate_date: str = None, book: str = None,
+                  dry_run: bool = True) -> dict:
+    """Remove stored plays that the CURRENT dedupe rules would never have posted.
+
+    Boards written before the cross-run fix could carry the same pitcher twice on
+    one card — his strikeouts from the 11:30 PM board and his earned runs from
+    the 9 AM top-up. Those are not two results, they are one start counted twice,
+    and leaving them in inflates the sample and correlates the record with itself.
+
+    KEEPS THE STRONGEST AND DROPS THE REST, per (book, slate):
+      - one row per PLAYER, the one with the highest model probability
+      - at most MAX_PER_GAME players per game
+
+    Deliberately does NOT cap at MAX_PLAYS. A slate legitimately holds a 12-play
+    primary board plus a 6-play top-up; trimming to 12 would delete plays that
+    really were posted.
+
+    dry_run=True by default — it reports what it would remove and changes
+    nothing. Deleting graded history is not something to do on a typo.
+    """
+    from .post import MAX_PER_GAME
+    out = {"examined": 0, "removed": 0, "kept": 0, "dry_run": dry_run,
+           "details": []}
+    if not _init():
+        return out
+    try:
+        s = _Session()
+        try:
+            q = s.query(_MlbPick)
+            if slate_date:
+                q = q.filter_by(slate_date=slate_date)
+            if book:
+                q = q.filter_by(book=book)
+            rows = q.all()
+            out["examined"] = len(rows)
+
+            groups = {}
+            for r in rows:
+                groups.setdefault((r.book, r.slate_date), []).append(r)
+
+            doomed = []
+            for (bk, slate), grp in sorted(groups.items()):
+                # Best-first, exactly how the board ranked them. A row with no
+                # probability sorts last rather than winning by accident.
+                grp.sort(key=lambda r: -(r.probability or 0))
+                seen_players, per_game = set(), {}
+                for r in grp:
+                    who = r.pitcher
+                    key = r.game_pk or ("solo", who)
+                    if who in seen_players:
+                        doomed.append((r, f"{who} already kept on another prop"))
+                        continue
+                    if per_game.get(key, 0) >= MAX_PER_GAME:
+                        doomed.append((r, f"game {r.game_pk} already has "
+                                          f"{MAX_PER_GAME} players"))
+                        continue
+                    seen_players.add(who)
+                    per_game[key] = per_game.get(key, 0) + 1
+                    out["kept"] += 1
+
+            for r, why in doomed:
+                out["details"].append(
+                    f"{r.book} {r.slate_date} {r.pitcher} {r.prop_type} "
+                    f"{r.lean} {r.line} [{r.result}] — {why}")
+            out["removed"] = len(doomed)
+
+            if not dry_run and doomed:
+                for r, _ in doomed:
+                    s.delete(r)
+                s.commit()
+                log.warning("mlb store: DEDUPED RECORD — removed %d duplicate "
+                            "row(s), kept %d", out["removed"], out["kept"])
+            else:
+                log.info("mlb store: dedupe_record DRY RUN — would remove %d, "
+                         "keep %d", out["removed"], out["kept"])
+            return out
+        finally:
+            s.close()
+    except Exception as exc:  # noqa: BLE001
+        log.exception("mlb store dedupe_record failed: %s", exc)
+        return out
+
+
 def reset_slate(slate_date: str, book: str = None) -> int:
     """Set every graded row on a slate back to PENDING so it re-settles.
 

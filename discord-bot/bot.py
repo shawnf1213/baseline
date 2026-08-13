@@ -3278,6 +3278,35 @@ MLB_STORE_NOW = (os.getenv("MLB_STORE_NOW", "") or "").strip()
 # final one. Unset after use.
 MLB_REGRADE_SLATE = (os.getenv("MLB_REGRADE_SLATE", "") or "").strip()
 
+# MLB_DEDUPE_RECORD removes stored plays the current dedupe rules would never
+# have posted — the same pitcher on two props across the night board and the
+# morning top-up. One start counted twice inflates the sample and correlates the
+# record with itself.
+#   "dry"    report what would go, change nothing
+#   "apply"  actually delete
+MLB_DEDUPE_RECORD = (os.getenv("MLB_DEDUPE_RECORD", "") or "").strip().lower()
+
+
+async def _mlb_dedupe_record_once():
+    """Runs once at startup when MLB_DEDUPE_RECORD is set. Never raises."""
+    try:
+        mlb_store = _mlb_import("mlb.store")
+        apply = MLB_DEDUPE_RECORD in ("apply", "1", "true", "yes", "on")
+        res = await asyncio.to_thread(mlb_store.dedupe_record, None, None,
+                                      not apply)
+        for line in (res.get("details") or []):
+            log.warning("MLB DEDUPE %s | %s", "REMOVE" if apply else "would remove",
+                        line)
+        log.warning("MLB DEDUPE RECORD (%s): examined=%s removed=%s kept=%s",
+                    "APPLIED" if apply else "DRY RUN",
+                    res.get("examined"), res.get("removed"), res.get("kept"))
+        if apply:
+            for book in ("prizepicks", "underdog"):
+                rec = await asyncio.to_thread(mlb_store.record, book, 30)
+                log.warning("MLB DEDUPE record after (%s): %s", book, rec)
+    except Exception:  # noqa: BLE001
+        log.exception("MLB dedupe-record failed (tennis unaffected)")
+
 
 async def _mlb_regrade_once():
     """Runs once at startup when MLB_REGRADE_SLATE is set. Never raises."""
@@ -5068,6 +5097,13 @@ async def on_ready():
                             MLB_PURGE_SLATE)
         except Exception:
             log.exception("failed to schedule MLB purge (tennis unaffected)")
+        try:
+            if MLB_DEDUPE_RECORD:
+                asyncio.create_task(_mlb_dedupe_record_once())
+                log.warning("MLB_DEDUPE_RECORD=%s — one-shot record dedupe "
+                            "scheduled", MLB_DEDUPE_RECORD)
+        except Exception:
+            log.exception("failed to schedule MLB dedupe-record (tennis unaffected)")
         try:
             if MLB_REGRADE_SLATE:
                 asyncio.create_task(_mlb_regrade_once())
