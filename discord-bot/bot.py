@@ -3290,6 +3290,13 @@ async def _mlb_regrade_once():
         for book in ("prizepicks", "underdog"):
             res = await asyncio.to_thread(mlb_recap.resolve_pending, book)
             log.warning("MLB REGRADE re-settle (%s): %s", book, res)
+        # Report the corrected record per book AND per slate, so the effect of
+        # the re-grade is visible rather than having to be inferred from counts.
+        for book in ("prizepicks", "underdog"):
+            rec = await asyncio.to_thread(mlb_store.record, book, 30)
+            log.warning("MLB REGRADE record (%s): %s", book, rec)
+        summ = await asyncio.to_thread(mlb_store.summary)
+        log.warning("MLB REGRADE summary: %s", summ)
     except Exception:  # noqa: BLE001
         log.exception("MLB regrade failed (tennis unaffected)")
 
