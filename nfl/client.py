@@ -54,6 +54,29 @@ _ESPN_HEADERS = {"User-Agent": "Mozilla/5.0"}
 
 _mem = {}          # in-process frame cache, keyed by (dataset, season)
 
+# ── TEAM ABBREVIATIONS DIFFER BETWEEN THE TWO SOURCES, AND SILENTLY ──────────
+# ESPN says LAR and WSH; nflverse says LA and WAS. Nothing errors when they
+# disagree — the ratings lookup simply misses and the opponent adjustment
+# defaults to 1.000, so a projection against the Rams or the Commanders quietly
+# loses its defensive adjustment while looking completely normal.
+#
+# Everything is normalised to the NFLVERSE convention at the ingest boundary,
+# because that is the side the statistics live on. The extra historical codes
+# cost nothing and cover relocations that still appear in older data.
+TEAM_ALIASES = {
+    "LAR": "LA", "WSH": "WAS", "JAC": "JAX",
+    "OAK": "LV", "SD": "LAC", "STL": "LA", "ARZ": "ARI",
+    "BLT": "BAL", "CLV": "CLE", "HST": "HOU",
+}
+
+
+def normalize_team(abbr: str) -> str:
+    """Team abbreviation in nflverse form. Passes unknown codes through."""
+    if not abbr:
+        return abbr
+    a = str(abbr).strip().upper()
+    return TEAM_ALIASES.get(a, a)
+
 
 def current_season(today: _dt.date = None) -> int:
     """The NFL season a date belongs to.
@@ -178,8 +201,10 @@ def get_schedule(start: str = None, end: str = None) -> list:
                 "state": ((comp.get("status") or {}).get("type") or {}).get("state"),
                 "home": (home.get("team") or {}).get("displayName"),
                 "away": (away.get("team") or {}).get("displayName"),
-                "home_abbr": (home.get("team") or {}).get("abbreviation"),
-                "away_abbr": (away.get("team") or {}).get("abbreviation"),
+                "home_abbr": normalize_team(
+                    (home.get("team") or {}).get("abbreviation")),
+                "away_abbr": normalize_team(
+                    (away.get("team") or {}).get("abbreviation")),
                 "spread_home": spread_home,
                 "total": odds.get("overUnder"),
             })
