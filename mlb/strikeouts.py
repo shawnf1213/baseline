@@ -64,6 +64,24 @@ log = logging.getLogger("baseline.mlb.strikeouts")
 
 MIN_STARTS = 5                    # below this the rate is a rumour, not a stat
 
+# ── OPENER / SHORT-ROLE DETECTION ────────────────────────────────────────────
+# A starter faces ~23 batters. An OPENER is announced as the starter and is
+# pulled after one or two innings by design — a bullpen game wearing a starter's
+# label. Projecting him on a starter's workload is not slightly wrong, it is
+# several times wrong.
+#
+# Sean Newcomb, 2026-08-14: pulled in the FIRST, 4 batters faced. He had exactly
+# two 2026 starts (9 BF and 4 BF), which is below MIN_STARTS, so the early-season
+# fallback reached into 2025 — when he really was a starter at 18-24 BF — and
+# averaged the two into 17.0 BF/start. The model then projected him as a
+# conventional starter for a game his team planned to open.
+#
+# THE FALLBACK ASSUMES PRIOR-SEASON DATA IS STALE. Sometimes it is INVALID: a
+# role change makes last year's workload a description of a different job. So
+# the current season now gets to veto the extension.
+OPENER_BF = 12.0            # a start under this is not a starter's workload
+ROLE_CHANGE_RATIO = 0.65    # current season this far below prior = role change
+
 # ── Fitted on 6,092 starts, all qualified starters 2023-2026 ─────────────────
 # Variance/mean for a pitcher's K count. 1.00 would be pure Poisson; the excess
 # is real start-to-start variation in length, opponent and pitch count that a
@@ -120,11 +138,44 @@ def pitcher_form(pitcher_id, as_of: _dt.date = None) -> dict:
 
     rows = _starts(as_of.year)
     extended = False
+    role_note = None
+    cur_bf = (sum(r["bf"] for r in rows) / len(rows)) if rows else None
+
+    # A pitcher his team is currently using in short outings gets NO extension,
+    # however thin the sample. Two starts of 9 and 4 batters is a small sample
+    # about his ROLE, and it is not improved by adding last season's data about a
+    # different one.
+    if rows and len(rows) >= 2 and cur_bf is not None and cur_bf < OPENER_BF:
+        log.info("mlb strikeouts: pitcher %s averaging %.1f BF over %d start(s) "
+                 "this season — opener/short role, not extending to prior year",
+                 pitcher_id, cur_bf, len(rows))
+        return {
+            "pitcher_id": pitcher_id, "starts": len(rows),
+            "opener_risk": True, "bf_per_start": round(cur_bf, 1),
+            "role_note": (f"{cur_bf:.1f} batters faced per start this season — "
+                          f"used as an opener or in short relief"),
+        }
+
     if len(rows) < MIN_STARTS:
         # Early-season fallback: a two-start sample is not a rate. Reach back
         # rather than project off nothing — and SAY SO in the output.
         prior = _starts(as_of.year - 1)
         if prior:
+            prior_bf = sum(r["bf"] for r in prior) / len(prior)
+            # Veto: if this season's workload is far below last season's, the
+            # role changed and the prior year describes a different pitcher.
+            if (cur_bf is not None and len(rows) >= 2 and prior_bf > 0
+                    and cur_bf / prior_bf < ROLE_CHANGE_RATIO):
+                log.info("mlb strikeouts: pitcher %s at %.1f BF/start vs %.1f "
+                         "last season — role change, refusing the extension",
+                         pitcher_id, cur_bf, prior_bf)
+                return {
+                    "pitcher_id": pitcher_id, "starts": len(rows),
+                    "opener_risk": True, "bf_per_start": round(cur_bf, 1),
+                    "role_note": (f"{cur_bf:.1f} batters faced per start this "
+                                  f"season against {prior_bf:.1f} last season — "
+                                  f"role has changed"),
+                }
             rows = rows + prior
             extended = True
     if len(rows) < MIN_STARTS:
@@ -166,6 +217,14 @@ def project(pitcher_id, opponent_team_id, line=None, as_of: _dt.date = None,
         form = pitcher_form(pitcher_id, as_of=as_of)
         if not form:
             return {}
+        # AN OPENER IS NOT A THIN SAMPLE, IT IS THE WRONG QUESTION. The model
+        # prices ~23 batters faced; a pitcher being pulled after one inning by
+        # design is several times off, not slightly. Refuse with a reason rather
+        # than return a number nobody can act on.
+        if form.get("opener_risk"):
+            return {"skipped": True, "sport": "mlb", "prop": "strikeouts",
+                    "pitcher_id": pitcher_id, "opener_risk": True,
+                    "reason": form.get("role_note")}
         tb = team_batting if team_batting is not None else client.get_team_batting()
         lg = client.league_k_rate(tb) if tb else LEAGUE_TEAM_K_RATE
         opp = (tb or {}).get(opponent_team_id) or {}

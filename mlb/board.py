@@ -193,8 +193,11 @@ def scan_all_props(date: str = None, book: str = "underdog",
                 else:
                     row = _pp.project(ctx["pitcher_id"], prop,
                                       opponent_team_id=ctx["opponent_team_id"])
-                if not row:
-                    continue           # thin sample; the engine logged why
+                if not row or row.get("skipped"):
+                    if row and row.get("opener_risk"):
+                        log.info("mlb scan: skipping %s %s — %s",
+                                 ctx.get("pitcher"), prop, row.get("reason"))
+                    continue           # thin sample or wrong role; engine logged why
                 row.update({k: ctx[k] for k in
                             ("pitcher", "team", "opponent", "game_pk",
                              "game_date")})

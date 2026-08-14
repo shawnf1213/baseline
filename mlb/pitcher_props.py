@@ -128,6 +128,14 @@ def project(pitcher_id, prop: str, opponent_team_id=None, line=None,
         if prop not in SUPPORTED:
             return {}
         rows = _start_rows(pitcher_id, as_of)
+        # Same opener gate as strikeouts — outs, hits and earned runs allowed all
+        # scale with batters faced, so a one-inning opener breaks every one of
+        # them in the same way.
+        _form = _so.pitcher_form(pitcher_id, as_of=as_of)
+        if _form.get("opener_risk"):
+            return {"skipped": True, "sport": "mlb", "prop": prop,
+                    "pitcher_id": pitcher_id, "opener_risk": True,
+                    "reason": _form.get("role_note")}
         if len(rows) < _so.MIN_STARTS:
             log.info("mlb %s: pitcher %s has %d starts (< %d) — no projection",
                      prop, pitcher_id, len(rows), _so.MIN_STARTS)
