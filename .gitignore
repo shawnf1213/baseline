@@ -42,3 +42,6 @@ logs/
 # Railway / Vercel
 .vercel/
 .railway/
+
+# NFL data cache — nflverse parquet, re-downloadable
+nfl/_cache/
