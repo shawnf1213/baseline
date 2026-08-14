@@ -41,6 +41,27 @@ log = logging.getLogger("baseline.nfl.props")
 
 SUPPORTED = ("receptions", "receiving_yards", "rush_yards", "pass_yards")
 
+# ── VOLUME FLOORS — REFUSE TO PRICE WHAT THE MODEL WAS NOT FITTED ON ─────────
+# The empirical distributions were measured on players at board-realistic
+# volume: 3+ targets, 6+ carries, 15+ attempts. Below those the SHAPE is
+# completely different, and the model does not merely lose accuracy, it inverts.
+#
+# The board that exposed this: five of six top plays were "rush yards OVER 0.5"
+# for WIDE RECEIVERS. Projecting Puka Nacua at 4.6 rushing yards and calling it
+# 89% OVER is nonsense — a receiver takes a handoff in about one game in five,
+# so most weeks he records ZERO and the under cashes. His 0.3 carries a game sit
+# outside every fitted band, so the table silently lent him the 6-11 carry shape
+# of a real running back.
+#
+# A prop under the floor is not a low-confidence play, it is an unanswerable
+# question. It returns {} with a reason rather than a number.
+VOLUME_FLOOR = {
+    "receiving_yards": ("targets", 3.0),
+    "receptions": ("targets", 3.0),
+    "rush_yards": ("carries", 6.0),
+    "pass_yards": ("pass_attempts", 15.0),
+}
+
 # Coefficient of variation (sd / mean) per prop, fitted on 2023-2025 weekly logs
 # for players at realistic board volume. Set by fit_dispersion().
 # CV IS A FUNCTION OF VOLUME, NOT A CONSTANT — the single most important guard
@@ -264,6 +285,14 @@ def project(player: str, prop: str, line: float = None, game: dict = None,
         # Volume driver for this prop — the term CV scales with.
         _vol_driver = (drivers.get("pass_attempts") or drivers.get("targets")
                        or drivers.get("carries"))
+        # Floor check BEFORE any probability is computed.
+        _fname, _floor = VOLUME_FLOOR[prop]
+        if _vol_driver is not None and _vol_driver < _floor:
+            log.info("nfl %s: %s projects %.2f %s (< %.1f floor) — not priced",
+                     prop, player, _vol_driver, _fname, _floor)
+            return {"skipped": True, "reason":
+                    f"{_vol_driver:.1f} {_fname} is below the {_floor:.0f} the "
+                    f"model was fitted on", "player": u["player"], "prop": prop}
         cv = cv_for(prop, _vol_driver)
         out = {
             "sport": "nfl", "prop": prop, "player": u["player"],
