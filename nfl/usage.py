@@ -73,13 +73,19 @@ def _weighted(vals, weights):
     return (sum(v * w for v, w in zip(vals, weights)) / tot) if tot else None
 
 
-def player_usage(player: str, season: int = None, position: str = None) -> dict:
+def player_usage(player: str, season: int = None, position: str = None,
+                 before_week: int = None) -> dict:
     """A player's usage and efficiency rates, shrunk and recency-weighted.
 
     Returns {} when there is not enough history to say anything. Never raises.
 
     The returned `games` and `window` are not decoration — a caller showing a
     projection built on five games should be able to say so.
+
+    `before_week` restricts the CURRENT season to weeks strictly before it. It
+    exists for backtesting: a projection evaluated against week 9 must be built
+    only from weeks 1-8, or the test measures nothing but hindsight. Prior
+    seasons are always fully available, which is what a real Sunday looks like.
     """
     from . import client
     import pandas as pd
@@ -95,6 +101,8 @@ def player_usage(player: str, season: int = None, position: str = None) -> dict:
                 continue
             d = df[(df.get("season_type") == "REG")
                    & (df.get("player_display_name") == player)]
+            if before_week and tag == "current":
+                d = d[d["week"] < before_week]
             if len(d):
                 frames.append(d.assign(_src=tag, _season=yr))
         if not frames:

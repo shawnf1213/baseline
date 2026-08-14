@@ -207,8 +207,21 @@ def project(player: str, prop: str, line: float = None, game: dict = None,
                                own_plays=tend.get("plays_per_game"))
 
         # ── volume x rate ────────────────────────────────────────────────────
+        # SCRIPT RATIO — how far this game's volume sits from the team's own
+        # neutral baseline. Applying it to a PLAYER's measured per-game volume
+        # keeps him anchored to what he actually does, instead of handing him
+        # 100% of the team's snaps.
+        _neutral = (vol["plays"] * vol["pass_rate"]) or 1.0
+        script_ratio = vol["pass_att"] / _neutral
+
         if prop == "pass_yards":
-            att = vol["pass_att"]
+            # A QB gets HIS OWN attempts scaled by the script, not the team's
+            # total. Assigning the whole team's pass volume over-projected every
+            # quarterback by 17 yards a game (+8%) in backtest: it silently
+            # credits him with snaps taken by a backup, and with the attempts he
+            # never made in games he left early.
+            att = (u["pass_att_per_game"] * script_ratio
+                   if u.get("pass_att_per_game") else vol["pass_att"])
             # Decomposed so the defence hits accuracy, which is what a
             # secondary actually suppresses, rather than a blended Y/A.
             comp_pct = u["completion_pct"] * of
