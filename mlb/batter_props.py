@@ -115,12 +115,17 @@ def _fs_of(row: dict) -> float:
 
 
 def project(batter_id, prop: str, line=None, lineup_confirmed: bool = False,
-            **kw) -> dict:
+            opposing_pitcher_id=None, **kw) -> dict:
     """Project one batter prop. {} when unsupported or the sample is too thin.
 
     `lineup_confirmed` is carried through, never enforced here — the board
     decides whether to post an unconfirmed batter. Making it visible rather than
     silently assuming he plays is the point.
+
+    `opposing_pitcher_id` applies the matchup. Without it a hitter projects
+    IDENTICALLY against the best pitcher in baseball and a replacement-level
+    arm, which is what this engine did until now — it had no opponent input at
+    all, not even an unused one.
     """
     try:
         if prop not in SUPPORTED:
@@ -138,6 +143,17 @@ def project(batter_id, prop: str, line=None, lineup_confirmed: bool = False,
                "lineup_confirmed": bool(lineup_confirmed),
                "teammate_dependent": prop in TEAMMATE_DEPENDENT}
 
+        # ── OPPOSING PITCHER ────────────────────────────────────────────────
+        # log5 against the league baseline, the same parameter-free identity
+        # the pitcher engines use, so a matchup means the same thing on both
+        # sides of the ball.
+        pf, pbasis = 1.0, "none (no opposing pitcher supplied)"
+        if opposing_pitcher_id:
+            pf, pbasis = _pitcher_factor(opposing_pitcher_id, prop)
+        out["opposing_pitcher_id"] = opposing_pitcher_id
+        out["opponent_factor"] = round(pf, 4)
+        out["opponent_basis"] = pbasis
+
         if prop in COMPOSITE_PROPS:
             if prop == "hitter_fantasy_score":
                 vals = [_fs_of(r) for r in rows]
@@ -145,8 +161,8 @@ def project(batter_id, prop: str, line=None, lineup_confirmed: bool = False,
             else:                                    # hits+runs+rbis
                 vals = [r["h"] + r["r"] + r["rbi"] for r in rows]
                 model = "empirical per-game H+R+RBI (components correlated)"
-            mu = sum(vals) / n
-            sd = (sum((v - mu) ** 2 for v in vals) / n) ** 0.5
+            mu = (sum(vals) / n) * pf
+            sd = ((sum((v - (sum(vals) / n)) ** 2 for v in vals) / n) ** 0.5) * pf
             out.update({"projection": round(mu, 2), "sd": round(sd, 2),
                         "model": model})
             if isinstance(line, (int, float)) and sd > 0:
@@ -159,9 +175,10 @@ def project(batter_id, prop: str, line=None, lineup_confirmed: bool = False,
 
         field, disp = COUNT_PROPS[prop]
         total = sum(r[field] for r in rows)
-        per_game = total / n
+        per_game = (total / n) * pf
         pa_total = sum(r["pa"] for r in rows) or 1
-        out.update({"projection": round(per_game, 2),
+        out.update({"unadjusted_projection": round(total / n, 2),
+                    "projection": round(per_game, 2),
                     "per_pa_rate": round(total / pa_total, 4),
                     "model": f"negative-binomial, dispersion {disp}"})
         if isinstance(line, (int, float)):
@@ -174,3 +191,50 @@ def project(batter_id, prop: str, line=None, lineup_confirmed: bool = False,
     except Exception as exc:  # noqa: BLE001 — Rule 2
         log.exception("mlb batter prop %s failed (%s): %s", prop, batter_id, exc)
         return {}
+
+
+# Which opposing-pitcher rate governs each batter prop, and the league baseline
+# it is measured against.
+_PITCHER_RATE = {
+    "hitter_strikeouts": ("k", 0.221),
+    "hits": ("h", 0.2162),
+    "singles": ("h", 0.2162),
+    "total_bases": ("h", 0.2162),
+    "doubles": ("h", 0.2162),
+    "triples": ("h", 0.2162),
+    "walks": ("bb", 0.0893),
+    "home_runs": ("hr", 0.0305),
+    "runs": ("h", 0.2162),
+    "rbis": ("h", 0.2162),
+    "hits_runs_rbis": ("h", 0.2162),
+    "hitter_fantasy_score": ("h", 0.2162),
+    "stolen_bases": (None, None),      # a catcher's arm, not the pitcher's rate
+}
+
+
+def _pitcher_factor(pitcher_id, prop: str):
+    """(multiplier, basis) for facing this pitcher. (1.0, reason) when unknown.
+
+    Uses the pitcher's own per-batter-faced rate against the league mean. Damped
+    by a square root because ONE pitcher does not control a batter's outcome the
+    way the batter's own skill does — the raw ratio would overstate a matchup a
+    hitter escapes with one swing.
+    """
+    field, lg = _PITCHER_RATE.get(prop, (None, None))
+    if not field or not lg:
+        return 1.0, "prop not pitcher-sensitive"
+    try:
+        from . import pitcher_props as _pp
+        rows = _pp._start_rows(pitcher_id)
+        if len(rows) < 3:
+            return 1.0, "opposing pitcher sample too thin"
+        bf = sum(r["bf"] for r in rows) or 1
+        rate = sum(r.get(field) or 0 for r in rows) / bf
+        if rate <= 0:
+            return 1.0, "opposing pitcher rate unavailable"
+        raw = rate / lg
+        f = max(0.75, min(1.30, raw ** 0.5))
+        return f, f"vs pitcher {field}/BF {rate:.3f} against league {lg:.3f}"
+    except Exception as exc:  # noqa: BLE001
+        log.warning("nfl pitcher factor failed (%s): %s", pitcher_id, str(exc)[:120])
+        return 1.0, "opposing pitcher lookup failed"

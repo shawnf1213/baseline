@@ -96,6 +96,9 @@ def _start_rows(pitcher_id, as_of=None):
                     "h": st.get("hits") or 0,
                     "bb": st.get("baseOnBalls") or 0,
                     "er": st.get("earnedRuns") or 0,
+                    # HR allowed — needed by the batter engine's home-run
+                    # matchup term, which silently fell back to 1.0 without it.
+                    "hr": st.get("homeRuns") or 0,
                     "win": 1 if (st.get("wins") or 0) else 0,
                 })
         return out
@@ -177,11 +180,60 @@ def project(pitcher_id, prop: str, opponent_team_id=None, line=None,
                  "walks_allowed": "bb", "earned_runs": "er"}[prop]
         total = sum(r[field] for r in rows)
         per_start = total / n
-        out["projection"] = round(per_start, 2)
-        out["per_bf_rate"] = round(total / bf, 4)
+        per_bf = total / bf
+
+        # ── OPPONENT ADJUSTMENT ──────────────────────────────────────────────
+        # These props had NO opponent term at all: project() accepted
+        # opponent_team_id and never read it, so earned runs, hits, walks and
+        # outs were pure season averages. A pitcher faced the best offence in
+        # baseball and the worst with the same projection, on props that led
+        # recent boards.
+        #
+        # Built as BF x per-BF rate x opponent, the same shape strikeouts uses,
+        # so the two engines cannot disagree about what a matchup is worth.
+        opp_field = {"hits_allowed": "hit_rate", "walks_allowed": "bb_rate",
+                     "earned_runs": "run_rate", "pitching_outs": "run_rate"}[prop]
+        tb = kw.get("team_batting")
+        if tb is None:
+            tb = client.get_team_batting()
+        lg = client.league_batting(tb) if tb else {}
+        opp = (tb or {}).get(opponent_team_id) or {}
+        opp_rate, lg_rate = opp.get(opp_field), lg.get(opp_field)
+        opp_factor, basis = 1.0, "none (opponent unknown)"
+        if (isinstance(opp_rate, (int, float)) and isinstance(lg_rate, (int, float))
+                and 0 < lg_rate < 1 and 0 < opp_rate < 1):
+            if prop == "pitching_outs":
+                # OUTS RUN THE OTHER WAY. A better offence does not lengthen a
+                # start, it shortens it — more baserunners, higher pitch count,
+                # an earlier hook. So the ratio is INVERTED here, and getting
+                # that sign wrong would have made every start against a good
+                # lineup look longer.
+                # Damped square root, not the raw ratio: start length responds
+                # to opponent quality but far less than one-for-one, because a
+                # manager's hook is driven by pitch count and leverage, not only
+                # by how good the lineup is.
+                opp_factor = (lg_rate / opp_rate) ** 0.5
+                basis = f"inverse opp {opp_field} (better offence = shorter start)"
+            else:
+                # log5 on the two rates against the league baseline — the same
+                # parameter-free identity the strikeout model uses.
+                opp_factor = _odds.log5(per_bf, opp_rate, lg_rate) / per_bf                     if per_bf > 0 else 1.0
+                basis = f"log5 vs opp {opp_field}"
+        # Bounded. An unclipped ratio on a small denominator eventually produces
+        # a number no offence in baseball justifies.
+        opp_factor = max(0.80, min(1.25, opp_factor))
+
+        out["projection"] = round(per_start * opp_factor, 2)
+        out["unadjusted_projection"] = round(per_start, 2)
+        out["per_bf_rate"] = round(per_bf, 4)
+        out["opponent_team_id"] = opponent_team_id
+        out["opponent_factor"] = round(opp_factor, 4)
+        out["opponent_basis"] = basis
+        out["opponent_rate"] = round(opp_rate, 4) if isinstance(opp_rate, (int, float)) else None
+        out["league_rate"] = round(lg_rate, 4) if isinstance(lg_rate, (int, float)) else None
         out["model"] = f"negative-binomial, dispersion {DISPERSION[prop]}"
         if isinstance(line, (int, float)):
-            r = _odds.count_over_under(per_start, line,
+            r = _odds.count_over_under(out["projection"], line,
                                        dispersion=DISPERSION[prop])
             out.update({"line": line,
                         "p_over": round(r["p_over"], 4),

@@ -192,7 +192,8 @@ def scan_all_props(date: str = None, book: str = "underdog",
                         home_team_id=ctx["home_team_id"])
                 else:
                     row = _pp.project(ctx["pitcher_id"], prop,
-                                      opponent_team_id=ctx["opponent_team_id"])
+                                      opponent_team_id=ctx["opponent_team_id"],
+                                      team_batting=team_batting)
                 if not row or row.get("skipped"):
                     if row and row.get("opener_risk"):
                         log.info("mlb scan: skipping %s %s — %s",
@@ -206,8 +207,11 @@ def scan_all_props(date: str = None, book: str = "underdog",
                 if not ctx:
                     no_lineup += 1
                     continue
+                # The opposing STARTER is the matchup. Without it a hitter
+                # projected the same against an ace and a replacement arm.
                 row = _bp.project(ctx["batter_id"], prop,
-                                  lineup_confirmed=True)
+                                  lineup_confirmed=True,
+                                  opposing_pitcher_id=ctx.get("opposing_pitcher_id"))
                 if not row:
                     continue
                 row.update({k: ctx[k] for k in

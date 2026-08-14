@@ -212,7 +212,8 @@ def get_pitcher_game_log(pitcher_id, season: int = None) -> list:
 
 # ── Team batting (the opponent side of a strikeout matchup) ──────────────────
 def get_team_batting(season: int = None) -> dict:
-    """{team_id: {team, pa, k, k_rate}} for all 30 clubs. {} on failure.
+    """{team_id: {team, pa, k, k_rate, bb_rate, hit_rate, run_rate, hr_rate, ops}}
+    for all 30 clubs. {} on failure.
 
     k_rate is strikeouts / plate appearances — the opponent-quality term. League
     mean is carried alongside so callers can express a matchup as a RATIO to
@@ -230,13 +231,39 @@ def get_team_batting(season: int = None) -> dict:
             so = st.get("strikeOuts")
             if not pa or so is None:
                 continue
+            # EVERY RATE A PITCHER PROP NEEDS, not just strikeouts. Fetching
+            # only k_rate is why hits/walks/earned-runs projections had no
+            # opponent term at all — the data was one field away the whole time.
             out[t.get("id")] = {
                 "team_id": t.get("id"),
                 "team": t.get("name"),
                 "pa": pa,
                 "k": so,
                 "k_rate": so / pa,
+                "bb_rate": (st.get("baseOnBalls") or 0) / pa,
+                "hit_rate": (st.get("hits") or 0) / pa,
+                "run_rate": (st.get("runs") or 0) / pa,
+                "hr_rate": (st.get("homeRuns") or 0) / pa,
+                "ops": float(st.get("ops") or 0) or None,
             }
+    return out
+
+
+def league_batting(team_batting: dict = None, season: int = None) -> dict:
+    """League mean of every rate in get_team_batting, PA-weighted.
+
+    Weighted rather than a simple mean of team rates: teams differ in plate
+    appearances, and an unweighted mean would let a low-PA club pull the league
+    baseline the same amount as a high-PA one.
+    """
+    tb = team_batting if team_batting is not None else get_team_batting(season)
+    if not tb:
+        return {}
+    tot_pa = sum(t.get("pa") or 0 for t in tb.values()) or 1
+    out = {"pa": tot_pa}
+    for f in ("k_rate", "bb_rate", "hit_rate", "run_rate", "hr_rate"):
+        out[f] = sum((t.get(f) or 0) * (t.get("pa") or 0)
+                     for t in tb.values()) / tot_pa
     return out
 
 
