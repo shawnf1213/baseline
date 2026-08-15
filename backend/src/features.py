@@ -314,6 +314,25 @@ def resolve_pick(player: str, opponent: str, prop_type: str,
                     "opponent_matched": opponent, "date": void.get("date")}
         return {"result": "NEEDS REVIEW", "reason": "completed match not found"}
 
+    # ── RETIREMENT IS A DNP, NOT A RESULT ────────────────────────────────────
+    # The match appears COMPLETED because it has a score, so the void path above
+    # never fires — that one only catches matches cancelled or walked over
+    # BEFORE they start. A mid-match retirement produces a real stat line that is
+    # a fragment of a match: Elisabetta Cocciaretto retired in the first set and
+    # was graded a LOSS at 0, because zero aces in a match she did not finish
+    # reads exactly like zero aces in a match she did.
+    #
+    # Books void props on a retirement, and the projection was for a completed
+    # match, so grading a partial one measures nothing about the model.
+    if best.get("match_ended_early"):
+        return {"result": "VOID",
+                "reason": f"match ended early ({best.get('status_desc') or 'retirement'})",
+                "opponent_matched": best.get("opponent_name"),
+                "date": best.get("date"),
+                "partial_value": (_fantasy_score(best) if is_fs
+                                  else _break_points_saved(best) if is_bps
+                                  else _val(best, field))}
+
     if is_fs:
         value = _fantasy_score(best)
     elif is_bps:

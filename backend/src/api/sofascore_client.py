@@ -1145,6 +1145,12 @@ def _parse_match_stats(stats_data: dict, event: dict, player_id: int) -> Optiona
     _is_dnf = (_st.get("code") in (91, 92, 93)
                or any(t in _st_desc for t in ("retir", "walkover", "default")))
     player_retired = bool(_is_dnf and not won)
+    # WHO retired does not matter for GRADING, only that the match ended early.
+    # player_retired is deliberately one-sided — it is an injury signal about
+    # THIS player and _retirement_risk depends on that meaning — so grading gets
+    # its own neutral flag. A prop does not care which side stopped: the match
+    # did not play out, and the stat line is a fragment of one.
+    match_ended_early = bool(_is_dnf)
 
     opp_team = event.get("awayTeam", {}) if side == "home" else event.get("homeTeam", {})
 
@@ -1155,6 +1161,9 @@ def _parse_match_stats(stats_data: dict, event: dict, player_id: int) -> Optiona
     result = {
         "won":           won,
         "player_retired": player_retired,
+        "match_ended_early": match_ended_early,
+        "status_code":   _st.get("code"),
+        "status_desc":   _st.get("description"),
         "sets_played":   _sets_played,
         "tiebreak_sets": _tb_sets,
         "tournament":    event.get("tournament", {}).get("name", "Unknown"),
