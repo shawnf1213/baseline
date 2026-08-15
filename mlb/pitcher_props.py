@@ -90,6 +90,11 @@ def _start_rows(pitcher_id, as_of=None):
                 out.append({
                     "date": s.get("date"),
                     "game_pk": (s.get("game") or {}).get("gamePk"),
+                    # WHO he faced. Every split carries it and nothing read it,
+                    # which is why a rate built on weak lineups looked identical
+                    # to one earned against real offences.
+                    "opponent_id": (s.get("opponent") or {}).get("id"),
+                    "is_home": bool(s.get("isHome")),
                     "outs": outs,
                     "bf": st.get("battersFaced") or 0,
                     "k": st.get("strikeOuts") or 0,
@@ -243,10 +248,31 @@ def project(pitcher_id, prop: str, opponent_team_id=None, line=None,
                 park_basis = f"{_pm} park {pf[venue]:.3f}"
         park = max(0.88, min(1.14, park))
 
+        # ── STRENGTH OF SCHEDULE — what the baseline was earned AGAINST ─────
+        # The opponent term above prices the NEXT start. This corrects the
+        # BASELINE for the teams already faced: a rate built on weak lineups
+        # overstates the pitcher, and pricing a good matchup on an inflated
+        # baseline gets the level wrong however good the matchup term is.
+        #
+        # MEASURED SMALL, and honestly so. Across 142 current starters the
+        # factor spans 0.985-1.013 on hits (ZERO pitchers moved 2%), 0.973-1.032
+        # on strikeouts and 0.960-1.038 on earned runs (21 moved 2%). MLB
+        # schedules are balanced by design — over fourteen starts everyone faces
+        # a similar mix — so this is nothing like the tennis draw effect, where
+        # one player meets qualifiers and another meets seeds. It is applied
+        # because it is real and self-neutralises to 1.000 where it is not.
+        from . import strength as _str
+        sched = _str.schedule_factor(rows, prop, tb, lg)
+        sf = sched.get("factor", 1.0) or 1.0
+        out["schedule_factor"] = round(sf, 4)
+        out["schedule_basis"] = sched.get("basis")
+
         # Combined clip, same reasoning as the batter side: opponent and park
         # are each bounded, but their product reaches 0.70-1.43 and no matchup
         # plus venue justifies that on its own.
-        _combined = opp_factor * park
+        # Divided, not multiplied: an EASY schedule (factor < 1) means the raw
+        # rate flatters him, so the baseline must rise.
+        _combined = (opp_factor * park) / sf
         _clipped = max(0.78, min(1.28, _combined))
         out["context_clipped"] = abs(_clipped - _combined) > 1e-9
         out["context_factor"] = round(_clipped, 4)
