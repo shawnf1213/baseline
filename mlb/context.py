@@ -402,7 +402,26 @@ def platoon_factor(batter_id, pitcher_id, prop: str, season: int = None):
 
 # ── Pitcher role and rest ────────────────────────────────────────────────────
 RELIEVER_GS_RATIO = 0.50     # starts / appearances below this = bullpen arm
-SHORT_REST_DAYS = 4          # a start on fewer days than this is short rest
+
+# SHORT REST IS NOT A USABLE SIGNAL, MEASURED ON 1,143 START PAIRS FROM 106
+# CURRENT STARTERS. It was going to be wired into the projection until the
+# effect was checked, and there are two independent reasons not to:
+#
+#   1. It barely happens. Days BETWEEN starts:
+#          3 days   0 starts
+#          4 days   3 starts
+#          5 days 381 starts   (the standard four-days-rest rotation)
+#          6+     759 starts
+#      A short-rest term would fire on roughly 0.3% of starts.
+#
+#   2. Where variation DOES exist there is no effect. Standard rotation against
+#      extra rest: 23.07 vs 23.08 batters faced, 5.15 vs 5.14 strikeouts,
+#      16.08 vs 16.19 outs. Not a small effect — none.
+#
+# days_rest() is therefore REPORTED as context and never multiplied into a
+# projection. Applying it would add a term that does nothing on almost every
+# start and fires on noise for the rest.
+SHORT_REST_DAYS = 4
 
 
 def role_profile(pitcher_id, season: int = None) -> dict:
@@ -445,9 +464,11 @@ def role_profile(pitcher_id, season: int = None) -> dict:
 def days_rest(pitcher_id, game_date=None, season: int = None) -> dict:
     """Days since this pitcher's last start. {} when unknown.
 
-    Short rest shortens a start — a manager who brings someone back early is
-    already planning a shorter leash. Reported rather than silently folded in,
-    because the effect is real but modest and a caller should see it.
+    DIAGNOSTIC ONLY — never multiplied into a projection. The intuition that
+    short rest shortens a start is reasonable and the data does not support it:
+    see the note on SHORT_REST_DAYS above. Kept because "he is on nine days
+    rest coming off the injured list" is worth SEEING next to a projection even
+    though it does not earn an adjustment.
     """
     try:
         from . import pitcher_props as _pp
