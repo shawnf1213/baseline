@@ -91,11 +91,12 @@ def pitcher_splits(pitcher_id, season: int = None) -> dict:
         return _cache[key]
     out = {}
     try:
+        # One call per code, for the same truncation reason as park_factors.
         for codes, names in ((("vl", "vr"), ("vs_lhb", "vs_rhb")),
                              (("h", "a"), ("home", "away"))):
+          for _c in codes:
             d = client._get(f"/people/{pitcher_id}/stats", stats="statSplits",
-                            group="pitching", season=season,
-                            sitCodes=",".join(codes))
+                            group="pitching", season=season, sitCodes=_c)
             for b in (d.get("stats") or []):
                 for s in (b.get("splits") or []):
                     code = (s.get("split") or {}).get("code")
@@ -116,8 +117,14 @@ def pitcher_splits(pitcher_id, season: int = None) -> dict:
 
 
 # ── Park factors ─────────────────────────────────────────────────────────────
-def park_factors(season: int = None) -> dict:
-    """{team_id: K factor} for each club's HOME venue, league-normalised to 1.0.
+def park_factors(season: int = None, metric: str = "k") -> dict:
+    """{team_id: factor} for each club's HOME venue, league-normalised to 1.0.
+
+    METRIC MATTERS AND MUST NOT BE ASSUMED. This used to compute strikeouts
+    only, and a strikeout park is NOT a run park — Coors suppresses breaking
+    balls and inflates runs at the same time. Using the K factor to adjust
+    earned runs or hits would apply a real number to the wrong question.
+    Supported: "k", "runs", "hits", "hr".
 
     Derived from each club's home vs away PITCHING K-rate. The same staff pitches
     both, so dividing cancels pitcher quality and what remains is the venue. Not
@@ -128,22 +135,31 @@ def park_factors(season: int = None) -> dict:
     projections on noise.
     """
     season = season or client._dt.date.today().year
-    key = ("park", season)
+    key = ("park", season, metric)
     if key in _cache:
         return _cache[key]
     try:
-        d = client._get("/teams/stats", stats="statSplits", group="pitching",
-                        season=season, sportId=1, sitCodes="h,a")
+        # ONE CALL PER SIT CODE. Requesting "h,a" together returns a TRUNCATED
+        # 50 splits instead of 60, so nine clubs came back with only one side and
+        # were silently dropped — including Colorado, the largest park effect in
+        # baseball. Two calls return 30 each and cost nothing.
         raw = {}
-        for b in (d.get("stats") or []):
+        _blocks = []
+        for _code in ("h", "a"):
+            _d = client._get("/teams/stats", stats="statSplits", group="pitching",
+                             season=season, sportId=1, sitCodes=_code)
+            _blocks.extend(_d.get("stats") or [])
+        for b in _blocks:
             for s in (b.get("splits") or []):
                 t = (s.get("team") or {}).get("id")
                 code = (s.get("split") or {}).get("code")
                 st = s.get("stat") or {}
-                bf, so = st.get("battersFaced"), st.get("strikeOuts")
-                if not (t and bf and so is not None):
+                bf = st.get("battersFaced")
+                num = {"k": st.get("strikeOuts"), "runs": st.get("runs"),
+                       "hits": st.get("hits"), "hr": st.get("homeRuns")}.get(metric)
+                if not (t and bf and num is not None):
                     continue
-                raw.setdefault(t, {})[code] = (so / bf, bf)
+                raw.setdefault(t, {})[code] = (num / bf, bf)
         fac = {}
         for t, v in raw.items():
             if "h" not in v or "a" not in v or not v["a"][0]:
@@ -156,11 +172,11 @@ def park_factors(season: int = None) -> dict:
         out = {t: _shrink(f / mean, games, 1.0, PARK_PRIOR_GAMES)
                for t, f in fac.items()}
         _cache[key] = out
-        log.info("mlb park factors: %d venues, range %.3f-%.3f",
-                 len(out), min(out.values()), max(out.values()))
+        log.info("mlb park factors (%s): %d venues, range %.3f-%.3f",
+                 metric, len(out), min(out.values()), max(out.values()))
         return out
     except Exception as exc:  # noqa: BLE001
-        log.warning("mlb park factors failed: %s", str(exc)[:140])
+        log.warning("mlb park factors (%s) failed: %s", metric, str(exc)[:140])
         return {}
 
 
@@ -296,3 +312,86 @@ def opponent_k_rate(pitcher_id, opponent_team_id, game_pk=None,
     except Exception as exc:  # noqa: BLE001
         log.exception("mlb opponent_k_rate failed: %s", exc)
         return out
+
+
+# ── Batter platoon splits ────────────────────────────────────────────────────
+def batter_splits(batter_id, season: int = None) -> dict:
+    """A hitter's rates against LEFT and RIGHT handed pitching.
+
+    {'vs_lhp': {...}, 'vs_rhp': {...}} with hit/k/hr/bb per plate appearance and
+    the PA behind each.
+
+    THE PLATOON SPLIT IS THE LARGEST UNUSED SIGNAL ON THE BATTER SIDE. A
+    right-handed hitter facing a lefty is a different hitter — the effect runs
+    around ten percent on contact rates and more on power, which dwarfs most of
+    what the model already adjusts for. It was computed nowhere and used nowhere.
+    """
+    if not batter_id:
+        return {}
+    season = season or client._dt.date.today().year
+    key = ("bsplits", batter_id, season)
+    if key in _cache:
+        return _cache[key]
+    out = {}
+    try:
+        for code, name in (("vl", "vs_lhp"), ("vr", "vs_rhp")):
+            d = client._get(f"/people/{batter_id}/stats", stats="statSplits",
+                            group="hitting", season=season, sitCodes=code)
+            for b in (d.get("stats") or []):
+                for s in (b.get("splits") or []):
+                    if (s.get("split") or {}).get("code") != code:
+                        continue
+                    st = s.get("stat") or {}
+                    pa = st.get("plateAppearances")
+                    if not pa:
+                        continue
+                    out[name] = {
+                        "pa": pa,
+                        "hit_rate": (st.get("hits") or 0) / pa,
+                        "k_rate": (st.get("strikeOuts") or 0) / pa,
+                        "hr_rate": (st.get("homeRuns") or 0) / pa,
+                        "bb_rate": (st.get("baseOnBalls") or 0) / pa,
+                        "ops": float(st.get("ops") or 0) or None,
+                    }
+        _cache[key] = out
+        return out
+    except Exception as exc:  # noqa: BLE001
+        log.warning("mlb batter splits %s failed: %s", batter_id, str(exc)[:120])
+        return {}
+
+
+def platoon_factor(batter_id, pitcher_id, prop: str, season: int = None):
+    """(multiplier, basis) for this hitter against this pitcher's HAND.
+
+    Compares the hitter's rate against that hand to his OWN overall rate, so the
+    factor isolates the platoon effect rather than re-stating how good he is —
+    his overall quality is already in the projection.
+
+    Shrunk by the split's plate appearances: a 40-PA split is a hint, not a fact.
+    """
+    field = {"hits": "hit_rate", "singles": "hit_rate", "total_bases": "hit_rate",
+             "doubles": "hit_rate", "triples": "hit_rate",
+             "runs": "hit_rate", "rbis": "hit_rate",
+             "hits_runs_rbis": "hit_rate", "hitter_fantasy_score": "hit_rate",
+             "hitter_strikeouts": "k_rate", "walks": "bb_rate",
+             "home_runs": "hr_rate"}.get(prop)
+    if not field:
+        return 1.0, "prop not platoon-sensitive"
+    hand = (handedness(pitcher_id) or {}).get("pitch")
+    if hand not in ("L", "R"):
+        return 1.0, "pitcher hand unknown"
+    sp = batter_splits(batter_id, season)
+    side = sp.get("vs_lhp" if hand == "L" else "vs_rhp")
+    other = sp.get("vs_rhp" if hand == "L" else "vs_lhp")
+    if not side or not other:
+        return 1.0, "platoon split unavailable"
+    own_pa = (side.get("pa") or 0) + (other.get("pa") or 0)
+    overall = (((side[field] * side["pa"]) + (other[field] * other["pa"]))
+               / own_pa) if own_pa else None
+    if not overall or overall <= 0:
+        return 1.0, "platoon baseline unavailable"
+    raw = side[field] / overall
+    # Shrink toward 1.0 by the split's own sample.
+    f = _shrink(raw, side.get("pa") or 0, 1.0, SPLIT_PRIOR_BF)
+    f = max(0.78, min(1.28, f))
+    return f, f"vs {hand}HP ({side.get('pa')} PA) {side[field]:.3f} vs own {overall:.3f}"

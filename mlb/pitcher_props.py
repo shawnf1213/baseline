@@ -117,7 +117,8 @@ def _fs_of(row: dict) -> float:
 
 
 def project(pitcher_id, prop: str, opponent_team_id=None, line=None,
-            as_of=None, **kw) -> dict:
+            as_of=None, is_home: bool = None, home_team_id=None,
+            **kw) -> dict:
     """Project one pitcher prop. {} when unsupported or the sample is too thin.
 
     Volume-driven props (hits/walks/earned runs) scale the pitcher's own per-BF
@@ -223,7 +224,28 @@ def project(pitcher_id, prop: str, opponent_team_id=None, line=None,
         # a number no offence in baseball justifies.
         opp_factor = max(0.80, min(1.25, opp_factor))
 
-        out["projection"] = round(per_start * opp_factor, 2)
+        # ── PARK, PER METRIC ────────────────────────────────────────────────
+        # A strikeout park is not a run park, so the factor is fetched for the
+        # metric this prop actually is. Walks are left alone: parks move balls
+        # in play, not the strike zone.
+        from . import context as _ctx
+        park, park_basis = 1.0, "none"
+        _pm = {"earned_runs": "runs", "hits_allowed": "hits",
+               "pitching_outs": "runs"}.get(prop)
+        venue = home_team_id if home_team_id is not None else (
+            opponent_team_id if is_home is False else None)
+        if _pm and venue is not None:
+            pf = _ctx.park_factors(metric=_pm)
+            if venue in pf:
+                park = pf[venue]
+                if prop == "pitching_outs":
+                    park = 1.0 / park      # a run-friendly park shortens starts
+                park_basis = f"{_pm} park {pf[venue]:.3f}"
+        park = max(0.88, min(1.14, park))
+
+        out["projection"] = round(per_start * opp_factor * park, 2)
+        out["park_factor"] = round(park, 4)
+        out["park_basis"] = park_basis
         out["unadjusted_projection"] = round(per_start, 2)
         out["per_bf_rate"] = round(per_bf, 4)
         out["opponent_team_id"] = opponent_team_id

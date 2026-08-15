@@ -91,6 +91,8 @@ def _batter_index(games: list, date: str = None) -> dict:
                     "batter_id": b["id"], "player": b.get("name"),
                     "lineup_slot": slot,
                     "team": g[side].get("team"),
+                    "team_id": g[side].get("team_id"),
+                    "home_team_id": (g.get("home") or {}).get("team_id"),
                     "opponent": g[opp].get("team"),
                     "opponent_team_id": g[opp].get("team_id"),
                     "opposing_pitcher_id": g[opp].get("pitcher_id"),
@@ -193,7 +195,9 @@ def scan_all_props(date: str = None, book: str = "underdog",
                 else:
                     row = _pp.project(ctx["pitcher_id"], prop,
                                       opponent_team_id=ctx["opponent_team_id"],
-                                      team_batting=team_batting)
+                                      team_batting=team_batting,
+                                      is_home=ctx["is_home"],
+                                      home_team_id=ctx["home_team_id"])
                 if not row or row.get("skipped"):
                     if row and row.get("opener_risk"):
                         log.info("mlb scan: skipping %s %s — %s",
@@ -209,9 +213,12 @@ def scan_all_props(date: str = None, book: str = "underdog",
                     continue
                 # The opposing STARTER is the matchup. Without it a hitter
                 # projected the same against an ace and a replacement arm.
-                row = _bp.project(ctx["batter_id"], prop,
-                                  lineup_confirmed=True,
-                                  opposing_pitcher_id=ctx.get("opposing_pitcher_id"))
+                row = _bp.project(
+                    ctx["batter_id"], prop, lineup_confirmed=True,
+                    opposing_pitcher_id=ctx.get("opposing_pitcher_id"),
+                    # The venue is the HOME team's park, whichever side he bats
+                    # for — his own when he is home, the opponent's when away.
+                    park_team_id=ctx.get("home_team_id"))
                 if not row:
                     continue
                 row.update({k: ctx[k] for k in

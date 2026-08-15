@@ -115,7 +115,7 @@ def _fs_of(row: dict) -> float:
 
 
 def project(batter_id, prop: str, line=None, lineup_confirmed: bool = False,
-            opposing_pitcher_id=None, **kw) -> dict:
+            opposing_pitcher_id=None, park_team_id=None, **kw) -> dict:
     """Project one batter prop. {} when unsupported or the sample is too thin.
 
     `lineup_confirmed` is carried through, never enforced here — the board
@@ -150,9 +150,35 @@ def project(batter_id, prop: str, line=None, lineup_confirmed: bool = False,
         pf, pbasis = 1.0, "none (no opposing pitcher supplied)"
         if opposing_pitcher_id:
             pf, pbasis = _pitcher_factor(opposing_pitcher_id, prop)
+        # ── PLATOON — the largest signal the batter engine was missing ─────
+        # A right-handed hitter facing a lefty is a different hitter. Measured
+        # against his OWN overall rate so the factor isolates the platoon effect
+        # rather than restating how good he is.
+        from . import context as _ctx
+        plf, plbasis = 1.0, "none"
+        if opposing_pitcher_id:
+            plf, plbasis = _ctx.platoon_factor(batter_id, opposing_pitcher_id, prop)
+
+        # ── PARK, per metric ───────────────────────────────────────────────
+        _pm = {"home_runs": "hr", "hits": "hits", "singles": "hits",
+               "doubles": "hits", "triples": "hits", "total_bases": "hits",
+               "hitter_strikeouts": "k", "runs": "runs", "rbis": "runs",
+               "hits_runs_rbis": "runs", "hitter_fantasy_score": "runs"}.get(prop)
+        park, park_basis = 1.0, "none"
+        if _pm and park_team_id is not None:
+            _pf = _ctx.park_factors(metric=_pm)
+            if park_team_id in _pf:
+                park = max(0.85, min(1.18, _pf[park_team_id]))
+                park_basis = f"{_pm} park {park:.3f}"
+
+        pf = pf * plf * park
         out["opposing_pitcher_id"] = opposing_pitcher_id
         out["opponent_factor"] = round(pf, 4)
         out["opponent_basis"] = pbasis
+        out["platoon_factor"] = round(plf, 4)
+        out["platoon_basis"] = plbasis
+        out["park_factor"] = round(park, 4)
+        out["park_basis"] = park_basis
 
         if prop in COMPOSITE_PROPS:
             if prop == "hitter_fantasy_score":
