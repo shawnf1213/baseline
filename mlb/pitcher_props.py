@@ -243,7 +243,14 @@ def project(pitcher_id, prop: str, opponent_team_id=None, line=None,
                 park_basis = f"{_pm} park {pf[venue]:.3f}"
         park = max(0.88, min(1.14, park))
 
-        out["projection"] = round(per_start * opp_factor * park, 2)
+        # Combined clip, same reasoning as the batter side: opponent and park
+        # are each bounded, but their product reaches 0.70-1.43 and no matchup
+        # plus venue justifies that on its own.
+        _combined = opp_factor * park
+        _clipped = max(0.78, min(1.28, _combined))
+        out["context_clipped"] = abs(_clipped - _combined) > 1e-9
+        out["context_factor"] = round(_clipped, 4)
+        out["projection"] = round(per_start * _clipped, 2)
         out["park_factor"] = round(park, 4)
         out["park_basis"] = park_basis
         out["unadjusted_projection"] = round(per_start, 2)

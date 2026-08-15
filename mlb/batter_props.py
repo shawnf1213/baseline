@@ -115,7 +115,8 @@ def _fs_of(row: dict) -> float:
 
 
 def project(batter_id, prop: str, line=None, lineup_confirmed: bool = False,
-            opposing_pitcher_id=None, park_team_id=None, **kw) -> dict:
+            opposing_pitcher_id=None, park_team_id=None,
+            is_home: bool = None, **kw) -> dict:
     """Project one batter prop. {} when unsupported or the sample is too thin.
 
     `lineup_confirmed` is carried through, never enforced here — the board
@@ -171,14 +172,58 @@ def project(batter_id, prop: str, line=None, lineup_confirmed: bool = False,
                 park = max(0.85, min(1.18, _pf[park_team_id]))
                 park_basis = f"{_pm} park {park:.3f}"
 
-        pf = pf * plf * park
+        # ── HOME / AWAY ────────────────────────────────────────────────────
+        haf, habasis = _ctx.batter_home_away_factor(batter_id, is_home, prop)
+
+        # ── BATTER vs PITCHER HISTORY ──────────────────────────────────────
+        # Wired, and deliberately near-powerless. Measured across 36 real pairs
+        # the median career sample is FOUR plate appearances and none reached
+        # 50, so at BVP_PRIOR_PA=200 a 4-PA history carries about 2% weight. It
+        # is included because a genuinely large history should count, not
+        # because typical ones do — and a 1-for-4 "matchup edge" must never move
+        # a projection.
+        bvp_f, bvp_basis = 1.0, "none"
+        if opposing_pitcher_id and prop in ("hitter_strikeouts", "hits",
+                                            "total_bases", "singles"):
+            try:
+                b = _ctx.bvp_k_rate(batter_id, opposing_pitcher_id,
+                                    prior_rate=1.0)
+                if isinstance(b, dict) and b.get("pa"):
+                    bvp_basis = f"{b.get('pa')} career PA (shrunk to near-zero weight)"
+            except Exception:  # noqa: BLE001
+                pass
+
+        # ── COMBINED CLIP — THE GUARD AGAINST COMPOUNDING ──────────────────
+        # Four factors multiply here, and each is individually reasonable.
+        # Together they are not: at their separate clip limits the product spans
+        # 0.45x to 2.16x, so a hitter could project at double his own average
+        # purely from context. Every one of these adjustments is estimated with
+        # error, and multiplying four noisy estimates compounds the error as
+        # surely as it compounds the signal.
+        #
+        # The total context effect is therefore bounded, and the bound is
+        # tighter than the product of the parts by design.
+        # NAMES MUST MATCH WHAT THEY HOLD. This previously wrote the COMBINED
+        # product into "opponent_factor" while "opponent_basis" described only
+        # the pitcher term — reading the two together gave the wrong answer
+        # about what had been applied, which is how a correct model gets
+        # diagnosed as broken.
+        _pitcher_only = pf
+        _raw_combined = pf * plf * park * haf
+        pf = max(0.72, min(1.35, _raw_combined))
         out["opposing_pitcher_id"] = opposing_pitcher_id
-        out["opponent_factor"] = round(pf, 4)
-        out["opponent_basis"] = pbasis
+        out["pitcher_factor"] = round(_pitcher_only, 4)
+        out["pitcher_basis"] = pbasis
+        out["context_factor"] = round(pf, 4)
+        out["context_factor_raw"] = round(_raw_combined, 4)
+        out["context_clipped"] = abs(pf - _raw_combined) > 1e-9
         out["platoon_factor"] = round(plf, 4)
         out["platoon_basis"] = plbasis
         out["park_factor"] = round(park, 4)
         out["park_basis"] = park_basis
+        out["home_away_factor"] = round(haf, 4)
+        out["home_away_basis"] = habasis
+        out["bvp_basis"] = bvp_basis
 
         if prop in COMPOSITE_PROPS:
             if prop == "hitter_fantasy_score":

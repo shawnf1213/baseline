@@ -136,6 +136,24 @@ def pitcher_form(pitcher_id, as_of: _dt.date = None) -> dict:
                 if r.get("is_start")
                 and isinstance(r.get("bf"), (int, float)) and r["bf"]]
 
+    # ROLE FIRST, BEFORE ANY WORKLOAD TEST. A club can name a reliever as the
+    # probable for a bullpen game, and until he throws that inning there is no
+    # short-start history to catch it — the BF test only works AFTER he has
+    # already opened once. Starts per appearance flags him beforehand.
+    role = _ctx.role_profile(pitcher_id)
+    if role.get("is_reliever"):
+        log.info("mlb strikeouts: pitcher %s is %d starts in %d appearances "
+                 "(%.2f) — a bullpen arm, not a starter",
+                 pitcher_id, role.get("starts"), role.get("games"),
+                 role.get("gs_ratio"))
+        return {
+            "pitcher_id": pitcher_id, "starts": role.get("starts", 0),
+            "opener_risk": True,
+            "role_note": (f"{role.get('starts')} starts in "
+                          f"{role.get('games')} appearances this season — a "
+                          f"relief pitcher, likely a bullpen game"),
+        }
+
     rows = _starts(as_of.year)
     extended = False
     role_note = None

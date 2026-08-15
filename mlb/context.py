@@ -316,9 +316,9 @@ def opponent_k_rate(pitcher_id, opponent_team_id, game_pk=None,
 
 # ── Batter platoon splits ────────────────────────────────────────────────────
 def batter_splits(batter_id, season: int = None) -> dict:
-    """A hitter's rates against LEFT and RIGHT handed pitching.
+    """A hitter's rates by pitcher hand AND by home/away.
 
-    {'vs_lhp': {...}, 'vs_rhp': {...}} with hit/k/hr/bb per plate appearance and
+    {'vs_lhp','vs_rhp','home','away'} with hit/k/hr/bb per plate appearance and
     the PA behind each.
 
     THE PLATOON SPLIT IS THE LARGEST UNUSED SIGNAL ON THE BATTER SIDE. A
@@ -334,7 +334,10 @@ def batter_splits(batter_id, season: int = None) -> dict:
         return _cache[key]
     out = {}
     try:
-        for code, name in (("vl", "vs_lhp"), ("vr", "vs_rhp")):
+        # One call per code — the API truncates multi-code split requests, which
+        # is what silently cost nine parks their factors.
+        for code, name in (("vl", "vs_lhp"), ("vr", "vs_rhp"),
+                           ("h", "home"), ("a", "away")):
             d = client._get(f"/people/{batter_id}/stats", stats="statSplits",
                             group="hitting", season=season, sitCodes=code)
             for b in (d.get("stats") or []):
@@ -395,3 +398,109 @@ def platoon_factor(batter_id, pitcher_id, prop: str, season: int = None):
     f = _shrink(raw, side.get("pa") or 0, 1.0, SPLIT_PRIOR_BF)
     f = max(0.78, min(1.28, f))
     return f, f"vs {hand}HP ({side.get('pa')} PA) {side[field]:.3f} vs own {overall:.3f}"
+
+
+# ── Pitcher role and rest ────────────────────────────────────────────────────
+RELIEVER_GS_RATIO = 0.50     # starts / appearances below this = bullpen arm
+SHORT_REST_DAYS = 4          # a start on fewer days than this is short rest
+
+
+def role_profile(pitcher_id, season: int = None) -> dict:
+    """{games, starts, gs_ratio, is_reliever} for a pitcher this season.
+
+    CATCHES A FIRST-TIME OPENER, which the batters-faced test cannot. A club can
+    name a reliever as the probable starter for a bullpen game, and until he
+    throws that one inning his game log looks like nothing at all — the BF
+    history that flagged Sean Newcomb only exists AFTER he has already opened
+    once. Starts per appearance flags him beforehand: Newcomb is 2 starts in 45
+    games (0.04), a bullpen arm, while a real starter sits at 1.00.
+    """
+    if not pitcher_id:
+        return {}
+    season = season or client._dt.date.today().year
+    key = ("role", pitcher_id, season)
+    if key in _cache:
+        return _cache[key]
+    try:
+        d = client._get(f"/people/{pitcher_id}/stats", stats="season",
+                        group="pitching", season=season)
+        for b in (d.get("stats") or []):
+            for s in (b.get("splits") or []):
+                st = s.get("stat") or {}
+                g, gs = st.get("gamesPlayed"), st.get("gamesStarted")
+                if not g:
+                    continue
+                ratio = (gs or 0) / g
+                out = {"games": g, "starts": gs or 0,
+                       "gs_ratio": round(ratio, 3),
+                       "is_reliever": ratio < RELIEVER_GS_RATIO}
+                _cache[key] = out
+                return out
+        return {}
+    except Exception as exc:  # noqa: BLE001
+        log.warning("mlb role profile %s failed: %s", pitcher_id, str(exc)[:120])
+        return {}
+
+
+def days_rest(pitcher_id, game_date=None, season: int = None) -> dict:
+    """Days since this pitcher's last start. {} when unknown.
+
+    Short rest shortens a start — a manager who brings someone back early is
+    already planning a shorter leash. Reported rather than silently folded in,
+    because the effect is real but modest and a caller should see it.
+    """
+    try:
+        from . import pitcher_props as _pp
+        import datetime as _d
+        rows = _pp._start_rows(pitcher_id)
+        if not rows:
+            return {}
+        dates = sorted(str(r.get("date"))[:10] for r in rows if r.get("date"))
+        if not dates:
+            return {}
+        ref = str(game_date)[:10] if game_date else _d.date.today().isoformat()
+        prior = [x for x in dates if x < ref]
+        if not prior:
+            return {}
+        last = _d.date.fromisoformat(prior[-1])
+        rest = (_d.date.fromisoformat(ref) - last).days
+        return {"last_start": prior[-1], "days_rest": rest,
+                "short_rest": rest < SHORT_REST_DAYS}
+    except Exception as exc:  # noqa: BLE001
+        log.warning("mlb days_rest %s failed: %s", pitcher_id, str(exc)[:120])
+        return {}
+
+
+def batter_home_away_factor(batter_id, is_home: bool, prop: str,
+                            season: int = None):
+    """(multiplier, basis) for a hitter's home/away tendency.
+
+    Measured against his OWN combined rate, so it isolates the venue habit
+    rather than restating his quality. Small by nature — a few percent — and
+    shrunk hard, because a home/away split is one of the noisiest cuts there is
+    and it is easy to mistake a hot month for a home-field skill.
+    """
+    if is_home is None:
+        return 1.0, "home/away unknown"
+    field = {"hits": "hit_rate", "singles": "hit_rate", "total_bases": "hit_rate",
+             "doubles": "hit_rate", "triples": "hit_rate", "runs": "hit_rate",
+             "rbis": "hit_rate", "hits_runs_rbis": "hit_rate",
+             "hitter_fantasy_score": "hit_rate",
+             "hitter_strikeouts": "k_rate", "walks": "bb_rate",
+             "home_runs": "hr_rate"}.get(prop)
+    if not field:
+        return 1.0, "prop not venue-sensitive"
+    sp = batter_splits(batter_id, season)
+    side = sp.get("home" if is_home else "away")
+    other = sp.get("away" if is_home else "home")
+    if not side or not other:
+        return 1.0, "home/away split unavailable"
+    tot = (side.get("pa") or 0) + (other.get("pa") or 0)
+    overall = (((side[field] * side["pa"]) + (other[field] * other["pa"])) / tot
+               if tot else None)
+    if not overall or overall <= 0:
+        return 1.0, "home/away baseline unavailable"
+    f = _shrink(side[field] / overall, side.get("pa") or 0, 1.0,
+                SPLIT_PRIOR_BF * 2)      # extra-heavy: this split is very noisy
+    f = max(0.90, min(1.10, f))
+    return f, f"{'home' if is_home else 'away'} ({side.get('pa')} PA)"

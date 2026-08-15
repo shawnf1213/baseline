@@ -218,7 +218,8 @@ def scan_all_props(date: str = None, book: str = "underdog",
                     opposing_pitcher_id=ctx.get("opposing_pitcher_id"),
                     # The venue is the HOME team's park, whichever side he bats
                     # for — his own when he is home, the opponent's when away.
-                    park_team_id=ctx.get("home_team_id"))
+                    park_team_id=ctx.get("home_team_id"),
+                    is_home=ctx["is_home"])
                 if not row:
                     continue
                 row.update({k: ctx[k] for k in
