@@ -1401,7 +1401,10 @@ def _promote_star(ordered: list):
 
 # One-off: on this ET date, keep these players OUT of the ⭐ Pick-of-the-Day slot
 # (they stay in the ranked list). Auto-reverts the next day.
-STAR_EXCLUDE_DATE    = "2026-07-13"
+# "" = disarmed. Was a one-off date now long past; the guard below compares
+# for equality with today, so a stale date and "" behave identically. Made
+# explicit so it does not read as an active exclusion.
+STAR_EXCLUDE_DATE    = os.getenv("STAR_EXCLUDE_DATE", "")
 STAR_EXCLUDE_PLAYERS = {"ann li"}     # normalised (see _norm)
 
 

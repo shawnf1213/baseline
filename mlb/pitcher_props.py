@@ -173,9 +173,7 @@ def project(pitcher_id, prop: str, opponent_team_id=None, line=None,
             if isinstance(line, (int, float)) and sd > 0:
                 # Continuous-ish composite -> normal is appropriate here, unlike
                 # the count props.
-                import math
-                z = (line - mu) / sd
-                p_over = 0.5 * math.erfc(z / (2 ** 0.5))
+                p_over = _odds.normal_sf(line, mu, sd)
                 out.update({"line": line,
                             "p_over": round(p_over, 4),
                             "p_under": round(1 - p_over, 4),

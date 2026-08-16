@@ -267,7 +267,7 @@ def _reprice(row: dict, line, prop: str, engine) -> None:
     sd = row.get("sd")
     if isinstance(sd, (int, float)) and sd > 0:
         # Composite (Fantasy Score, H+R+RBI): empirical spread, normal tail.
-        p_over = 0.5 * math.erfc(((line - mu) / sd) / (2 ** 0.5))
+        p_over = _odds.normal_sf(line, mu, sd)
         row.update({"p_over": round(p_over, 4),
                     "p_under": round(1 - p_over, 4),
                     "lean": "OVER" if p_over >= 0.5 else "UNDER"})

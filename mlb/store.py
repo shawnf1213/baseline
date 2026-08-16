@@ -141,7 +141,8 @@ def log_board(rows: list, book: str, slate_date: str, potd_key=None,
                 who = r.get("player") or r.get("pitcher")
                 prop = r.get("prop") or "strikeouts"
                 existing = (s.query(_MlbPick)
-                            .filter_by(book=book, slate_date=slate_date,
+                            .filter_by(sport="mlb", book=book,
+                                       slate_date=slate_date,
                                        pitcher=who, prop_type=prop)
                             .one_or_none())
                 vals = dict(
@@ -181,7 +182,8 @@ def pending(book: str = None) -> list:
     try:
         s = _Session()
         try:
-            q = s.query(_MlbPick).filter(_MlbPick.result == "PENDING")
+            q = s.query(_MlbPick).filter(_MlbPick.sport == "mlb",
+                                         _MlbPick.result == "PENDING")
             if book:
                 q = q.filter(_MlbPick.book == book)
             return [_to_dict(r) for r in q.all()]
@@ -222,7 +224,8 @@ def board_for(book: str, slate_date: str) -> list:
         s = _Session()
         try:
             rows = (s.query(_MlbPick)
-                    .filter_by(book=book, slate_date=slate_date).all())
+                    .filter_by(sport="mlb", book=book,
+                               slate_date=slate_date).all())
             out = [_to_dict(r) for r in rows]
             out.sort(key=lambda r: -(r.get("probability") or 0))
             return out
@@ -280,7 +283,7 @@ def purge_slate(slate_date: str, book: str = None) -> int:
     try:
         s = _Session()
         try:
-            q = s.query(_MlbPick).filter_by(slate_date=slate_date)
+            q = s.query(_MlbPick).filter_by(sport="mlb", slate_date=slate_date)
             if book:
                 q = q.filter_by(book=book)
             n = q.count()
@@ -319,7 +322,8 @@ def board_state(book: str, slate_date: str) -> dict:
         s = _Session()
         try:
             for r in (s.query(_MlbPick)
-                       .filter_by(book=book, slate_date=slate_date).all()):
+                       .filter_by(sport="mlb", book=book,
+                                  slate_date=slate_date).all()):
                 if r.pitcher:
                     out["players"].add(r.pitcher)
                 if r.game_pk:
@@ -360,7 +364,7 @@ def dedupe_record(slate_date: str = None, book: str = None,
     try:
         s = _Session()
         try:
-            q = s.query(_MlbPick)
+            q = s.query(_MlbPick).filter_by(sport="mlb")
             if slate_date:
                 q = q.filter_by(slate_date=slate_date)
             if book:
@@ -432,7 +436,7 @@ def reset_slate(slate_date: str, book: str = None) -> int:
     try:
         s = _Session()
         try:
-            q = s.query(_MlbPick).filter_by(slate_date=slate_date)
+            q = s.query(_MlbPick).filter_by(sport="mlb", slate_date=slate_date)
             if book:
                 q = q.filter_by(book=book)
             rows = [r for r in q.all()
@@ -476,8 +480,12 @@ def purge_all(confirm: str = "") -> int:
     try:
         s = _Session()
         try:
-            n = s.query(_MlbPick).count()
-            s.query(_MlbPick).delete(synchronize_session=False)
+            # Scoped to sport even though the table is MLB-only. This is the
+            # one destructive path in the module; an unscoped DELETE is the
+            # wrong default to leave lying around if the table ever grows.
+            n = s.query(_MlbPick).filter_by(sport="mlb").count()
+            (s.query(_MlbPick).filter_by(sport="mlb")
+              .delete(synchronize_session=False))
             s.commit()
             log.warning("mlb store: PURGED ALL — %d row(s) deleted from "
                         "mlb_picks; the MLB record is now empty", n)
@@ -497,7 +505,7 @@ def summary() -> dict:
     try:
         s = _Session()
         try:
-            rows = s.query(_MlbPick).all()
+            rows = s.query(_MlbPick).filter_by(sport="mlb").all()
             out = {"total": len(rows)}
             for r in rows:
                 b = r.book or "?"

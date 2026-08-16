@@ -73,8 +73,13 @@ PLAYS_MULT = {
 
 
 def _phi(x: float) -> float:
-    """Standard normal CDF."""
-    return 0.5 * math.erfc(-x / math.sqrt(2.0))
+    """Standard normal CDF — delegates to the shared helper.
+
+    Kept as a local alias because scenario_weights() reads far better with a
+    one-letter name in the four band expressions below.
+    """
+    from core.odds import normal_cdf
+    return normal_cdf(x)
 
 
 def scenario_weights(spread: float, total: float = None,

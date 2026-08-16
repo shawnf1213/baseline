@@ -11,6 +11,8 @@ reused per sport, never rebuilt.
 
 import math
 
+_SQRT2 = math.sqrt(2.0)
+
 
 # ── Implied probability / de-vig ─────────────────────────────────────────────
 def implied_prob(american) -> float:
@@ -106,3 +108,36 @@ def count_over_under(mu: float, line: float, dispersion: float = 1.0,
     p_over = max(0.0, min(1.0, 1.0 - p_at_or_under))
     return {"p_over": p_over, "p_under": p_under, "p_push": p_push,
             "lean": "OVER" if p_over >= p_under else "UNDER"}
+
+
+# ── Normal helpers ───────────────────────────────────────────────────────────
+# Four hand-rolled copies of these existed across mlb/ and nfl/, and they did
+# NOT all compute the same thing: three were survival functions written as
+# erfc(+z/root2) and one was a CDF written as erfc(-x/root2). Both forms are
+# correct in their own context and they are trivially easy to confuse, because
+# the only visible difference is a minus sign inside an erfc call.
+#
+# Naming them separately is the point. normal_sf answers "how likely is MORE
+# than this", normal_cdf answers "how likely is LESS than this", and neither can
+# be mistaken for the other at a call site.
+
+def normal_sf(x: float, mu: float, sd: float) -> float:
+    """P(X > x) for a normal with this mean and standard deviation.
+
+    The survival function — what an OVER is. Returns 0.0/1.0 rather than
+    dividing by zero when sd is non-positive, since a degenerate distribution
+    still has a well-defined answer either side of its point mass.
+    """
+    if sd is None or sd <= 0:
+        return 1.0 if mu > x else 0.0
+    return 0.5 * math.erfc(((x - mu) / sd) / _SQRT2)
+
+
+def normal_cdf(z: float) -> float:
+    """Phi(z) — P(Z < z) for the STANDARD normal.
+
+    Takes an already-standardised value, unlike normal_sf which takes raw
+    x/mu/sd. Used where the input is a z-score by construction, such as a
+    margin expressed in standard deviations.
+    """
+    return 0.5 * math.erfc(-z / _SQRT2)

@@ -237,8 +237,7 @@ def project(batter_id, prop: str, line=None, lineup_confirmed: bool = False,
             out.update({"projection": round(mu, 2), "sd": round(sd, 2),
                         "model": model})
             if isinstance(line, (int, float)) and sd > 0:
-                z = (line - mu) / sd
-                p_over = 0.5 * math.erfc(z / (2 ** 0.5))
+                p_over = _odds.normal_sf(line, mu, sd)
                 out.update({"line": line, "p_over": round(p_over, 4),
                             "p_under": round(1 - p_over, 4),
                             "lean": "OVER" if p_over >= 0.5 else "UNDER"})

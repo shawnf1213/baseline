@@ -1673,7 +1673,13 @@ SECOND_WAVE_MAX    = int(os.getenv("SECOND_WAVE_MAX", "6") or "6")      # cap on
 # (in addition to the normal daily run). The recurring schedule above is untouched;
 # dedup in _log_picks_pending prevents any double-counting. Set to "" to disable —
 # auto-reverts the next day.
-POD_EXTRA_RUN_DATE = os.getenv("POD_EXTRA_RUN_DATE", "2026-07-14")
+# Default "" = DISARMED, which is what the comment above already documents as
+# the off value. It previously defaulted to a one-off date that is now long
+# past. Behaviour is unchanged either way — a past date can never equal today,
+# and every consumer is truthiness-guarded — but a stale date READS as armed,
+# and a one-off override that looks live is exactly the class of thing that
+# gets misread during an incident.
+POD_EXTRA_RUN_DATE = os.getenv("POD_EXTRA_RUN_DATE", "")
 POD_EXTRA_RUN_HOUR = int(os.getenv("POD_EXTRA_RUN_HOUR", "22") or "22")
 POD_EXTRA_RUN_MINUTE = int(os.getenv("POD_EXTRA_RUN_MINUTE", "40") or "40")
 # NOTE: the `_daily_bundle` pre-generated-bundle mechanism was REMOVED on
@@ -1811,11 +1817,11 @@ def _slot_is_live(oneoff_hm: tuple) -> bool:
     return live
 # One-off skip: don't post the daily recap on this ET date (it already posted
 # earlier that day). Set to "" to disable. Resumes normally the next day.
-RESULTS_SKIP_DATE = os.getenv("RESULTS_SKIP_DATE", "2026-07-30")
+RESULTS_SKIP_DATE = os.getenv("RESULTS_SKIP_DATE", "")   # "" = disarmed
 # One-off Pick of the Day skip: on this ET date the scans DON'T generate picks —
 # the 4:50 scan posts a "no value, waiting for new tournaments" @everyone notice
 # and the evening scan stays silent. Set to "" to disable. Resumes next day.
-POD_SKIP_DATE = os.getenv("POD_SKIP_DATE", "2026-07-11")
+POD_SKIP_DATE = os.getenv("POD_SKIP_DATE", "")           # "" = disarmed
 MSG_POD_SKIP = (
     "🎾 **No Pick of the Day today.** There isn't enough value on the board "
     "right now — we're between tournaments. We'd rather sit out than force a "
