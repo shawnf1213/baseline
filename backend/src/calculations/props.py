@@ -2042,6 +2042,31 @@ def ptgw_scenario_mixture(p_sel, prop_line, tour="ATP", match_format="best_of_3"
     else:
         scale = 1.0
 
+    # ── THE LOSER ABSORBS THE LENGTH, AND IT IS AN IDENTITY NOT A FIT ────────
+    # A completed set structure fixes the winner's games at a floor (12 in BO3),
+    # so for any match total the loser's games are TOTAL MINUS WINNER. Scaling
+    # both sides by the same factor describes an impossible match: at a 13-game
+    # blowout a uniform scale gave the winner 7.2 games, fewer than the 12 two
+    # sets require, and simultaneously left the loser at 4.4 when the real answer
+    # is 1.
+    #
+    # Each losing scenario is therefore priced as its PAIRED total minus the
+    # winner's floor-respecting mean:
+    #     S4 (lose in straights) = straights total  - S1 mean
+    #     S3 (lose in a decider) = decider total    - S2 mean
+    # The paired totals come from the fit itself (S1+S4, S2+S3) scaled to THIS
+    # match, so at population scale the construction reproduces the fitted means
+    # exactly and only departs from them as the match gets shorter or longer.
+    #
+    # This is what makes a rout representable at all. Oliynykova lost 6-1 6-0 —
+    # one game — and the old construction could not return below 4.4 for her at
+    # any win probability or any match length.
+    pair_total = {
+        "S4": scen["S1"][0] + scen["S4"][0],     # a straight-sets match
+        "S3": scen["S2"][0] + scen["S3"][0],     # a three-set match
+    }
+    uncond_pop = base_pop if base_pop > 0 else 1.0
+
     p_over = 0.0
     mix_mean = 0.0
     contrib = {}
@@ -2056,6 +2081,12 @@ def ptgw_scenario_mixture(p_sel, prop_line, tour="ATP", match_format="best_of_3"
         # is where it actually lives.
         if s in ("S1", "S2"):
             mu_s = max(mu_s, float(winner_floor))
+        else:
+            # Loser = paired total for THIS match minus the winner's mean.
+            partner = "S1" if s == "S4" else "S2"
+            win_mu = max(scen[partner][0] * scale, float(winner_floor))
+            this_total = pair_total[s] * (scale if scale else 1.0)
+            mu_s = max(0.0, this_total - win_mu)
         if s in ("S1", "S2") and prop_line < winner_floor:
             po_s = 1.0                       # winner always clears a sub-floor line
         else:
