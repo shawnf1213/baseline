@@ -2288,6 +2288,27 @@ async def prop_calculate(req: PropRequest):
                             req.player_name or "player", _ptgw_model_wp,
                             ("%.3f" % _ptgw_mkt_wp) if _ptgw_anchored else "None",
                             _ptgw_blended, _ptgw_anchored)
+                # ── RECOMPUTE THE LENGTH ON THE SAME PROBABILITY ─────────────
+                # The scenario mixture keys off the market-anchored blend while
+                # the length above was built from the model's own read, so the
+                # two halves of one projection could describe different matches.
+                # Oliynykova/Andreeva: the mixture had her at 8% and the length
+                # model returned ~24 games for a match that went 13.
+                if _ptgw_anchored:
+                    _tg_anchored = project_total_games(
+                        p1_s, p2_s, req.surface, h2h_games_avg,
+                        h2h_games_n=h2h_games_n,
+                        tour=req.tour, court=court_for_calc,
+                        match_format=match_fmt,
+                        player_ta=player_ta_props, opponent_ta=opponent_ta_props,
+                        p1_win_prob_override=_ptgw_blended,
+                    )
+                    logger.info("PTGW_LENGTH | model_total=%.1f -> anchored_total=%.1f "
+                                "(win_prob %.3f)",
+                                float(tg_result.get("projection") or 0),
+                                float(_tg_anchored.get("projection") or 0),
+                                _ptgw_blended)
+                    tg_result = _tg_anchored
                 result = project_player_games_won(
                     p1_s, p2_s, req.surface, cpr,
                     games_combined=tg_result.get("projection"),

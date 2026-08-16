@@ -2087,6 +2087,20 @@ def ptgw_scenario_mixture(p_sel, prop_line, tour="ATP", match_format="best_of_3"
             win_mu = max(scen[partner][0] * scale, float(winner_floor))
             this_total = pair_total[s] * (scale if scale else 1.0)
             mu_s = max(0.0, this_total - win_mu)
+            # THE SPREAD MUST FOLLOW THE MEAN. The loser's mean now moves a long
+            # way — 6.29 games at population down to near zero in a rout — while
+            # the fitted sd was still being scaled by match length alone. At a
+            # 13-game blowout that left a mean of 0.0 with an sd of 1.32, putting
+            # HALF the probability mass below zero games won, which is not a
+            # result that exists. The impossible mass then mirrors into the
+            # positive tail and inflates P(over).
+            #
+            # Holding the coefficient of variation constant keeps the spread
+            # proportional to what is actually being predicted: a player expected
+            # to win two games cannot vary by the same absolute amount as one
+            # expected to win seven. The floor stops it collapsing to a spike.
+            cv_pop = (sd / mu) if mu > 0 else 0.0
+            sd_s = max(0.35, mu_s * cv_pop)
         if s in ("S1", "S2") and prop_line < winner_floor:
             po_s = 1.0                       # winner always clears a sub-floor line
         else:
@@ -2825,7 +2839,18 @@ def project_total_games(
     player_ta: dict = None,
     opponent_ta: dict = None,
     match_format: str = "best_of_3",
+    p1_win_prob_override: float = None,
 ) -> dict:
+    """`p1_win_prob_override` (0-1) replaces the model's own win-probability
+    estimate for the LENGTH calculation.
+
+    It exists because the caller may hold a better number than this function
+    can compute — specifically the de-vigged market moneyline. Without it the
+    two halves of a PTGW projection disagreed about the same match: the scenario
+    mixture keyed off a market-anchored 8% while the length model used its own
+    stats-based read, saw a competitive matchup, and returned ~24 games. Mirra
+    Andreeva beat Oleksandra Oliynykova 6-1 6-0 — thirteen.
+    """
     ta_used = False
     ta_surface_matches = 0
 
@@ -2885,6 +2910,11 @@ def project_total_games(
         o_form=opponent_stats.get("form") or opponent_stats.get("recent_form"),
         detail=_aff_detail,
     )
+    # The caller's anchored probability wins when supplied — see the docstring.
+    if isinstance(p1_win_prob_override, (int, float)) and 0.0 < p1_win_prob_override < 1.0:
+        p_prob = p1_win_prob_override * 100.0
+        o_prob = 100.0 - p_prob
+        win_prob_gap = abs(p_prob - o_prob)
     exp_sets, comp_label = _expected_sets_from_gap(win_prob_gap, is_bo5)
     avg_hist_sets = _AVG_HISTORICAL_SETS.get(tour, 2.45)
 
@@ -2903,7 +2933,12 @@ def project_total_games(
     # to correct it, e.g. Sara Sorribes Tormo at Targu Mures). expected_sets already
     # trims SETS for lopsided matches; this trims GAMES-PER-SET too. Floor 6.5 (a set
     # is first to 6). win_prob_gap is in percentage points (gap >40 = big favorite).
-    _lopsided_gps = -min(1.8, max(0.0, win_prob_gap - 22.0) * 0.05)
+    # CAP RAISED FROM 1.8 TO 3.2. The floor below is 6.5 games per set, which is
+    # the true minimum (6-1 6-0 is 6.5). A 1.8 cap could not reach it from a ~9.5
+    # baseline, so the most lopsided matches in tennis were floored at roughly
+    # 7.7 games per set — about 16 games — when the real answer is 13. The cap
+    # was doing the floor's job badly; the floor does it exactly.
+    _lopsided_gps = -min(3.2, max(0.0, win_prob_gap - 22.0) * 0.05)
     if _lopsided_gps < 0:
         games_per_set = max(6.5, games_per_set + _lopsided_gps)
         logger.info("TG_LOPSIDED | gap=%.1fpp | gps %+.2f (blowout = fewer games) -> %.2f",
