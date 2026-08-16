@@ -1951,7 +1951,23 @@ def _norm_sf(x, mu, sd):
 _SQRT2 = 2.0 ** 0.5
 
 
-_PTGW_SCALE_LO, _PTGW_SCALE_HI = 0.70, 1.30   # sanity clamp on the match-length scale
+# Sanity clamp on the match-length scale.
+#
+# THE LOW BOUND WAS 0.70 AND IT WAS BINDING ON EVERY BLOWOUT. The shortest
+# possible BO3 is 6-0 6-0 = 12 games, which against a ~22.3-game population
+# total is a scale of 0.54 — so 0.70 made a 13-game rout mathematically
+# indistinguishable from a 15-game match, and the loser's mean could never fall
+# below 4.4 games however lopsided the match.
+#
+# Oleksandra Oliynykova vs Mirra Andreeva, 2026-08-16: projected 10 games won
+# against a 5.5 line at 76%, actual 1 (6-1 6-0). The model had her correctly at
+# roughly an 8% underdog; the damage came from the length side.
+#
+# The floor is now 0.50, which spans the full physical range. Lowering it is
+# safe because the WINNER FLOOR is what protects the winning scenarios — S1/S2
+# are already held at >= 12 games regardless of scale, so the low bound was
+# never doing that job. All it did was stop losing scenarios from shrinking.
+_PTGW_SCALE_LO, _PTGW_SCALE_HI = 0.50, 1.30
 
 
 def _ptgw_base_pop(tour="ATP", is_bo5=False) -> float:
