@@ -48,6 +48,7 @@ shrinking the board.
 """
 
 import logging
+import os
 import re
 import unicodedata
 
@@ -126,6 +127,24 @@ BATTER_PROPS = ("hits", "total_bases", "hitter_strikeouts", "walks",
                 "home_runs", "doubles", "triples", "singles", "runs",
                 "rbis", "stolen_bases", "hits_runs_rbis",
                 "hitter_fantasy_score")
+
+# WHAT WE ACTUALLY POST. The maps above stay COMPLETE on purpose — this is an
+# allow-list applied after parsing, not a shorter PROP_MAP. Deleting entries
+# from the maps would break the role disambiguation that keeps a bare
+# "Strikeouts" on Underdog from being priced as a pitcher line when it belongs
+# to a hitter: hitter_strikeouts has to be recognised in order to be dropped.
+#
+# The three kept props are the ones whose engines are driven by the same
+# quantity — how many batters the starter faces — so the opponent, park, and
+# schedule-strength terms are shared and validated. hits_allowed and
+# walks_allowed are priced but noisier per plate appearance, and
+# pitcher_fantasy_score is a composite of props we are no longer posting
+# individually. All three remain fully implemented and reachable via
+# MLB_ENABLED_PROPS; nothing was removed.
+ENABLED_PROPS = tuple(
+    p.strip() for p in os.getenv(
+        "MLB_ENABLED_PROPS", "strikeouts,earned_runs,pitching_outs").split(",")
+    if p.strip())
 
 
 def _norm(s: str) -> str:

@@ -160,6 +160,21 @@ def scan_all_props(date: str = None, book: str = "underdog",
             log.info("mlb scan_all_props: %s posted no usable lines", book)
             return []
 
+        # Allow-list BEFORE anything is priced, so a disabled prop costs no
+        # projection work and cannot reach a board by any path.
+        if _lines.ENABLED_PROPS:
+            _pre = len(book_lines)
+            book_lines = {k: v for k, v in book_lines.items()
+                          if k[1] in _lines.ENABLED_PROPS}
+            if _pre != len(book_lines):
+                log.info("mlb scan_all_props: %s -> %d line(s) after the prop "
+                         "allow-list %s (dropped %d)", book, len(book_lines),
+                         ",".join(_lines.ENABLED_PROPS), _pre - len(book_lines))
+            if not book_lines:
+                log.info("mlb scan_all_props: %s posted no lines for any "
+                         "enabled prop", book)
+                return []
+
         if only in ("pitcher", "batter"):
             fam = _lines.PITCHER_PROPS if only == "pitcher" else _lines.BATTER_PROPS
             book_lines = {k: v for k, v in book_lines.items() if k[1] in fam}

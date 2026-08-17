@@ -65,13 +65,13 @@ CHANNELS = {
 }
 
 COLOR = 0x1D428A          # MLB blue — visually distinct from the tennis boards
-MAX_PLAYS = 12            # same board size as tennis, for comparability
+MAX_PLAYS = int(os.getenv("MLB_MAX_PLAYS", "8") or "8")
 
 # The follow-up run is a TOP-UP, not a second board — same as the tennis second
 # wave, which caps at SECOND_WAVE_MAX=6 and titles itself "Additional Plays".
 # Without this the 9 AM run posted a full twelve-play board with its own star,
 # so a single card produced two competing "Pick of the Day" posts.
-SECOND_MAX = int(os.getenv("MLB_SECOND_MAX", "6") or "6")
+SECOND_MAX = int(os.getenv("MLB_SECOND_MAX", "4") or "4")
 
 BOOK_LABEL = {"prizepicks": "PrizePicks", "underdog": "Underdog"}
 
