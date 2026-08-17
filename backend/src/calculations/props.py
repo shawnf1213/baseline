@@ -2037,8 +2037,30 @@ def ptgw_scenario_mixture(p_sel, prop_line, tour="ATP", match_format="best_of_3"
     # THIS match's projected total so both sides sum to it, exactly as
     # bp_scenario_mixture rescales by base_proj/base_pop.
     base_pop = _ptgw_base_pop(tour, is_bo5)
-    if isinstance(games_combined, (int, float)) and games_combined > 0 and base_pop > 0:
-        scale = max(_PTGW_SCALE_LO, min(_PTGW_SCALE_HI, games_combined / base_pop))
+    # THE DENOMINATOR IS THIS MATCH'S OWN IMPLIED TOTAL, NOT THE POPULATION'S.
+    #
+    # Match length enters this model TWICE. _scenario_p3 already takes
+    # games_combined and shortens the match by making a decider less likely — at
+    # 18.5 games it drives P(3 sets) from 0.358 down to its 0.12 floor, which on
+    # its own already implies a 19.8-game match. Dividing by the POPULATION total
+    # (22.34, computed at p_sel=0.5) then charged the model for that same
+    # shortening a second time, scaling every scenario mean by 0.828 on top of a
+    # composition that had already absorbed it.
+    #
+    # The double charge did not land evenly. The winning scenarios are pinned by
+    # winner_floor, so the whole of it fell on the LOSING ones: a straight-sets
+    # loss came out at 3.4 games — a 6-2 6-1 — as the AVERAGE way a 70% favourite
+    # loses. Swiatek losing in straights to Sakkari is 6-4 6-4.
+    #
+    # Dividing by the total THIS composition implies charges it exactly once, and
+    # makes the two players' means sum to games_combined by construction rather
+    # than by a correction applied afterwards.
+    _implied_total = ((p["S1"] + p["S4"]) * (scen["S1"][0] + scen["S4"][0])
+                      + (p["S2"] + p["S3"]) * (scen["S2"][0] + scen["S3"][0]))
+    if (isinstance(games_combined, (int, float)) and games_combined > 0
+            and _implied_total > 0):
+        scale = max(_PTGW_SCALE_LO, min(_PTGW_SCALE_HI,
+                                        games_combined / _implied_total))
     else:
         scale = 1.0
 
