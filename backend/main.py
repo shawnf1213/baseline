@@ -2069,6 +2069,51 @@ async def prop_calculate(req: PropRequest):
                 tour=req.tour, court=court_for_calc, match_format=match_fmt,
                 player_ta=player_ta_props, opponent_ta=opponent_ta_props,
             )
+            # ── MARKET WIN-PROB ANCHOR (1A) ──────────────────────────────────
+            # The model systematically underrates favourites. De-vig the two-way
+            # moneyline of the upcoming Sofascore event into a market win prob and
+            # blend: blended = w·market + (1−w)·model. No moneyline -> model-only,
+            # flagged 'unanchored' (confidence capped at 70 downstream). The blended
+            # prob feeds the mixture, so P(3 sets|win/lose) and the whole scenario
+            # distribution shift consistently.
+            #
+            # THIS RUNS BEFORE THE GAMES MARGIN, and that ordering is the point.
+            # The margin is built from the Total Games projection, which is itself
+            # a function of the win probability. Computing the margin first meant
+            # it described the UNANCHORED match while the scenario probabilities
+            # below described the ANCHORED one — the same self-contradiction PTGW
+            # had, where match length and scenarios disagreed about who was
+            # favoured. Anchoring first, then re-deriving the total, keeps one
+            # match behind both halves of the projection.
+            _model_wp = (_tg_r.get("p1_win_prob") or 50.0) / 100.0
+            _ml = await asyncio.to_thread(
+                get_match_moneyline_prob,
+                req.player_id, req.opponent_id, req.tour)
+            _mkt_wp = _ml.get("market_p1") if isinstance(_ml, dict) else None
+            _anchored = isinstance(_mkt_wp, (int, float))
+            if _anchored:
+                _blended_wp = (WINPROB_MARKET_WEIGHT * _mkt_wp
+                               + (1.0 - WINPROB_MARKET_WEIGHT) * _model_wp)
+            else:
+                _blended_wp = _model_wp
+            logger.info("FS_WINPROB | %s | model=%.3f market=%s blended=%.3f anchored=%s (%s)",
+                        req.player_name or "player", _model_wp,
+                        ("%.3f" % _mkt_wp) if _anchored else "None",
+                        _blended_wp, _anchored,
+                        (_ml.get("reason") if isinstance(_ml, dict) else "no data") or "ok")
+            if _anchored:
+                _tg_anchored_fs = project_total_games(
+                    p1_s, p2_s, req.surface, h2h_games_avg, h2h_games_n=h2h_games_n,
+                    tour=req.tour, court=court_for_calc, match_format=match_fmt,
+                    player_ta=player_ta_props, opponent_ta=opponent_ta_props,
+                    p1_win_prob_override=_blended_wp,
+                )
+                logger.info("FS_LENGTH | model_total=%.1f -> anchored_total=%.1f "
+                            "(win_prob %.3f)",
+                            float(_tg_r.get("projection") or 0),
+                            float(_tg_anchored_fs.get("projection") or 0), _blended_wp)
+                _tg_r = _tg_anchored_fs
+
             # ── FS GAMES-MARGIN from HOLDS + BREAK-POINTS-WON (capper method) ──
             # The FS games swing is who holds and who breaks — not a tour average.
             # games_won  = service_games·player_hold% + BP_won (the BP projection)
@@ -2099,29 +2144,6 @@ async def prop_calculate(req: PropRequest):
                 logger.info("FS_GAMES_MARGIN | %s | total=%.1f hold=%.0f%%/%.0f%% BP_won=%.2f "
                             "-> games %.1f-%.1f margin=%+.2f", req.player_name or "player",
                             _fs_total, _fs_hp, _fs_ho, _fs_bp_won, _fs_gw, _fs_gl, _fs_games_margin)
-            # ── MARKET WIN-PROB ANCHOR (1A) ──────────────────────────────────
-            # The model systematically underrates favourites. De-vig the two-way
-            # moneyline of the upcoming Sofascore event into a market win prob and
-            # blend: blended = w·market + (1−w)·model. No moneyline -> model-only,
-            # flagged 'unanchored' (confidence capped at 70 downstream). The blended
-            # prob feeds the mixture, so P(3 sets|win/lose) and the whole scenario
-            # distribution shift consistently.
-            _model_wp = (_tg_r.get("p1_win_prob") or 50.0) / 100.0
-            _ml = await asyncio.to_thread(
-                get_match_moneyline_prob,
-                req.player_id, req.opponent_id, req.tour)
-            _mkt_wp = _ml.get("market_p1") if isinstance(_ml, dict) else None
-            _anchored = isinstance(_mkt_wp, (int, float))
-            if _anchored:
-                _blended_wp = (WINPROB_MARKET_WEIGHT * _mkt_wp
-                               + (1.0 - WINPROB_MARKET_WEIGHT) * _model_wp)
-            else:
-                _blended_wp = _model_wp
-            logger.info("FS_WINPROB | %s | model=%.3f market=%s blended=%.3f anchored=%s (%s)",
-                        req.player_name or "player", _model_wp,
-                        ("%.3f" % _mkt_wp) if _anchored else "None",
-                        _blended_wp, _anchored,
-                        (_ml.get("reason") if isinstance(_ml, dict) else "no data") or "ok")
             result = project_fantasy_score(
                 p_sel=max(0.02, min(0.98, _blended_wp)),
                 ace_proj=_ace_r.get("projection"),

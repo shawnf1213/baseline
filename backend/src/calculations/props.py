@@ -2722,25 +2722,71 @@ def project_player_games_won(
         mix = ptgw_scenario_mixture(p_sel, prop_line, tour=tour, match_format=match_format,
                                     mean_hold=_pg_mean_hold,
                                     games_combined=games_combined, level=_pg_lvl)
-        # DISPLAYED projection = the MEDIAN (fair line), not the mean: PTGW is
-        # bimodal, so the mean sits in the valley between the win and loss bands.
-        # The median is a real 50/50 value. The mean is retained as ptgw_mixture_mean.
-        fair_line = max(4.5, ptgw_fair_line(p_sel, tour=tour, match_format=match_format,
-                                            mean_hold=_pg_mean_hold,
-                                            games_combined=games_combined,
-                                            level=_pg_lvl))
-        projection = fair_line
+        # DISPLAYED projection = the mixture MEAN, RENORMALISED so the two
+        # players' projections add up to the match that was actually modelled.
+        #
+        # THIS WAS THE MEDIAN, on the reasoning that a bimodal distribution's
+        # mean sits in the valley between its bands. That reasoning does not
+        # survive the numbers. The median of a two-band mixture is whichever
+        # band happens to contain the 50% mark, so it is a STEP FUNCTION of the
+        # win probability rather than a projection:
+        #
+        #     p_win 0.40 -> 5.3 games        p_win 0.45 -> 9.4 games
+        #
+        # A five-point move in win probability swung it 4.1 games, and EVERY
+        # favourite from 52% to 80% received the identical 12.0 — once the win
+        # band owns the median it pins there and stops responding. Sakkari at
+        # 29.7% sat deep in the flat part and was projected 4.0 games, a 6-2 6-2
+        # sweep, in a match she took a set off Swiatek in.
+        #
+        # It also broke the invariant this function's docstring promises. At
+        # p_sel = 0.50 BOTH players were projected 12.0 games — a 24-game match
+        # whose combined total was 18.5.
+        #
+        # The mean is continuous and monotonic in p_sel and never pins. It has
+        # one flaw: the raw scenario fit under-counts, own + opponent summing to
+        # 16.4 against a combined 18.5 — a CONSTANT -2.1 at every win
+        # probability, which is a missing normalisation rather than a modelling
+        # error. Scaling both sides onto games_combined removes it and makes
+        # `player + opponent == games_combined` true BY CONSTRUCTION.
+        #
+        # The lean is unaffected either way: it reads p_over from the mixture
+        # (main.py::_ptgw_lean), never this number.
+        _own_mean = mix["mixture_mean"]
+        _opp_mean = ptgw_scenario_mixture(
+            1.0 - p_sel, prop_line, tour=tour, match_format=match_format,
+            mean_hold=_pg_mean_hold, games_combined=games_combined,
+            level=_pg_lvl)["mixture_mean"]
+        _pair_mean = _own_mean + _opp_mean
+        if _pair_mean > 1e-6 and games_combined > 0:
+            projection = _own_mean * (games_combined / _pair_mean)
+        else:
+            projection = _own_mean
+        # NO 4.5 FLOOR ON THIS PATH. That floor ("even a swept loser wins a few
+        # games") was written for the median, which could collapse into the
+        # loss band and needed catching. The renormalised mean cannot collapse,
+        # and on a short match the floor states something physically impossible:
+        # at a combined 14 games the winner took 12, so the loser won 2 — the
+        # floor would insist on 4.5. Renormalisation already bounds this to
+        # [0, games_combined]; that is the only constraint the scoreline
+        # actually imposes.
+        projection = max(0.0, min(projection,
+                                  games_combined if games_combined > 0 else projection))
+        fair_line = projection
         _trace(trace, "PTGW_scenario_mixture",
                {"line": prop_line,
                 "p_win_match": mix["p_win_match"],
                 "scenario_probs": mix["scenario_probs"],
                 "p3_win": mix["p3_win"], "p3_lose": mix["p3_lose"],
                 "over_contrib": mix["over_contrib"],
-                "fair_line_median": fair_line, "mixture_mean": round(mix["mixture_mean"], 2)},
+                "own_mean": round(_own_mean, 2), "opponent_mean": round(_opp_mean, 2),
+                "renorm_factor": round((games_combined / _pair_mean) if _pair_mean else 1.0, 4),
+                "mixture_mean": round(mix["mixture_mean"], 2)},
                round(mix["p_over"], 4), round(projection, 2),
                "P(over %.1f) = Σ P(scenario)·P(games>line|scenario) = %.3f; displayed "
-               "projection = fair line (median) %.1f; mean %.2f logged internally"
-               % (prop_line, mix["p_over"], fair_line, mix["mixture_mean"]))
+               "projection = mixture mean %.2f renormalised onto the combined total "
+               "(%.1f) so player + opponent == combined -> %.2f"
+               % (prop_line, mix["p_over"], _own_mean, games_combined, projection))
 
     # ── Component trace ──────────────────────────────────────────────────────
     # PTGW had NO trace coverage: its projection comes from here, but only aces
