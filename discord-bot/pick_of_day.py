@@ -565,14 +565,28 @@ async def _evaluate(prop: dict, sem: asyncio.Semaphore):
 
 
 def current_board_lines() -> dict:
-    """Re-fetch the PrizePicks board and return {(norm_player, prop_type): line}
+    """Re-fetch the PrizePicks board and return
+    {(norm_player, prop_type): {"line": float, "opponent": norm_opponent}}
     for the standard lines only. Used by the line-movement monitor. Empty on
-    failure — never raises."""
+    failure — never raises.
+
+    THE OPPONENT IS PART OF THE ANSWER, NOT DECORATION. This used to return the
+    bare line, so a line was identified by player and prop alone. A player
+    appears on the board again the moment their NEXT match is posted, under
+    exactly the same key, and the monitor read that as movement on the pick it
+    was already watching. Swiatek's match had already been played when the
+    monitor compared her Fantasy Score line for TOMORROW's match against
+    today's projection and reported it as holding. Carrying the opponent lets
+    the monitor tell "the line moved" apart from "this is a different match".
+    """
     try:
         board = _fetch_board()
         out = {}
         for pr in _parse_board(board):
-            out[(_norm(pr["player"]), pr["prop_type"])] = pr["line"]
+            out[(_norm(pr["player"]), pr["prop_type"])] = {
+                "line": pr["line"],
+                "opponent": _norm(pr.get("opponent") or ""),
+            }
         return out
     except Exception as exc:  # noqa: BLE001
         log.warning("current_board_lines failed: %s", exc)

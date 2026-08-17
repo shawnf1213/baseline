@@ -35,6 +35,28 @@ _SHORT_PROP = {
 }
 
 
+def _same_match(pick_opp: str, board_opp: str) -> bool:
+    """Is the board entry the SAME match this pick was made on?
+
+    The two names come from different places — ours is the resolved Sofascore
+    name, the board's is PrizePicks' description string — so they agree on the
+    surname far more reliably than on the full name. Surname match, or either
+    name containing the other, is the same test resolve_pick uses to pair a
+    pick with a completed match.
+
+    Unknown on either side returns True: the caller treats that as "cannot
+    tell", and a monitor that refuses to alert whenever it lacks an opponent
+    would go silent on the restart path, which is worse than the bug being
+    fixed. The caller logs that case instead.
+    """
+    a, b = (pick_opp or "").strip(), (board_opp or "").strip()
+    if not a or not b:
+        return True
+    if a == b or a in b or b in a:
+        return True
+    return a.split()[-1:] == b.split()[-1:]
+
+
 def _recompute_lean(projection, line):
     if projection is None or line is None:
         return None
@@ -61,6 +83,10 @@ async def monitor(picks: list, get_lines, post_alert, interval: int = INTERVAL_S
             active.append({
                 "pick": p,
                 "key": (_norm(p.get("pp_player") or p.get("player", "")), p.get("prop_type")),
+                # The MATCH this pick belongs to. The board key is player+prop,
+                # which a player's NEXT match reuses verbatim, so the opponent is
+                # what separates "the line moved" from "different match".
+                "opponent": _norm(p.get("opponent") or ""),
                 "original": float(p["original_line"]),
                 "alerted": False,        # have we alerted for the current departure?
             })
@@ -101,10 +127,42 @@ async def monitor(picks: list, get_lines, post_alert, interval: int = INTERVAL_S
             if not lines:
                 continue
 
+            _next_active = []
             for a in active:
                 cur = lines.get(a["key"])
                 if cur is None:
+                    _next_active.append(a)
                     continue
+                # The board now carries {"line", "opponent"}. A bare number is a
+                # stale feed shape — treat it as unscoped rather than crashing.
+                if isinstance(cur, dict):
+                    board_opp = cur.get("opponent") or ""
+                    cur = cur.get("line")
+                else:
+                    board_opp = ""
+                if cur is None:
+                    _next_active.append(a)
+                    continue
+                # A DIFFERENT OPPONENT UNDER THE SAME KEY IS THE NEXT MATCH, NOT
+                # A LINE MOVE. The pick's match is over (its board entry has been
+                # replaced), so there is nothing left to watch — stop, do not
+                # compare, and never alert. This is the bug that had Swiatek's
+                # already-played match compared against tomorrow's Fantasy Score
+                # line and reported as holding.
+                if not _same_match(a["opponent"], board_opp):
+                    log.info("Line monitor: dropping %s %s — board now shows a "
+                             "different opponent (%s, pick was %s); that match is "
+                             "over, not a line move",
+                             a["pick"].get("player"), a["pick"].get("prop_type"),
+                             board_opp or "?", a["opponent"] or "?")
+                    continue
+                if not a["opponent"] or not board_opp:
+                    log.info("Line monitor: %s %s has no opponent on one side "
+                             "(pick=%r board=%r) — cannot confirm it is the same "
+                             "match; alerting on name+prop alone",
+                             a["pick"].get("player"), a["pick"].get("prop_type"),
+                             a["opponent"], board_opp)
+                _next_active.append(a)
                 cur = float(cur)
                 moved = abs(cur - a["original"])
                 if moved < MOVE_THRESHOLD:
@@ -171,6 +229,9 @@ async def monitor(picks: list, get_lines, post_alert, interval: int = INTERVAL_S
                 except Exception:  # noqa: BLE001
                     log.exception("post_alert failed")
 
+            # Picks whose match has been replaced on the board were not carried
+            # into _next_active — they are finished and stop being watched here.
+            active = _next_active
             first = False   # later passes announce genuinely-new departures
 
         log.info("Line monitor finished — all matches started.")

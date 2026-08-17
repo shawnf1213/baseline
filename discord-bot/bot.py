@@ -2112,6 +2112,9 @@ async def _resume_line_monitor_on_startup():
                 "original_line": orig,
                 "projection": p.get("model_projection"),
                 "lean": p.get("lean"),
+                # The MATCH, so the monitor can tell a line move from this
+                # player's NEXT match reappearing under the same board key.
+                "opponent": p.get("opponent"),
                 "start_timestamp": None,           # unknown post-restart -> runs to the safety cap
             })
         if picks:
@@ -3607,6 +3610,7 @@ async def _post_second_wave(channel, track: bool = True) -> str:
                 mon.append({"player": p.get("player"), "pp_player": p.get("player"),
                             "prop_type": p.get("prop_type"), "original_line": orig,
                             "projection": p.get("model_projection"), "lean": p.get("lean"),
+                            "opponent": p.get("opponent"),
                             "start_timestamp": None})
             if mon:
                 _start_line_monitor(channel, mon)
