@@ -314,24 +314,89 @@ def resolve_pick(player: str, opponent: str, prop_type: str,
                     "opponent_matched": opponent, "date": void.get("date")}
         return {"result": "NEEDS REVIEW", "reason": "completed match not found"}
 
-    # ── RETIREMENT IS A DNP, NOT A RESULT ────────────────────────────────────
-    # The match appears COMPLETED because it has a score, so the void path above
-    # never fires — that one only catches matches cancelled or walked over
-    # BEFORE they start. A mid-match retirement produces a real stat line that is
-    # a fragment of a match: Elisabetta Cocciaretto retired in the first set and
-    # was graded a LOSS at 0, because zero aces in a match she did not finish
-    # reads exactly like zero aces in a match she did.
+    # ── RETIREMENT — PRIZEPICKS' PUBLISHED TENNIS POLICY, NOT A HOUSE RULE ───
+    # From the PrizePicks Tennis scoring chart (DNP and Reboot Policy):
     #
-    # Books void props on a retirement, and the projection was for a completed
-    # match, so grading a partial one measures nothing about the model.
+    #   "In the event of a Retirement, all projections from the match will be
+    #    DNP'd with the following exceptions:
+    #      1. If MORE is selected and the athlete exceeds their projection, this
+    #         will result in a win.
+    #      2. If LESS is selected and the athlete exceeds their projection, this
+    #         will result in a loss.
+    #      3. Fantasy Score projections will be scored as if the winning athlete
+    #         won all remaining scheduled games, provided the match completes the
+    #         first set. If the match does not complete the first set, the
+    #         Fantasy Score projection will be DNP'd."
+    #
+    # THREE REAL PICKS THIS GOVERNS, all previously graded wrong:
+    #   Cocciaretto  retired in the FIRST set, MORE 5.0 break points won, had 0.
+    #                Not exceeded -> DNP. It had been graded a LOSS.
+    #   O'Connell    opponent retired in the second set; he had ALREADY cleared
+    #                his ace line -> exception 1 -> WIN. It had been DNP'd.
+    #   Bencic       retired, LESS on Fantasy Score, first set completed ->
+    #                exception 3, and since a retiring player wins no further
+    #                games her score is final and below the line -> WIN. It had
+    #                been DNP'd.
+    #
+    # NOTE THE ASYMMETRY IS THEIRS, NOT OURS. A LESS that has already been
+    # exceeded LOSES; a LESS that has not been exceeded is a DNP, NOT a win. My
+    # first pass at this graded any unexceeded LESS as a win, which would have
+    # quietly inflated the record on every retirement.
     if best.get("match_ended_early"):
-        return {"result": "VOID",
-                "reason": f"match ended early ({best.get('status_desc') or 'retirement'})",
-                "opponent_matched": best.get("opponent_name"),
-                "date": best.get("date"),
-                "partial_value": (_fantasy_score(best) if is_fs
-                                  else _break_points_saved(best) if is_bps
-                                  else _val(best, field))}
+        _early_val = (_fantasy_score(best) if is_fs
+                      else _break_points_saved(best) if is_bps
+                      else _val(best, field))
+        _ln = (lean or "").upper()
+        _why = f"match ended early ({best.get('status_desc') or 'retirement'})"
+        _sets_done = best.get("sets_played") or 0
+        _base = {"opponent_matched": best.get("opponent_name"),
+                 "date": best.get("date"), "ended_early": True}
+
+        # Exception 3 — Fantasy Score has its own rule and is checked FIRST,
+        # because it survives a retirement that would DNP every other prop.
+        if is_fs:
+            if _sets_done < 1:
+                return {"result": "VOID",
+                        "reason": f"{_why} — first set not completed (FS DNP rule)",
+                        "partial_value": _early_val, **_base}
+            if _early_val is None:
+                return {"result": "VOID", "reason": f"{_why} — score unavailable",
+                        **_base}
+            # A retiring player wins no further games, so their own score is
+            # already final. The "winner takes all remaining games" half of the
+            # rule only inflates the OPPONENT's score, so for a player who
+            # RETIRED this grades exactly as a completed match would.
+            _won = (float(_early_val) > float(line) if _ln == "OVER"
+                    else float(_early_val) < float(line))
+            _res = "W" if _won else "L"
+            _note = ""
+            if best.get("won"):
+                # Selected player WON because the opponent retired. PrizePicks
+                # credits him with the remaining scheduled games, which RAISES
+                # his Fantasy Score above what the partial line shows. We do not
+                # reconstruct that hypothetical, so this specific combination is
+                # flagged rather than silently graded on an understated score.
+                _note = (" — NOTE: opponent retired and PrizePicks credits the "
+                         "winner with all remaining games; our value is the "
+                         "partial line and may understate it")
+            return {"result": _res, "value": _early_val, "line": line,
+                    "lean": _ln, "reason": f"{_why} — FS scored per exception 3{_note}",
+                    "review_flag": bool(_note), **_base}
+
+        # Exceptions 1 and 2 — settled only by EXCEEDING the projection.
+        if _early_val is not None:
+            if _ln == "OVER" and float(_early_val) > float(line):
+                return {"result": "W", "value": _early_val, "line": line,
+                        "lean": _ln,
+                        "reason": f"{_why} — MORE already exceeded at {_early_val:g}",
+                        **_base}
+            if _ln == "UNDER" and float(_early_val) > float(line):
+                return {"result": "L", "value": _early_val, "line": line,
+                        "lean": _ln,
+                        "reason": f"{_why} — LESS already exceeded at {_early_val:g}",
+                        **_base}
+        return {"result": "VOID", "reason": _why,
+                "partial_value": _early_val, **_base}
 
     if is_fs:
         value = _fantasy_score(best)

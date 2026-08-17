@@ -1022,6 +1022,54 @@ def _build_score_str(event: dict) -> str:
     return " ".join(sets)
 
 
+def _score_shape_incomplete(event: dict) -> bool:
+    """True when the SET SCORE proves the match did not play out, regardless of
+    what the status code says.
+
+    WHY THIS EXISTS: Sofascore does not reliably stamp code 92 ("Retired") on a
+    retirement. O'Connell vs Ruud (2026-08-16) came back code=100 "Ended" with a
+    score of "7-5 1-2" — Ruud retired at 1-2 in the second, and the status field
+    gave no hint. Grading trusted the code, treated a fragment as a final line,
+    and would have posted a LOSS on any prop the partial line failed to clear
+    where PrizePicks scores a DNP.
+
+    Two independent tells, either one sufficient:
+      1. The LAST set is not a legally completed set (6-x with a 2-game margin,
+         7-5, or 7-6). "1-2" is nobody winning a set — play stopped inside it.
+      2. Every set is legal but the SET COUNT is not one a finished match can
+         end on. Only 2-0, 2-1 (best-of-three) and 3-0, 3-1, 3-2 (best-of-five)
+         are terminal. "6-3" alone is 1-0; a 2-2 is a best-of-five abandoned
+         before the decider. Both are retirements between sets.
+
+    Deliberately conservative: 2-1 in completed sets is accepted as a finished
+    best-of-three, which means a best-of-five retirement after a complete third
+    set still slips through. That case needs the match format, which the event
+    payload does not carry reliably, and I would rather miss a rare Slam
+    retirement than void completed straight-sets matches across the whole tour.
+    """
+    score = _build_score_str(event)
+    if not score:
+        return False                      # no score at all — say nothing
+    sets_h = sets_a = 0
+    toks = score.split()
+    for i, tok in enumerate(toks):
+        try:
+            h, a = (int(x) for x in tok.split("-"))
+        except (ValueError, TypeError):
+            return False                  # unparseable — do not guess
+        hi, lo = max(h, a), min(h, a)
+        legal = (hi == 6 and lo <= 4) or (hi == 7 and lo in (5, 6))
+        if not legal:
+            # Tell 1 — but only if it is the FINAL set. A weird middle set is a
+            # parsing artifact, not an abandonment.
+            return i == len(toks) - 1
+        sets_h += (h > a)
+        sets_a += (a > h)
+    # Tell 2 — all sets legal, but the set count is not a terminal one.
+    return (max(sets_h, sets_a), min(sets_h, sets_a)) not in {
+        (2, 0), (2, 1), (3, 0), (3, 1), (3, 2)}
+
+
 def _competition_tier(event: dict) -> float:
     """Strength-of-field proxy from the Sofascore category/tournament name.
     Tour (ATP/WTA) = 3, Challenger = 2, ITF / qualifying / exhibition = 1.
@@ -1150,7 +1198,11 @@ def _parse_match_stats(stats_data: dict, event: dict, player_id: int) -> Optiona
     # THIS player and _retirement_risk depends on that meaning — so grading gets
     # its own neutral flag. A prop does not care which side stopped: the match
     # did not play out, and the stat line is a fragment of one.
-    match_ended_early = bool(_is_dnf)
+    # The status code is necessary but NOT sufficient — see
+    # _score_shape_incomplete. player_retired stays code-only on purpose: it
+    # feeds _retirement_risk, where a false positive would penalise a healthy
+    # player, and the score shape cannot say WHO stopped.
+    match_ended_early = bool(_is_dnf or _score_shape_incomplete(event))
 
     opp_team = event.get("awayTeam", {}) if side == "home" else event.get("homeTeam", {})
 
