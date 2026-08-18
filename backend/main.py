@@ -1241,6 +1241,32 @@ def _pstdev(vals):
     return (sum((x - mu) ** 2 for x in vals) / n) ** 0.5
 
 
+def _mcp_style(name: str):
+    """Match Charting Project playstyle for one player, or None.
+
+    Wrapped so the charting repo being unreachable, renamed or reshaped can
+    never reach a projection response — this is additive diagnostic data and a
+    failure to load it must look exactly like the common case of a player
+    simply not being charted.
+    """
+    try:
+        from src.api.match_charting import profile as _mcp_profile, describe as _mcp_describe
+        p = _mcp_profile(name or "")
+        if not p:
+            return None
+        return {"summary": _mcp_describe(p),
+                "matches_charted": p.get("matches_charted"),
+                "return_deep_pct": p.get("return_deep_pct"),
+                "aggression_pct": p.get("aggression_pct"),
+                "unforced_pct": p.get("unforced_pct"),
+                "forehand_share_pct": p.get("forehand_share_pct"),
+                "net_pts_per_match": p.get("net_pts_per_match"),
+                "snv_pct_of_serve_pts": p.get("snv_pct_of_serve_pts"),
+                "hand": p.get("hand")}
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _retirement_risk(matches):
     """Improvement 5 — retirement/walkover pattern (Sofascore status 91/92/93).
     RECENCY-DECAYED: a DNF in the last 10 matches counts fully, 11-30 back at
@@ -3321,6 +3347,13 @@ async def prop_calculate(req: PropRequest):
             "opponent_tour_avg_stats": p2_gw_est,
             "player_archetype":     p1_arch,
             "opponent_archetype":   p2_arch,
+            # Match Charting Project playstyle — DIAGNOSTIC ONLY. Per North Star
+            # rule 4 this ships as data first: nothing here feeds a projection,
+            # a confidence score or a lean. None for most of the field, which is
+            # the honest answer (the median charted player has ~2 matches and is
+            # gated out), so every reader must treat absence as normal.
+            "player_playstyle":     _mcp_style(req.player_name),
+            "opponent_playstyle":   _mcp_style(req.opponent_name),
             # Serve/Return Profile badge (distinct from playing-style archetype)
             "player_serve_profile":   p1_serve_profile,
             "opponent_serve_profile": p2_serve_profile,
