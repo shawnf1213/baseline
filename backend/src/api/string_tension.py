@@ -36,7 +36,20 @@ _HEADERS = {
 
 # Patterns we look for in the page HTML — strings like "ST Pace Index: 37.7"
 # or "Pace Index: 37.7". We're liberal here to cover different page layouts.
+# One calendar ROW in the flattened page text, e.g.
+#   "250 ATP Umag Jul 13, 2026 S Clay · Court Pace Index: 32.5"
+# Captures (name, surface, pace). "Court" is optional so the older "ST Pace
+# Index" / bare "Pace Index" wording still parses if the site reverts.
+_ROW_PATTERN = re.compile(
+    r"([A-Z][A-Za-z'’\-\. ]{2,40}?)\s+"        # tournament name (tour prefix trimmed later)
+    r"[A-Z][a-z]{2}\s+\d{1,2},\s*\d{4}\s+"     # "Jul 13, 2026"
+    r"[A-Z]?\s*(Clay|Hard|Grass|Carpet)\s*"    # surface
+    r".{0,3}?(?:Court\s+|ST\s+)?Pace\s+Index\s*[:\-–]\s*([\d.]+)",
+    re.IGNORECASE,
+)
+
 _PACE_PATTERNS = [
+    re.compile(r"Court\s+Pace\s+Index\s*[:\-–]\s*([\d.]+)", re.IGNORECASE),
     re.compile(r"ST\s+Pace\s+Index\s*[:\-–]\s*([\d.]+)", re.IGNORECASE),
     re.compile(r"Pace\s+Index\s*[:\-–]\s*([\d.]+)", re.IGNORECASE),
     re.compile(r"SPI\s*[:\-–]\s*([\d.]+)", re.IGNORECASE),
@@ -75,6 +88,37 @@ def _parse_calendar(html: str) -> dict:
     Returns {tournament_name: pace_index} with raw names as scraped.
     """
     results: dict = {}
+
+    # ── PRIMARY: parse the FLATTENED page text ───────────────────────────────
+    # The site rebuilt as a React app and renamed the metric. Two changes, each
+    # enough on its own to kill the old parse:
+    #   1. "ST Pace Index" is now "Court Pace Index".
+    #   2. The tournament name and the value are in SEPARATE elements, so the
+    #      old pattern — which required a name and a value close together in
+    #      raw HTML — could never match again.
+    # The result was silent: _parse_calendar returned {}, every lookup answered
+    # ('no_data'), and every court fell back to the hardcoded COURT_CPR in
+    # constants.py. Nothing errored, so nothing surfaced it.
+    #
+    # Stripping the tags first turns each row back into the line a reader sees:
+    #   "250 ATP Umag Jul 13, 2026 S Clay · Court Pace Index: 32.5"
+    # which is stable against markup churn in a way an HTML-shaped regex is not.
+    text = re.sub(r"<script.*?</script>|<style.*?</style>", " ", html, flags=re.S)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"&[a-z]+;", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    for m in _ROW_PATTERN.finditer(text):
+        name = re.sub(r"^(ATP|WTA)\s+", "", m.group(1).strip()).strip()
+        try:
+            pace = float(m.group(3))
+        except (TypeError, ValueError):
+            continue
+        if name and 10.0 <= pace <= 80.0:
+            results[name] = pace
+    if results:
+        logger.info("[ST] parsed %d tournaments from flattened text", len(results))
+        return results
+
     for m in _TOURNAMENT_SECTION_PATTERN.finditer(html):
         name = m.group("name").strip()
         try:
