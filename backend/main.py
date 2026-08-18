@@ -1082,6 +1082,19 @@ UNDERDOG_AFFINITY_STRONG_GAP = 8.0    # strong edge -> the larger penalty
 UNDERDOG_UNDER_PENALTY_MIN   = 8
 UNDERDOG_UNDER_PENALTY_MAX   = 12
 
+# Outcome reliance — how far a play's probability may lean on the player WINNING
+# the match before confidence is docked for it. MIN_GAP 0.10 leaves normal plays
+# alone: every OVER on an outcome-dependent prop leans somewhat on winning, and
+# only a play running meaningfully ahead of its own win probability is flagged.
+# K 60 with a cap of 12 keeps this the same size as the affinity penalty beside
+# it, so no single rule can dominate the score: Tauson's 0.16 gap costs 10,
+# taking that play from 70 to 60. A 75% favourite's OVER is untouched (it leans
+# on winning, but no further than the model already leans), and UNDERs never
+# trigger it because they do not need the win.
+OUTCOME_RELIANCE_MIN_GAP     = 0.10
+OUTCOME_RELIANCE_PENALTY_K   = 60
+OUTCOME_RELIANCE_PENALTY_MAX = 12
+
 _DEEP_MIN_MATCHES = 15
 _DEEP_STATUS_TTL  = 7 * 24 * 3600
 _DEEP_STATUS: dict = {}          # (player_id, surface) -> ts last measured deep
@@ -2407,6 +2420,10 @@ async def prop_calculate(req: PropRequest):
                     result["bp_scenario_probs"] = _bp_mix["scenario_probs"]
                     result["bp_scaled_means"] = _bp_mix["scaled_scenario_means"]
                     result["bp_mixture_mean"] = round(_bp_mix["mixture_mean"], 3)
+                    # Per-scenario share of P(over) — the OUTCOME-RELIANCE penalty
+                    # below needs to know how much of the play's probability comes
+                    # from scenarios where the player WINS the match.
+                    result["bp_over_contrib"] = _bp_mix.get("over_contrib")
                     result["bp_fair_line"] = round(_bp_fair, 2)
                     # NB: this key is later shadowed in the response dict by
                     # "bp_base_proj": result.get("base_proj"), so what ships is
@@ -2892,6 +2909,59 @@ async def prop_calculate(req: PropRequest):
                 "(competitive-loss scorelines beat this line)",
                 req.player_name, req.prop_type, _p1wp, _aff_gap, _pen,
             )
+
+        # ── OUTCOME RELIANCE: does this play need a result the model doubts? ──
+        # Break Points Won and Player Total Games Won are OUTCOME-DEPENDENT: you
+        # break serve, and you win games, by being competitive. The scenario
+        # mixture already knows this — it prices a straight-sets loss far below a
+        # win — but CONFIDENCE never looked at it. Confidence scored data quality
+        # only: sample size, H2H, opponent depth, source agreement.
+        #
+        # Clara Tauson OVER 2.5 break points vs Noskova is what that misses. She
+        # was a 47.3% underdog. 60% of the OVER's probability came from the two
+        # scenarios where she WINS the match — a play leaning on her winning more
+        # than the model thought she would — and it still scored 70 on the
+        # strength of a 455-match sample. She lost in straights and finished with
+        # one break, which is close to what the model's own losing scenario said
+        # she would get (1.83).
+        #
+        # So compare the two directly: how much of the play's probability rests
+        # on winning, against how likely the player is to win. When reliance runs
+        # ahead of the win probability, the play needs an outcome the model does
+        # not expect, and confidence should say so. This is not an "is underdog"
+        # flag — a favourite whose OVER leans entirely on winning is fine, and an
+        # underdog whose play survives a loss is fine. Only the gap is penalised.
+        _oc = result.get("bp_over_contrib")
+        _sp = result.get("bp_scenario_probs")
+        _owp = result.get("ptgw_blended_wp") or result.get("bp_blended_wp")
+        if _owp is None and isinstance(result.get("p1_win_prob"), (int, float)):
+            _owp = result["p1_win_prob"] / 100.0
+        if (req.prop_type in ("Break Points Won", "Player Total Games Won")
+                and isinstance(_oc, dict) and isinstance(_owp, (int, float))
+                and (lean or "").upper() in ("OVER", "UNDER")):
+            _tot = sum(v for v in _oc.values() if isinstance(v, (int, float)))
+            _win_part = sum(_oc.get(s, 0.0) for s in ("S1", "S2"))
+            if (lean or "").upper() == "UNDER":
+                # The UNDER's mass is everything the OVER's is not, so its
+                # win-reliance is the complement within each scenario.
+                _sp = _sp if isinstance(_sp, dict) else {}
+                _all = sum(v for v in _sp.values() if isinstance(v, (int, float))) or 1.0
+                _tot = _all - _tot
+                _win_part = (_sp.get("S1", 0.0) + _sp.get("S2", 0.0)) - _win_part
+            if _tot > 1e-6:
+                _reliance = max(0.0, min(1.0, _win_part / _tot))
+                _gap = _reliance - float(_owp)
+                if _gap > OUTCOME_RELIANCE_MIN_GAP:
+                    _pen = min(OUTCOME_RELIANCE_PENALTY_MAX,
+                               int(round(_gap * OUTCOME_RELIANCE_PENALTY_K)))
+                    if _pen > 0:
+                        confidence -= _pen
+                        logger.info(
+                            "OUTCOME_RELIANCE_PENALTY | %s %s %s | %.0f%% of this "
+                            "play's probability needs a MATCH WIN but win_prob is "
+                            "%.0f%% (gap %+.2f) -> -%d confidence",
+                            req.player_name, req.prop_type, lean,
+                            _reliance * 100.0, float(_owp) * 100.0, _gap, _pen)
 
         # Edge-based ceiling — a SEPARATE rule (caps confidence when the
         # projection barely clears the line), not the floor/cap. Applied before
