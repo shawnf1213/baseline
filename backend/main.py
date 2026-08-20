@@ -1425,10 +1425,25 @@ async def billing_webhook(req: Request):
 
 
 @app.get("/api/billing/status")
-def billing_status(discord_id: str = "", email: str = ""):
-    """Is this person entitled right now? Fails closed."""
+def billing_status(req: Request, discord_id: str = "", email: str = "",
+                   sync_token: str = ""):
+    """Is this person entitled right now? Fails closed.
+
+    The owner token is read from the X-Owner-Token HEADER, never a query
+    parameter: query strings land in server logs, browser history and
+    Referer headers, and a bypass secret that leaks into any of those is a free
+    subscription for whoever reads them.
+
+    discord_id is caller-supplied and therefore untrusted. It is only treated as
+    an OWNER id when sync_token proves the caller is our own bot — otherwise
+    anyone who knew the owner's Discord id could type it into this URL.
+    """
     from src import billing
-    return billing.has_access(discord_id=discord_id, email=email)
+    owner_token = req.headers.get("x-owner-token", "")
+    expected_sync = os.getenv("BILLING_SYNC_TOKEN", "").strip()
+    trusted = bool(expected_sync and sync_token == expected_sync)
+    return billing.has_access(discord_id=discord_id, email=email,
+                              owner_token=owner_token, trusted_discord=trusted)
 
 
 @app.get("/api/billing/subscribers")

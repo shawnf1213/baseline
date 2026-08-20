@@ -59,6 +59,50 @@ except Exception as exc:  # noqa: BLE001
     _LIB_OK = False
 
 
+# ── OWNER BYPASS ─────────────────────────────────────────────────────────────
+# The owner must be able to use the product without paying for it. There are two
+# mechanisms here and the difference between them is the whole security of this
+# feature.
+#
+# BILLING_OWNER_TOKEN — a long random secret, for the APP. The browser sends it
+#   as a header and the server compares it to the env var. Unforgeable without
+#   knowing the secret.
+#
+# BILLING_OWNER_DISCORD_IDS — for the BOT ONLY, where the Discord user id comes
+#   from a signed interaction payload and the caller cannot choose it.
+#
+# WHY NOT JUST TRUST A DISCORD ID FROM THE APP: /api/billing/status takes
+# discord_id as a query parameter, which is caller-supplied. If an id on the
+# owner list granted access there, anyone who learned the owner's Discord id —
+# which is public in any server they post in — could type it into a URL and take
+# the product for free. Owner ids are therefore honoured ONLY when the caller has
+# already proven it is the bot, via the same BILLING_SYNC_TOKEN shared secret.
+OWNER_TOKEN = os.getenv("BILLING_OWNER_TOKEN", "").strip()
+OWNER_DISCORD_IDS = {
+    x.strip() for x in os.getenv("BILLING_OWNER_DISCORD_IDS", "").split(",")
+    if x.strip()
+}
+
+
+def is_owner_token(token: str) -> bool:
+    """Constant-time compare against the owner token. Empty token never matches,
+    so leaving the env var unset disables the bypass entirely rather than
+    granting everyone access."""
+    if not OWNER_TOKEN or not token:
+        return False
+    import hmac
+    return hmac.compare_digest(token, OWNER_TOKEN)
+
+
+def is_owner_discord(discord_id: str, trusted: bool = False) -> bool:
+    """Owner check for a Discord id.
+
+    `trusted` MUST be True and is only set by a caller that has proven it is the
+    bot. A caller-supplied id is never enough — see the note above.
+    """
+    return bool(trusted and discord_id and discord_id in OWNER_DISCORD_IDS)
+
+
 def is_configured() -> bool:
     """True when a checkout could actually be created."""
     return bool(_LIB_OK and STRIPE_SECRET_KEY and (PRICE_WEEKLY or PRICE_MONTHLY))
@@ -96,7 +140,12 @@ def create_checkout_session(plan: str, discord_id: str = "",
         sess = _stripe.checkout.Session.create(
             mode="subscription",
             line_items=[{"price": price, "quantity": 1}],
-            success_url=SUCCESS_URL,
+            # {CHECKOUT_SESSION_ID} is substituted by Stripe. The quickstart
+            # uses it so the success page can VERIFY the session instead of
+            # trusting that a redirect happened — a URL anyone can visit.
+            success_url=(SUCCESS_URL +
+                         ('&' if '?' in SUCCESS_URL else '?') +
+                         'session_id={CHECKOUT_SESSION_ID}'),
             cancel_url=CANCEL_URL,
             allow_promotion_codes=True,
             # Metadata lands on BOTH the session and the subscription, so the
@@ -180,7 +229,8 @@ def apply_event(event) -> dict:
     return {"ok": True, "handled": None, "ignored": etype}
 
 
-def has_access(discord_id: str = "", email: str = "") -> dict:
+def has_access(discord_id: str = "", email: str = "",
+               owner_token: str = "", trusted_discord: bool = False) -> dict:
     """Is this person entitled right now? {active, status, plan, period_end}.
 
     Grants through current_period_end even when cancel_at_period_end is set: the
@@ -189,6 +239,15 @@ def has_access(discord_id: str = "", email: str = "") -> dict:
     opposite is giving the product away.
     """
     from . import database as db
+    # Owner bypass, checked before any subscription lookup so it still works
+    # when Stripe is unconfigured or the database is down — the owner must never
+    # be locked out of their own product by a billing outage.
+    if is_owner_token(owner_token):
+        return {"active": True, "status": "owner", "plan": "owner",
+                "period_end": None, "cancels_at_period_end": False}
+    if is_owner_discord(discord_id, trusted=trusted_discord):
+        return {"active": True, "status": "owner", "plan": "owner",
+                "period_end": None, "cancels_at_period_end": False}
     try:
         row = db.find_subscription(discord_id=discord_id, email=email)
     except Exception:  # noqa: BLE001
