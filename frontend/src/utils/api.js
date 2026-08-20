@@ -11,7 +11,14 @@ import axios from 'axios'
 //    the backend hasn't CORS-allowlisted fails every request.
 function resolveBase() {
   if (typeof window === 'undefined') return ''
-  if (window.location.hostname === 'baseline-app-three.vercel.app') {
+  // Both public hostnames go DIRECT to the backend. Without listing a host
+  // here it falls back to the same-origin /api rewrite, which runs through a
+  // Vercel edge function with a hard timeout — and a cold prop-calculate can
+  // take minutes, so projections would fail on the new domain while working on
+  // the old one. Every public origin must appear in BOTH this list and the
+  // backend's CORS allowlist.
+  const DIRECT = ['baselineev.vercel.app', 'baseline-app-three.vercel.app']
+  if (DIRECT.includes(window.location.hostname)) {
     return 'https://backend-production-84ab.up.railway.app'
   }
   return ''

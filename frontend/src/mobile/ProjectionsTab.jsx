@@ -1,6 +1,6 @@
 import { useState, useMemo } from 'react'
 import { T } from './theme'
-import { Card, Chip, Spinner, Empty, SectionLabel, MiniBars } from './bits'
+import { Card, Chip, Spinner, Empty, SectionLabel } from './bits'
 import PlayerPhoto from './PlayerPhoto'
 import ConfidenceGauge from '../components/ConfidenceGauge'
 import { usePlayerSearch } from '../hooks/usePlayerSearch'
@@ -124,6 +124,122 @@ function Select({ label, value, onChange, options }) {
   )
 }
 
+// ── HIT-RATE WINDOWS ─────────────────────────────────────────────────────────
+// The row PickFinder leads with: the same prop measured over several windows,
+// each showing how often it CLEARED and what it averaged. One number in
+// isolation ("proj 4.7") tells you nothing about whether that is normal for
+// this player; five windows side by side tell you whether the projection sits
+// with the trend or against it, which is the actual question.
+//
+// Rate is always stated for the SIDE WE LEAN. On an UNDER, 20% overs is an 80%
+// hit, and showing the raw over-rate would read as the opposite of the truth.
+function HitWindows({ hist, lean, line }) {
+  if (!hist) return null
+  const vals = (hist.values || []).filter(v => typeof v === 'number')
+  const side = (arr) => {
+    const n = arr.length
+    if (!n || line == null) return null
+    const hits = arr.filter(v => lean === 'UNDER' ? v < line : v > line).length
+    return { pct: Math.round((hits / n) * 100), avg: arr.reduce((a, b) => a + b, 0) / n, n }
+  }
+  const seasonPct = (() => {
+    const o = hist.season?.over, u = hist.season?.under, pu = hist.season?.push
+    const tot = (o || 0) + (u || 0) + (pu || 0)
+    if (!tot) return null
+    return Math.round(((lean === 'UNDER' ? u : o) / tot) * 100)
+  })()
+  const cells = [
+    { k: 'L5', d: side(vals.slice(0, 5)) },
+    { k: 'L10', d: side(vals) },
+    { k: 'SEASON', d: seasonPct == null ? null
+        : { pct: seasonPct, avg: hist.average, n: hist.season?.n } },
+  ].filter(c => c.d)
+  if (!cells.length) return null
+  return (
+    <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
+      {cells.map(({ k, d }) => {
+        const tone = d.pct >= 70 ? T.green : d.pct >= 50 ? T.amber : T.red
+        return (
+          <div key={k} style={{
+            flex: 1, background: T.card, border: `1px solid ${T.border}`,
+            borderRadius: 12, padding: '10px 8px', textAlign: 'center',
+          }}>
+            <div style={{ fontSize: 9.5, fontFamily: T.cond, fontWeight: 800,
+                          letterSpacing: 1, color: T.muted2 }}>{k}</div>
+            <div style={{ fontSize: 19, fontWeight: 800, color: tone,
+                          fontVariantNumeric: 'tabular-nums', lineHeight: 1.25 }}>
+              {d.pct}%
+            </div>
+            <div style={{ fontSize: 10.5, color: T.muted2 }}>
+              avg {fmt(d.avg)}{d.n ? ` · ${d.n}g` : ''}
+            </div>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+// ── GAME LOG ─────────────────────────────────────────────────────────────────
+// Every game as a labelled bar with the LINE DRAWN THROUGH IT. The line is the
+// whole point of the chart — without it a reader has to hold the number in
+// their head and compare bar heights by eye. With it, clearing or missing is
+// immediate.
+function GameChart({ hist, line, lean }) {
+  const games = (hist?.games || []).filter(g => typeof g.value === 'number')
+  if (!games.length) return null
+  const series = [...games].reverse()          // oldest -> newest, left to right
+  const top = Math.max(line || 0, ...series.map(g => g.value)) * 1.25 || 1
+  const H = 108
+  return (
+    <div style={{ background: T.card, border: `1px solid ${T.border}`,
+                  borderRadius: 14, padding: '14px 12px 10px', marginBottom: 10 }}>
+      <div style={{ fontSize: 9.5, fontFamily: T.cond, fontWeight: 800,
+                    letterSpacing: 1, color: T.muted2, marginBottom: 12 }}>
+        LAST {series.length} · LINE {fmt(line)}
+      </div>
+      <div style={{ position: 'relative', height: H, display: 'flex',
+                    alignItems: 'flex-end', gap: 4 }}>
+        {/* the line itself */}
+        <div style={{ position: 'absolute', left: 0, right: 0,
+                      bottom: `${Math.min(100, (line / top) * 100)}%`,
+                      borderTop: `1.5px dashed ${T.muted2}`, opacity: 0.85, zIndex: 2 }} />
+        {series.map((g, i) => {
+          const cleared = lean === 'UNDER' ? g.value < line : g.value > line
+          const h = Math.max(4, (g.value / top) * H)
+          return (
+            <div key={i} style={{ flex: 1, display: 'flex', flexDirection: 'column',
+                                  alignItems: 'center', justifyContent: 'flex-end' }}>
+              <span style={{ fontSize: 10, fontWeight: 800, color: cleared ? T.green : T.red,
+                             marginBottom: 3, fontVariantNumeric: 'tabular-nums' }}>
+                {g.value % 1 === 0 ? g.value : fmt(g.value)}
+              </span>
+              <div style={{
+                width: '100%', height: h, borderRadius: '4px 4px 2px 2px',
+                background: cleared ? 'rgba(0,230,118,0.55)' : 'rgba(255,68,68,0.45)',
+                border: `1px solid ${cleared ? T.green : T.red}`,
+              }} />
+            </div>
+          )
+        })}
+      </div>
+      <div style={{ display: 'flex', gap: 4, marginTop: 6 }}>
+        {series.map((g, i) => (
+          <div key={i} style={{ flex: 1, textAlign: 'center', overflow: 'hidden' }}>
+            <div style={{ fontSize: 8.5, color: T.muted2, whiteSpace: 'nowrap' }}>
+              {(g.date || '').slice(5).replace('-', '/')}
+            </div>
+            <div style={{ fontSize: 8, color: '#4a4a4a', whiteSpace: 'nowrap',
+                          overflow: 'hidden', textOverflow: 'ellipsis' }}>
+              {(g.opponent || '').split(' ').slice(-1)[0].slice(0, 6)}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 function Stat({ label, value, tone }) {
   return (
     <div style={{ textAlign: 'center', flex: 1 }}>
@@ -184,7 +300,14 @@ export default function ProjectionsTab() {
       // Only some props have an over/under log — PROP_TYPES.history says which.
       if (PROP_TYPES.find(p => p.key === prop)?.history) {
         fetchHistory(String(player.id), player.tour || tour, prop, surface, ln)
-          .then(h => setHist(hitStrip(h, ln)))
+          .then(h => setHist({
+            ...hitStrip(h, ln),
+            // The per-game rows and the season counts drive the chart and the
+            // window row; hitStrip alone flattens both away.
+            games: Array.isArray(h?.last10) ? h.last10 : [],
+            season: { over: h?.over, under: h?.under, push: h?.push,
+                      n: h?.player_matches },
+          }))
           .catch(() => {})
       }
     } catch (e) {
@@ -287,8 +410,18 @@ export default function ProjectionsTab() {
         <>
           {/* Verdict — the props.cash move: the answer, at a glance, first. */}
           <Card style={{ padding: 16, marginBottom: 10 }}>
-            <div style={{ fontSize: 11, color: T.muted2, marginBottom: 10 }}>
-              {player.name} vs {opponent.name} · {surface}{court ? ` · ${court}` : ''}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 11, marginBottom: 14 }}>
+              <PlayerPhoto id={player.id} name={player.name} size={44} />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 16, fontWeight: 800, color: T.white,
+                              whiteSpace: 'nowrap', overflow: 'hidden',
+                              textOverflow: 'ellipsis' }}>{player.name}</div>
+                <div style={{ fontSize: 11, color: T.muted2, whiteSpace: 'nowrap',
+                              overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  vs {opponent.name} · {surface}{court ? ` · ${court}` : ''}
+                </div>
+              </div>
+              <PlayerPhoto id={opponent.id} name={opponent.name} size={32} />
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
               <div style={{ flex: 1 }}>
@@ -327,21 +460,9 @@ export default function ProjectionsTab() {
                   value={res.p1_win_prob != null ? `${Math.round(res.p1_win_prob)}%` : '—'} />
           </Card>
 
-          {/* Game log — Pick Finder's bottom half: show the actual results. */}
-          {hist?.values?.length > 0 && (
-            <Card style={{ padding: 14, marginBottom: 10 }}>
-              <div style={{ fontSize: 9.5, fontFamily: T.cond, fontWeight: 800, letterSpacing: 1,
-                            textTransform: 'uppercase', color: T.muted2, marginBottom: 8 }}>
-                Last 10 vs this line
-              </div>
-              <MiniBars values={hist.values} refLine={ln} />
-              {hist.average != null && (
-                <div style={{ fontSize: 11, color: T.muted2, marginTop: 8 }}>
-                  Average {fmt(hist.average)} over {hist.sample || hist.l10.n} matches
-                </div>
-              )}
-            </Card>
-          )}
+          {/* Hit rate across windows, then every game with the line through it. */}
+          <HitWindows hist={hist} lean={lean} line={ln} />
+          <GameChart hist={hist} line={ln} lean={lean} />
 
           {res.explanation && (
             <Card style={{ padding: 14 }}>
