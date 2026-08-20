@@ -89,6 +89,28 @@ export default function AuthGate({ children }) {
 
   useEffect(() => { check() }, [check])
 
+  // COMING BACK FROM STRIPE MUST NOT LEAVE THE PAGE DEAD. Every checkout sets
+  // busy=true and then navigates away, so the success path never clears it.
+  // Press Back and the browser restores this page from its back-forward cache
+  // with busy still true — every button disabled, no way to retry, nothing on
+  // screen explaining why.
+  //
+  // pageshow.persisted fires on a bfcache restore; visibilitychange covers
+  // returning to the tab without one. Both also re-check entitlement, so
+  // somebody who actually completed the purchase is let straight in rather than
+  // being shown the paywall they just paid to get past.
+  useEffect(() => {
+    const revive = () => { setBusy(false); check() }
+    const onShow = (e) => { if (e.persisted) revive() }
+    const onVis = () => { if (document.visibilityState === 'visible') revive() }
+    window.addEventListener('pageshow', onShow)
+    document.addEventListener('visibilitychange', onVis)
+    return () => {
+      window.removeEventListener('pageshow', onShow)
+      document.removeEventListener('visibilitychange', onVis)
+    }
+  }, [check])
+
   const connectDiscord = async () => {
     setBusy(true)
     try {
@@ -111,6 +133,15 @@ export default function AuthGate({ children }) {
       else setBusy(false)
     } catch { setBusy(false) }
   }
+
+  // Safety net: if navigation to Stripe has not happened within a few seconds,
+  // release the buttons. A disabled screen with no explanation is the worst
+  // possible outcome of a slow or blocked redirect.
+  useEffect(() => {
+    if (!busy) return
+    const t = setTimeout(() => setBusy(false), 8000)
+    return () => clearTimeout(t)
+  }, [busy])
 
   if (state.phase === 'loading') {
     return <Shell><div style={{ color: '#666', textAlign: 'center' }}>Loading…</div></Shell>
