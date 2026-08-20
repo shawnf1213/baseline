@@ -42,7 +42,7 @@ sys.modules["streamlit.runtime"] = types.ModuleType("streamlit.runtime")
 # ---------------------------------------------------------------------------
 # Normal imports (after mock)
 # ---------------------------------------------------------------------------
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -1370,6 +1370,93 @@ def _recent_form_pull(proj_val, surf_matches, prop_type, weight=0.30):
 
 # POST /api/prop/calculate
 # ---------------------------------------------------------------------------
+# ── BILLING (Stripe) ─────────────────────────────────────────────────────────
+# Checkout is Stripe-hosted: we hand back a URL and the card is entered on
+# Stripe's domain. No card data reaches this server by design, and no card form
+# exists anywhere in this codebase.
+@app.get("/api/billing/config")
+def billing_config():
+    """Which pieces of Stripe configuration are present. Reports only WHETHER
+    each secret is set, never its value."""
+    from src import billing
+    return billing.config_status()
+
+
+@app.post("/api/billing/checkout")
+async def billing_checkout(req: Request):
+    """Create a Checkout Session and return its URL."""
+    from src import billing
+    body = await req.json()
+    plan = (body.get("plan") or "").lower()
+    out = billing.create_checkout_session(
+        plan=plan,
+        discord_id=str(body.get("discord_id") or ""),
+        email=str(body.get("email") or ""),
+    )
+    if out.get("error"):
+        raise HTTPException(status_code=400, detail=out["error"])
+    return out
+
+
+@app.post("/api/billing/webhook")
+async def billing_webhook(req: Request):
+    """Stripe webhook receiver.
+
+    THE RAW BODY IS REQUIRED. Signature verification runs over the exact bytes
+    Stripe signed, so this must not be parsed as JSON first — re-serialising
+    changes whitespace and key order and every signature would fail.
+
+    An invalid signature returns 400 and the payload is never decoded. This
+    endpoint is public, so without that check anyone who found the URL could
+    POST themselves a subscription.
+    """
+    from src import billing
+    raw = await req.body()
+    sig = req.headers.get("stripe-signature", "")
+    event = billing.verify_webhook(raw, sig)
+    if event is None:
+        raise HTTPException(status_code=400, detail="invalid signature")
+    try:
+        return billing.apply_event(event)
+    except Exception:  # noqa: BLE001
+        logger.exception("webhook handling failed")
+        # 500 makes Stripe retry, which is what we want for a transient DB blip.
+        raise HTTPException(status_code=500, detail="handler error")
+
+
+@app.get("/api/billing/status")
+def billing_status(discord_id: str = "", email: str = ""):
+    """Is this person entitled right now? Fails closed."""
+    from src import billing
+    return billing.has_access(discord_id=discord_id, email=email)
+
+
+@app.get("/api/billing/subscribers")
+def billing_subscribers(token: str = ""):
+    """Discord ids entitled right now — the list the bot syncs roles against.
+
+    Shared-secret gated: it is a list of paying customers and must not be
+    public. Absent BILLING_SYNC_TOKEN the route is disabled rather than open.
+    """
+    expected = os.getenv("BILLING_SYNC_TOKEN", "").strip()
+    if not expected or token != expected:
+        raise HTTPException(status_code=403, detail="forbidden")
+    from src import database as _db
+    return {"discord_ids": _db.active_subscriber_discord_ids()}
+
+
+@app.post("/api/billing/portal")
+async def billing_portal(req: Request):
+    """Stripe-hosted portal so a subscriber can change their card or cancel."""
+    from src import billing
+    body = await req.json()
+    out = billing.billing_portal_url(str(body.get("customer_id") or ""),
+                                     str(body.get("return_url") or ""))
+    if out.get("error"):
+        raise HTTPException(status_code=400, detail=out["error"])
+    return out
+
+
 @app.post("/api/prop/calculate")
 async def prop_calculate(req: PropRequest):
     try:

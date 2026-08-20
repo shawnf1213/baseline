@@ -5,7 +5,7 @@ import PlayerPhoto from './PlayerPhoto'
 import ConfidenceGauge from '../components/ConfidenceGauge'
 import Last5Bars from '../components/Last5Bars'
 import { fetchForm, fetchStats, fetchNextMatch, fetchHistory } from '../utils/api'
-import { normName, hitStrip, shortProp, fmt, prettyDate, startTimeLabel, PROP_TYPES } from './data'
+import { normName, hitStrip, shortProp, fmt, prettyDate, startTimeLabel, PROP_TYPES, mergedBoardRows } from './data'
 import { projectRow, cachedProjection, resolvePlayer } from './project'
 import { useBookmarks, playerBookmarkId } from './useBookmarks'
 
@@ -21,7 +21,7 @@ function mostPlayedSurface(stats) {
   return n > 0 ? best : null
 }
 
-export default function PlayerDashboard({ player, board, onClose, onOpenPlayer }) {
+export default function PlayerDashboard({ player, boards, onClose, onOpenPlayer }) {
   // The tour is authoritative only once resolved (a board tap carries no tour).
   const [resolvedTour, setResolvedTour] = useState(player.tour || 'ATP')
   const [pid, setPid] = useState(player.id ? String(player.id) : null)
@@ -37,9 +37,12 @@ export default function PlayerDashboard({ player, board, onClose, onOpenPlayer }
   const { has, toggle } = useBookmarks()
   const bmId = playerBookmarkId(player.name)
 
+  // BOTH books. This took boards[book] — whichever the Boards tab happened to
+  // be showing — so a player's Underdog props simply did not exist here unless
+  // you had toggled that first.
   const boardRows = useMemo(
-    () => (board?.rows || []).filter(r => normName(r.player) === normName(player.name)),
-    [board, player.name])
+    () => mergedBoardRows(boards).filter(r => normName(r.player) === normName(player.name)),
+    [boards, player.name])
   const lineByProp = useMemo(() => {
     const m = {}
     for (const r of boardRows) if (r.line != null) m[r.propType] = r.line
@@ -152,17 +155,27 @@ export default function PlayerDashboard({ player, board, onClose, onOpenPlayer }
               </Card>
             )}
 
-            {/* Live PrizePicks props for this player, projected on the fly */}
+            {/* Live props for this player across BOTH books, projected on the fly */}
             {boardRows.length > 0 && (
               <section style={{ marginBottom: 22 }}>
-                <SectionLabel>Live Props · PrizePicks</SectionLabel>
+                <SectionLabel>Live Props</SectionLabel>
                 {boardRows.map(r => {
                   const p = propProj[r.key] || {}
                   const done = !p.loading && !p.failed && p.projection != null
                   return (
                     <Card key={r.key} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 14px', marginBottom: 10 }}>
                       <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 16, color: T.white, letterSpacing: 0.3 }}>{shortProp(r.propType)}</div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+                          <span style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 16, color: T.white, letterSpacing: 0.3 }}>{shortProp(r.propType)}</span>
+                          {(r.books || []).map(b => (
+                            <span key={b} style={{
+                              fontSize: 9.5, fontWeight: 800, letterSpacing: 0.4, padding: '2px 5px', borderRadius: 4,
+                              color: b === 'prizepicks' ? T.green : '#42A5F5',
+                              background: b === 'prizepicks' ? 'rgba(0,230,118,0.10)' : 'rgba(66,165,245,0.10)',
+                              border: `1px solid ${b === 'prizepicks' ? 'rgba(0,230,118,0.25)' : 'rgba(66,165,245,0.25)'}`,
+                            }}>{b === 'prizepicks' ? 'PP' : 'UD'}</span>
+                          ))}
+                        </div>
                         <div style={{ display: 'flex', gap: 14, marginTop: 8, alignItems: 'center' }}>
                           <Mini label="Line" value={fmt(r.line, Number.isInteger(r.line) ? 0 : 1)} />
                           <Mini label="Proj" value={done ? fmt(p.projection) : '—'} accent={done} />

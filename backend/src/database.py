@@ -145,12 +145,48 @@ try:
         written_at  = Column(DateTime(timezone=True), server_default=func.now())
         ttl_seconds = Column(Integer)                     # NULL = never expires
 
+    class Subscription(Base):
+        """One row per PAYING CUSTOMER, keyed by their Stripe customer id.
+
+        WHY A LOCAL TABLE AND NOT "ASK STRIPE": entitlement is checked on every
+        gated request, and a network call to Stripe per request would put their
+        uptime in front of ours. Stripe remains the source of truth; webhooks
+        write here, and this is the fast read.
+
+        NO CARD DATA IS EVER STORED, and none is available to store — checkout is
+        Stripe-hosted, so the card never touches this server. The only payment
+        identifiers here are Stripe's own opaque ids.
+
+        discord_id links a subscription to a Discord account so the bot can grant
+        and revoke the role; app_email links it to an app login. Either may be
+        NULL: someone can pay before connecting Discord, and the link is made
+        later without disturbing the subscription itself.
+        """
+        __tablename__ = "subscriptions"
+        id                  = Column(Integer, primary_key=True, autoincrement=True)
+        stripe_customer_id  = Column(String, nullable=False, index=True)
+        stripe_sub_id       = Column(String, nullable=False, unique=True, index=True)
+        # active | trialing | past_due | canceled | unpaid | incomplete
+        status              = Column(String, nullable=False, default="incomplete")
+        plan                = Column(String, default="")        # weekly | monthly
+        discord_id          = Column(String, default="", index=True)
+        app_email           = Column(String, default="", index=True)
+        # When the paid period ends. Access is granted up to this instant even
+        # after a cancellation — a cancel is "do not renew", not "cut them off
+        # mid-period", and treating it as the latter would be taking money for
+        # time not served.
+        current_period_end  = Column(DateTime(timezone=True), nullable=True)
+        cancel_at_period_end = Column(Integer, default=0)        # 0/1
+        created_at          = Column(DateTime(timezone=True), server_default=func.now())
+        updated_at          = Column(DateTime(timezone=True), server_default=func.now())
+
     _SQLALCHEMY_OK = True
 except Exception as exc:  # pragma: no cover — missing dep shouldn't crash the app
     logger.warning("SQLAlchemy unavailable — results DB disabled: %s", exc)
     _SQLALCHEMY_OK = False
     Pick = None  # type: ignore
     CacheEntry = None  # type: ignore
+    Subscription = None  # type: ignore
 
 
 def init_db() -> None:
@@ -418,6 +454,127 @@ def pending_picks() -> list:
 # Every helper degrades to a no-op / miss when the DB is unavailable, so a
 # Postgres problem costs cache warmth and NOTHING else — the callers still have
 # their in-memory layer and their network fallback.
+# ── Subscriptions ────────────────────────────────────────────────────────────
+def upsert_subscription(rec: dict) -> dict:
+    """Insert or update one subscription, keyed on stripe_sub_id.
+
+    UPSERT, NOT INSERT: Stripe sends created -> updated -> deleted for the same
+    subscription and re-delivers any event whose response it did not see. An
+    insert-only path would fan one subscription into duplicate rows and leave
+    entitlement depending on which row a query happened to find first.
+    """
+    if not _READY or Subscription is None:
+        return {}
+    try:
+        for s in _session():
+            row = (s.query(Subscription)
+                    .filter(Subscription.stripe_sub_id == rec["stripe_sub_id"])
+                    .one_or_none())
+            if row is None:
+                row = Subscription(stripe_sub_id=rec["stripe_sub_id"])
+                s.add(row)
+            for f in ("stripe_customer_id", "status", "plan",
+                      "current_period_end", "cancel_at_period_end"):
+                if rec.get(f) is not None:
+                    setattr(row, f, rec[f])
+            # Never blank an existing link: a later event may carry no metadata,
+            # and overwriting a known discord_id with "" would silently strip a
+            # paying subscriber of their role.
+            if rec.get("discord_id"):
+                row.discord_id = rec["discord_id"]
+            if rec.get("app_email"):
+                row.app_email = rec["app_email"]
+            row.updated_at = datetime.now(timezone.utc)
+            s.flush()
+            return {"id": row.id, "stripe_sub_id": row.stripe_sub_id,
+                    "status": row.status}
+    except Exception:
+        logger.exception("upsert_subscription failed")
+    return {}
+
+
+def find_subscription(discord_id: str = "", email: str = "") -> dict:
+    """Best current subscription for a person, or {}. Prefers an ACTIVE row —
+    someone who cancelled and resubscribed has two, and the live one is the
+    answer."""
+    if not _READY or Subscription is None:
+        return {}
+    if not discord_id and not email:
+        return {}
+    try:
+        for s in _session():
+            q = s.query(Subscription)
+            q = (q.filter(Subscription.discord_id == discord_id) if discord_id
+                 else q.filter(Subscription.app_email == email))
+            rows = q.all()
+            if not rows:
+                return {}
+            rows.sort(key=lambda r: (
+                0 if (r.status or "") in ("active", "trialing") else 1,
+                -(r.current_period_end.timestamp() if r.current_period_end else 0),
+            ))
+            r = rows[0]
+            return {"id": r.id, "stripe_customer_id": r.stripe_customer_id,
+                    "stripe_sub_id": r.stripe_sub_id, "status": r.status,
+                    "plan": r.plan, "discord_id": r.discord_id,
+                    "app_email": r.app_email,
+                    "current_period_end": r.current_period_end,
+                    "cancel_at_period_end": r.cancel_at_period_end}
+    except Exception:
+        logger.exception("find_subscription failed")
+    return {}
+
+
+def link_subscription(stripe_sub_id: str, discord_id: str = "",
+                      email: str = "") -> bool:
+    """Attach a Discord id or app email to an existing subscription — someone
+    who paid before connecting either one."""
+    if not _READY or Subscription is None or not stripe_sub_id:
+        return False
+    try:
+        for s in _session():
+            row = (s.query(Subscription)
+                    .filter(Subscription.stripe_sub_id == stripe_sub_id)
+                    .one_or_none())
+            if row is None:
+                return False
+            if discord_id:
+                row.discord_id = discord_id
+            if email:
+                row.app_email = email
+            row.updated_at = datetime.now(timezone.utc)
+            return True
+    except Exception:
+        logger.exception("link_subscription failed")
+    return False
+
+
+def active_subscriber_discord_ids() -> list:
+    """Discord ids entitled right now — what the bot syncs roles against."""
+    if not _READY or Subscription is None:
+        return []
+    try:
+        now = datetime.now(timezone.utc)
+        out = []
+        for s in _session():
+            for r in s.query(Subscription).all():
+                if not r.discord_id:
+                    continue
+                if (r.status or "") not in ("active", "trialing", "past_due"):
+                    continue
+                end = r.current_period_end
+                if end is not None:
+                    if end.tzinfo is None:
+                        end = end.replace(tzinfo=timezone.utc)
+                    if end <= now:
+                        continue
+                out.append(r.discord_id)
+        return sorted(set(out))
+    except Exception:
+        logger.exception("active_subscriber_discord_ids failed")
+    return []
+
+
 def cache_get(key: str):
     """Value for ``key``, or None on miss/expiry/DB-unavailable. TTL is enforced
     HERE on read: an expired row is a miss and the caller refetches, so a stale

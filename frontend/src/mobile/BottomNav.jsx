@@ -2,6 +2,7 @@ import { T, SAFE_BOTTOM } from './theme'
 
 const TABS = [
   { key: 'board',    label: 'Boards',   icon: 'board' },
+  { key: 'project',  label: 'Project',  icon: 'project' },
   { key: 'picks',    label: 'Picks',    icon: 'picks' },
   { key: 'players',  label: 'Players',  icon: 'players' },
   { key: 'search',   label: 'Search',   icon: 'search' },
@@ -13,6 +14,7 @@ function Icon({ name, active }) {
   const p = { width: 23, height: 23, viewBox: '0 0 24 24', fill: 'none', stroke: c, strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round' }
   switch (name) {
     case 'board': return (<svg {...p}><path d="M4 5h16M4 12h16M4 19h10" /></svg>)
+    case 'project': return (<svg {...p}><path d="M4 19V5M4 19h16" /><path d="M8 15l3.5-4.5L15 13l4-5.5" /></svg>)
     case 'picks': return (<svg {...p}><path d="M9 11l2 2 4-4" /><path d="M5 4h14a1 1 0 0 1 1 1v15l-3-2-2 2-3-2-3 2-2-2-3 2V5a1 1 0 0 1 1-1z" /></svg>)
     case 'players': return (<svg {...p}><circle cx="9" cy="8" r="3.2" /><path d="M3.5 19a5.5 5.5 0 0 1 11 0" /><path d="M16 7.5a3 3 0 0 1 0 5.8M20.5 19a5 5 0 0 0-3.5-4.8" /></svg>)
     case 'search': return (<svg {...p}><circle cx="11" cy="11" r="7" /><path d="M21 21l-4.3-4.3" /></svg>)

@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { T, SAFE_TOP, SAFE_BOTTOM } from './theme'
 import BottomNav from './BottomNav'
 import BoardTab from './BoardTab'
+import ProjectionsTab from './ProjectionsTab'
 import PicksTab from './PicksTab'
 import PlayersTab from './PlayersTab'
 import SearchTab from './SearchTab'
@@ -90,8 +91,9 @@ export default function MobileShell() {
       {/* Tab content */}
       <main style={{ padding: `16px 14px calc(84px + ${SAFE_BOTTOM})`, maxWidth: 640, margin: '0 auto' }}>
         {tab === 'board' && <BoardTab boards={boards} book={book} setBook={setBook} loading={loading} error={error} reload={load} onOpenPlayer={onOpenPlayer} />}
+        {tab === 'project' && <ProjectionsTab />}
         {tab === 'picks' && <PicksTab record={record} slate={slate} loading={loading} error={recordError} onOpenPlayer={onOpenPlayer} />}
-        {tab === 'players' && <PlayersTab board={boards[book]} loading={loading} onOpenPlayer={onOpenPlayer} />}
+        {tab === 'players' && <PlayersTab boards={boards} loading={loading} onOpenPlayer={onOpenPlayer} />}
         {tab === 'search' && <SearchTab onOpenPlayer={onOpenPlayer} />}
         {tab === 'research' && <ResearchTab onOpenPlayer={onOpenPlayer} />}
       </main>
@@ -103,7 +105,7 @@ export default function MobileShell() {
         <PlayerDashboard
           key={openPlayer.name}
           player={openPlayer}
-          board={boards[book]}
+          boards={boards}
           onClose={() => setOpenPlayer(null)}
           onOpenPlayer={onOpenPlayer}
         />

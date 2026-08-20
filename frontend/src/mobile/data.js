@@ -402,6 +402,32 @@ export function rollingRecord(days, windowDays = 30) {
 }
 
 // Distinct players present on the board (for the Players tab).
+// ── BOTH BOOKS, ONE BOARD ────────────────────────────────────────────────────
+// Every consumer that shows "the live board" for a player must see BOTH books.
+// Passing boards[book] — one selected book — meant a player's Underdog props
+// were invisible in the Players tab unless you had switched the Boards toggle
+// first, which is not a thing anyone would think to do while reading a player.
+//
+// Rows carry `books`, the list of books offering that exact prop AND line, so a
+// shared line renders one row with two badges while a disagreement renders two
+// rows. Collapsing on line rather than on prop is deliberate: a different line
+// is a different bet, not a duplicate.
+export function mergedBoardRows(boards) {
+  const byKey = new Map()
+  for (const src of ['prizepicks', 'underdog']) {
+    for (const r of (boards?.[src]?.rows || [])) {
+      const k = `${normName(r.player)}|${r.propType}|${r.line}`
+      if (!byKey.has(k)) byKey.set(k, { ...r, key: k, books: [] })
+      const row = byKey.get(k)
+      if (!row.books.includes(src)) row.books.push(src)
+      for (const f of ['opponent', 'surface', 'tour', 'tournament', 'startTs']) {
+        if (!row[f] && r[f]) row[f] = r[f]
+      }
+    }
+  }
+  return [...byKey.values()]
+}
+
 export function boardPlayers(rows) {
   const m = new Map()
   for (const r of rows) {

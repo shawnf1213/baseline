@@ -202,3 +202,13 @@ input, select, button { font-family: inherit; }
     transition-duration: 0.001ms !important;
   }
 }
+
+/* iOS SAFARI ZOOM GUARD — do not lower these below 16px.
+   Mobile Safari zooms the entire page when a focused input has a font-size
+   under 16px, and it never zooms back out on its own, so one 15px search box
+   left the whole app magnified until the user pinched out by hand. This is a
+   floor, not a style choice; per-element font-size below 16px on a form control
+   is always a bug on touch. */
+@media (max-width: 900px) {
+  input, select, textarea { font-size: 16px; }
+}

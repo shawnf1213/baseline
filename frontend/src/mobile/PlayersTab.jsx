@@ -2,11 +2,13 @@ import { useMemo } from 'react'
 import { T } from './theme'
 import { Card, Spinner, Empty, SectionLabel } from './bits'
 import PlayerPhoto from './PlayerPhoto'
-import { boardPlayers } from './data'
+import { boardPlayers, mergedBoardRows } from './data'
 import { useRecentPlayers } from './useRecent'
 
-export default function PlayersTab({ board, loading, onOpenPlayer }) {
-  const players = useMemo(() => boardPlayers(board?.rows || []), [board])
+export default function PlayersTab({ boards, loading, onOpenPlayer }) {
+  // Both books — a player appearing only on Underdog belongs on this list.
+  const players = useMemo(() => boardPlayers(mergedBoardRows(boards)), [boards])
+  const board = boards?.prizepicks || boards?.underdog
   const { list: recent } = useRecentPlayers()
 
   return (
