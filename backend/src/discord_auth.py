@@ -129,7 +129,11 @@ def login_url(state: str = "") -> str:
         "response_type": "code",
         "scope": "identify guilds.members.read",
         "state": state or "",
-        "prompt": "none",
+        # NO prompt=none. It means "only proceed if this user has ALREADY
+        # authorised the app", which is a pleasant shortcut for returning users
+        # and an outright failure for every first-time one — Discord errors
+        # instead of showing the authorise button, so nobody could ever complete
+        # a first login. Omitted, so Discord shows consent when it needs to.
     })
 
 
