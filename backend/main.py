@@ -1370,6 +1370,69 @@ def _recent_form_pull(proj_val, surf_matches, prop_type, weight=0.30):
 
 # POST /api/prop/calculate
 # ---------------------------------------------------------------------------
+
+# ── APP AUTH (Discord sign-in) ───────────────────────────────────────────────
+# Entitlement order: owner -> premium role in the guild -> Stripe subscription.
+# See src/discord_auth.py for why the id must come from OAuth and never from the
+# caller.
+@app.get("/api/auth/config")
+def auth_config():
+    from src import discord_auth
+    return discord_auth.config_status()
+
+
+@app.get("/api/auth/login")
+def auth_login(redirect: str = ""):
+    """Begin Discord sign-in. Returns the URL for the client to open.
+
+    `state` is a signed, short-lived value the callback verifies. Without it the
+    callback would accept a code from anywhere, which is the standard OAuth CSRF
+    hole — an attacker can trick a victim's browser into completing a login as
+    the ATTACKER'S account, and anything the victim then does lands in it.
+    """
+    from src import discord_auth
+    if not discord_auth.is_configured():
+        raise HTTPException(status_code=503, detail="discord auth not configured")
+    state = discord_auth.make_session("state", redirect or "")
+    return {"url": discord_auth.login_url(state=state)}
+
+
+@app.get("/api/auth/callback")
+def auth_callback(code: str = "", state: str = ""):
+    """OAuth redirect target. Verifies state, exchanges the code, issues a
+    session, and bounces back to the app with it."""
+    from fastapi.responses import RedirectResponse
+    from src import discord_auth
+    st = discord_auth.read_session(state)
+    if not st or st.get("sub") != "state":
+        raise HTTPException(status_code=400, detail="invalid state")
+    user = discord_auth.exchange_code(code)
+    if not user or not user.get("id"):
+        raise HTTPException(status_code=400, detail="discord sign-in failed")
+    token = discord_auth.make_session(user["id"], user.get("username", ""))
+    app_url = (st.get("u") or "").strip() or discord_auth.APP_URL
+    sep = "&" if "?" in app_url else "?"
+    return RedirectResponse(f"{app_url}{sep}session={token}", status_code=303)
+
+
+@app.get("/api/auth/me")
+def auth_me(req: Request):
+    """Who is this, and do they have access right now?
+
+    Roles are RE-CHECKED here rather than baked into the session, so losing
+    premium in Discord takes effect within the role cache window instead of
+    lasting until a long-lived token expires.
+    """
+    from src import discord_auth
+    tok = req.headers.get("authorization", "").replace("Bearer ", "").strip()
+    data = discord_auth.read_session(tok)
+    if not data or data.get("sub") in (None, "", "state"):
+        return {"authenticated": False, "active": False}
+    out = discord_auth.access_for(str(data["sub"]), data.get("u", ""))
+    out["authenticated"] = True
+    return out
+
+
 # ── BILLING (Stripe) ─────────────────────────────────────────────────────────
 # Checkout is Stripe-hosted: we hand back a URL and the card is entered on
 # Stripe's domain. No card data reaches this server by design, and no card form
