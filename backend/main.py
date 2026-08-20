@@ -1520,7 +1520,9 @@ def billing_subscribers(token: str = ""):
     if not expected or token != expected:
         raise HTTPException(status_code=403, detail="forbidden")
     from src import database as _db
-    return {"discord_ids": _db.active_subscriber_discord_ids()}
+    sets = _db.subscription_role_sets()
+    return {"discord_ids": _db.active_subscriber_discord_ids(),
+            "grant": sets["grant"], "revoke": sets["revoke"]}
 
 
 @app.post("/api/billing/portal")

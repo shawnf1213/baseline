@@ -4976,6 +4976,86 @@ async def on_error(event_method: str, *args, **kwargs):
 _guild_synced = False
 
 
+# ── STRIPE -> DISCORD ROLE SYNC ──────────────────────────────────────────────
+# Someone who subscribes on the web is not in the Discord yet, or is in it
+# without the premium role. This grants it so a paying subscriber gets the
+# channels too, and takes it back when they stop paying.
+#
+# IT ONLY EVER TOUCHES PEOPLE WITH A STRIPE RECORD. The backend's revoke list
+# contains only ids whose subscription has LAPSED — never someone it has no
+# record of. The premium role is also handed out by Discord's own server
+# subscriptions, by comps and by hand, and a sync that removed the role from
+# "everyone not currently paying us through Stripe" would strip every one of
+# those members the first time it ran. That is the failure this shape exists to
+# make impossible.
+SUB_SYNC_MINUTES = int(os.getenv("SUB_SYNC_MINUTES", "15") or "15")
+SUB_SYNC_GUILD_ID = int(os.getenv("DISCORD_GUILD_ID", "0") or 0)
+SUB_SYNC_ROLE_ID = int(
+    (os.getenv("DISCORD_PREMIUM_ROLE_IDS", "").split(",")[0] or "0").strip() or 0)
+BILLING_SYNC_TOKEN = os.getenv("BILLING_SYNC_TOKEN", "").strip()
+
+
+@tasks.loop(minutes=SUB_SYNC_MINUTES)
+async def subscription_role_sync():
+    if not (BILLING_SYNC_TOKEN and SUB_SYNC_GUILD_ID and SUB_SYNC_ROLE_ID):
+        return
+    try:
+        r = await asyncio.to_thread(
+            requests.get, f"{API_BASE}/api/billing/subscribers",
+            params={"token": BILLING_SYNC_TOKEN}, timeout=30)
+        if r.status_code != 200:
+            log.warning("sub role sync: backend HTTP %s", r.status_code)
+            return
+        data = r.json() or {}
+        grant = [str(x) for x in (data.get("grant") or [])]
+        revoke = [str(x) for x in (data.get("revoke") or [])]
+    except Exception:
+        log.exception("sub role sync: could not reach backend")
+        return
+    if not grant and not revoke:
+        return
+
+    guild = client.get_guild(SUB_SYNC_GUILD_ID)
+    if guild is None:
+        log.warning("sub role sync: guild %s not visible to the bot", SUB_SYNC_GUILD_ID)
+        return
+    role = guild.get_role(SUB_SYNC_ROLE_ID)
+    if role is None:
+        log.warning("sub role sync: role %s not found", SUB_SYNC_ROLE_ID)
+        return
+
+    added = removed = 0
+    for did in grant:
+        try:
+            m = guild.get_member(int(did)) or await guild.fetch_member(int(did))
+        except Exception:
+            continue          # not in the server — nothing to grant, not an error
+        if m and role not in m.roles:
+            try:
+                await m.add_roles(role, reason="Baseline: active Stripe subscription")
+                added += 1
+            except Exception:
+                log.exception("sub role sync: add failed for %s", did)
+    for did in revoke:
+        try:
+            m = guild.get_member(int(did)) or await guild.fetch_member(int(did))
+        except Exception:
+            continue
+        if m and role in m.roles:
+            try:
+                await m.remove_roles(role, reason="Baseline: subscription lapsed")
+                removed += 1
+            except Exception:
+                log.exception("sub role sync: remove failed for %s", did)
+    if added or removed:
+        log.info("sub role sync: +%d role(s), -%d role(s)", added, removed)
+
+
+@subscription_role_sync.before_loop
+async def _before_subscription_role_sync():
+    await client.wait_until_ready()
+
+
 @client.event
 async def on_ready():
     global _guild_synced
@@ -5053,6 +5133,20 @@ async def on_ready():
                      UNDERDOG_HOUR, UNDERDOG_MINUTE)
         except Exception:
             log.exception("failed to start underdog pre-warm loop")
+    # Stripe -> Discord role sync. Wrapped so a failure here cannot stop the
+    # tennis loops from starting.
+    try:
+        if BILLING_SYNC_TOKEN and SUB_SYNC_GUILD_ID and SUB_SYNC_ROLE_ID:
+            if not subscription_role_sync.is_running():
+                subscription_role_sync.start()
+                log.info("Subscription role sync every %dm -> role %s",
+                         SUB_SYNC_MINUTES, SUB_SYNC_ROLE_ID)
+        else:
+            log.info("Subscription role sync OFF (needs BILLING_SYNC_TOKEN, "
+                     "DISCORD_GUILD_ID and DISCORD_PREMIUM_ROLE_IDS)")
+    except Exception:
+        log.exception("failed to start subscription role sync")
+
     # MLB — separate sport, separate channels, separate database. Wrapped so a
     # failure to start MLB can never prevent a tennis loop from starting.
     if MLB_TASKS_ENABLED:

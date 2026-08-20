@@ -525,6 +525,44 @@ def find_subscription(discord_id: str = "", email: str = "") -> dict:
     return {}
 
 
+def subscription_role_sets() -> dict:
+    """{"grant": [...], "revoke": [...]} of Discord ids for role syncing.
+
+    THE REVOKE LIST IS DELIBERATELY NARROW: it contains only people who have a
+    Stripe subscription record that has LAPSED. Someone with no record at all
+    never appears in either list.
+
+    That distinction is the whole safety of this feature. The premium role is
+    also granted by Discord's own server subscriptions, by comps and by hand,
+    and a sync that revoked "everyone with the role who is not currently paying
+    us through Stripe" would strip the role from every one of those people the
+    first time it ran.
+    """
+    if not _READY or Subscription is None:
+        return {"grant": [], "revoke": []}
+    try:
+        now = datetime.now(timezone.utc)
+        grant, lapsed = set(), set()
+        for s in _session():
+            for r in s.query(Subscription).all():
+                did = (r.discord_id or "").strip()
+                if not did:
+                    continue
+                end = r.current_period_end
+                if end is not None and end.tzinfo is None:
+                    end = end.replace(tzinfo=timezone.utc)
+                live = ((r.status or "") in ("active", "trialing", "past_due")
+                        and (end is None or end > now))
+                (grant if live else lapsed).add(did)
+        # Someone who resubscribed has both an old dead row and a live one.
+        # Active always wins, so they are never revoked on the strength of a
+        # superseded record.
+        return {"grant": sorted(grant), "revoke": sorted(lapsed - grant)}
+    except Exception:
+        logger.exception("subscription_role_sets failed")
+    return {"grant": [], "revoke": []}
+
+
 def link_subscription(stripe_sub_id: str, discord_id: str = "",
                       email: str = "") -> bool:
     """Attach a Discord id or app email to an existing subscription — someone
