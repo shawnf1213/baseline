@@ -1495,7 +1495,11 @@ def auth_me(req: Request):
     data = discord_auth.read_session(tok)
     if not data or data.get("sub") in (None, "", "state"):
         return {"authenticated": False, "active": False}
-    out = discord_auth.access_for(str(data["sub"]), data.get("u", ""))
+    # Sessions issued before `k` existed have no kind and are Discord ids.
+    if (data.get("k") or "discord") == "email":
+        out = discord_auth.access_for_email(str(data["sub"]))
+    else:
+        out = discord_auth.access_for(str(data["sub"]), data.get("u", ""))
     out["authenticated"] = True
     return out
 
@@ -1552,6 +1556,41 @@ async def billing_webhook(req: Request):
         logger.exception("webhook handling failed")
         # 500 makes Stripe retry, which is what we want for a transient DB blip.
         raise HTTPException(status_code=500, detail="handler error")
+
+
+
+@app.post("/api/billing/claim")
+async def billing_claim(req: Request):
+    """Exchange a completed Stripe Checkout Session for an app session.
+
+    This is how somebody who subscribed WITHOUT a Discord account gets in.
+    Stripe appends the session id to our success_url; we verify it against
+    Stripe server-to-server and, if it is genuinely paid, issue a signed app
+    session bound to the email on the payment.
+
+    The id is verified rather than trusted — editing the address bar cannot
+    manufacture one — and an unpaid or abandoned session is refused, so reaching
+    the payment page without paying grants nothing.
+    """
+    from src import billing, discord_auth
+    body = await req.json()
+    sid = str(body.get("session_id") or "").strip()
+    if not sid:
+        raise HTTPException(status_code=400, detail="session_id required")
+    res = billing.claim_session(sid)
+    if not res.get("ok"):
+        raise HTTPException(status_code=400, detail=res.get("error") or "invalid session")
+    # Prefer the Discord id when the buyer had one; otherwise the email is the
+    # identity, and it is the thing they can prove again later.
+    if res.get("discord_id"):
+        tok = discord_auth.make_session(res["discord_id"], "", kind="discord")
+    elif res.get("email"):
+        tok = discord_auth.make_session(res["email"], res["email"].split("@")[0],
+                                        kind="email")
+    else:
+        raise HTTPException(status_code=400, detail="session carried no identity")
+    return {"session": tok, "email": res.get("email") or "",
+            "discord_id": res.get("discord_id") or ""}
 
 
 @app.get("/api/billing/status")

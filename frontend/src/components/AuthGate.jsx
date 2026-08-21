@@ -63,6 +63,22 @@ export default function AuthGate({ children }) {
       url.searchParams.delete('session')
       window.history.replaceState({}, '', url.toString())
     }
+
+    // ── JUST PAID? LOG THEM IN ─────────────────────────────────────────────
+    // Stripe returns them with session_id on the URL. Handing that to the
+    // backend, which verifies it against Stripe, produces an app session bound
+    // to the email on the payment — so someone who subscribed without ever
+    // touching Discord lands inside the app rather than back on the paywall
+    // they just paid to pass.
+    const stripeSid = url.searchParams.get('session_id')
+    if (stripeSid) {
+      try {
+        const r = (await api.post('/api/billing/claim', { session_id: stripeSid })).data
+        if (r?.session) localStorage.setItem(SESSION_KEY, r.session)
+      } catch { /* fall through to the normal check below */ }
+      url.searchParams.delete('session_id')
+      window.history.replaceState({}, '', url.toString())
+    }
     let cfg = { ready: false }
     try {
       cfg = (await api.get('/api/auth/config')).data || {}
@@ -121,29 +137,17 @@ export default function AuthGate({ children }) {
     } catch { setBusy(false) }
   }
 
-  const [needsConnect, setNeedsConnect] = useState(false)
-
   const subscribe = async (plan) => {
     const tok = localStorage.getItem(SESSION_KEY) || ''
     const me = state.me || {}
-
-    // ── DISCORD FIRST, THEN PAY ────────────────────────────────────────────
-    // Checkout carries the buyer's Discord id so the webhook knows whose
-    // access to unlock — on a Payment Link it rides in client_reference_id,
-    // which is the ONLY thread tying that payment to an account. Sending
-    // somebody to Stripe before they have connected takes their money and
-    // produces a subscription nobody can be matched to, which is worse than
-    // one extra tap.
-    if (!me.discord_id) {
-      setNeedsConnect(true)
-      connectDiscord()
-      return
-    }
-
+    // No Discord required. A buyer with a connected account gets their id
+    // attached so the role syncs too; everyone else is identified by the email
+    // Stripe collects, and the session id on the way back logs them straight in
+    // (see the claim step in check()).
     setBusy(true)
     try {
       const r = (await api.post('/api/billing/checkout', {
-        plan, discord_id: me.discord_id,
+        plan, discord_id: me.discord_id || '',
       }, { headers: tok ? { Authorization: `Bearer ${tok}` } : {} })).data
       if (r?.url) window.location.href = r.url
       else setBusy(false)
@@ -236,13 +240,6 @@ export default function AuthGate({ children }) {
         <div style={{ flex: 1, height: 1, background: '#242424' }} />
       </div>
 
-      {needsConnect && (
-        <div style={{ color: '#FFB300', fontSize: 12.5, textAlign: 'center',
-                      margin: '0 0 10px', lineHeight: 1.45 }}>
-          Connecting Discord first so your subscription unlocks automatically…
-        </div>
-      )}
-
       <Btn onClick={() => subscribe('weekly')} disabled={busy}>
         Weekly · free trial
       </Btn>
@@ -250,7 +247,7 @@ export default function AuthGate({ children }) {
 
       <p style={{ color: '#6b6b6b', fontSize: 11.5, textAlign: 'center',
                   margin: '2px 0 0', lineHeight: 1.5 }}>
-        You'll connect Discord first so access unlocks the moment you subscribe.
+        No Discord needed — you'll be signed in automatically after checkout.
       </p>
 
       {state.phase === 'paywall' && (

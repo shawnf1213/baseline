@@ -170,12 +170,10 @@ def create_checkout_session(plan: str, discord_id: str = "",
             # checkout.session.completed, which is the only thread tying this
             # payment to a Discord account.
             link = f"{link}{sep}client_reference_id={discord_id}"
-        else:
-            # No id to attach. The caller is responsible for signing the buyer
-            # in first; logged so an unlinkable purchase is visible rather than
-            # silently unresolvable later.
-            logger.warning("payment link for %s issued with NO discord_id — "
-                           "this subscription cannot be auto-linked", plan_key)
+        # No discord_id is fine and expected: someone can buy without ever
+        # touching Discord. They are identified by the EMAIL Stripe collects,
+        # and the checkout session id hands them a logged-in app session on the
+        # way back (see claim_session).
         logger.info("payment link issued plan=%s discord=%s", plan_key,
                     discord_id or "-")
         return {"url": link, "via": "payment_link"}
@@ -372,3 +370,49 @@ def billing_portal_url(customer_id: str, return_url: str = "") -> dict:
     except Exception as exc:  # noqa: BLE001
         logger.exception("portal session failed")
         return {"error": str(exc)[:200]}
+
+def claim_session(session_id: str) -> dict:
+    """Turn a completed Checkout Session id into a verified identity.
+
+    THIS IS WHAT LETS SOMEONE BUY WITHOUT A DISCORD ACCOUNT AND STILL GET IN.
+    Stripe appends the session id to our success_url, we retrieve that session
+    from Stripe — server-to-server, with our secret key — and read the email and
+    subscription off it. The id is only useful to whoever just completed the
+    payment, and it is verified against Stripe rather than trusted from the URL,
+    so it cannot be forged by editing the address bar.
+
+    Only a PAID session is accepted. An abandoned one carries the same id and
+    would otherwise hand out access to somebody who reached the payment page and
+    never paid.
+    """
+    if not is_configured() or not session_id:
+        return {"ok": False, "error": "not configured"}
+    try:
+        sess = _stripe.checkout.Session.retrieve(session_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("claim: could not retrieve %s: %s", session_id, str(exc)[:120])
+        return {"ok": False, "error": "unknown session"}
+
+    paid = (sess.get("payment_status") in ("paid", "no_payment_required")
+            or sess.get("status") == "complete")
+    if not paid:
+        # no_payment_required covers a 100%-off trial, where nothing is charged
+        # today but the subscription is real.
+        return {"ok": False, "error": "session not paid"}
+
+    email = ((sess.get("customer_details") or {}).get("email")
+             or sess.get("customer_email") or "")
+    sub_id = sess.get("subscription") or ""
+    ref = (sess.get("client_reference_id") or "").strip()
+    if sub_id and (email or ref):
+        from . import database as db
+        if not db.link_subscription(sub_id, discord_id=ref, email=email):
+            db.upsert_subscription({
+                "stripe_customer_id": sess.get("customer") or "",
+                "stripe_sub_id": sub_id, "status": "incomplete",
+                "discord_id": ref, "app_email": email,
+            })
+    logger.info("claim ok sub=%s email=%s discord=%s", sub_id or "-",
+                "yes" if email else "-", ref or "-")
+    return {"ok": True, "email": email, "discord_id": ref,
+            "stripe_sub_id": sub_id, "customer_id": sess.get("customer") or ""}

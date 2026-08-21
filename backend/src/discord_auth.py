@@ -87,7 +87,7 @@ def _b64d(s: str) -> bytes:
     return base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
 
 
-def make_session(discord_id: str, username: str = "") -> str:
+def make_session(discord_id: str, username: str = "", kind: str = "discord") -> str:
     """HMAC-signed token: payload.signature.
 
     Signed, NOT encrypted — it carries no secret, only a user id the holder
@@ -95,7 +95,13 @@ def make_session(discord_id: str, username: str = "") -> str:
     payload cannot be altered, so nobody can re-issue themselves someone else's
     session or extend their own expiry.
     """
-    payload = {"sub": discord_id, "u": username, "iat": int(time.time())}
+    # `k` says WHAT the subject is. Someone who bought without ever touching
+    # Discord is identified by the email Stripe collected, and their session has
+    # to carry that distinction or the entitlement check would look up an email
+    # as though it were a Discord id and find nothing. Absent on tokens issued
+    # before this existed, which is why every reader defaults it to "discord".
+    payload = {"sub": discord_id, "u": username, "k": kind,
+               "iat": int(time.time())}
     raw = _b64e(json.dumps(payload, separators=(",", ":")).encode())
     sig = hmac.new(SESSION_SECRET.encode(), raw.encode(), hashlib.sha256).digest()
     return f"{raw}.{_b64e(sig)}"
@@ -203,6 +209,31 @@ def _member_roles(discord_id: str) -> Optional[tuple]:
     except Exception:  # noqa: BLE001
         logger.exception("guild member lookup failed")
         return None
+
+
+def access_for_email(email: str) -> dict:
+    """Entitlement for a VERIFIED email — someone who subscribed without Discord.
+
+    Only ever call this with an address proven by a completed Stripe session or
+    an equivalent verification. An email typed into a form is a claim, and
+    treating it as proof would let anyone who guessed a subscriber's address
+    take their subscription.
+    """
+    try:
+        from . import billing
+        sub = billing.has_access(email=email)
+    except Exception:  # noqa: BLE001
+        logger.exception("email entitlement lookup failed — denying")
+        return {"active": False, "reason": "lookup_failed", "owner": False}
+    return {
+        "active": bool(sub.get("active")),
+        "reason": "stripe_subscription" if sub.get("active") else "no_subscription",
+        "owner": False, "source": "stripe" if sub.get("active") else None,
+        "plan": sub.get("plan") or "", "period_end": sub.get("period_end"),
+        "cancels_at_period_end": sub.get("cancels_at_period_end", False),
+        "subscription_status": sub.get("status") or "none",
+        "email": email, "username": email.split("@")[0] if email else "",
+    }
 
 
 def access_for(discord_id: str, username: str = "") -> dict:
