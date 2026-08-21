@@ -1504,6 +1504,50 @@ def auth_me(req: Request):
     return out
 
 
+
+# ── MAGIC-LINK SIGN-IN (subscribers without Discord) ─────────────────────────
+@app.get("/api/auth/magic/config")
+def magic_config():
+    from src import magic_link
+    return magic_link.config_status()
+
+
+@app.post("/api/auth/magic/request")
+async def magic_request(req: Request):
+    """Email a sign-in link to a subscriber.
+
+    Responds identically whether or not the address has a subscription — see
+    magic_link.request_link. Anything else turns this into a way to test
+    addresses against the customer list.
+    """
+    from src import magic_link
+    body = await req.json()
+    out = magic_link.request_link(str(body.get("email") or ""))
+    if not out.get("ok"):
+        raise HTTPException(status_code=400, detail=out.get("error") or "bad request")
+    return {"ok": True}
+
+
+@app.post("/api/auth/magic/verify")
+async def magic_verify(req: Request):
+    """Trade a link token for an app session.
+
+    Entitlement is re-checked HERE rather than trusted from the token. A link is
+    valid for fifteen minutes, and a subscription can be cancelled inside that
+    window — the token proves who they are, never that they are still paying.
+    """
+    from src import magic_link, discord_auth
+    body = await req.json()
+    email = magic_link.read_token(str(body.get("token") or ""))
+    if not email:
+        raise HTTPException(status_code=400, detail="link expired or invalid")
+    if not discord_auth.access_for_email(email).get("active"):
+        raise HTTPException(status_code=403, detail="no active subscription")
+    return {"session": discord_auth.make_session(email, email.split("@")[0],
+                                                 kind="email"),
+            "email": email}
+
+
 # ── BILLING (Stripe) ─────────────────────────────────────────────────────────
 # Checkout is Stripe-hosted: we hand back a URL and the card is entered on
 # Stripe's domain. No card data reaches this server by design, and no card form

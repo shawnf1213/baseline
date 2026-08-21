@@ -70,6 +70,20 @@ export default function AuthGate({ children }) {
     // to the email on the payment — so someone who subscribed without ever
     // touching Discord lands inside the app rather than back on the paywall
     // they just paid to pass.
+    // ── ARRIVING FROM A SIGN-IN EMAIL ──────────────────────────────────────
+    // Exchanged for a session immediately and stripped from the address bar, so
+    // the token does not sit in history where a shared screenshot or a synced
+    // browser would hand somebody else a valid login.
+    const magic = url.searchParams.get('magic')
+    if (magic) {
+      try {
+        const r = (await api.post('/api/auth/magic/verify', { token: magic })).data
+        if (r?.session) localStorage.setItem(SESSION_KEY, r.session)
+      } catch { /* expired or cancelled — the normal check below shows why */ }
+      url.searchParams.delete('magic')
+      window.history.replaceState({}, '', url.toString())
+    }
+
     const stripeSid = url.searchParams.get('session_id')
     if (stripeSid) {
       try {
@@ -135,6 +149,22 @@ export default function AuthGate({ children }) {
       })).data
       if (r?.url) window.location.href = r.url
     } catch { setBusy(false) }
+  }
+
+  const [emailMode, setEmailMode] = useState(false)
+  const [email, setEmail] = useState('')
+  const [emailSent, setEmailSent] = useState(false)
+
+  const requestMagic = async () => {
+    setBusy(true)
+    try {
+      await api.post('/api/auth/magic/request', { email })
+      // Shown whatever the answer was. The backend deliberately does not say
+      // whether that address has a subscription, and echoing a difference here
+      // would undo that.
+      setEmailSent(true)
+    } catch { /* only a malformed address reaches here */ }
+    setBusy(false)
   }
 
   const subscribe = async (plan) => {
@@ -257,6 +287,44 @@ export default function AuthGate({ children }) {
           Sign out
         </button>
       )}
+
+      {/* ── ALREADY PAID, NEW DEVICE ────────────────────────────────────────
+          A subscriber who cleared their browser or picked up a different phone
+          has a live subscription and no way in. This is that way in. */}
+      <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid #1e1e1e' }}>
+        {!emailMode ? (
+          <button onClick={() => setEmailMode(true)} style={{
+            width: '100%', background: 'transparent', border: 'none',
+            color: '#8a8a8a', fontSize: 13, cursor: 'pointer', padding: 6,
+          }}>
+            Already subscribed? <span style={{ color: '#00E676' }}>Sign in with email</span>
+          </button>
+        ) : emailSent ? (
+          <div style={{ color: '#00E676', fontSize: 13, textAlign: 'center',
+                        lineHeight: 1.55 }}>
+            Check your inbox — if that address has a subscription, a sign-in
+            link is on its way. It expires in 15 minutes.
+          </div>
+        ) : (
+          <>
+            <input
+              value={email}
+              onChange={e => setEmail(e.target.value)}
+              type="email" inputMode="email" autoComplete="email"
+              placeholder="The email you paid with"
+              style={{
+                width: '100%', boxSizing: 'border-box', minHeight: 48,
+                padding: '0 14px', background: '#111',
+                border: '1px solid #2a2a2a', borderRadius: 12, color: '#fff',
+                fontSize: 16, outline: 'none', marginBottom: 8,
+              }}
+            />
+            <Btn onClick={requestMagic} disabled={busy || !email.includes('@')}>
+              Email me a link
+            </Btn>
+          </>
+        )}
+      </div>
 
       <p style={{ color: '#4a4a4a', fontSize: 10.5, textAlign: 'center',
         marginTop: 20, lineHeight: 1.5 }}>
