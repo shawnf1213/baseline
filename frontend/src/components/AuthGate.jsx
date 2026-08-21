@@ -51,6 +51,12 @@ const Btn = ({ onClick, children, primary, disabled }) => (
 export default function AuthGate({ children }) {
   const [state, setState] = useState({ phase: 'loading' })
   const [busy, setBusy] = useState(false)
+  // Declared ABOVE check(), which calls setInvite. Below it the reference sits
+  // in the temporal dead zone — it happens to work because check only runs
+  // after the component body finishes, and that is exactly the kind of accident
+  // that breaks the moment someone calls it earlier.
+  const [invite, setInvite] = useState('')
+  const [linkDismissed, setLinkDismissed] = useState(false)
 
   const check = useCallback(async () => {
     // A session arriving on the URL is the OAuth callback handing it back.
@@ -96,6 +102,7 @@ export default function AuthGate({ children }) {
     let cfg = { ready: false }
     try {
       cfg = (await api.get('/api/auth/config')).data || {}
+      if (cfg.invite_url) setInvite(cfg.invite_url)
     } catch { /* backend unreachable — handled below */ }
 
     if (!cfg.ready) {
@@ -155,7 +162,6 @@ export default function AuthGate({ children }) {
     } catch { setBusy(false) }
   }
 
-  const [linkDismissed, setLinkDismissed] = useState(false)
   const [emailMode, setEmailMode] = useState(false)
   const [email, setEmail] = useState('')
   const [emailSent, setEmailSent] = useState(false)
@@ -214,8 +220,13 @@ export default function AuthGate({ children }) {
     // Discord id. Without this they would pay for server access that silently
     // never arrives. Dismissible, because it must not nag anyone who does not
     // want the Discord at all.
-    const needsLink = m.email && m.discord_linked === false && !linkDismissed
-    if (!needsLink) return children
+    // Two different problems with two different fixes:
+    //   needsLink — bought on the website, no Discord attached at all
+    //   needsJoin — Discord attached, but never joined the server, so the sync
+    //               has nobody to grant the role to
+    const needsLink = m.email && m.discord_linked === false
+    const needsJoin = m.source === 'stripe' && m.in_guild === false && invite
+    if (linkDismissed || (!needsLink && !needsJoin)) return children
     return (
       <>
         <div style={{
@@ -226,14 +237,25 @@ export default function AuthGate({ children }) {
         }}>
           <div style={{ flex: 1, minWidth: 0, fontSize: 13, color: '#dcdcff',
                         lineHeight: 1.45 }}>
-            Your subscription is active. <b>Connect Discord</b> to get the
-            premium role in the server too.
+            {needsJoin
+              ? <>Your subscription is active. <b>Join the Discord</b> to pick up
+                  your premium role — the role can only be granted to a member.</>
+              : <>Your subscription is active. <b>Connect Discord</b> to get the
+                  premium role in the server too.</>}
           </div>
-          <button onClick={connectDiscord} disabled={busy} style={{
-            flex: '0 0 auto', padding: '9px 14px', borderRadius: 10, border: 'none',
-            background: '#5865F2', color: '#fff', fontWeight: 800, fontSize: 12.5,
-            letterSpacing: 0.5, cursor: 'pointer',
-          }}>Connect</button>
+          {needsJoin ? (
+            <a href={invite} target="_blank" rel="noreferrer" style={{
+              flex: '0 0 auto', padding: '9px 14px', borderRadius: 10,
+              background: '#5865F2', color: '#fff', fontWeight: 800, fontSize: 12.5,
+              letterSpacing: 0.5, textDecoration: 'none',
+            }}>Join</a>
+          ) : (
+            <button onClick={connectDiscord} disabled={busy} style={{
+              flex: '0 0 auto', padding: '9px 14px', borderRadius: 10, border: 'none',
+              background: '#5865F2', color: '#fff', fontWeight: 800, fontSize: 12.5,
+              letterSpacing: 0.5, cursor: 'pointer',
+            }}>Connect</button>
+          )}
           <button onClick={() => setLinkDismissed(true)} style={{
             flex: '0 0 auto', background: 'transparent', border: 'none',
             color: '#9a9ac0', fontSize: 19, cursor: 'pointer', padding: '0 4px',
@@ -286,6 +308,8 @@ export default function AuthGate({ children }) {
           fontSize: 13, lineHeight: 1.45 }}>
           {inGuildNoRole
             ? <>Signed in as <b>{me.username || 'you'}</b>. You’re in the Discord but don’t have the premium role yet — get premium there and it unlocks here automatically.</>
+            : me.reason === 'not_in_guild' && invite
+            ? <>Signed in as <b>{me.username || 'you'}</b>. No subscription on this account — subscribe below, or <a href={invite} target="_blank" rel="noreferrer" style={{ color: '#FFB300', fontWeight: 700 }}>join the Discord</a> if you have premium there.</>
             : <>Signed in as <b>{me.username || 'you'}</b>. No active subscription on this account.</>}
         </div>
       )}

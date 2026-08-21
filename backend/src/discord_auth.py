@@ -43,7 +43,12 @@ CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET", "").strip()
 BOT_TOKEN     = os.getenv("DISCORD_BOT_TOKEN", "").strip()
 GUILD_ID      = os.getenv("DISCORD_GUILD_ID", "").strip()
 REDIRECT_URI  = os.getenv("DISCORD_REDIRECT_URI", "").strip()
-APP_URL       = os.getenv("APP_URL", "https://baseline-app-three.vercel.app").strip()
+APP_URL       = os.getenv("APP_URL", "https://baselineev.com").strip()
+# Where to send somebody who has linked Discord but is not in the server.
+# CONNECTING AN ACCOUNT IS NOT JOINING A SERVER: the role sync can only grant
+# to a member, and it skips a non-member silently, so without this a linked
+# subscriber waits forever for a role that can never arrive.
+INVITE_URL    = os.getenv("DISCORD_INVITE_URL", "").strip()
 SESSION_SECRET = os.getenv("APP_SESSION_SECRET", "").strip()
 
 PREMIUM_ROLE_IDS = {r.strip() for r in
@@ -73,6 +78,7 @@ def config_status() -> dict:
         "redirect_uri_set": bool(REDIRECT_URI),
         "session_secret_set": bool(SESSION_SECRET),
         "premium_roles_configured": len(PREMIUM_ROLE_IDS),
+        "invite_url": INVITE_URL or None,
         "owner_ids_configured": len(OWNER_DISCORD_IDS),
         "ready": is_configured(),
     }
@@ -211,6 +217,15 @@ def _member_roles(discord_id: str) -> Optional[tuple]:
         return None
 
 
+def _linked_discord(email: str) -> str:
+    """Discord id already attached to this email's subscription, or ""."""
+    try:
+        from . import database as db
+        return (db.find_subscription(email=email) or {}).get("discord_id") or ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def access_for_email(email: str) -> dict:
     """Entitlement for a VERIFIED email — someone who subscribed without Discord.
 
@@ -233,6 +248,10 @@ def access_for_email(email: str) -> dict:
         "cancels_at_period_end": sub.get("cancels_at_period_end", False),
         "subscription_status": sub.get("status") or "none",
         "email": email, "username": email.split("@")[0] if email else "",
+        # Drives the in-app "connect Discord for the server role" prompt. False
+        # means this subscriber is paying for a role the sync cannot grant,
+        # because it skips every subscription with no Discord id.
+        "discord_linked": bool(_linked_discord(email)),
     }
 
 
@@ -285,6 +304,11 @@ def access_for(discord_id: str, username: str = "") -> dict:
 
     if sub.get("active"):
         return {"active": True, "reason": "stripe_subscription", "owner": False,
+                # roles is () for a non-member and a tuple for a member, so this
+                # distinguishes "subscribed and in the server, just no role yet"
+                # from "subscribed and never joined" — different problems with
+                # different fixes.
+                "in_guild": bool(roles),
                 "source": "stripe", "plan": sub.get("plan") or "",
                 "period_end": sub.get("period_end"),
                 "cancels_at_period_end": sub.get("cancels_at_period_end", False),
