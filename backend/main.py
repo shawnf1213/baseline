@@ -1372,6 +1372,41 @@ def _recent_form_pull(proj_val, surf_matches, prop_type, weight=0.30):
 # POST /api/prop/calculate
 # ---------------------------------------------------------------------------
 
+
+@app.get("/api/player/image")
+def player_image(player_id: str = ""):
+    """Player headshot, proxied.
+
+    Sofascore answers 403 to a DIRECT request for a player image no matter what
+    headers are sent, and the img.* host 404s — which is why every avatar in the
+    app fell back to initials. The backend already reaches Sofascore through a
+    residential session for stats, so the same session can fetch the picture.
+
+    Cached hard at the edge: a headshot does not change, and re-proxying it on
+    every scroll would burn proxy bandwidth we pay for by the gigabyte.
+
+    A miss returns 404 so the client falls back to initials — never a
+    placeholder face, which would be inventing a person's appearance.
+    """
+    from fastapi.responses import Response
+    from src.api import sofascore_client as sc
+    if not player_id.isdigit():
+        raise HTTPException(status_code=400, detail="player_id must be numeric")
+    try:
+        if sc._proxy_session is None:
+            sc._new_session(force_port=True)
+        r = sc._proxy_session.get(
+            f"https://api.sofascore.com/api/v1/player/{player_id}/image", timeout=10)
+        ctype = (r.headers.get("content-type") or "").lower()
+        if r.status_code == 200 and ctype.startswith("image") and r.content:
+            return Response(content=r.content, media_type=ctype,
+                            headers={"Cache-Control": "public, max-age=604800, immutable"})
+        logger.info("player image %s -> %s %s", player_id, r.status_code, ctype[:24])
+    except Exception:  # noqa: BLE001
+        logger.exception("player image proxy failed for %s", player_id)
+    raise HTTPException(status_code=404, detail="no image")
+
+
 # ── APP AUTH (Discord sign-in) ───────────────────────────────────────────────
 # Entitlement order: owner -> premium role in the guild -> Stripe subscription.
 # See src/discord_auth.py for why the id must come from OAuth and never from the

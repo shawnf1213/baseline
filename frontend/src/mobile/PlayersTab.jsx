@@ -11,6 +11,7 @@ export default function PlayersTab({ boards, loading, onOpenPlayer }) {
   const board = boards?.prizepicks || boards?.underdog
   const { list: recent } = useRecentPlayers()
 
+
   return (
     <div>
       <div style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 26, color: T.white, letterSpacing: 0.5, marginBottom: 14 }}>Players</div>
@@ -49,7 +50,7 @@ export default function PlayersTab({ boards, loading, onOpenPlayer }) {
           {/* Neutral rail — this list is people, not calls, so it carries the
               shape of the language without claiming a side it does not have. */}
           <SideRail rgb={null} weight={1} />
-          <PlayerPhoto id={null} name={p.player} size={44} />
+          <PlayerPhoto id={null} name={p.player} size={46} />
           <div style={{ minWidth: 0, flex: 1 }}>
             <div style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 17, color: T.white, letterSpacing: 0.3 }}>{p.player}</div>
             <div style={{ color: T.muted, fontSize: 12.5, marginTop: 1 }}>
