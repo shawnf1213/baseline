@@ -86,10 +86,17 @@ export default function MobileShell() {
         borderBottom: '1px solid rgba(0,230,118,0.16)',
         boxShadow: '0 1px 22px rgba(0,230,118,0.05)',
         paddingTop: SAFE_TOP,
+        // Start where the content starts so the fixed rail never paints over
+        // the header's own contents.
+        marginLeft: wide ? 210 : 0,
         backdropFilter: 'blur(8px)', WebkitBackdropFilter: 'blur(8px)',
       }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px' }}>
-          <div style={{ fontFamily: T.cond, fontWeight: 900, fontSize: 22, letterSpacing: 3, textTransform: 'uppercase' }}>
+          {/* On desktop the rail shows the wordmark, so repeating it here
+              would be the same brand twice on one line. */}
+          <div style={{ fontFamily: T.cond, fontWeight: 900, fontSize: 22,
+                        letterSpacing: 3, textTransform: 'uppercase',
+                        visibility: wide ? 'hidden' : 'visible' }}>
             BASE<span style={{ color: T.green }}>LINE</span>
           </div>
           <span style={{

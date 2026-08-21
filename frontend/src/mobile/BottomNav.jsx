@@ -40,8 +40,20 @@ export default function BottomNav({ active, onChange }) {
         borderRight: '1px solid rgba(0,230,118,0.14)',
         boxShadow: '1px 0 30px rgba(0,230,118,0.04)',
         backdropFilter: 'blur(8px)', WebkitBackdropFilter: 'blur(8px)',
-        display: 'flex', flexDirection: 'column', gap: 4, padding: '84px 12px 20px',
+        display: 'flex', flexDirection: 'column', gap: 4, padding: '18px 12px 20px',
       }}>
+        {/* THE WORDMARK LIVES HERE ON DESKTOP. The rail is z-index 1000 and the
+            header 50, so a header spanning the full width had its logo painted
+            over by the rail — the top-left corner showed a dark smudge where
+            BASELINE should be. In a sidebar layout the mark belongs at the top
+            of the rail anyway, and the header now starts where the content
+            does. */}
+        <div style={{
+          fontFamily: T.cond, fontWeight: 900, fontSize: 21, letterSpacing: 3,
+          textTransform: 'uppercase', color: T.white, padding: '4px 14px 20px',
+        }}>
+          BASE<span style={{ color: T.green }}>LINE</span>
+        </div>
         {TABS.map(t => {
           const on = active === t.key
           return (
