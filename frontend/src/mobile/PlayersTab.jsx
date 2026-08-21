@@ -54,7 +54,11 @@ export default function PlayersTab({ boards, loading, onOpenPlayer }) {
             <div style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 17, color: T.white, letterSpacing: 0.3 }}>{p.player}</div>
             <div style={{ color: T.muted, fontSize: 12.5, marginTop: 1 }}>
               <span style={{ color: T.green, fontWeight: 800 }}>{p.props}</span>
-              {` prop${p.props !== 1 ? 's' : ''}`}{p.surface ? ` · ${p.surface}` : ''} · {p.tour}
+              {` prop${p.props !== 1 ? 's' : ''}`}
+              {/* Join only the parts that EXIST. The tour suffix was
+                  unconditional, so a player with no resolved tour rendered
+                  "6 props ·" with a separator pointing at nothing. */}
+              {[p.surface, p.tour].filter(Boolean).map(x => ` · ${x}`).join('')}
             </div>
           </div>
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={T.muted2} strokeWidth="2" strokeLinecap="round"><path d="M9 6l6 6-6 6" /></svg>

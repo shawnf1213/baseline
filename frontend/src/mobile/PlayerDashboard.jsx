@@ -1,8 +1,8 @@
 import { useState, useEffect, useMemo } from 'react'
 import { T, SAFE_TOP } from './theme'
-import { Card, Heart, Spinner, Empty, SectionLabel, Delta , sideTone, SideRail, TierBadge, tierCardStyle } from './bits'
+import { Card, Heart, Spinner, Empty, SectionLabel, tier, sideTone, SideRail,
+         TierBadge, ConfBar, BigStat, tierCardStyle } from './bits'
 import PlayerPhoto from './PlayerPhoto'
-import ConfidenceGauge from '../components/ConfidenceGauge'
 import Last5Bars from '../components/Last5Bars'
 import { fetchForm, fetchStats, fetchNextMatch, fetchHistory } from '../utils/api'
 import { normName, hitStrip, shortProp, fmt, prettyDate, startTimeLabel, PROP_TYPES, mergedBoardRows } from './data'
@@ -162,24 +162,20 @@ export default function PlayerDashboard({ player, boards, onClose, onOpenPlayer 
                 {boardRows.map((r, i) => {
                   const p = propProj[r.key] || {}
                   const done = !p.loading && !p.failed && p.projection != null
+                  const s = sideTone(done ? p.edge : null)
                   return (
                     <Card key={r.key} index={i} style={{
-                      display: 'flex', alignItems: 'center', gap: 12,
-                      padding: '12px 14px 12px 16px', marginBottom: 10,
+                      padding: 0, marginBottom: 10,
                       position: 'relative', overflow: 'hidden',
-                      // Identical treatment to the board row this was opened
-                      // from — tapping a player should feel like moving deeper
-                      // into the same object, not arriving somewhere new.
-                      ...tierCardStyle(done ? p.confidence : null, sideTone(done ? p.edge : null).rgb),
+                      ...tierCardStyle(done ? p.confidence : null, s.rgb),
                     }}>
-                      <SideRail rgb={done ? sideTone(p.edge).rgb : null}
-                                weight={done ? 2 : 1} />
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
-                          <span style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 16, color: T.white, letterSpacing: 0.3 }}>{shortProp(r.propType)}</span>
-                          {done && <TierBadge conf={p.confidence}
-                                              tone={sideTone(p.edge).tone}
-                                              rgb={sideTone(p.edge).rgb} />}
+                      <SideRail rgb={done ? s.rgb : null} weight={tier(done ? p.confidence : null).weight} />
+                      <div style={{ padding: '13px 13px 13px 18px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 7, flexWrap: 'wrap' }}>
+                          <span style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 17,
+                                         color: T.white, letterSpacing: 0.4 }}>
+                            {shortProp(r.propType)}
+                          </span>
                           {(r.books || []).map(b => (
                             <span key={b} style={{
                               fontSize: 9.5, fontWeight: 800, letterSpacing: 0.4, padding: '2px 5px', borderRadius: 4,
@@ -188,23 +184,52 @@ export default function PlayerDashboard({ player, boards, onClose, onOpenPlayer 
                               border: `1px solid ${b === 'prizepicks' ? 'rgba(0,230,118,0.25)' : 'rgba(66,165,245,0.25)'}`,
                             }}>{b === 'prizepicks' ? 'PP' : 'UD'}</span>
                           ))}
+                          {done && <TierBadge conf={p.confidence} tone={s.tone} rgb={s.rgb} />}
                         </div>
-                        <div style={{ display: 'flex', gap: 14, marginTop: 8, alignItems: 'center' }}>
-                          <Mini label="Line" value={fmt(r.line, Number.isInteger(r.line) ? 0 : 1)} />
-                          <Mini label="Proj" value={done ? fmt(p.projection) : '—'} accent={done} />
-                          <div style={{ textAlign: 'center' }}>
-                            {done ? <Delta value={p.edge} size={16} />
-                              : p.loading ? <Spinner size={14} />
-                              : <span style={{ color: T.muted2, fontSize: 13 }}>—</span>}
-                            <div style={{ fontFamily: T.cond, fontWeight: 700, fontSize: 9.5, letterSpacing: 1, textTransform: 'uppercase', color: T.muted2 }}>vs line</div>
+
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 11 }}>
+                          <div style={{ minWidth: 0, flex: 1 }}>
+                            {/* The CALL, same as the board row this was opened from. */}
+                            <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
+                              <span style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 21,
+                                             color: s.tone, letterSpacing: 0.5 }}>
+                                {s.side || '—'}
+                              </span>
+                              <span style={{ fontSize: 18, fontWeight: 800, color: T.white,
+                                             fontVariantNumeric: 'tabular-nums' }}>
+                                {fmt(r.line, Number.isInteger(r.line) ? 0 : 1)}
+                              </span>
+                            </div>
+                            <div style={{ fontFamily: T.cond, fontWeight: 700, fontSize: 10,
+                                          letterSpacing: 1.1, color: T.muted2, marginTop: 3 }}>
+                              LINE {fmt(r.line, Number.isInteger(r.line) ? 0 : 1)} · PROJ {done ? fmt(p.projection) : '—'}
+                            </div>
                           </div>
+
+                          {/* THE EDGE IS THE HEADLINE, not the confidence ring.
+                              A gauge takes the most space on the card and is the
+                              least actionable thing on it — you still have to
+                              read the number to learn anything. The edge is why
+                              this row is worth a look, so it gets the size. */}
+                          {done ? (
+                            <BigStat tone={s.tone} rgb={s.rgb}
+                              value={`${p.edge > 0 ? '+' : ''}${fmt(p.edge)}`}
+                              label="EDGE VS LINE" />
+                          ) : (
+                            <div style={{ minWidth: 86, textAlign: 'center' }}>
+                              {p.loading ? <Spinner size={16} />
+                                : <span style={{ color: T.muted2, fontSize: 13 }}>—</span>}
+                            </div>
+                          )}
                         </div>
+
+                        {done && p.confidence != null && (
+                          <div style={{ display: 'flex', alignItems: 'center',
+                                        justifyContent: 'flex-end', marginTop: 10 }}>
+                            <ConfBar conf={p.confidence} tone={s.tone} max={150} />
+                          </div>
+                        )}
                       </div>
-                      {done && p.confidence != null && (
-                        <div style={{ flex: '0 0 auto' }}>
-                          <ConfidenceGauge confidence={Math.round(p.confidence)} size={76} showLabel={false} />
-                        </div>
-                      )}
                     </Card>
                   )
                 })}

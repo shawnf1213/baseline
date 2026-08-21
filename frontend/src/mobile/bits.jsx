@@ -37,9 +37,9 @@ export function Card({ children, style, onClick, index = 0, ...rest }) {
       }}
       whileTap={onClick && !REDUCED ? { scale: 0.985 } : undefined}
       style={{
-        background: `linear-gradient(160deg, ${T.cardHi} 0%, ${T.card} 62%)`,
+        background: `linear-gradient(158deg, #1a1a1a 0%, ${T.card} 58%)`,
         border: `1px solid ${T.border}`, borderRadius: 14,
-        boxShadow: '0 1px 0 rgba(255,255,255,0.03) inset, 0 6px 18px rgba(0,0,0,0.35)',
+        boxShadow: '0 1px 0 rgba(255,255,255,0.05) inset, 0 8px 24px rgba(0,0,0,0.5)',
         ...(onClick ? { cursor: 'pointer', WebkitTapHighlightColor: 'transparent' } : null),
         ...style,
       }} {...rest}>{children}</motion.div>
@@ -230,7 +230,9 @@ export function SideRail({ rgb, weight = 1, tone }) {
   return (
     <div style={{
       position: 'absolute', left: 0, top: 0, bottom: 0,
-      width: weight >= 3 ? 5 : weight === 2 ? 4 : 3,
+      // 3px did not register at arm's length on a phone. The rail is the
+      // fastest read on a card and has to be legible without looking for it.
+      width: weight >= 3 ? 7 : weight === 2 ? 6 : 4,
       background: rgb
         ? `linear-gradient(180deg, rgba(${rgb},0.95), rgba(${rgb},0.35))`
         : (tone || T.border),
@@ -245,8 +247,8 @@ export function TierBadge({ conf, tone, rgb }) {
     <span style={{
       fontFamily: T.cond, fontWeight: 800, fontSize: 9.5, letterSpacing: 1.2,
       color: tone, padding: '2.5px 7px', borderRadius: 6,
-      background: `rgba(${rgb},0.13)`, border: `1px solid rgba(${rgb},0.4)`,
-      boxShadow: tr.weight >= 3 ? `0 0 12px rgba(${rgb},0.35)` : 'none',
+      background: `rgba(${rgb},0.18)`, border: `1px solid rgba(${rgb},0.55)`,
+      boxShadow: tr.weight >= 3 ? `0 0 16px rgba(${rgb},0.55)` : `0 0 8px rgba(${rgb},0.18)`,
     }}>{tr.label}</span>
   )
 }
@@ -256,9 +258,10 @@ export function ConfBar({ conf, tone, max = 132 }) {
   if (conf == null) return null
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 7, flex: 1, maxWidth: max }}>
-      <div style={{ flex: 1, height: 4, borderRadius: 3, background: '#1c1c1c', overflow: 'hidden' }}>
+      <div style={{ flex: 1, height: 6, borderRadius: 4, background: '#191919', overflow: 'hidden' }}>
         <div style={{ width: `${Math.min(100, conf)}%`, height: '100%',
-                      background: tone, borderRadius: 3 }} />
+                      background: tone, borderRadius: 4,
+                      boxShadow: `0 0 10px ${tone}` }} />
       </div>
       <span style={{ fontSize: 11.5, fontWeight: 800, color: tone,
                      fontVariantNumeric: 'tabular-nums' }}>{Math.round(conf)}</span>
@@ -274,7 +277,8 @@ export function BigStat({ value, label, tone, rgb, muted }) {
       background: muted ? 'transparent' : `rgba(${rgb},0.10)`,
       border: `1px solid ${muted ? T.border : `rgba(${rgb},0.30)`}`,
     }}>
-      <div style={{ fontSize: 25, fontWeight: 800, color: muted ? T.muted2 : tone,
+      <div style={{ fontSize: 28, fontWeight: 800, color: muted ? T.muted2 : tone,
+                    textShadow: muted ? 'none' : `0 0 18px rgba(${rgb},0.45)`,
                     lineHeight: 1.05, fontVariantNumeric: 'tabular-nums' }}>{value}</div>
       <div style={{ fontFamily: T.cond, fontWeight: 700, fontSize: 9,
                     letterSpacing: 1.2, color: T.muted2 }}>{label}</div>
@@ -287,11 +291,11 @@ export function BigStat({ value, label, tone, rgb, muted }) {
 export function tierCardStyle(conf, rgb) {
   const w = tier(conf).weight
   return {
-    border: `1px solid ${w >= 2 ? `rgba(${rgb},0.45)` : T.border}`,
+    border: `1px solid ${w >= 2 ? `rgba(${rgb},0.55)` : T.border}`,
     boxShadow: w >= 3
-      ? `0 0 0 1px rgba(${rgb},0.20), 0 6px 26px rgba(${rgb},0.16), 0 6px 18px rgba(0,0,0,0.4)`
+      ? `0 0 0 1px rgba(${rgb},0.30), 0 8px 34px rgba(${rgb},0.26), 0 8px 22px rgba(0,0,0,0.5)`
       : w === 2
-        ? `0 4px 18px rgba(${rgb},0.09), 0 6px 18px rgba(0,0,0,0.38)`
-        : '0 6px 18px rgba(0,0,0,0.35)',
+        ? `0 6px 24px rgba(${rgb},0.15), 0 8px 22px rgba(0,0,0,0.46)`
+        : '0 8px 24px rgba(0,0,0,0.5)',
   }
 }
