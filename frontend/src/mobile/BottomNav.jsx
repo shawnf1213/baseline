@@ -36,7 +36,9 @@ export default function BottomNav({ active, onChange }) {
     return (
       <nav style={{
         position: 'fixed', left: 0, top: 0, bottom: 0, width: 210, zIndex: 1000,
-        background: 'rgba(10,10,10,0.96)', borderRight: `1px solid ${T.border}`,
+        background: 'rgba(8,8,8,0.72)',
+        borderRight: '1px solid rgba(0,230,118,0.14)',
+        boxShadow: '1px 0 30px rgba(0,230,118,0.04)',
         backdropFilter: 'blur(8px)', WebkitBackdropFilter: 'blur(8px)',
         display: 'flex', flexDirection: 'column', gap: 4, padding: '84px 12px 20px',
       }}>

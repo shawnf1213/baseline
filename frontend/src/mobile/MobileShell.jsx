@@ -76,18 +76,28 @@ export default function MobileShell() {
   }, [])
 
   return (
-    <div style={{ minHeight: '100vh', background: T.bg, color: T.white, fontFamily: T.font }}>
+    <div style={{ minHeight: '100vh', background: 'transparent', color: T.white, fontFamily: T.font }}>
       {/* Header */}
       <header style={{
-        position: 'sticky', top: 0, zIndex: 50, background: 'rgba(10,10,10,0.95)',
-        borderBottom: `1px solid ${T.border}`, paddingTop: SAFE_TOP,
+        position: 'sticky', top: 0, zIndex: 50,
+        // Translucent rather than solid so the page glow reads through it, with
+        // a brand hairline instead of another grey rule.
+        background: 'rgba(8,8,8,0.82)',
+        borderBottom: '1px solid rgba(0,230,118,0.16)',
+        boxShadow: '0 1px 22px rgba(0,230,118,0.05)',
+        paddingTop: SAFE_TOP,
         backdropFilter: 'blur(8px)', WebkitBackdropFilter: 'blur(8px)',
       }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px' }}>
           <div style={{ fontFamily: T.cond, fontWeight: 900, fontSize: 22, letterSpacing: 3, textTransform: 'uppercase' }}>
             BASE<span style={{ color: T.green }}>LINE</span>
           </div>
-          <span style={{ fontFamily: T.cond, fontWeight: 700, fontSize: 10, letterSpacing: 2.5, color: T.muted2, textTransform: 'uppercase' }}>Research</span>
+          <span style={{
+            fontFamily: T.cond, fontWeight: 700, fontSize: 10, letterSpacing: 2.5,
+            color: T.green, textTransform: 'uppercase',
+            border: '1px solid rgba(0,230,118,0.28)', borderRadius: 999,
+            padding: '4px 10px', background: 'rgba(0,230,118,0.07)',
+          }}>Research</span>
         </div>
       </header>
 
@@ -103,7 +113,7 @@ export default function MobileShell() {
         className={wide ? 'baseline-wide' : undefined}
         style={{
           padding: wide ? '22px 30px 40px' : `16px 14px calc(84px + ${SAFE_BOTTOM})`,
-          maxWidth: wide ? 1180 : 640,
+          maxWidth: wide ? 1560 : 640,
           margin: wide ? '0 0 0 210px' : '0 auto',
         }}>
         <AnimatePresence initial={false}>

@@ -34,16 +34,27 @@ export const SAFE_TOP = 'env(safe-area-inset-top, 0px)'
 export const WIDE_PX = 1024
 
 export function useIsWide() {
-  const get = () => typeof window !== 'undefined' && window.innerWidth >= WIDE_PX
+  // matchMedia rather than a resize listener. It fires for anything that
+  // actually changes which layout applies — a window drag, a rotation, a
+  // browser zoom, a DPI change — whereas 'resize' misses some of those, and it
+  // costs one listener instead of running a comparison on every resize frame.
+  const query = `(min-width: ${WIDE_PX}px)`
+  const get = () => typeof window !== 'undefined'
+    && !!window.matchMedia && window.matchMedia(query).matches
   const [wide, setWide] = useState(get)
   useEffect(() => {
-    const on = () => setWide(get())
-    window.addEventListener('resize', on)
-    window.addEventListener('orientationchange', on)
+    if (typeof window === 'undefined' || !window.matchMedia) return
+    const mq = window.matchMedia(query)
+    const on = (e) => setWide(e.matches)
+    // addListener is the Safari < 14 spelling; still worth keeping since this
+    // is a phone-first app and an old iOS device would otherwise never update.
+    if (mq.addEventListener) mq.addEventListener('change', on)
+    else mq.addListener(on)
+    setWide(mq.matches)          // re-sync in case it changed before we attached
     return () => {
-      window.removeEventListener('resize', on)
-      window.removeEventListener('orientationchange', on)
+      if (mq.removeEventListener) mq.removeEventListener('change', on)
+      else mq.removeListener(on)
     }
-  }, [])
+  }, [query])
   return wide
 }

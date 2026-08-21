@@ -229,3 +229,38 @@ input, select, button { font-family: inherit; }
     -webkit-column-break-inside: avoid;
   }
 }
+
+/* ── PAGE BACKGROUND ─────────────────────────────────────────────────────────
+   Flat #0a0a0a left a large screen reading as an empty void with a strip of
+   cards down the middle. Three layers, all cheap and all fixed so they do not
+   move under a scroll:
+     • two soft green pools, top-left and bottom-right, that give the page a
+       direction to read across instead of uniform darkness
+     • a faint grid, which reads as a data surface rather than decoration
+   Kept very low contrast on purpose — the cards carry the colour, and a
+   background that competes with them makes the board harder to scan, which is
+   the opposite of the point. */
+body {
+  background-color: #070707;
+  background-image:
+    radial-gradient(1100px 560px at 10% -8%, rgba(0, 230, 118, 0.085), transparent 62%),
+    radial-gradient(900px 520px at 102% 104%, rgba(0, 230, 118, 0.06), transparent 60%),
+    linear-gradient(rgba(255, 255, 255, 0.016) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.016) 1px, transparent 1px);
+  background-size: auto, auto, 46px 46px, 46px 46px;
+  background-attachment: fixed;
+}
+
+/* Three tracks once there is genuinely room for them. At 1560px two columns
+   left ~500px of dead space on a 1900px screen; three fills it without making
+   any single card narrower than it is on a phone. */
+@media (min-width: 1600px) {
+  .baseline-wide .baseline-cols { columns: 3; }
+}
+
+/* ── GREEN ACCENTS ───────────────────────────────────────────────────────── */
+/* The sidebar gets a hairline of brand colour so the rail reads as part of the
+   product rather than a grey gutter. */
+@media (min-width: 1024px) {
+  .baseline-wide { position: relative; }
+}
