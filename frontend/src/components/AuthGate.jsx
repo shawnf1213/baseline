@@ -64,12 +64,6 @@ export default function AuthGate({ children }) {
       window.history.replaceState({}, '', url.toString())
     }
 
-    // ── JUST PAID? LOG THEM IN ─────────────────────────────────────────────
-    // Stripe returns them with session_id on the URL. Handing that to the
-    // backend, which verifies it against Stripe, produces an app session bound
-    // to the email on the payment — so someone who subscribed without ever
-    // touching Discord lands inside the app rather than back on the paywall
-    // they just paid to pass.
     // ── ARRIVING FROM A SIGN-IN EMAIL ──────────────────────────────────────
     // Exchanged for a session immediately and stripped from the address bar, so
     // the token does not sit in history where a shared screenshot or a synced
@@ -84,6 +78,12 @@ export default function AuthGate({ children }) {
       window.history.replaceState({}, '', url.toString())
     }
 
+    // ── JUST PAID? LOG THEM IN ─────────────────────────────────────────────
+    // Stripe returns them with session_id on the URL. Handing that to the
+    // backend, which verifies it against Stripe, produces an app session bound
+    // to the email on the payment — so someone who subscribed without ever
+    // touching Discord lands inside the app rather than back on the paywall
+    // they just paid to pass.
     const stripeSid = url.searchParams.get('session_id')
     if (stripeSid) {
       try {

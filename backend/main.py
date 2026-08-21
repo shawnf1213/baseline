@@ -146,7 +146,9 @@ from src.api.string_tension import lookup_pace_index
 app = FastAPI(title="Baseline Tennis API", version="1.0.0")
 
 _ALLOWED_ORIGINS = [
-    "https://baselineev.vercel.app",          # public URL
+    "https://baselineev.com",                 # primary domain
+    "https://www.baselineev.com",
+    "https://baselineev.vercel.app",          # kept working
     "https://baseline-app-three.vercel.app",  # original alias, kept working
     "http://localhost:5173",
     "http://localhost:5174",

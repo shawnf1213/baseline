@@ -17,7 +17,8 @@ function resolveBase() {
   // take minutes, so projections would fail on the new domain while working on
   // the old one. Every public origin must appear in BOTH this list and the
   // backend's CORS allowlist.
-  const DIRECT = ['baselineev.vercel.app', 'baseline-app-three.vercel.app']
+  const DIRECT = ['baselineev.com', 'www.baselineev.com',
+                  'baselineev.vercel.app', 'baseline-app-three.vercel.app']
   if (DIRECT.includes(window.location.hostname)) {
     return 'https://backend-production-84ab.up.railway.app'
   }
