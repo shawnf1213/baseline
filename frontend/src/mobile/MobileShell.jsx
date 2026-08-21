@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { T, SAFE_TOP, SAFE_BOTTOM } from './theme'
+import { T, SAFE_TOP, SAFE_BOTTOM, useIsWide } from './theme'
 import BottomNav from './BottomNav'
 import { motion, AnimatePresence } from 'framer-motion'
 import BoardTab from './BoardTab'
@@ -68,6 +68,8 @@ export default function MobileShell() {
   // tab's offset — a long Boards scroll otherwise carries into a short Picks list.
   useEffect(() => { window.scrollTo(0, 0) }, [tab])
 
+  const wide = useIsWide()
+
   const onOpenPlayer = useCallback((p) => {
     setOpenPlayer(p)
     window.scrollTo(0, 0)
@@ -92,7 +94,18 @@ export default function MobileShell() {
       {/* Tab content — cross-faded so switching tabs reads as a transition
           rather than an instant repaint. mode="wait" would double the delay,
           so the outgoing view is simply replaced. */}
-      <main style={{ padding: `16px 14px calc(84px + ${SAFE_BOTTOM})`, maxWidth: 640, margin: '0 auto' }}>
+      {/* On desktop the content sits beside the rail and is allowed to be
+          genuinely wide — a 640px column centred in a 1920px window is still a
+          phone layout, just with more empty space around it. `columns` lets the
+          card lists flow into two tracks; break-inside keeps a card whole
+          rather than splitting it across the gap. */}
+      <main
+        className={wide ? 'baseline-wide' : undefined}
+        style={{
+          padding: wide ? '22px 30px 40px' : `16px 14px calc(84px + ${SAFE_BOTTOM})`,
+          maxWidth: wide ? 1180 : 640,
+          margin: wide ? '0 0 0 210px' : '0 auto',
+        }}>
         <AnimatePresence initial={false}>
           <motion.div
             key={tab}

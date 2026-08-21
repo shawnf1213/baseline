@@ -106,12 +106,14 @@ export default function BoardTab({ boards, book, setBook, loading, error, onOpen
             : `${book === 'underdog' ? 'Underdog' : 'PrizePicks'} has no tennis lines up right now. Check back when matches are near.`} />
       )}
 
-      {!loading && !error && rows.map((r, i) => (
-        <PropRow key={r.key} r={r} index={i}
-          saved={has(propBookmarkId(r))}
-          onSave={() => toggle({ id: propBookmarkId(r), kind: 'prop', ...r })}
-          onOpen={() => onOpenPlayer({ name: r.player, tour: r.tour })} />
-      ))}
+      <div className="baseline-cols">
+        {!loading && !error && rows.map((r, i) => (
+          <PropRow key={r.key} r={r} index={i}
+            saved={has(propBookmarkId(r))}
+            onSave={() => toggle({ id: propBookmarkId(r), kind: 'prop', ...r })}
+            onOpen={() => onOpenPlayer({ name: r.player, tour: r.tour })} />
+        ))}
+      </div>
 
       {!loading && !error && !!rows.length && (
         <div style={{ color: T.muted2, fontSize: 11.5, textAlign: 'center', padding: '16px 12px 4px', lineHeight: 1.5 }}>

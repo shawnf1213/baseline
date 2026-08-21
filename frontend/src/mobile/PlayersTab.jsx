@@ -42,6 +42,7 @@ export default function PlayersTab({ boards, loading, onOpenPlayer }) {
           hint="The slate populates after the evening update. Use Search to open any player now." />
       )}
 
+      <div className="baseline-cols">
       {!loading && players.map(p => (
         <Card key={p.player} onClick={() => onOpenPlayer({ name: p.player, tour: p.tour })}
           index={players.indexOf(p)}
@@ -65,6 +66,7 @@ export default function PlayersTab({ boards, loading, onOpenPlayer }) {
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={T.muted2} strokeWidth="2" strokeLinecap="round"><path d="M9 6l6 6-6 6" /></svg>
         </Card>
       ))}
+      </div>
     </div>
   )
 }

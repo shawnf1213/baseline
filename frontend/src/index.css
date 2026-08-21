@@ -212,3 +212,20 @@ input, select, button { font-family: inherit; }
 @media (max-width: 900px) {
   input, select, textarea { font-size: 16px; }
 }
+
+
+/* Desktop card flow. Applied to the tab content only — a two-track column
+   layout turns a long single-file list into something that uses the screen,
+   and break-inside stops a card being sliced in half at the column boundary.
+   Headings inside a tab span both tracks so a section title never ends up
+   floating beside the rows it introduces. */
+@media (min-width: 1024px) {
+  .baseline-wide .baseline-cols {
+    columns: 2;
+    column-gap: 16px;
+  }
+  .baseline-wide .baseline-cols > * {
+    break-inside: avoid;
+    -webkit-column-break-inside: avoid;
+  }
+}

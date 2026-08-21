@@ -1,5 +1,5 @@
 import { motion } from 'framer-motion'
-import { T, SAFE_BOTTOM } from './theme'
+import { T, SAFE_BOTTOM, useIsWide } from './theme'
 
 const TABS = [
   { key: 'board',    label: 'Boards',   icon: 'board' },
@@ -25,6 +25,44 @@ function Icon({ name, active }) {
 }
 
 export default function BottomNav({ active, onChange }) {
+  const wide = useIsWide()
+
+  // ── A BAR PINNED TO THE BOTTOM IS A PHONE IDIOM ────────────────────────────
+  // On a large screen it either stretches absurdly or floats as a narrow strip
+  // in the middle of nothing, and it puts navigation at the FURTHEST point from
+  // where a mouse rests. Desktop gets a fixed left rail with labels beside the
+  // icons, which is what the width is for.
+  if (wide) {
+    return (
+      <nav style={{
+        position: 'fixed', left: 0, top: 0, bottom: 0, width: 210, zIndex: 1000,
+        background: 'rgba(10,10,10,0.96)', borderRight: `1px solid ${T.border}`,
+        backdropFilter: 'blur(8px)', WebkitBackdropFilter: 'blur(8px)',
+        display: 'flex', flexDirection: 'column', gap: 4, padding: '84px 12px 20px',
+      }}>
+        {TABS.map(t => {
+          const on = active === t.key
+          return (
+            <button key={t.key} onClick={() => onChange(t.key)} style={{
+              display: 'flex', alignItems: 'center', gap: 12, width: '100%',
+              minHeight: 46, padding: '0 14px', borderRadius: 11, border: 'none',
+              cursor: 'pointer', textAlign: 'left',
+              background: on ? 'rgba(0,230,118,0.10)' : 'transparent',
+              boxShadow: on ? `inset 3px 0 0 ${T.green}` : 'none',
+              transition: 'background 140ms ease',
+            }}>
+              <Icon name={t.icon} active={on} />
+              <span style={{
+                fontFamily: T.cond, fontWeight: 800, fontSize: 13, letterSpacing: 1.4,
+                textTransform: 'uppercase', color: on ? T.green : T.muted2,
+              }}>{t.label}</span>
+            </button>
+          )
+        })}
+      </nav>
+    )
+  }
+
   return (
     <nav style={{
       // Centred and capped so a desktop window gets a nav bar the width of
