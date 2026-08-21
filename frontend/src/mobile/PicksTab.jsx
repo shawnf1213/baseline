@@ -20,6 +20,19 @@ export default function PicksTab({ record, slate, loading, error, onOpenPlayer }
   const rolling = useMemo(() => rollingRecord(days, 30), [days])
   const today = etToday()
 
+  // RENDER A WINDOW, NOT THE WHOLE LOG. Every pick ever released was mounted at
+  // once — hundreds of animated cards in a single commit. React stayed busy long
+  // enough that the entrance animation had no frames to run in, so the list
+  // appeared to snap into place instead of arriving, and the tab felt frozen on
+  // open. Showing a fortnight first drops that to a couple of dozen.
+  //
+  // The window only limits what is PAINTED. `rolling` above is computed from the
+  // full `days`, so the 30-day record stays correct no matter what is on screen.
+  const DAY_WINDOW = 14
+  const [shownDays, setShownDays] = useState(DAY_WINDOW)
+  const visibleDays = days.slice(0, shownDays)
+  const moreDays = days.length - visibleDays.length
+
   return (
     <div style={{ paddingBottom: 8 }}>
       <div style={{ marginBottom: 12 }}>
@@ -63,7 +76,7 @@ export default function PicksTab({ record, slate, loading, error, onOpenPlayer }
             </Card>
           )}
 
-          {days.map(d => (
+          {visibleDays.map(d => (
             <div key={d.date} style={{ marginBottom: 20 }}>
               <SectionLabel right={<DayTally day={d} />}>
                 {prettyDate(d.date)}{d.date === today ? ' · Today' : ''}
@@ -73,6 +86,20 @@ export default function PicksTab({ record, slate, loading, error, onOpenPlayer }
               ))}
             </div>
           ))}
+
+          {moreDays > 0 && (
+            <button
+              onClick={() => setShownDays(n => n + 30)}
+              style={{
+                width: '100%', minHeight: 46, marginTop: 4, borderRadius: 12,
+                background: 'transparent', border: `1px solid ${T.border}`,
+                color: T.muted, fontFamily: T.cond, fontWeight: 800, fontSize: 12.5,
+                letterSpacing: 1.2, textTransform: 'uppercase', cursor: 'pointer',
+                WebkitTapHighlightColor: 'transparent',
+              }}>
+              Show {moreDays} more {moreDays === 1 ? 'day' : 'days'}
+            </button>
+          )}
         </>
       )}
     </div>

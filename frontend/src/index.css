@@ -66,10 +66,11 @@ body {
   -webkit-font-smoothing: antialiased;
   min-height: 100vh;
 
-  /* SINGLE LAYER static gradient — no fixed attachment, no noise SVG, no
-     repeating grids. Drastically cheaper than layered fixed backgrounds.
-     The "tennis court" look is conveyed by the green/dark palette. */
-  background: radial-gradient(ellipse 80% 60% at 50% 0%, #0d1a0d 0%, #080d08 50%, #050a05 100%);
+  /* No background here on purpose. The page background is owned entirely by the
+     body::before layer further down — it is fixed and opaque, so it covers the
+     viewport at all times and anything painted on body itself is invisible.
+     A gradient used to be declared here as well; it cost a full-page paint to
+     produce pixels nobody could ever see. */
 }
 
 #root { min-height: 100vh; position: relative; }
@@ -239,8 +240,29 @@ input, select, button { font-family: inherit; }
      • a faint grid, which reads as a data surface rather than decoration
    Kept very low contrast on purpose — the cards carry the colour, and a
    background that competes with them makes the board harder to scan, which is
-   the opposite of the point. */
+   the opposite of the point.
+
+   PAINTED ON A FIXED PSEUDO-ELEMENT, NOT WITH background-attachment: fixed.
+   That property was the honest way to write this and the wrong way to ship it:
+   it makes the background viewport-anchored while the element still scrolls, so
+   the browser cannot just translate the layer and instead REPAINTS ALL FOUR
+   LAYERS ACROSS THE WHOLE VIEWPORT ON EVERY SCROLL FRAME. Two 1100px radial
+   gradients repainted at 60fps saturate the main thread on a phone, which is
+   what made scrolling stutter and left card animations without frames to run in.
+   iOS Safari also implements it inconsistently.
+
+   A fixed pseudo-element gets its own compositor layer that simply stays put
+   while content scrolls over it. Identical result, painted once. */
 body {
+  background-color: #070707;
+}
+
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
   background-color: #070707;
   background-image:
     radial-gradient(1100px 560px at 10% -8%, rgba(0, 230, 118, 0.085), transparent 62%),
@@ -248,7 +270,6 @@ body {
     linear-gradient(rgba(255, 255, 255, 0.016) 1px, transparent 1px),
     linear-gradient(90deg, rgba(255, 255, 255, 0.016) 1px, transparent 1px);
   background-size: auto, auto, 46px 46px, 46px 46px;
-  background-attachment: fixed;
 }
 
 /* Three tracks once there is genuinely room for them. At 1560px two columns

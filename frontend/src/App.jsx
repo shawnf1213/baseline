@@ -1,12 +1,23 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, lazy, Suspense } from 'react'
 import { motion, AnimatePresence } from 'motion/react'
-import SurfaceAnalyzer from './pages/SurfaceAnalyzer'
-import PropProjection  from './pages/PropProjection'
-import HeadToHead      from './pages/HeadToHead'
-import ValueBet        from './pages/ValueBet'
 import SplineAccent    from './components/SplineAccent'
 import ErrorBoundary   from './components/ErrorBoundary'
 import MobileShell     from './mobile/MobileShell'
+
+// LAZY ON PURPOSE — THESE FOUR ARE THE WHOLE LEGACY OPTIMIZER, AND
+// DESKTOP_OPTIMIZER IS false, SO NOBODY RENDERS THEM. Imported statically they
+// were still bundled, because they are referenced from live code the flag
+// guards and Vite cannot prove the branch is dead. Between them they drag in
+// recharts, which was the single largest thing in a 467KB main chunk that every
+// phone downloaded before the app could paint.
+//
+// lazy() moves them into chunks fetched only if the flag is flipped back on, so
+// the optimizer stays one boolean away from working without charging every
+// mobile user for it.
+const SurfaceAnalyzer = lazy(() => import('./pages/SurfaceAnalyzer'))
+const PropProjection  = lazy(() => import('./pages/PropProjection'))
+const HeadToHead      = lazy(() => import('./pages/HeadToHead'))
+const ValueBet        = lazy(() => import('./pages/ValueBet'))
 
 // Tab definitions with icons (inline SVG so no extra deps)
 const TABS = [
@@ -323,10 +334,14 @@ export default function App() {
             {/* Each tab has its own error boundary — one tab crashing won't
                 affect the others. Board Optimizer is the most likely to
                 fail (network-heavy) so its boundary is especially important. */}
-            {tab === 'surface' && <ErrorBoundary label="Surface Analyzer"><SurfaceAnalyzer tour={tour} /></ErrorBoundary>}
-            {tab === 'prop'    && <ErrorBoundary label="Prop Projection"><PropProjection   tour={tour} /></ErrorBoundary>}
-            {tab === 'h2h'     && <ErrorBoundary label="Head to Head"><HeadToHead         tour={tour} /></ErrorBoundary>}
-            {tab === 'value'   && <ErrorBoundary label="Value Bet"><ValueBet               tour={tour} /></ErrorBoundary>}
+            {/* Suspense is required now that these are lazy — without a
+                boundary React throws on the first render of a pending chunk. */}
+            <Suspense fallback={<div style={{ padding: 40, color: '#7a7a7a' }}>Loading…</div>}>
+              {tab === 'surface' && <ErrorBoundary label="Surface Analyzer"><SurfaceAnalyzer tour={tour} /></ErrorBoundary>}
+              {tab === 'prop'    && <ErrorBoundary label="Prop Projection"><PropProjection   tour={tour} /></ErrorBoundary>}
+              {tab === 'h2h'     && <ErrorBoundary label="Head to Head"><HeadToHead         tour={tour} /></ErrorBoundary>}
+              {tab === 'value'   && <ErrorBoundary label="Value Bet"><ValueBet               tour={tour} /></ErrorBoundary>}
+            </Suspense>
           </motion.div>
         </AnimatePresence>
       </div>
