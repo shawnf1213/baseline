@@ -466,7 +466,7 @@ def upsert_subscription(rec: dict) -> dict:
     if not _READY or Subscription is None:
         return {}
     try:
-        for s in _session():
+        with _session() as s:
             row = (s.query(Subscription)
                     .filter(Subscription.stripe_sub_id == rec["stripe_sub_id"])
                     .one_or_none())
@@ -502,7 +502,7 @@ def find_subscription(discord_id: str = "", email: str = "") -> dict:
     if not discord_id and not email:
         return {}
     try:
-        for s in _session():
+        with _session() as s:
             q = s.query(Subscription)
             q = (q.filter(Subscription.discord_id == discord_id) if discord_id
                  else q.filter(Subscription.app_email == email))
@@ -525,6 +525,27 @@ def find_subscription(discord_id: str = "", email: str = "") -> dict:
     return {}
 
 
+def subscriptions_debug() -> dict:
+    """Row count and a redacted sample. Never exposed without the sync token."""
+    if not _READY or Subscription is None:
+        return {"ready": bool(_READY), "model": Subscription is not None,
+                "note": "db disabled or model missing"}
+    out = {"ready": True, "rows": 0, "sample": []}
+    with _session() as s:
+        rows = s.query(Subscription).all()
+        out["rows"] = len(rows)
+        for r in rows[:5]:
+            out["sample"].append({
+                "sub": (r.stripe_sub_id or "")[-8:],
+                "status": r.status,
+                "has_email": bool(r.app_email),
+                "has_discord": bool(r.discord_id),
+                "period_end": str(r.current_period_end)[:19] if r.current_period_end else None,
+            })
+        return out
+    return out
+
+
 def subscription_role_sets() -> dict:
     """{"grant": [...], "revoke": [...]} of Discord ids for role syncing.
 
@@ -543,7 +564,7 @@ def subscription_role_sets() -> dict:
     try:
         now = datetime.now(timezone.utc)
         grant, lapsed = set(), set()
-        for s in _session():
+        with _session() as s:
             for r in s.query(Subscription).all():
                 did = (r.discord_id or "").strip()
                 if not did:
@@ -572,7 +593,7 @@ def link_subscription(stripe_sub_id: str, discord_id: str = "",
     if not _READY or Subscription is None or not stripe_sub_id:
         return False
     try:
-        for s in _session():
+        with _session() as s:
             row = (s.query(Subscription)
                     .filter(Subscription.stripe_sub_id == stripe_sub_id)
                     .one_or_none())
@@ -596,7 +617,7 @@ def active_subscriber_discord_ids() -> list:
     try:
         now = datetime.now(timezone.utc)
         out = []
-        for s in _session():
+        with _session() as s:
             for r in s.query(Subscription).all():
                 if not r.discord_id:
                     continue

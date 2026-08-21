@@ -242,6 +242,28 @@ def _ts(v) -> Optional[datetime]:
         return None
 
 
+
+def _period_end(sub) -> Optional[datetime]:
+    """When the paid period ends.
+
+    CURRENT STRIPE API VERSIONS DO NOT PUT THIS AT THE TOP LEVEL. It lives on
+    each subscription ITEM, and sub["current_period_end"] comes back None — so
+    every expiry check silently compared against nothing and only the status
+    field was doing any work. Falls back to trial_end, which is the meaningful
+    boundary for a subscription still in trial.
+    """
+    v = sub.get("current_period_end")
+    if not v:
+        items = (sub.get("items") or {}).get("data") or []
+        for it in items:
+            v = it.get("current_period_end")
+            if v:
+                break
+    if not v:
+        v = sub.get("trial_end")
+    return _ts(v)
+
+
 def apply_event(event) -> dict:
     """Fold one verified Stripe event into the subscriptions table.
 
@@ -322,7 +344,7 @@ def apply_event(event) -> dict:
                        else (obj.get("status") or "incomplete")),
             "plan": md.get("plan") or "",
             "discord_id": md.get("discord_id") or "",
-            "current_period_end": _ts(obj.get("current_period_end")),
+            "current_period_end": _period_end(obj),
             "cancel_at_period_end": 1 if obj.get("cancel_at_period_end") else 0,
         }
         if not rec["stripe_sub_id"]:
@@ -441,3 +463,62 @@ def claim_session(session_id: str) -> dict:
                 "yes" if email else "-", ref or "-")
     return {"ok": True, "email": email, "discord_id": ref,
             "stripe_sub_id": sub_id, "customer_id": sess.get("customer") or ""}
+
+
+def resync_from_stripe(limit: int = 100) -> dict:
+    """Rebuild the subscriptions table from Stripe.
+
+    Stripe is the source of truth; this table is a local read cache written by
+    webhooks. Anything that stops a webhook landing — a deploy mid-delivery, an
+    outage, or a bug like the one that made every write silently no-op — leaves
+    real paying customers invisible to entitlement and the role sync.
+
+    This is the repair. It is idempotent (upsert on stripe_sub_id) and safe to
+    run any time, so it doubles as a way to verify that what we hold matches
+    what Stripe holds.
+
+    The customer's email is fetched per subscription because the subscription
+    object does not carry it, and the email is what identifies a buyer who never
+    connected Discord.
+    """
+    if not is_configured():
+        return {"ok": False, "error": "billing not configured"}
+    from . import database as db
+    seen, wrote, errors = 0, 0, 0
+    try:
+        subs = _stripe.Subscription.list(limit=min(100, limit), status="all")
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("resync: could not list subscriptions")
+        return {"ok": False, "error": str(exc)[:200]}
+
+    for sub in subs.auto_paging_iter():
+        seen += 1
+        if seen > limit:
+            break
+        try:
+            email = ""
+            cust_id = sub.get("customer")
+            if cust_id:
+                try:
+                    cust = _stripe.Customer.retrieve(cust_id)
+                    email = (cust.get("email") or "") if not cust.get("deleted") else ""
+                except Exception:  # noqa: BLE001
+                    pass
+            md = sub.get("metadata") or {}
+            rec = {
+                "stripe_customer_id": cust_id or "",
+                "stripe_sub_id": sub.get("id") or "",
+                "status": sub.get("status") or "incomplete",
+                "plan": md.get("plan") or "",
+                "discord_id": md.get("discord_id") or "",
+                "app_email": email,
+                "current_period_end": _period_end(sub),
+                "cancel_at_period_end": 1 if sub.get("cancel_at_period_end") else 0,
+            }
+            if rec["stripe_sub_id"] and db.upsert_subscription(rec):
+                wrote += 1
+        except Exception:  # noqa: BLE001
+            errors += 1
+            logger.exception("resync: failed on one subscription")
+    logger.info("resync: %d seen, %d written, %d errors", seen, wrote, errors)
+    return {"ok": True, "seen": seen, "written": wrote, "errors": errors}

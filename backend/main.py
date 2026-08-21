@@ -243,12 +243,41 @@ async def results_health():
             "database_url_present": bool(database.DATABASE_URL)}
 
 
+def _strip_breakdowns(node):
+    """Drop `confidence_breakdown` from every pick, at any nesting depth.
+
+    That field is a ~1.3KB JSON-encoded diagnostic of the confidence components,
+    stored per pick. Across `picks`, `underdog.picks` and `threex_legs.picks` it
+    was about 60% of a 1.09MB response — and NOTHING reads it from here. The one
+    consumer, the ConfidenceBreakdown panel, takes it from /api/prop/calculate,
+    which computes it live for a single prop.
+
+    A megabyte of JSON is not just slow to download: parsing it blocks the main
+    thread, which is exactly when the app is trying to animate its cards in, so
+    the entrance animation gets starved of frames and lands as a freeze frame.
+
+    Recursive because the shape nests (underdog carries its own threex_legs).
+    """
+    if isinstance(node, dict):
+        return {k: _strip_breakdowns(v) for k, v in node.items()
+                if k != "confidence_breakdown"}
+    if isinstance(node, list):
+        return [_strip_breakdowns(v) for v in node]
+    return node
+
+
 @app.get("/api/results/record")
-async def results_record():
+async def results_record(full: bool = False):
     """Full pick log plus aggregate record (W/L, win rate, avg confidence on
-    winners vs losers, current streak). Public — used as a sales record."""
+    winners vs losers, current streak). Public — used as a sales record.
+
+    `full=1` restores the per-pick confidence_breakdown for any offline consumer
+    that wants it. The default is lean because the app is the hot caller and
+    fetches this on every cold start.
+    """
     from src import database
-    return database.record_summary()
+    summary = database.record_summary()
+    return summary if full else _strip_breakdowns(summary)
 
 
 @app.get("/api/results/pending")
@@ -1685,6 +1714,24 @@ async def billing_claim(req: Request):
             "discord_id": res.get("discord_id") or ""}
 
 
+
+@app.post("/api/billing/resync")
+def billing_resync(token: str = "", limit: int = 100):
+    """Rebuild the local subscriptions table from Stripe. Shared-secret gated.
+
+    Idempotent, so it is safe to re-run and doubles as a check that what we hold
+    matches Stripe.
+    """
+    expected = os.getenv("BILLING_SYNC_TOKEN", "").strip()
+    if not expected or token != expected:
+        raise HTTPException(status_code=403, detail="forbidden")
+    from src import billing
+    out = billing.resync_from_stripe(limit=limit)
+    if not out.get("ok"):
+        raise HTTPException(status_code=400, detail=out.get("error") or "resync failed")
+    return out
+
+
 @app.get("/api/billing/status")
 def billing_status(req: Request, discord_id: str = "", email: str = "",
                    sync_token: str = ""):
@@ -1719,8 +1766,16 @@ def billing_subscribers(token: str = ""):
         raise HTTPException(status_code=403, detail="forbidden")
     from src import database as _db
     sets = _db.subscription_role_sets()
+    # Diagnostics behind the same shared secret. An empty grant list cannot tell
+    # "no subscriptions" apart from "the query threw and was swallowed", and
+    # that ambiguity cost real time chasing a billing bug.
+    diag = {}
+    try:
+        diag = _db.subscriptions_debug()
+    except Exception as exc:  # noqa: BLE001
+        diag = {"error": str(exc)[:200]}
     return {"discord_ids": _db.active_subscriber_discord_ids(),
-            "grant": sets["grant"], "revoke": sets["revoke"]}
+            "grant": sets["grant"], "revoke": sets["revoke"], "debug": diag}
 
 
 @app.post("/api/billing/portal")
