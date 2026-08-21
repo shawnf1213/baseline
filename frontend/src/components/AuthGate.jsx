@@ -121,13 +121,29 @@ export default function AuthGate({ children }) {
     } catch { setBusy(false) }
   }
 
+  const [needsConnect, setNeedsConnect] = useState(false)
+
   const subscribe = async (plan) => {
+    const tok = localStorage.getItem(SESSION_KEY) || ''
+    const me = state.me || {}
+
+    // ── DISCORD FIRST, THEN PAY ────────────────────────────────────────────
+    // Checkout carries the buyer's Discord id so the webhook knows whose
+    // access to unlock — on a Payment Link it rides in client_reference_id,
+    // which is the ONLY thread tying that payment to an account. Sending
+    // somebody to Stripe before they have connected takes their money and
+    // produces a subscription nobody can be matched to, which is worse than
+    // one extra tap.
+    if (!me.discord_id) {
+      setNeedsConnect(true)
+      connectDiscord()
+      return
+    }
+
     setBusy(true)
     try {
-      const tok = localStorage.getItem(SESSION_KEY) || ''
-      const me = state.me || {}
       const r = (await api.post('/api/billing/checkout', {
-        plan, discord_id: me.discord_id || '',
+        plan, discord_id: me.discord_id,
       }, { headers: tok ? { Authorization: `Bearer ${tok}` } : {} })).data
       if (r?.url) window.location.href = r.url
       else setBusy(false)
@@ -220,8 +236,22 @@ export default function AuthGate({ children }) {
         <div style={{ flex: 1, height: 1, background: '#242424' }} />
       </div>
 
-      <Btn onClick={() => subscribe('weekly')} disabled={busy}>Weekly</Btn>
+      {needsConnect && (
+        <div style={{ color: '#FFB300', fontSize: 12.5, textAlign: 'center',
+                      margin: '0 0 10px', lineHeight: 1.45 }}>
+          Connecting Discord first so your subscription unlocks automatically…
+        </div>
+      )}
+
+      <Btn onClick={() => subscribe('weekly')} disabled={busy}>
+        Weekly · free trial
+      </Btn>
       <Btn onClick={() => subscribe('monthly')} disabled={busy}>Monthly</Btn>
+
+      <p style={{ color: '#6b6b6b', fontSize: 11.5, textAlign: 'center',
+                  margin: '2px 0 0', lineHeight: 1.5 }}>
+        You'll connect Discord first so access unlocks the moment you subscribe.
+      </p>
 
       {state.phase === 'paywall' && (
         <button onClick={() => { localStorage.removeItem(SESSION_KEY); check() }}

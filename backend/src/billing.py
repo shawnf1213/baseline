@@ -42,6 +42,24 @@ CANCEL_URL            = os.getenv("STRIPE_CANCEL_URL",
 
 PLANS = {"weekly": PRICE_WEEKLY, "monthly": PRICE_MONTHLY}
 
+# ── PAYMENT LINKS ────────────────────────────────────────────────────────────
+# A Stripe-hosted Payment Link, used INSTEAD of building a Checkout Session for
+# a plan when one is configured. The reason to prefer it is that trial terms and
+# promotions can be configured on the link in the dashboard without a deploy —
+# the weekly link carries the free trial.
+#
+# THE COST OF A PAYMENT LINK IS THAT IT CARRIES NO METADATA OF OUR OWN. A
+# session we build attaches discord_id directly to the subscription, which is
+# how the webhook knows whose role to grant. A link cannot, so the id rides in
+# `client_reference_id` on the URL instead, and the checkout.session.completed
+# handler reads it back and links the subscription. Without that a subscriber
+# pays, Stripe records it, and they get no access — the exact failure this
+# indirection exists to prevent.
+PAYMENT_LINKS = {
+    "weekly": os.getenv("STRIPE_LINK_WEEKLY", "").strip(),
+    "monthly": os.getenv("STRIPE_LINK_MONTHLY", "").strip(),
+}
+
 # Statuses that grant access. past_due is deliberately INCLUDED: Stripe retries a
 # failed payment for days, and cutting a paying subscriber off the moment a card
 # blips — often a bank's fraud hold, not a real failure — is a worse outcome than
@@ -104,8 +122,13 @@ def is_owner_discord(discord_id: str, trusted: bool = False) -> bool:
 
 
 def is_configured() -> bool:
-    """True when a checkout could actually be created."""
-    return bool(_LIB_OK and STRIPE_SECRET_KEY and (PRICE_WEEKLY or PRICE_MONTHLY))
+    """True when a checkout could actually be started.
+
+    A configured Payment Link counts: it needs no API call to hand out, so a
+    plan can be sold on a link alone even before a price id is set.
+    """
+    return bool(_LIB_OK and STRIPE_SECRET_KEY
+                and (PRICE_WEEKLY or PRICE_MONTHLY or any(PAYMENT_LINKS.values())))
 
 
 def config_status() -> dict:
@@ -118,6 +141,8 @@ def config_status() -> dict:
         "webhook_secret_set": bool(STRIPE_WEBHOOK_SECRET),
         "weekly_price_set": bool(PRICE_WEEKLY),
         "monthly_price_set": bool(PRICE_MONTHLY),
+        "weekly_link_set": bool(PAYMENT_LINKS["weekly"]),
+        "monthly_link_set": bool(PAYMENT_LINKS["monthly"]),
         "test_mode": STRIPE_SECRET_KEY.startswith("sk_test_") if STRIPE_SECRET_KEY else None,
         "ready": is_configured(),
     }
@@ -133,7 +158,29 @@ def create_checkout_session(plan: str, discord_id: str = "",
     """
     if not is_configured():
         return {"error": "billing not configured"}
-    price = PLANS.get((plan or "").lower())
+    plan_key = (plan or "").lower()
+
+    # A configured Payment Link wins over building a session, because that is
+    # where the trial and promo terms live.
+    link = PAYMENT_LINKS.get(plan_key)
+    if link:
+        if discord_id:
+            sep = "&" if "?" in link else "?"
+            # Stripe echoes client_reference_id back on
+            # checkout.session.completed, which is the only thread tying this
+            # payment to a Discord account.
+            link = f"{link}{sep}client_reference_id={discord_id}"
+        else:
+            # No id to attach. The caller is responsible for signing the buyer
+            # in first; logged so an unlinkable purchase is visible rather than
+            # silently unresolvable later.
+            logger.warning("payment link for %s issued with NO discord_id — "
+                           "this subscription cannot be auto-linked", plan_key)
+        logger.info("payment link issued plan=%s discord=%s", plan_key,
+                    discord_id or "-")
+        return {"url": link, "via": "payment_link"}
+
+    price = PLANS.get(plan_key)
     if not price:
         return {"error": f"unknown plan '{plan}'"}
     try:
@@ -201,6 +248,43 @@ def apply_event(event) -> dict:
     from . import database as db
     etype = getattr(event, "type", None) or event.get("type")
     obj = (getattr(event, "data", None) or event.get("data", {})).get("object", {})
+
+    # ── THE LINK BETWEEN A PAYMENT LINK PURCHASE AND A DISCORD ACCOUNT ──────
+    # A Payment Link cannot carry our metadata, so the buyer's Discord id rides
+    # in client_reference_id and comes back HERE and nowhere else. Without this
+    # branch a link purchase creates a subscription with no discord_id, the role
+    # sync never sees them, and someone who paid gets nothing.
+    #
+    # Ordering is not guaranteed: this event can arrive before or after
+    # customer.subscription.created. Both paths therefore upsert on
+    # stripe_sub_id, and link_subscription never blanks a value it already has,
+    # so whichever lands second completes the record rather than overwriting it.
+    if etype == "checkout.session.completed":
+        ref = (obj.get("client_reference_id") or "").strip()
+        sub_id = obj.get("subscription") or ""
+        email = ((obj.get("customer_details") or {}).get("email")
+                 or obj.get("customer_email") or "")
+        if not sub_id:
+            return {"ok": True, "handled": etype, "note": "not a subscription"}
+        if ref or email:
+            linked = db.link_subscription(sub_id, discord_id=ref, email=email)
+            if not linked:
+                # The subscription row does not exist yet. Create the shell so
+                # the id is not lost; the subscription.* event fills in status
+                # and period end when it arrives.
+                db.upsert_subscription({
+                    "stripe_customer_id": obj.get("customer") or "",
+                    "stripe_sub_id": sub_id,
+                    "status": "incomplete",
+                    "discord_id": ref,
+                    "app_email": email,
+                })
+            logger.info("checkout completed sub=%s discord=%s email=%s",
+                        sub_id, ref or "-", "yes" if email else "-")
+        else:
+            logger.warning("checkout completed for %s with NO client_reference_id "
+                           "and no email — cannot be linked to an account", sub_id)
+        return {"ok": True, "handled": etype}
 
     if etype in ("customer.subscription.created",
                  "customer.subscription.updated",
