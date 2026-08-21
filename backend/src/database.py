@@ -551,7 +551,9 @@ def subscription_role_sets() -> dict:
                 end = r.current_period_end
                 if end is not None and end.tzinfo is None:
                     end = end.replace(tzinfo=timezone.utc)
-                live = ((r.status or "") in ("active", "trialing", "past_due")
+                # Must match billing.ACTIVE_STATUSES. past_due is NOT
+                # entitled: a failed payment removes the role on the next sync.
+                live = ((r.status or "") in ("active", "trialing")
                         and (end is None or end > now))
                 (grant if live else lapsed).add(did)
         # Someone who resubscribed has both an old dead row and a live one.
@@ -598,7 +600,7 @@ def active_subscriber_discord_ids() -> list:
             for r in s.query(Subscription).all():
                 if not r.discord_id:
                     continue
-                if (r.status or "") not in ("active", "trialing", "past_due"):
+                if (r.status or "") not in ("active", "trialing"):
                     continue
                 end = r.current_period_end
                 if end is not None:

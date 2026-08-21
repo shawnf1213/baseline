@@ -60,11 +60,18 @@ PAYMENT_LINKS = {
     "monthly": os.getenv("STRIPE_LINK_MONTHLY", "").strip(),
 }
 
-# Statuses that grant access. past_due is deliberately INCLUDED: Stripe retries a
-# failed payment for days, and cutting a paying subscriber off the moment a card
-# blips — often a bank's fraud hold, not a real failure — is a worse outcome than
-# a few days of grace. unpaid/canceled are excluded; by then Stripe has given up.
-ACTIVE_STATUSES = {"active", "trialing", "past_due"}
+# Statuses that grant access. NO GRACE PERIOD, by explicit decision: the moment
+# Stripe reports a failed payment the subscription stops entitling anything.
+#
+# past_due used to be included, on the reasoning that Stripe retries for days and
+# a bank's fraud hold is not a real cancellation. That is a real cost — a
+# subscriber whose card blips loses access and the Discord role until they fix
+# it, and Stripe's own retry would have recovered many of them silently. It is
+# the owner's call and the call is strict enforcement.
+#
+# Payment recovers -> Stripe flips the subscription back to active, the webhook
+# writes it, and the next role sync restores the role. Nothing is permanent.
+ACTIVE_STATUSES = {"active", "trialing"}
 
 try:
     import stripe as _stripe
@@ -282,6 +289,24 @@ def apply_event(event) -> dict:
         else:
             logger.warning("checkout completed for %s with NO client_reference_id "
                            "and no email — cannot be linked to an account", sub_id)
+        return {"ok": True, "handled": etype}
+
+    # ── A FAILED PAYMENT, ACTED ON IMMEDIATELY ──────────────────────────────
+    # customer.subscription.updated normally carries the status flip to
+    # past_due, but invoice.payment_failed is the event Stripe emits FIRST and
+    # it is the one that cannot be missed. Writing the status here means a
+    # failure is recorded even if the subscription update is delayed, and the
+    # next role sync removes the role. Belt and braces on the one transition
+    # the owner asked to be strict about.
+    if etype == "invoice.payment_failed":
+        sub_id = obj.get("subscription") or ""
+        if sub_id:
+            db.upsert_subscription({
+                "stripe_customer_id": obj.get("customer") or "",
+                "stripe_sub_id": sub_id,
+                "status": "past_due",
+            })
+            logger.info("payment failed for %s -> past_due (access revoked)", sub_id)
         return {"ok": True, "handled": etype}
 
     if etype in ("customer.subscription.created",

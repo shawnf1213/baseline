@@ -4988,7 +4988,10 @@ _guild_synced = False
 # "everyone not currently paying us through Stripe" would strip every one of
 # those members the first time it ran. That is the failure this shape exists to
 # make impossible.
-SUB_SYNC_MINUTES = int(os.getenv("SUB_SYNC_MINUTES", "15") or "15")
+# 3 minutes, not 15: a failed payment must cost the role promptly, and the
+# sync is one cheap HTTP call plus a role edit only when something actually
+# changed — it does not walk the member list.
+SUB_SYNC_MINUTES = int(os.getenv("SUB_SYNC_MINUTES", "3") or "3")
 SUB_SYNC_GUILD_ID = int(os.getenv("DISCORD_GUILD_ID", "0") or 0)
 SUB_SYNC_ROLE_ID = int(
     (os.getenv("DISCORD_PREMIUM_ROLE_IDS", "").split(",")[0] or "0").strip() or 0)

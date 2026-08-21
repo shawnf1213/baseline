@@ -13,6 +13,7 @@ Endpoints:
 
 import asyncio
 import datetime
+import json
 import os
 import sys
 import time
@@ -1451,18 +1452,31 @@ def auth_config():
 
 
 @app.get("/api/auth/login")
-def auth_login(redirect: str = ""):
+def auth_login(redirect: str = "", link_session: str = ""):
     """Begin Discord sign-in. Returns the URL for the client to open.
 
     `state` is a signed, short-lived value the callback verifies. Without it the
     callback would accept a code from anywhere, which is the standard OAuth CSRF
     hole — an attacker can trick a victim's browser into completing a login as
     the ATTACKER'S account, and anything the victim then does lands in it.
+
+    link_session: an EXISTING app session belonging to somebody who subscribed
+    by email and now wants the Discord role. The email is pulled out and carried
+    inside the signed state, so the callback knows which subscription to attach
+    the Discord id to. It is verified HERE, before it goes into the state — a
+    caller-supplied email in the state would let anyone claim a stranger's
+    subscription by connecting their own Discord to it.
     """
     from src import discord_auth
     if not discord_auth.is_configured():
         raise HTTPException(status_code=503, detail="discord auth not configured")
-    state = discord_auth.make_session("state", redirect or "")
+    link_email = ""
+    if link_session:
+        data = discord_auth.read_session(link_session)
+        if data and (data.get("k") or "discord") == "email":
+            link_email = str(data.get("sub") or "")
+    state = discord_auth.make_session(
+        "state", json.dumps({"r": redirect or "", "e": link_email}))
     return {"url": discord_auth.login_url(state=state)}
 
 
@@ -1478,8 +1492,40 @@ def auth_callback(code: str = "", state: str = ""):
     user = discord_auth.exchange_code(code)
     if not user or not user.get("id"):
         raise HTTPException(status_code=400, detail="discord sign-in failed")
+
+    # The state carries {r: return-url, e: email-to-link}. Older states were a
+    # bare redirect string, so fall back to treating it as one.
+    try:
+        meta = json.loads(st.get("u") or "{}")
+        if not isinstance(meta, dict):
+            raise ValueError
+    except Exception:  # noqa: BLE001
+        meta = {"r": (st.get("u") or ""), "e": ""}
+
+    # ── ATTACH THE DISCORD ID TO AN EXISTING EMAIL SUBSCRIPTION ─────────────
+    # Somebody who bought without Discord has a subscription keyed on their
+    # email, and the role sync skips any subscription with no Discord id — so
+    # they were paying for a server role they could never receive. This is where
+    # that is repaired. The email came from a session we verified at /login, not
+    # from the caller.
+    link_email = (meta.get("e") or "").strip()
+    if link_email:
+        try:
+            from src import database as _db
+            row = _db.find_subscription(email=link_email)
+            if row.get("stripe_sub_id"):
+                _db.link_subscription(row["stripe_sub_id"],
+                                      discord_id=user["id"], email=link_email)
+                logger.info("linked discord %s to subscription %s",
+                            user["id"], row["stripe_sub_id"])
+                # Drop the cached role result so the next check is live rather
+                # than waiting out the five-minute window.
+                discord_auth.invalidate(user["id"])
+        except Exception:  # noqa: BLE001
+            logger.exception("failed linking discord to %s", link_email)
+
     token = discord_auth.make_session(user["id"], user.get("username", ""))
-    app_url = (st.get("u") or "").strip() or discord_auth.APP_URL
+    app_url = (meta.get("r") or "").strip() or discord_auth.APP_URL
     sep = "&" if "?" in app_url else "?"
     return RedirectResponse(f"{app_url}{sep}session={token}", status_code=303)
 

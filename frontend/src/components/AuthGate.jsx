@@ -144,13 +144,18 @@ export default function AuthGate({ children }) {
   const connectDiscord = async () => {
     setBusy(true)
     try {
+      // Pass the current session when there is one. If it is an EMAIL session
+      // the backend attaches the Discord id to that subscription, which is what
+      // turns a website purchase into a server role.
+      const existing = localStorage.getItem(SESSION_KEY) || ''
       const r = (await api.get('/api/auth/login', {
-        params: { redirect: window.location.origin },
+        params: { redirect: window.location.origin, link_session: existing },
       })).data
       if (r?.url) window.location.href = r.url
     } catch { setBusy(false) }
   }
 
+  const [linkDismissed, setLinkDismissed] = useState(false)
   const [emailMode, setEmailMode] = useState(false)
   const [email, setEmail] = useState('')
   const [emailSent, setEmailSent] = useState(false)
@@ -201,7 +206,43 @@ export default function AuthGate({ children }) {
   // rather than locking everyone out mid-setup.
   if (state.phase === 'legacy') return <PasswordGate>{children}</PasswordGate>
 
-  if (state.phase === 'in') return children
+  if (state.phase === 'in') {
+    const m = state.me || {}
+    // ── PAYING FOR A ROLE THEY CANNOT RECEIVE ──────────────────────────────
+    // Someone who subscribed on the website without Discord has a subscription
+    // keyed on their email, and the role sync skips any subscription with no
+    // Discord id. Without this they would pay for server access that silently
+    // never arrives. Dismissible, because it must not nag anyone who does not
+    // want the Discord at all.
+    const needsLink = m.email && m.discord_linked === false && !linkDismissed
+    if (!needsLink) return children
+    return (
+      <>
+        <div style={{
+          background: 'linear-gradient(90deg, rgba(88,101,242,0.16), rgba(88,101,242,0.05))',
+          borderBottom: '1px solid rgba(88,101,242,0.35)',
+          padding: '11px 14px', display: 'flex', alignItems: 'center', gap: 12,
+          fontFamily: '"Barlow", sans-serif',
+        }}>
+          <div style={{ flex: 1, minWidth: 0, fontSize: 13, color: '#dcdcff',
+                        lineHeight: 1.45 }}>
+            Your subscription is active. <b>Connect Discord</b> to get the
+            premium role in the server too.
+          </div>
+          <button onClick={connectDiscord} disabled={busy} style={{
+            flex: '0 0 auto', padding: '9px 14px', borderRadius: 10, border: 'none',
+            background: '#5865F2', color: '#fff', fontWeight: 800, fontSize: 12.5,
+            letterSpacing: 0.5, cursor: 'pointer',
+          }}>Connect</button>
+          <button onClick={() => setLinkDismissed(true)} style={{
+            flex: '0 0 auto', background: 'transparent', border: 'none',
+            color: '#9a9ac0', fontSize: 19, cursor: 'pointer', padding: '0 4px',
+          }}>×</button>
+        </div>
+        {children}
+      </>
+    )
+  }
 
   const me = state.me || {}
   // The paywall copy is chosen by WHY they were denied. A member sitting in the
