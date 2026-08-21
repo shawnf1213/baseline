@@ -1373,37 +1373,68 @@ def _recent_form_pull(proj_val, surf_matches, prop_type, weight=0.30):
 # ---------------------------------------------------------------------------
 
 
+_PIC_CACHE: dict = {}          # norm name -> (checked_at, url|None)
+_PIC_TTL = 30 * 24 * 3600      # a headshot does not change
+
+
 @app.get("/api/player/image")
-def player_image(player_id: str = ""):
-    """Player headshot, proxied.
+def player_image(name: str = "", player_id: str = ""):
+    """Player headshot, sourced from Wikipedia/Wikimedia.
 
-    Sofascore answers 403 to a DIRECT request for a player image no matter what
-    headers are sent, and the img.* host 404s — which is why every avatar in the
-    app fell back to initials. The backend already reaches Sofascore through a
-    residential session for stats, so the same session can fetch the picture.
+    NOT SOFASCORE: it answers 403 to /player/{id}/image with a bare request,
+    with full browser headers, with a sofascore.com Referer AND through our
+    residential proxy, and img.sofascore.com 404s. There is no way through.
 
-    Cached hard at the edge: a headshot does not change, and re-proxying it on
-    every scroll would burn proxy bandwidth we pay for by the gigabyte.
+    Wikimedia images are freely licensed and hotlinkable, so this redirects to
+    the file rather than proxying the bytes — the browser caches it and we pay
+    no bandwidth.
 
-    A miss returns 404 so the client falls back to initials — never a
-    placeholder face, which would be inventing a person's appearance.
+    IT VERIFIES THE PERSON BEFORE RETURNING A FACE. Wikipedia will happily
+    answer "Michael Zheng" or "Lorenzo Giustino" with some other subject
+    entirely, and showing a stranger's photograph beside a player's name is far
+    worse than showing initials. The article description must identify a tennis
+    player or nothing is returned.
+
+    404 on any miss, so the client falls back to initials — never a placeholder
+    face, which would be inventing someone's appearance.
     """
-    from fastapi.responses import Response
-    from src.api import sofascore_client as sc
-    if not player_id.isdigit():
-        raise HTTPException(status_code=400, detail="player_id must be numeric")
+    from fastapi.responses import RedirectResponse
+    # requests is NOT imported at module level in this file — only curl_cffi
+    # inside one function — so this must be local or the route NameErrors at
+    # request time, which a build would never catch.
+    import requests as _rq
+    import urllib.parse
+    nm = (name or "").strip()
+    if not nm:
+        raise HTTPException(status_code=400, detail="name required")
+    key = nm.lower()
+    hit = _PIC_CACHE.get(key)
+    if hit and (time.time() - hit[0]) < _PIC_TTL:
+        if hit[1]:
+            return RedirectResponse(hit[1], status_code=307)
+        raise HTTPException(status_code=404, detail="no image")
+    url = None
     try:
-        if sc._proxy_session is None:
-            sc._new_session(force_port=True)
-        r = sc._proxy_session.get(
-            f"https://api.sofascore.com/api/v1/player/{player_id}/image", timeout=10)
-        ctype = (r.headers.get("content-type") or "").lower()
-        if r.status_code == 200 and ctype.startswith("image") and r.content:
-            return Response(content=r.content, media_type=ctype,
-                            headers={"Cache-Control": "public, max-age=604800, immutable"})
-        logger.info("player image %s -> %s %s", player_id, r.status_code, ctype[:24])
+        r = _rq.get(
+            "https://en.wikipedia.org/api/rest_v1/page/summary/"
+            + urllib.parse.quote(nm.replace(" ", "_")),
+            # Wikimedia require a descriptive agent and rate-limit generic ones.
+            headers={"User-Agent": "BaselineTennis/1.0 (baselineev.vercel.app)"},
+            timeout=12)
+        if r.status_code == 200:
+            j = r.json() or {}
+            blurb = ((j.get("description") or "") + " "
+                     + (j.get("extract") or "")[:200]).lower()
+            if "tennis" in blurb:
+                url = ((j.get("originalimage") or {}).get("source")
+                       or (j.get("thumbnail") or {}).get("source"))
+            else:
+                logger.info("player image %s: article is not a tennis player", nm)
     except Exception:  # noqa: BLE001
-        logger.exception("player image proxy failed for %s", player_id)
+        logger.warning("player image lookup failed for %s", nm)
+    _PIC_CACHE[key] = (time.time(), url)
+    if url:
+        return RedirectResponse(url, status_code=307)
     raise HTTPException(status_code=404, detail="no image")
 
 

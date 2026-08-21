@@ -470,7 +470,13 @@ export function hitStrip(history, refLine) {
 // Player headshot straight from Sofascore by id (real data, not a placeholder).
 // The backend exposes no photo, so this is sourced client-side; callers fall
 // back to an initials avatar when it fails to load.
-export const sofaImg = (id) => id ? `https://api.sofascore.app/api/v1/player/${id}/image` : null
+// Headshot URL. Keyed by NAME, not a Sofascore id: Sofascore answers 403 to
+// its own image endpoint from everywhere we can call it, so the backend sources
+// the picture from Wikimedia instead and verifies the article is a tennis
+// player before returning one. Same-origin, so it works on any host without a
+// CORS allowlist entry.
+export const playerImg = (name) =>
+  name ? `/api/player/image?name=${encodeURIComponent(name)}` : null
 
 export const initials = (name) => {
   const t = (name || '').trim().split(/\s+/)

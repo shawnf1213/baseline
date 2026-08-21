@@ -1,13 +1,16 @@
 import { useState } from 'react'
 import { T } from './theme'
-import { sofaImg, initials } from './data'
+import { playerImg, initials } from './data'
 
 // Player headshot. Sourced directly from Sofascore by id (the backend exposes
 // no photo). Falls back to an initials avatar when there's no id or the image
 // fails to load — never a fabricated/placeholder face.
-export default function PlayerPhoto({ id, name, size = 64, ring = true }) {
+// Looked up by NAME. Call sites still pass an `id` prop; it is simply
+// ignored via the rest of the props, so nothing had to change at the call
+// sites when the source moved off Sofascore.
+export default function PlayerPhoto({ name, size = 64, ring = true }) {
   const [failed, setFailed] = useState(false)
-  const src = sofaImg(id)
+  const src = playerImg(name)
   const showImg = src && !failed
 
   const box = {
