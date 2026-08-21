@@ -204,6 +204,9 @@ function TabBar({ tabs, activeKey, onChange }) {
 // ~930px wide but only ~430px tall — the width alone would wrongly trip a
 // width-only breakpoint into the desktop layout, so require height too. No phone
 // (portrait or landscape) exceeds 500px on its short side; laptops/desktops do.
+// Flip to true to route wide viewports back to the original optimizer layout.
+const DESKTOP_OPTIMIZER = false
+
 function isDesktopViewport() {
   if (typeof window === 'undefined') return true
   return window.innerWidth > 900 && window.innerHeight > 500
@@ -225,11 +228,23 @@ export default function App() {
     }
   }, [])
 
-  // Mobile (≤900px): the installable research app with its own bottom-tab shell.
-  // Desktop (>900px): the existing optimizer layout below, unchanged.
-  if (!isDesktop) {
+  // ── ONE APP ON EVERY SCREEN ────────────────────────────────────────────────
+  // This used to hand desktop the original optimizer layout and phones the
+  // research shell. The shell is where all the current work lives — the live
+  // boards, conviction-weighted rows, the projections tab, the pick log, the
+  // Discord/Stripe gate — so anyone opening the site on a laptop was served a
+  // genuinely old product with no way to reach the new one.
+  //
+  // The shell is width-capped and centred, so a wide window shows the same
+  // interface in a readable column rather than a phone layout stretched across
+  // 1900px.
+  //
+  // The optimizer below is kept, not deleted, and is reachable again by
+  // flipping DESKTOP_OPTIMIZER to true. Gated on a flag rather than left after
+  // an unconditional return so it stays live code the linter can see.
+  if (!DESKTOP_OPTIMIZER || !isDesktop) {
     return (
-      <ErrorBoundary label="Mobile App">
+      <ErrorBoundary label="Baseline App">
         <MobileShell />
       </ErrorBoundary>
     )

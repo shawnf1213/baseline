@@ -27,7 +27,10 @@ function Icon({ name, active }) {
 export default function BottomNav({ active, onChange }) {
   return (
     <nav style={{
-      position: 'fixed', left: 0, right: 0, bottom: 0, zIndex: 1000,
+      // Centred and capped so a desktop window gets a nav bar the width of
+      // the content, not one stretched edge to edge across the screen.
+      position: 'fixed', left: '50%', transform: 'translateX(-50%)',
+      bottom: 0, zIndex: 1000, width: '100%', maxWidth: 640,
       background: 'rgba(10,10,10,0.96)', borderTop: `1px solid ${T.border}`,
       paddingBottom: SAFE_BOTTOM,
       display: 'grid', gridTemplateColumns: `repeat(${TABS.length}, 1fr)`,
