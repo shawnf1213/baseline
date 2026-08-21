@@ -270,18 +270,43 @@ export function ConfBar({ conf, tone, max = 132 }) {
 }
 
 // The one number a card exists to show, in a tinted well.
-export function BigStat({ value, label, tone, rgb, muted }) {
+export function BigStat({ value, label, proj, tone, rgb, muted }) {
+  // TWO NUMBERS, BOTH LEGIBLE. The projection is the model's actual answer and
+  // it was 9px grey text tucked under the edge — smaller than the line it is
+  // being compared against, and the quietest thing on a card built to show it.
+  //
+  // The edge keeps the colour because it carries the direction and drives the
+  // card's conviction; the projection is white, because it is a measurement
+  // rather than a verdict and colouring it would imply a side it does not have.
+  const showProj = proj !== undefined && proj !== null && proj !== ''
   return (
     <div style={{
-      textAlign: 'center', minWidth: 86, padding: '7px 10px', borderRadius: 12,
+      minWidth: showProj ? 132 : 90, padding: '8px 11px', borderRadius: 12,
       background: muted ? 'transparent' : `rgba(${rgb},0.10)`,
       border: `1px solid ${muted ? T.border : `rgba(${rgb},0.30)`}`,
+      display: 'flex', alignItems: 'center',
+      justifyContent: showProj ? 'space-between' : 'center', gap: 10,
     }}>
-      <div style={{ fontSize: 28, fontWeight: 800, color: muted ? T.muted2 : tone,
-                    textShadow: muted ? 'none' : `0 0 18px rgba(${rgb},0.45)`,
-                    lineHeight: 1.05, fontVariantNumeric: 'tabular-nums' }}>{value}</div>
-      <div style={{ fontFamily: T.cond, fontWeight: 700, fontSize: 9,
-                    letterSpacing: 1.2, color: T.muted2 }}>{label}</div>
+      {showProj && (
+        <div style={{ textAlign: 'center' }}>
+          <div style={{ fontSize: 22, fontWeight: 800, color: T.white,
+                        lineHeight: 1.05, fontVariantNumeric: 'tabular-nums' }}>{proj}</div>
+          <div style={{ fontFamily: T.cond, fontWeight: 700, fontSize: 9,
+                        letterSpacing: 1.2, color: T.muted2 }}>PROJ</div>
+        </div>
+      )}
+      {showProj && (
+        <div style={{ width: 1, alignSelf: 'stretch',
+                      background: `rgba(${rgb},0.28)` }} />
+      )}
+      <div style={{ textAlign: 'center' }}>
+        <div style={{ fontSize: showProj ? 22 : 28, fontWeight: 800,
+                      color: muted ? T.muted2 : tone,
+                      textShadow: muted ? 'none' : `0 0 18px rgba(${rgb},0.45)`,
+                      lineHeight: 1.05, fontVariantNumeric: 'tabular-nums' }}>{value}</div>
+        <div style={{ fontFamily: T.cond, fontWeight: 700, fontSize: 9,
+                      letterSpacing: 1.2, color: T.muted2 }}>{label}</div>
+      </div>
     </div>
   )
 }

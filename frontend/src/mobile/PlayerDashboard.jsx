@@ -202,7 +202,7 @@ export default function PlayerDashboard({ player, boards, onClose, onOpenPlayer 
                             </div>
                             <div style={{ fontFamily: T.cond, fontWeight: 700, fontSize: 10,
                                           letterSpacing: 1.1, color: T.muted2, marginTop: 3 }}>
-                              LINE {fmt(r.line, Number.isInteger(r.line) ? 0 : 1)} · PROJ {done ? fmt(p.projection) : '—'}
+                              LINE {fmt(r.line, Number.isInteger(r.line) ? 0 : 1)}
                             </div>
                           </div>
 
@@ -213,8 +213,9 @@ export default function PlayerDashboard({ player, boards, onClose, onOpenPlayer 
                               this row is worth a look, so it gets the size. */}
                           {done ? (
                             <BigStat tone={s.tone} rgb={s.rgb}
+                              proj={fmt(p.projection)}
                               value={`${p.edge > 0 ? '+' : ''}${fmt(p.edge)}`}
-                              label="EDGE VS LINE" />
+                              label="EDGE" />
                           ) : (
                             <div style={{ minWidth: 86, textAlign: 'center' }}>
                               {p.loading ? <Spinner size={16} />

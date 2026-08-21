@@ -175,8 +175,9 @@ function PropRow({ r, saved, onSave, onOpen, index = 0 }) {
 
           {hasProj ? (
             <BigStat tone={tone} rgb={rgb}
+              proj={fmt(r.projection)}
               value={`${r.edge > 0 ? '+' : ''}${fmt(r.edge)}`}
-              label={`EDGE · PROJ ${fmt(r.projection)}`} />
+              label="EDGE" />
           ) : (
             <div style={{ minWidth: 86, textAlign: 'center' }}>
               {r._state === 'loading' ? <Spinner size={16} />
