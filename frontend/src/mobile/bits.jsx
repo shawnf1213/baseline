@@ -1,28 +1,71 @@
+import { motion } from 'framer-motion'
 import { T } from './theme'
 import { fmtSigned } from './data'
 
-export function Card({ children, style, onClick, ...rest }) {
+// ── SHARED SURFACES ──────────────────────────────────────────────────────────
+// Card and Chip are used by every tab, so this file is where motion and depth
+// buy the most: one change here reaches Boards, Picks, Players, Search and
+// Projections at once.
+//
+// The app had framer-motion and gsap installed and imported in ZERO files, and
+// not one transition or animation anywhere in src/mobile. It read as flat
+// because nothing ever moved or responded, not because anything was missing.
+//
+// Motion here is functional rather than decorative: cards rise as they arrive
+// so a list reads as arriving rather than blinking into place, and everything
+// tappable shrinks under the finger so a touch is acknowledged before the
+// network answers. Durations stay under ~250ms — past that it stops feeling
+// responsive and starts feeling slow.
+
+// Respect a user who has asked the OS for less motion. Ignoring that setting
+// causes real discomfort for people with vestibular conditions, and the cost of
+// honouring it is one media query.
+const REDUCED = typeof window !== 'undefined'
+  && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+
+export function Card({ children, style, onClick, index = 0, ...rest }) {
   return (
-    <div onClick={onClick} style={{
-      background: T.card, border: `1px solid ${T.border}`, borderRadius: 14,
-      ...(onClick ? { cursor: 'pointer', WebkitTapHighlightColor: 'transparent' } : null),
-      ...style,
-    }} {...rest}>{children}</div>
+    <motion.div
+      onClick={onClick}
+      initial={REDUCED ? false : { opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{
+        duration: 0.26, ease: [0.16, 1, 0.3, 1],
+        // Stagger by position so a list cascades instead of appearing at once.
+        // Capped at 6 items — beyond that the last card would visibly lag.
+        delay: REDUCED ? 0 : Math.min(index, 6) * 0.035,
+      }}
+      whileTap={onClick && !REDUCED ? { scale: 0.985 } : undefined}
+      style={{
+        background: `linear-gradient(160deg, ${T.cardHi} 0%, ${T.card} 62%)`,
+        border: `1px solid ${T.border}`, borderRadius: 14,
+        boxShadow: '0 1px 0 rgba(255,255,255,0.03) inset, 0 6px 18px rgba(0,0,0,0.35)',
+        ...(onClick ? { cursor: 'pointer', WebkitTapHighlightColor: 'transparent' } : null),
+        ...style,
+      }} {...rest}>{children}</motion.div>
   )
 }
 
 // Filter / segment chip — 40px+ tall touch target.
 export function Chip({ active, onClick, children, style }) {
   return (
-    <button onClick={onClick} style={{
-      minHeight: 40, padding: '8px 14px', borderRadius: 999,
-      fontFamily: T.cond, fontWeight: 700, fontSize: 13, letterSpacing: 0.6,
-      textTransform: 'uppercase', whiteSpace: 'nowrap', cursor: 'pointer',
-      border: `1px solid ${active ? T.green : T.border}`,
-      background: active ? 'rgba(0,230,118,0.12)' : 'transparent',
-      color: active ? T.green : T.muted,
-      transition: 'all 140ms ease', ...style,
-    }}>{children}</button>
+    <motion.button
+      onClick={onClick}
+      whileTap={REDUCED ? undefined : { scale: 0.93 }}
+      transition={{ type: 'spring', stiffness: 520, damping: 30 }}
+      style={{
+        minHeight: 40, padding: '8px 14px', borderRadius: 999,
+        fontFamily: T.cond, fontWeight: 700, fontSize: 13, letterSpacing: 0.6,
+        textTransform: 'uppercase', whiteSpace: 'nowrap', cursor: 'pointer',
+        border: `1px solid ${active ? T.green : T.border}`,
+        background: active ? 'rgba(0,230,118,0.14)' : 'transparent',
+        color: active ? T.green : T.muted,
+        // A selected chip glows rather than merely changing colour, so the
+        // active filter is findable at a glance in a long scrolling row.
+        boxShadow: active ? '0 0 0 1px rgba(0,230,118,0.25), 0 0 14px rgba(0,230,118,0.18)' : 'none',
+        transition: 'background 140ms ease, color 140ms ease, box-shadow 180ms ease',
+        ...style,
+      }}>{children}</motion.button>
   )
 }
 

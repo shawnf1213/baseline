@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { T, SAFE_TOP, SAFE_BOTTOM } from './theme'
 import BottomNav from './BottomNav'
+import { motion, AnimatePresence } from 'framer-motion'
 import BoardTab from './BoardTab'
 import ProjectionsTab from './ProjectionsTab'
 import PicksTab from './PicksTab'
@@ -88,14 +89,25 @@ export default function MobileShell() {
         </div>
       </header>
 
-      {/* Tab content */}
+      {/* Tab content — cross-faded so switching tabs reads as a transition
+          rather than an instant repaint. mode="wait" would double the delay,
+          so the outgoing view is simply replaced. */}
       <main style={{ padding: `16px 14px calc(84px + ${SAFE_BOTTOM})`, maxWidth: 640, margin: '0 auto' }}>
-        {tab === 'board' && <BoardTab boards={boards} book={book} setBook={setBook} loading={loading} error={error} reload={load} onOpenPlayer={onOpenPlayer} />}
-        {tab === 'project' && <ProjectionsTab />}
-        {tab === 'picks' && <PicksTab record={record} slate={slate} loading={loading} error={recordError} onOpenPlayer={onOpenPlayer} />}
-        {tab === 'players' && <PlayersTab boards={boards} loading={loading} onOpenPlayer={onOpenPlayer} />}
-        {tab === 'search' && <SearchTab onOpenPlayer={onOpenPlayer} />}
-        {tab === 'research' && <ResearchTab onOpenPlayer={onOpenPlayer} />}
+        <AnimatePresence initial={false}>
+          <motion.div
+            key={tab}
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+          >
+            {tab === 'board' && <BoardTab boards={boards} book={book} setBook={setBook} loading={loading} error={error} reload={load} onOpenPlayer={onOpenPlayer} />}
+            {tab === 'project' && <ProjectionsTab />}
+            {tab === 'picks' && <PicksTab record={record} slate={slate} loading={loading} error={recordError} onOpenPlayer={onOpenPlayer} />}
+            {tab === 'players' && <PlayersTab boards={boards} loading={loading} onOpenPlayer={onOpenPlayer} />}
+            {tab === 'search' && <SearchTab onOpenPlayer={onOpenPlayer} />}
+            {tab === 'research' && <ResearchTab onOpenPlayer={onOpenPlayer} />}
+          </motion.div>
+        </AnimatePresence>
       </main>
 
       <BottomNav active={tab} onChange={setTab} />

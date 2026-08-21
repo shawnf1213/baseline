@@ -1,3 +1,4 @@
+import { motion } from 'framer-motion'
 import { T, SAFE_BOTTOM } from './theme'
 
 const TABS = [
@@ -35,7 +36,8 @@ export default function BottomNav({ active, onChange }) {
       {TABS.map(t => {
         const on = active === t.key
         return (
-          <button key={t.key} onClick={() => onChange(t.key)} style={{
+          <motion.button key={t.key} onClick={() => onChange(t.key)} whileTap={{ scale: 0.9 }} style={{
+            position: 'relative',
             display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 4,
             minHeight: 58, padding: '8px 4px 10px', background: 'transparent', border: 'none',
             cursor: 'pointer', WebkitTapHighlightColor: 'transparent',
@@ -45,7 +47,7 @@ export default function BottomNav({ active, onChange }) {
               fontFamily: T.cond, fontWeight: 700, fontSize: 10.5, letterSpacing: 0.8,
               textTransform: 'uppercase', color: on ? T.green : T.muted2,
             }}>{t.label}</span>
-          </button>
+          </motion.button>
         )
       })}
     </nav>

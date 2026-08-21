@@ -106,8 +106,8 @@ export default function BoardTab({ boards, book, setBook, loading, error, onOpen
             : `${book === 'underdog' ? 'Underdog' : 'PrizePicks'} has no tennis lines up right now. Check back when matches are near.`} />
       )}
 
-      {!loading && !error && rows.map(r => (
-        <PropRow key={r.key} r={r}
+      {!loading && !error && rows.map((r, i) => (
+        <PropRow key={r.key} r={r} index={i}
           saved={has(propBookmarkId(r))}
           onSave={() => toggle({ id: propBookmarkId(r), kind: 'prop', ...r })}
           onOpen={() => onOpenPlayer({ name: r.player, tour: r.tour })} />
@@ -126,11 +126,11 @@ export default function BoardTab({ boards, book, setBook, loading, error, onOpen
   )
 }
 
-function PropRow({ r, saved, onSave, onOpen }) {
+function PropRow({ r, saved, onSave, onOpen, index = 0 }) {
   const start = startTimeLabel(r.startTs)
   const hasProj = r._state === 'done'
   return (
-    <Card onClick={onOpen} style={{ padding: '12px 12px 12px 14px', marginBottom: 10 }}>
+    <Card onClick={onOpen} index={index} style={{ padding: '12px 12px 12px 14px', marginBottom: 10 }}>
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 }}>
         <div style={{ minWidth: 0, flex: 1 }}>
           <span style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 18, color: T.white, letterSpacing: 0.3 }}>{r.player}</span>
