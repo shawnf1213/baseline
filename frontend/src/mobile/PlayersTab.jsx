@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 import { T } from './theme'
-import { Card, Spinner, Empty, SectionLabel } from './bits'
+import { Card, Spinner, Empty, SectionLabel , SideRail } from './bits'
 import PlayerPhoto from './PlayerPhoto'
 import { boardPlayers, mergedBoardRows } from './data'
 import { useRecentPlayers } from './useRecent'
@@ -43,12 +43,18 @@ export default function PlayersTab({ boards, loading, onOpenPlayer }) {
 
       {!loading && players.map(p => (
         <Card key={p.player} onClick={() => onOpenPlayer({ name: p.player, tour: p.tour })}
-          style={{ display: 'flex', alignItems: 'center', gap: 12, padding: 10, marginBottom: 8 }}>
+          index={players.indexOf(p)}
+          style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 12px 10px 16px',
+                   marginBottom: 8, position: 'relative', overflow: 'hidden' }}>
+          {/* Neutral rail — this list is people, not calls, so it carries the
+              shape of the language without claiming a side it does not have. */}
+          <SideRail rgb={null} weight={1} />
           <PlayerPhoto id={null} name={p.player} size={44} />
           <div style={{ minWidth: 0, flex: 1 }}>
             <div style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 17, color: T.white, letterSpacing: 0.3 }}>{p.player}</div>
             <div style={{ color: T.muted, fontSize: 12.5, marginTop: 1 }}>
-              {p.props} prop{p.props !== 1 ? 's' : ''}{p.surface ? ` · ${p.surface}` : ''} · {p.tour}
+              <span style={{ color: T.green, fontWeight: 800 }}>{p.props}</span>
+              {` prop${p.props !== 1 ? 's' : ''}`}{p.surface ? ` · ${p.surface}` : ''} · {p.tour}
             </div>
           </div>
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={T.muted2} strokeWidth="2" strokeLinecap="round"><path d="M9 6l6 6-6 6" /></svg>

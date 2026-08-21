@@ -1,6 +1,6 @@
 import { useMemo, useState, useEffect } from 'react'
 import { T } from './theme'
-import { Card, Heart, Spinner, Empty, Segment } from './bits'
+import { Card, Heart, Spinner, Empty, Segment, tier, sideTone, SideRail, TierBadge, ConfBar, BigStat, tierCardStyle } from './bits'
 import FilterSheet from './FilterSheet'
 import { shortProp, startTimeLabel, fmt } from './data'
 import { projectRow, cachedProjection } from './project'
@@ -126,54 +126,18 @@ export default function BoardTab({ boards, book, setBook, loading, error, onOpen
   )
 }
 
-// ── CONVICTION DRIVES THE VISUAL WEIGHT ──────────────────────────────────────
-// Every row used to look identical whether it carried a 12-point edge or a coin
-// flip, so a reader had to compare small grey numbers to find anything worth
-// looking at. Colour, glow and border strength are now a function of
-// confidence: the plays worth attention are the ones that LOOK loud, and a scan
-// of the board lands on them without reading a single number.
-//
-// The bands are the ones confidence.py already uses, so what the eye is told
-// matches what the model actually said — a card cannot look elite while
-// scoring 61.
-function tier(conf) {
-  if (conf == null) return { key: 'none', label: '', weight: 0 }
-  if (conf >= 80) return { key: 'elite', label: 'ELITE', weight: 3 }
-  if (conf >= 72) return { key: 'strong', label: 'STRONG', weight: 2 }
-  if (conf >= 64) return { key: 'lean', label: 'LEAN', weight: 1 }
-  return { key: 'thin', label: '', weight: 0 }
-}
-
 function PropRow({ r, saved, onSave, onOpen, index = 0 }) {
   const start = startTimeLabel(r.startTs)
   const hasProj = r._state === 'done'
-  const side = hasProj && r.edge != null
-    ? (r.edge > 0 ? 'OVER' : r.edge < 0 ? 'UNDER' : null) : null
-  const tone = side === 'OVER' ? T.green : side === 'UNDER' ? T.red : T.muted2
-  const rgb = side === 'OVER' ? '0,230,118' : side === 'UNDER' ? '255,68,68' : '107,107,107'
-  const tr = tier(hasProj ? r.confidence : null)
+  const { side, tone, rgb } = sideTone(hasProj ? r.edge : null)
+  const conf = hasProj ? r.confidence : null
 
   return (
     <Card onClick={onOpen} index={index} style={{
       padding: 0, marginBottom: 10, overflow: 'hidden', position: 'relative',
-      // Outline and glow both scale with conviction, so the board has a visible
-      // top end instead of one flat texture.
-      border: `1px solid ${tr.weight >= 2 ? `rgba(${rgb},0.45)` : T.border}`,
-      boxShadow: tr.weight >= 3
-        ? `0 0 0 1px rgba(${rgb},0.20), 0 6px 26px rgba(${rgb},0.16), 0 6px 18px rgba(0,0,0,0.4)`
-        : tr.weight === 2
-          ? `0 4px 18px rgba(${rgb},0.09), 0 6px 18px rgba(0,0,0,0.38)`
-          : '0 6px 18px rgba(0,0,0,0.35)',
+      ...tierCardStyle(conf, rgb),
     }}>
-      {/* Side rail — the fastest read on the card. Colour says which way, and
-          thickness says how strongly. */}
-      <div style={{
-        position: 'absolute', left: 0, top: 0, bottom: 0,
-        width: tr.weight >= 3 ? 5 : tr.weight === 2 ? 4 : 3,
-        background: side
-          ? `linear-gradient(180deg, rgba(${rgb},0.95), rgba(${rgb},0.35))`
-          : T.border,
-      }} />
+      <SideRail rgb={side ? rgb : null} weight={tier(conf).weight} />
 
       <div style={{ padding: '12px 12px 12px 16px' }}>
         <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
@@ -181,14 +145,7 @@ function PropRow({ r, saved, onSave, onOpen, index = 0 }) {
             <div style={{ display: 'flex', alignItems: 'center', gap: 7, flexWrap: 'wrap' }}>
               <span style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 19,
                              color: T.white, letterSpacing: 0.3 }}>{r.player}</span>
-              {tr.label && (
-                <span style={{
-                  fontFamily: T.cond, fontWeight: 800, fontSize: 9.5, letterSpacing: 1.2,
-                  color: tone, padding: '2.5px 7px', borderRadius: 6,
-                  background: `rgba(${rgb},0.13)`, border: `1px solid rgba(${rgb},0.4)`,
-                  boxShadow: tr.weight >= 3 ? `0 0 12px rgba(${rgb},0.35)` : 'none',
-                }}>{tr.label}</span>
-              )}
+              <TierBadge conf={conf} tone={tone} rgb={rgb} />
             </div>
             <div style={{ color: T.muted, fontSize: 12.5, marginTop: 2 }}>
               vs {r.opponent}{r.surface ? ` · ${r.surface}` : ''}{r.tour ? ` · ${r.tour}` : ''}
@@ -204,13 +161,9 @@ function PropRow({ r, saved, onSave, onOpen, index = 0 }) {
                           color: T.muted, marginBottom: 3 }}>
               {shortProp(r.propType)}
             </div>
-            {/* The CALL in words, rather than leaving it to be inferred from the
-                sign of a small delta. */}
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
               <span style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 20,
-                             color: tone, letterSpacing: 0.5 }}>
-                {side || '—'}
-              </span>
+                             color: tone, letterSpacing: 0.5 }}>{side || '—'}</span>
               <span style={{ fontSize: 17, fontWeight: 800, color: T.white,
                              fontVariantNumeric: 'tabular-nums' }}>
                 {fmt(r.line, Number.isInteger(r.line) ? 0 : 1)}
@@ -218,50 +171,25 @@ function PropRow({ r, saved, onSave, onOpen, index = 0 }) {
             </div>
           </div>
 
-          {/* The edge, at the largest size on the card — it is the reason to
-              look at this row at all. */}
-          <div style={{
-            textAlign: 'center', minWidth: 86, padding: '7px 10px', borderRadius: 12,
-            background: hasProj ? `rgba(${rgb},0.10)` : 'transparent',
-            border: `1px solid ${hasProj ? `rgba(${rgb},0.30)` : T.border}`,
-          }}>
-            {hasProj ? (
-              <>
-                <div style={{ fontSize: 25, fontWeight: 800, color: tone, lineHeight: 1.05,
-                              fontVariantNumeric: 'tabular-nums' }}>
-                  {r.edge > 0 ? '+' : ''}{fmt(r.edge)}
-                </div>
-                <div style={{ fontFamily: T.cond, fontWeight: 700, fontSize: 9,
-                              letterSpacing: 1.2, color: T.muted2 }}>
-                  EDGE · PROJ {fmt(r.projection)}
-                </div>
-              </>
-            ) : r._state === 'loading' ? <Spinner size={16} />
-              : <span style={{ color: T.muted2, fontSize: 12 }}>—</span>}
-          </div>
+          {hasProj ? (
+            <BigStat tone={tone} rgb={rgb}
+              value={`${r.edge > 0 ? '+' : ''}${fmt(r.edge)}`}
+              label={`EDGE · PROJ ${fmt(r.projection)}`} />
+          ) : (
+            <div style={{ minWidth: 86, textAlign: 'center' }}>
+              {r._state === 'loading' ? <Spinner size={16} />
+                : <span style={{ color: T.muted2, fontSize: 12 }}>—</span>}
+            </div>
+          )}
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between',
                       marginTop: 10, gap: 8 }}>
           <span style={{ color: T.muted2, fontSize: 11 }}>{start ? `⏱ ${start}` : ''}</span>
-          {hasProj && r.confidence != null && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 7, flex: 1,
-                          maxWidth: 132 }}>
-              <div style={{ flex: 1, height: 4, borderRadius: 3, background: '#1c1c1c',
-                            overflow: 'hidden' }}>
-                <div style={{ width: `${Math.min(100, r.confidence)}%`, height: '100%',
-                              background: tone, borderRadius: 3 }} />
-              </div>
-              <span style={{ fontSize: 11.5, fontWeight: 800, color: tone,
-                             fontVariantNumeric: 'tabular-nums' }}>
-                {Math.round(r.confidence)}
-              </span>
-            </div>
-          )}
+          <ConfBar conf={conf} tone={tone} />
         </div>
       </div>
     </Card>
   )
 }
-
 

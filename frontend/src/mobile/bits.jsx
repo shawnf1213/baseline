@@ -192,3 +192,106 @@ export function MiniBars({ values, refLine }) {
     </div>
   )
 }
+
+// ── ONE VISUAL LANGUAGE, DEFINED ONCE ────────────────────────────────────────
+// These are the pieces the Boards redesign introduced, lifted out of BoardTab
+// so every screen speaks the same language instead of each growing its own
+// one-off treatment. A confidence of 78 must look the same on the board, in the
+// pick log, on a saved item and inside a player screen — otherwise a reader has
+// to relearn the interface on every tab, and inconsistency reads as sloppiness
+// far more than plainness does.
+
+// Confidence bands. THESE ARE THE BANDS confidence.py ALREADY USES (80/72/64),
+// so what the eye is told matches what the model said. A card must never look
+// elite while scoring 61: an interface that oversells the model is worse than
+// a plain one.
+export function tier(conf) {
+  if (conf == null) return { key: 'none', label: '', weight: 0 }
+  if (conf >= 80) return { key: 'elite', label: 'ELITE', weight: 3 }
+  if (conf >= 72) return { key: 'strong', label: 'STRONG', weight: 2 }
+  if (conf >= 64) return { key: 'lean', label: 'LEAN', weight: 1 }
+  return { key: 'thin', label: '', weight: 0 }
+}
+
+// Colour for a side. Accepts a lean string or a signed edge, because different
+// screens hold one or the other and neither should have to convert.
+export function sideTone(leanOrEdge) {
+  const s = typeof leanOrEdge === 'number'
+    ? (leanOrEdge > 0 ? 'OVER' : leanOrEdge < 0 ? 'UNDER' : null)
+    : (leanOrEdge || '').toUpperCase()
+  if (s === 'OVER') return { side: 'OVER', tone: T.green, rgb: '0,230,118' }
+  if (s === 'UNDER') return { side: 'UNDER', tone: T.red, rgb: '255,68,68' }
+  return { side: null, tone: T.muted2, rgb: '107,107,107' }
+}
+
+// The coloured edge of a card: which way, and how strongly. Absolutely
+// positioned, so any Card using it needs position:relative and overflow:hidden.
+export function SideRail({ rgb, weight = 1, tone }) {
+  return (
+    <div style={{
+      position: 'absolute', left: 0, top: 0, bottom: 0,
+      width: weight >= 3 ? 5 : weight === 2 ? 4 : 3,
+      background: rgb
+        ? `linear-gradient(180deg, rgba(${rgb},0.95), rgba(${rgb},0.35))`
+        : (tone || T.border),
+    }} />
+  )
+}
+
+export function TierBadge({ conf, tone, rgb }) {
+  const tr = tier(conf)
+  if (!tr.label) return null
+  return (
+    <span style={{
+      fontFamily: T.cond, fontWeight: 800, fontSize: 9.5, letterSpacing: 1.2,
+      color: tone, padding: '2.5px 7px', borderRadius: 6,
+      background: `rgba(${rgb},0.13)`, border: `1px solid rgba(${rgb},0.4)`,
+      boxShadow: tr.weight >= 3 ? `0 0 12px rgba(${rgb},0.35)` : 'none',
+    }}>{tr.label}</span>
+  )
+}
+
+// Confidence as something you can see the size of, rather than a bare number.
+export function ConfBar({ conf, tone, max = 132 }) {
+  if (conf == null) return null
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 7, flex: 1, maxWidth: max }}>
+      <div style={{ flex: 1, height: 4, borderRadius: 3, background: '#1c1c1c', overflow: 'hidden' }}>
+        <div style={{ width: `${Math.min(100, conf)}%`, height: '100%',
+                      background: tone, borderRadius: 3 }} />
+      </div>
+      <span style={{ fontSize: 11.5, fontWeight: 800, color: tone,
+                     fontVariantNumeric: 'tabular-nums' }}>{Math.round(conf)}</span>
+    </div>
+  )
+}
+
+// The one number a card exists to show, in a tinted well.
+export function BigStat({ value, label, tone, rgb, muted }) {
+  return (
+    <div style={{
+      textAlign: 'center', minWidth: 86, padding: '7px 10px', borderRadius: 12,
+      background: muted ? 'transparent' : `rgba(${rgb},0.10)`,
+      border: `1px solid ${muted ? T.border : `rgba(${rgb},0.30)`}`,
+    }}>
+      <div style={{ fontSize: 25, fontWeight: 800, color: muted ? T.muted2 : tone,
+                    lineHeight: 1.05, fontVariantNumeric: 'tabular-nums' }}>{value}</div>
+      <div style={{ fontFamily: T.cond, fontWeight: 700, fontSize: 9,
+                    letterSpacing: 1.2, color: T.muted2 }}>{label}</div>
+    </div>
+  )
+}
+
+// Card styling for a conviction tier — border and glow scale together so the
+// list has a visible top end rather than one flat texture.
+export function tierCardStyle(conf, rgb) {
+  const w = tier(conf).weight
+  return {
+    border: `1px solid ${w >= 2 ? `rgba(${rgb},0.45)` : T.border}`,
+    boxShadow: w >= 3
+      ? `0 0 0 1px rgba(${rgb},0.20), 0 6px 26px rgba(${rgb},0.16), 0 6px 18px rgba(0,0,0,0.4)`
+      : w === 2
+        ? `0 4px 18px rgba(${rgb},0.09), 0 6px 18px rgba(0,0,0,0.38)`
+        : '0 6px 18px rgba(0,0,0,0.35)',
+  }
+}

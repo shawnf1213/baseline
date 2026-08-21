@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { T } from './theme'
-import { Card, Spinner, Empty, Segment, ResultBadge, SectionLabel } from './bits'
+import { Card, Spinner, Empty, Segment, ResultBadge, SectionLabel , sideTone, SideRail, TierBadge, ConfBar, tierCardStyle } from './bits'
 import { shortProp, fmt, prettyDate, etToday, derivePicks, rollingRecord, resultMeta } from './data'
 
 const BOOKS = [
@@ -95,12 +95,20 @@ function PickRow({ r, onOpen }) {
   const meta = resultMeta(r.result)
   const dim = meta.tone === 'void'
   return (
-    <Card onClick={onOpen} style={{ padding: '12px 12px 12px 14px', marginBottom: 10, opacity: dim ? 0.55 : 1 }}>
+    <Card onClick={onOpen} style={{
+      padding: '12px 12px 12px 16px', marginBottom: 10, opacity: dim ? 0.55 : 1,
+      position: 'relative', overflow: 'hidden',
+      // Same rail and glow as the board, so a pick reads identically whether it
+      // is being offered or being scored.
+      ...tierCardStyle(r.confidence, sideTone(r.lean).rgb),
+    }}>
+      <SideRail rgb={sideTone(r.lean).rgb} weight={2} />
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 }}>
         <div style={{ minWidth: 0, flex: 1 }}>
-          <span style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 18, color: T.white, letterSpacing: 0.3 }}>
+          <span style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 19, color: T.white, letterSpacing: 0.3 }}>
             {r.player}
           </span>
+          <TierBadge conf={r.confidence} tone={sideTone(r.lean).tone} rgb={sideTone(r.lean).rgb} />
           {r.isThreeX && (
             <span style={{
               marginLeft: 6, fontFamily: T.cond, fontWeight: 800, fontSize: 10, letterSpacing: 1,
@@ -127,7 +135,9 @@ function PickRow({ r, onOpen }) {
         </span>
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 12 }}>
           <Metric label="Proj" value={fmt(r.projection)} accent />
-          {r.confidence != null && <Metric label="Conf" value={`${Math.round(r.confidence)}%`} muted />}
+          {r.confidence != null && (
+            <ConfBar conf={r.confidence} tone={sideTone(r.lean).tone} max={104} />
+          )}
         </div>
       </div>
     </Card>

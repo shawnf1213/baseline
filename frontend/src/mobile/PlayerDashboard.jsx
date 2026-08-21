@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react'
 import { T, SAFE_TOP } from './theme'
-import { Card, Heart, Spinner, Empty, SectionLabel, Delta } from './bits'
+import { Card, Heart, Spinner, Empty, SectionLabel, Delta , sideTone, SideRail, TierBadge, tierCardStyle } from './bits'
 import PlayerPhoto from './PlayerPhoto'
 import ConfidenceGauge from '../components/ConfidenceGauge'
 import Last5Bars from '../components/Last5Bars'
@@ -159,14 +159,27 @@ export default function PlayerDashboard({ player, boards, onClose, onOpenPlayer 
             {boardRows.length > 0 && (
               <section style={{ marginBottom: 22 }}>
                 <SectionLabel>Live Props</SectionLabel>
-                {boardRows.map(r => {
+                {boardRows.map((r, i) => {
                   const p = propProj[r.key] || {}
                   const done = !p.loading && !p.failed && p.projection != null
                   return (
-                    <Card key={r.key} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 14px', marginBottom: 10 }}>
+                    <Card key={r.key} index={i} style={{
+                      display: 'flex', alignItems: 'center', gap: 12,
+                      padding: '12px 14px 12px 16px', marginBottom: 10,
+                      position: 'relative', overflow: 'hidden',
+                      // Identical treatment to the board row this was opened
+                      // from — tapping a player should feel like moving deeper
+                      // into the same object, not arriving somewhere new.
+                      ...tierCardStyle(done ? p.confidence : null, sideTone(done ? p.edge : null).rgb),
+                    }}>
+                      <SideRail rgb={done ? sideTone(p.edge).rgb : null}
+                                weight={done ? 2 : 1} />
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
                           <span style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 16, color: T.white, letterSpacing: 0.3 }}>{shortProp(r.propType)}</span>
+                          {done && <TierBadge conf={p.confidence}
+                                              tone={sideTone(p.edge).tone}
+                                              rgb={sideTone(p.edge).rgb} />}
                           {(r.books || []).map(b => (
                             <span key={b} style={{
                               fontSize: 9.5, fontWeight: 800, letterSpacing: 0.4, padding: '2px 5px', borderRadius: 4,
