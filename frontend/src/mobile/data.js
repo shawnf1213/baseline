@@ -389,16 +389,35 @@ export function derivePicks(record, source = 'prizepicks', slate = null) {
   return { source, days }
 }
 
-// Rolling record across the last N slate days that have any decided pick.
-export function rollingRecord(days, windowDays = 30) {
-  const cutoff = new Date(Date.now() - windowDays * 86400000).toISOString().slice(0, 10)
+// Record for the CURRENT CALENDAR MONTH, Eastern time.
+//
+// This replaced a trailing 30-day window. A rolling window answers "how have
+// the last four weeks gone", which is not the question people ask of a tracked
+// record — they ask how it is doing THIS MONTH — and its number can never be
+// reproduced by anyone counting the board themselves, because the cutoff moves
+// every day.
+//
+// Both `days[].date` and etToday() are YYYY-MM-DD in ET, so comparing the
+// leading YYYY-MM is an exact month test: no date arithmetic, and no drift at
+// the month boundary from the browser's own timezone. The old cutoff built its
+// boundary from UTC while the rest of the app runs on ET, so late-evening ET
+// picks could fall on the wrong side of it.
+export function monthRecord(days) {
+  const prefix = etToday().slice(0, 7)
   let w = 0, l = 0
   for (const d of days) {
-    if (d.date < cutoff) continue
+    if (!String(d.date || '').startsWith(prefix)) continue
     w += d.wins; l += d.losses
   }
   const decided = w + l
   return { wins: w, losses: l, winRate: decided ? Math.round((w / decided) * 1000) / 10 : null, decided }
+}
+
+// "August" — the month monthRecord() is reporting on, for its heading.
+export function etMonthLabel() {
+  const [y, m] = etToday().split('-').map(Number)
+  return new Date(Date.UTC(y, m - 1, 1))
+    .toLocaleDateString('en-US', { month: 'long', timeZone: 'UTC' })
 }
 
 // Distinct players present on the board (for the Players tab).

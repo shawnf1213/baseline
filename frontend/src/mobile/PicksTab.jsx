@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { T } from './theme'
 import { Card, Spinner, Empty, Segment, ResultBadge, SectionLabel , sideTone, SideRail, TierBadge, ConfBar, tierCardStyle } from './bits'
-import { shortProp, fmt, prettyDate, etToday, derivePicks, rollingRecord, resultMeta } from './data'
+import { shortProp, fmt, prettyDate, etToday, derivePicks, monthRecord, etMonthLabel, resultMeta } from './data'
 
 const BOOKS = [
   { key: 'prizepicks', label: 'PrizePicks' },
@@ -17,20 +17,28 @@ export default function PicksTab({ record, slate, loading, error, onOpenPlayer }
   const [book, setBook] = useState('prizepicks')
 
   const { days } = useMemo(() => derivePicks(record, book, slate), [record, book, slate])
-  const rolling = useMemo(() => rollingRecord(days, 30), [days])
+  const month = useMemo(() => monthRecord(days), [days])
+  const monthName = etMonthLabel()
   const today = etToday()
 
   // RENDER A WINDOW, NOT THE WHOLE LOG. Every pick ever released was mounted at
   // once — hundreds of animated cards in a single commit. React stayed busy long
   // enough that the entrance animation had no frames to run in, so the list
   // appeared to snap into place instead of arriving, and the tab felt frozen on
-  // open. Showing a fortnight first drops that to a couple of dozen.
+  // open.
   //
-  // The window only limits what is PAINTED. `rolling` above is computed from the
-  // full `days`, so the 30-day record stays correct no matter what is on screen.
-  const DAY_WINDOW = 14
-  const [shownDays, setShownDays] = useState(DAY_WINDOW)
-  const visibleDays = days.slice(0, shownDays)
+  // The window is THE CURRENT MONTH, matching the headline above it. Showing a
+  // month-to-date rate over a list that stops partway through the month invites
+  // exactly one question — "these rows don't add up to that number" — and the
+  // answer would just be an implementation detail. Bounded at 31 days by the
+  // calendar, so unlike the full log this cannot creep back up over time.
+  //
+  // Floored at 14 so the 1st of a month isn't a single row, and extended rather
+  // than replaced by Show more, so paging back never shrinks what's on screen.
+  const monthDays = days.filter(d => String(d.date || '').startsWith(today.slice(0, 7))).length
+  const baseWindow = Math.max(14, monthDays)
+  const [extraDays, setExtraDays] = useState(0)
+  const visibleDays = days.slice(0, baseWindow + extraDays)
   const moreDays = days.length - visibleDays.length
 
   return (
@@ -60,18 +68,18 @@ export default function PicksTab({ record, slate, loading, error, onOpenPlayer }
 
       {!loading && !error && !!days.length && (
         <>
-          {rolling.decided > 0 && (
+          {month.decided > 0 && (
             <Card style={{ padding: '12px 14px', marginBottom: 14, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
               <div>
                 <div style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 11, letterSpacing: 1.6, textTransform: 'uppercase', color: T.muted2 }}>
-                  Last 30 days
+                  {monthName} so far
                 </div>
                 <div style={{ color: T.muted, fontSize: 12, marginTop: 3 }}>
-                  {rolling.wins}W–{rolling.losses}L · pushes count as wins
+                  {month.wins}W–{month.losses}L · pushes count as wins
                 </div>
               </div>
               <div style={{ fontFamily: T.cond, fontWeight: 900, fontSize: 30, color: T.green, letterSpacing: 0.5 }}>
-                {rolling.winRate != null ? `${rolling.winRate}%` : '—'}
+                {month.winRate != null ? `${month.winRate}%` : '—'}
               </div>
             </Card>
           )}
@@ -89,7 +97,7 @@ export default function PicksTab({ record, slate, loading, error, onOpenPlayer }
 
           {moreDays > 0 && (
             <button
-              onClick={() => setShownDays(n => n + 30)}
+              onClick={() => setExtraDays(n => n + 30)}
               style={{
                 width: '100%', minHeight: 46, marginTop: 4, borderRadius: 12,
                 background: 'transparent', border: `1px solid ${T.border}`,
