@@ -935,6 +935,40 @@ def _agg_split(all_m: list, stat_m: list) -> dict:
         vals = [m[key] for m in stat_m if key in m and m[key] is not None]
         result[key] = round(sum(vals) / len(vals), 4) if vals else None
 
+    # ── PER-SET ACE RATES: sum/sum, the same convention as bp_converted below ─
+    # `aces` and `opp_aces` above are per-MATCH means, and a match is not a fixed
+    # unit of serving. A player whose sample happens to contain more three-setters
+    # shows a higher per-match ace count than one who kept winning in straights,
+    # from extra service games rather than from serving better. The same confound
+    # inflates opp_aces, which is this player's ACES ALLOWED — so a grinder looks
+    # like a worse returner than they are.
+    #
+    # It matters because the projector divides the per-match mean by a TOUR-WIDE
+    # 2.35 sets to get a per-set rate. Numerator from this player's sample,
+    # denominator from the tour: any player whose matches ran long is scaled up
+    # twice. Dividing by this player's OWN sets removes the confound entirely and
+    # makes the tour constant unnecessary on that path.
+    #
+    # sum/sum, not a mean of per-match ratios, for the reason stated below: a
+    # short match should not carry the same weight as a long one when forming a
+    # rate. Only matches with BOTH the stat and a set count are paired.
+    def _per_set(stat_key):
+        pairs = [(m[stat_key], m["sets_played"]) for m in stat_m
+                 if m.get(stat_key) is not None and m.get("sets_played")]
+        if not pairs:
+            return None, None, 0
+        tot, sets = sum(p[0] for p in pairs), sum(p[1] for p in pairs)
+        if sets <= 0:
+            return None, None, 0
+        return (round(tot / sets, 4), round(sets / len(pairs), 3), len(pairs))
+
+    result["aces_per_set"], result["mean_sets_per_match"], _n_ace_set = _per_set("aces")
+    result["ace_against_per_set"], _ag_mean_sets, _n_ag_set = _per_set("opp_aces")
+    result["aces_per_set_n"] = _n_ace_set
+    result["ace_against_per_set_n"] = _n_ag_set
+    if _ag_mean_sets and not result.get("mean_sets_per_match"):
+        result["mean_sets_per_match"] = _ag_mean_sets
+
     # ── bp_converted: sum/sum from raw return-side counts ────────────────────
     # Pair matches that have BOTH return_bp_converted and return_bp_opportunities.
     # This gives the true career conversion rate on the surface, not an average

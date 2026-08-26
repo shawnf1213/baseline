@@ -483,7 +483,40 @@ def project_aces(
         sofascore_base_raw = _rw_aces
     # Per-set scaling: divide per-match by historical avg sets, then multiply
     # by THIS match's expected sets.
-    sofascore_base = sofascore_base_raw * per_set_scale
+    #
+    # PREFER THE PLAYER'S OWN SETS. per_set_scale is expected_sets / 2.35, where
+    # 2.35 is a TOUR-WIDE constant — but the numerator it scales is this player's
+    # per-match ace mean, taken over this player's own matches. If their sample
+    # ran longer than 2.35 sets (deep runs, three-setters, a returner who drags
+    # matches out), the per-match mean is already inflated by the extra service
+    # games and then gets scaled up a second time against a denominator that
+    # never saw those sets. Measured on the live board, projections ran ~1.7 aces
+    # above realized while the book sat within half an ace of it.
+    #
+    # aces_per_set is sum(aces)/sum(sets_played) over the same matches, so the
+    # denominator is the player's real serving volume. Multiplying by this
+    # match's expected_sets is then a clean length conversion with no tour
+    # constant in the path at all. Falls back to the old form whenever the set
+    # counts are missing, so a player with no parsed scorelines is unchanged.
+    # Recency-weighted per-set first (same 120d half-life as the per-match form,
+    # just length-corrected), then the plain sum/sum per-set rate, then the old
+    # tour-constant path when no scoreline was parsed.
+    _rw_per_set = player_stats.get("recency_weighted_aces_per_set")
+    _aces_per_set = player_stats.get("aces_per_set")
+    _aps_n = player_stats.get("aces_per_set_n") or 0
+    _src = None
+    if isinstance(_rw_per_set, (int, float)) and _rw_per_set > 0:
+        sofascore_base, _src = _rw_per_set * expected_sets, "recency_per_set"
+    elif isinstance(_aces_per_set, (int, float)) and _aces_per_set > 0 and _aps_n >= 3:
+        sofascore_base, _src = _aces_per_set * expected_sets, "per_set"
+    else:
+        sofascore_base, _src = sofascore_base_raw * per_set_scale, "per_match_legacy"
+    logger.info(
+        "ACE_BASE | src=%s -> %.2f | legacy per_match=%.2f x scale=%.3f = %.2f "
+        "| sample_mean_sets=%s exp_sets=%.2f",
+        _src, sofascore_base, sofascore_base_raw, per_set_scale,
+        sofascore_base_raw * per_set_scale,
+        player_stats.get("mean_sets_per_match"), expected_sets)
 
     ta_base = None
     ta_surf = None
@@ -612,7 +645,27 @@ def project_aces(
     # ── Opponent ace-against rate (aces they concede per match on surface) ────
     # Direct measure: how many aces this opponent gives up as a returner.
     opp_ace_against = None
-    ss_opp_ace_against = opponent_stats.get("ace_against_per_match")
+    # LENGTH-NORMALIZED. ace_against_per_match is a plain mean of opponent aces
+    # per match, so it reads a player who plays long matches as a worse returner
+    # than one who closes in straights — the extra aces came from extra return
+    # games, not from returning worse. That flows straight into opp_factor below
+    # and biases the ace projection UP against exactly the players who grind.
+    #
+    # Rescaling the per-set rate to a standard-length match keeps the comparison
+    # against _TOUR_AVG_ACE_AGAINST (itself a per-match figure) apples-to-apples,
+    # so the ratio and its [0.78, 1.22] clamp keep their calibration.
+    ss_opp_ace_against = None
+    _ag_per_set = opponent_stats.get("ace_against_per_set")
+    _ag_n = opponent_stats.get("ace_against_per_set_n") or 0
+    if isinstance(_ag_per_set, (int, float)) and _ag_per_set > 0 and _ag_n >= 3:
+        ss_opp_ace_against = _ag_per_set * avg_hist_sets
+        logger.info("ACE_AGAINST_PER_SET | per_set=%.3f x %.2f = %.2f "
+                    "(raw per_match=%s, opp_mean_sets=%s, n=%d)",
+                    _ag_per_set, avg_hist_sets, ss_opp_ace_against,
+                    opponent_stats.get("ace_against_per_match"),
+                    opponent_stats.get("mean_sets_per_match"), _ag_n)
+    if ss_opp_ace_against is None:
+        ss_opp_ace_against = opponent_stats.get("ace_against_per_match")
     if ss_opp_ace_against is None and opponent_ta:
         ss_opp_ace_against = opponent_ta.get("ace_against_per_match")
     # TA opponent ace_pct is the opponent's OWN serve ace rate, a proxy for how

@@ -1114,6 +1114,11 @@ UNDERDOG_AFFINITY_MIN_GAP    = 4.0    # meaningful affinity edge to the underdog
 UNDERDOG_AFFINITY_STRONG_GAP = 8.0    # strong edge -> the larger penalty
 UNDERDOG_UNDER_PENALTY_MIN   = 8
 UNDERDOG_UNDER_PENALTY_MAX   = 12
+# Weight on the scenario-mixture P(side) when forming Break Points Won
+# confidence; the remainder goes to the composite data-quality score. 0.0 = pure
+# composite (pre-A2 behaviour), 1.0 = pure probability (what A2 shipped, which
+# crowded BP off the board). See the blend site for the measured reasoning.
+BP_PROB_CONF_WEIGHT = 0.5
 
 # Outcome reliance — how far a play's probability may lean on the player WINNING
 # the match before confidence is docked for it. MIN_GAP 0.10 leaves normal plays
@@ -2302,14 +2307,31 @@ async def prop_calculate(req: PropRequest):
             # form dominates and stale matches (e.g. last year's grass peak) decay,
             # so the base reflects how the player is serving NOW, not a year ago.
             _num = _den = 0.0
+            # Weighted PER-SET, not per-match. A match is not a fixed unit of
+            # serving: a three-setter offers ~50% more service games than a
+            # straight-sets win, so a per-match mean rewards long matches as if
+            # the player had served better in them. The projector then divides
+            # that by a tour-wide 2.35 sets, which never saw this player's
+            # actual match lengths — the inflation compounds.
+            #
+            # Weighting aces/set keeps the 120d half-life exactly as it was and
+            # removes the length confound at the same time. Denominator is the
+            # summed weighted SETS, so this is still a proper weighted rate and
+            # long matches carry the extra weight they earn, once.
+            _num_sets = 0.0
             for _m in _surf_log:
                 _a, _ts = _m.get("aces"), _m.get("timestamp") or 0
+                _sp = _m.get("sets_played")
                 if not isinstance(_a, (int, float)) or not _ts:
                     continue
                 _w = 0.5 ** (max(0.0, (_now_ts - _ts) / 86400.0) / 120.0)
                 _num += _w * _a
                 _den += _w
+                if isinstance(_sp, (int, float)) and _sp > 0:
+                    _num_sets += _w * _sp
             _s["recency_weighted_aces"] = (_num / _den) if _den > 0 else None
+            _s["recency_weighted_aces_per_set"] = (
+                (_num / _num_sets) if _num_sets > 0 else None)
 
         # ── Match format: strict rules, logged for every request ────────────────
         # ATP Grand Slam MAIN DRAW → best_of_5. ATP Grand Slam QUALIFYING →
@@ -3184,7 +3206,40 @@ async def prop_calculate(req: PropRequest):
             _bp_lean = "OVER" if _bp_p_over >= 0.5 else "UNDER"
             result["lean"] = _bp_lean
             _bp_side = _bp_p_over if _bp_lean == "OVER" else (1.0 - _bp_p_over)
-            confidence = 100.0 * _bp_side
+            # ── BLEND, DON'T REPLACE (2026-08-26) ────────────────────────────
+            # This used to be `confidence = 100 * _bp_side`, which threw the
+            # composite away entirely. That silently changed what the number
+            # MEANS: P(side) rarely clears 0.85 on a real prop, while the
+            # composite — sample size, H2H, recency, source agreement — sits in
+            # the high 80s/90s when the data is good. Both then get ranked
+            # against each other for board selection.
+            #
+            # Measured consequence: BP carried a -22.5 gap between its breakdown
+            # sum and its stored confidence (Aces and Double Faults: 0.0), and
+            # BP board volume fell 69% per slate day while every other prop rose
+            # 45-230%. BP was not being beaten on merit, it was being scored on
+            # a scale that could not compete.
+            #
+            # The composite was also the regime that produced BP's best results
+            # (60.7% over 107 decided picks, the tightest absolute error of any
+            # prop at 1.56). So it comes back — but blended, not restored
+            # outright, because P(side) is the honest read on a bimodal prop and
+            # dropping it would reintroduce the outcome-blind mean fallacy A2
+            # was built to remove. Equal weight: neither signal is known to
+            # dominate, and a 50/50 is the defensible default until the split is
+            # backtested.
+            _bp_prob_conf = 100.0 * _bp_side
+            # Clamp the composite to the SAME ceiling it would be capped at on
+            # its own before blending. At this point in the chain `confidence`
+            # is still the pre-cap total and can exceed 100 (observed: 108) —
+            # blending that raw would smuggle the overflow past the 95 ceiling
+            # and hand BP a number the cap exists to forbid.
+            _bp_composite_conf = max(25.0, min(95.0, float(confidence)))
+            confidence = (BP_PROB_CONF_WEIGHT * _bp_prob_conf
+                          + (1.0 - BP_PROB_CONF_WEIGHT) * _bp_composite_conf)
+            logger.info("BP_CONF_BLEND | prob=%.1f composite=%.1f w=%.2f -> %.1f",
+                        _bp_prob_conf, _bp_composite_conf,
+                        BP_PROB_CONF_WEIGHT, confidence)
             _bp_prob_base = True
             _bp_knife_edge = 0.45 <= _bp_p_over <= 0.55
             _who = req.player_name or "player"
