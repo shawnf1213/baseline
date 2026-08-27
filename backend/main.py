@@ -1720,6 +1720,70 @@ async def billing_claim(req: Request):
 
 
 
+@app.get("/api/odds/coverage")
+def odds_coverage(token: str = "", limit: int = 12):
+    """Which sportsbook markets exist across TODAY's slate, aggregated.
+
+    THE QUESTION THIS ANSWERS: are Total Aces and break-point lines actually
+    priced? Every probe so far ran during US Open qualifying, where events carry
+    a skeleton menu — moneyline, set winners, win-a-set, and "Player with Most
+    Aces", which is a head-to-head compare and cannot anchor a projection.
+    Marquee matches carry the full menu, so the answer changes with the draw and
+    has to be re-measured rather than assumed.
+
+    Walks the slate rather than one match because a single event proves nothing:
+    a market missing from one qualifier is not a market FanDuel does not offer.
+
+    Read-only, shared-secret gated, and capped — this reads a book per match.
+    """
+    expected = os.getenv("BILLING_SYNC_TOKEN", "").strip()
+    if not expected or token != expected:
+        raise HTTPException(status_code=403, detail="forbidden")
+    from src.api import book_odds
+    import collections
+
+    from src import features
+    slate = features.get_slate("") or {}
+    matches = []
+    for k in ("atp", "wta"):
+        matches += [(m.get("p1"), m.get("p2"), m.get("tournament"))
+                    for m in (slate.get(k) or [])]
+
+    seen = collections.Counter()
+    checked, matched = 0, 0
+    detail = []
+    for p1, p2, tourn in matches[:limit]:
+        if not p1 or not p2:
+            continue
+        checked += 1
+        raw = book_odds.markets_for(p1, p2)
+        if not raw.get("found"):
+            detail.append({"match": f"{p1} v {p2}", "found": False})
+            continue
+        matched += 1
+        names = [m.get("marketName") for m in raw.get("markets", [])]
+        for n in names:
+            seen[n] += 1
+        detail.append({"match": f"{p1} v {p2}", "tournament": tourn,
+                       "found": True, "markets": names})
+
+    def _any(sub):
+        return sorted({n for n in seen if n and sub in n.lower()})
+
+    return {
+        "ok": True,
+        "slate_matches": len(matches),
+        "checked": checked,
+        "matched_on_book": matched,
+        "market_frequency": seen.most_common(),
+        # The three questions worth asking every time this runs.
+        "ace_markets": _any("ace"),
+        "break_markets": _any("break"),
+        "total_games_markets": _any("total games"),
+        "detail": detail,
+    }
+
+
 @app.get("/api/odds/markets")
 def odds_markets(player_id: str = "", event_id: int = 0, token: str = ""):
     """Enumerate EVERY odds market Sofascore carries for one event.
