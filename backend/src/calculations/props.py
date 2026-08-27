@@ -501,11 +501,26 @@ def project_aces(
     # Recency-weighted per-set first (same 120d half-life as the per-match form,
     # just length-corrected), then the plain sum/sum per-set rate, then the old
     # tour-constant path when no scoreline was parsed.
+    # BO3 ONLY. At BO5 the per-set form multiplies a rate built almost entirely
+    # from best-of-3 tennis by up to 4.125 expected sets, which runs ~17% above
+    # the legacy path (Mensik US Open: 18.9 vs ~15.5). The legacy BO5 denominator
+    # _ACE_BO5_SETS is not a tour constant like 2.35 — it was calibrated against
+    # actual Grand Slam outcomes, and it already absorbs both the double-count it
+    # was written for and whatever a player's per-set rate does over five sets
+    # (fatigue, more conservative serving, grindier long matches). None of that
+    # is measured yet.
+    #
+    # So a slam keeps the calibration that has real results behind it, and the
+    # length fix applies to best-of-3, which is the overwhelming bulk of the
+    # slate. Revisit with US Open data in hand rather than shipping an untested
+    # +17% into a Grand Slam on a model already projecting high.
     _rw_per_set = player_stats.get("recency_weighted_aces_per_set")
     _aces_per_set = player_stats.get("aces_per_set")
     _aps_n = player_stats.get("aces_per_set_n") or 0
     _src = None
-    if isinstance(_rw_per_set, (int, float)) and _rw_per_set > 0:
+    if is_bo5:
+        sofascore_base, _src = sofascore_base_raw * per_set_scale, "per_match_bo5_calibrated"
+    elif isinstance(_rw_per_set, (int, float)) and _rw_per_set > 0:
         sofascore_base, _src = _rw_per_set * expected_sets, "recency_per_set"
     elif isinstance(_aces_per_set, (int, float)) and _aces_per_set > 0 and _aps_n >= 3:
         sofascore_base, _src = _aces_per_set * expected_sets, "per_set"
@@ -658,10 +673,17 @@ def project_aces(
     _ag_per_set = opponent_stats.get("ace_against_per_set")
     _ag_n = opponent_stats.get("ace_against_per_set_n") or 0
     if isinstance(_ag_per_set, (int, float)) and _ag_per_set > 0 and _ag_n >= 3:
-        ss_opp_ace_against = _ag_per_set * avg_hist_sets
+        # Rescale on the BO3 standard ALWAYS, never avg_hist_sets. This figure is
+        # only ever used as a ratio against _TOUR_AVG_ACE_AGAINST, which is a
+        # best-of-3 per-match number — normalizing with the BO5 denominator (2.80)
+        # would inflate every Grand Slam ratio by 2.80/2.35 = 1.19 and boost ace
+        # projections there for no reason at all. The ratio must be format-neutral;
+        # match length is already handled by expected_sets in L1.
+        _ag_std_sets = _ACE_AVG_HISTORICAL_SETS.get(tour, 2.35)
+        ss_opp_ace_against = _ag_per_set * _ag_std_sets
         logger.info("ACE_AGAINST_PER_SET | per_set=%.3f x %.2f = %.2f "
                     "(raw per_match=%s, opp_mean_sets=%s, n=%d)",
-                    _ag_per_set, avg_hist_sets, ss_opp_ace_against,
+                    _ag_per_set, _ag_std_sets, ss_opp_ace_against,
                     opponent_stats.get("ace_against_per_match"),
                     opponent_stats.get("mean_sets_per_match"), _ag_n)
     if ss_opp_ace_against is None:
