@@ -119,6 +119,18 @@ def _games_per_set(combined_hold: float, tour: str = "ATP") -> float:
 
 # Tour-average aces faced per match — used to normalise opponent ace-against rate
 _TOUR_AVG_ACE_AGAINST = {"ATP": 5.5, "WTA": 3.0}
+
+# Shrink applied to the finished ace projection, toward the tour's population
+# ace level. This is the slope from regressing REALIZED ace counts on our own
+# projection across 91 graded picks (actual ~ -1.14 + 0.839·proj, R2 0.345);
+# a slope below 1 says the chain over-extrapolates and the outcomes do not
+# follow it that far. Holds either side of the A2 rebuild (0.78 / 0.90), so it
+# is a property of the chain, not of one window.
+#
+# Set to 1.0 to disable. Refit this on projections for props we did NOT pick
+# before trusting it further — the sample behind it is picks we chose, and we
+# choose where the projection is high.
+ACE_CALIB_SHRINK = 0.839
 # Joint cap on the PRODUCT of the ace matchup multipliers (opponent ace-against ×
 # court pace × service volume × handedness × surface × H2H), measured against the
 # player's own base rate. Individually each is bounded; nothing bounded the stack,
@@ -863,6 +875,48 @@ def project_aces(
                    "matchup multipliers are individually bounded but their PRODUCT was "
                    "not — capped so compounding factors can't run the projection away "
                    "from the player's own baseline")
+
+    # ── OUTCOME CALIBRATION ──────────────────────────────────────────────────
+    # Fitted on REALIZED ACE COUNTS, not on any line. Regressing actual on
+    # projection over 91 graded picks gives actual ~ -1.14 + 0.839·proj with
+    # R2 = 0.345 — the strongest signal of any prop we run, but mis-scaled: the
+    # slope under 1 means the chain over-extrapolates from the population mean,
+    # so a player we read as a big server is pushed further than the outcomes
+    # support. Split either side of the A2 rebuild the relationship holds
+    # (slope 0.78 / 0.90, intercept -1.05 / -1.51), so it is a stable property
+    # of the chain rather than one window's noise.
+    #
+    # SHRINKS TOWARD THE POPULATION MEAN rather than applying the raw OLS line.
+    # The fit comes from picks we CHOSE, and we choose where the projection is
+    # high, so the sample over-represents our top end; the raw intercept would
+    # also drag low projections down, and at the low end we measured the
+    # opposite error (UNDER leans projected 5.14 against 6.43 realized).
+    # Anchoring the shrink at the tour mean corrects the spread, which is what
+    # the slope actually measures, without inventing a level change at the end
+    # we have no evidence for.
+    #
+    # ACE_CALIB_SHRINK is the fitted slope. 1.0 disables this entirely.
+    # Tour-average aces HIT per match equals tour-average aces CONCEDED per
+    # match — every ace hit is an ace conceded, so the two are the same number
+    # and there is no reason to carry a second constant that can drift from it.
+    # Rescaled onto this match's expected length so the anchor is comparable to
+    # the projection it is shrinking.
+    _pop_ace = (_TOUR_AVG_ACE_AGAINST.get(tour, 5.5)
+                * (expected_sets / max(avg_hist_sets, 0.01)))
+    if ACE_CALIB_SHRINK < 1.0 and proj > 0 and _pop_ace > 0:
+        _pre_calib = proj
+        proj = _pop_ace + ACE_CALIB_SHRINK * (proj - _pop_ace)
+        proj = max(0.0, proj)
+        logger.info("ACE_CALIB | %s | pop=%.2f shrink=%.2f | %.2f -> %.2f",
+                    player_stats.get("player_name", "?"), _pop_ace,
+                    ACE_CALIB_SHRINK, _pre_calib, proj)
+        _trace(trace, "ace_outcome_calibration",
+               {"population_mean": round(_pop_ace, 3), "shrink": ACE_CALIB_SHRINK,
+                "proj_in": round(_pre_calib, 3)},
+               ACE_CALIB_SHRINK, round(proj, 3),
+               "shrink toward the population ace level by the slope fitted on "
+               "realized ace counts (0.839 over 91 graded picks, R2 0.345). "
+               "Corrects over-extrapolation, not level.")
 
     _trace(trace, "projector_output", {"chain_result": round(proj, 3)},
            proj, round(proj, 1),
