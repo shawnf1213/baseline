@@ -1720,6 +1720,52 @@ async def billing_claim(req: Request):
 
 
 
+@app.get("/api/odds/markets")
+def odds_markets(player_id: str = "", event_id: int = 0, token: str = ""):
+    """Enumerate EVERY odds market Sofascore carries for one event.
+
+    We already pull this exact feed for the de-vigged moneyline and discard
+    everything except "Full time". If it also carries per-player ace or
+    break-point markets, we get real priced lines -- flat numbers with juice,
+    not .5 pick'em lines -- from a source we are already authenticated against
+    and already resolve an event id for on every board scan. That is the market
+    anchor those props have never had.
+
+    Read-only and shared-secret gated: it exists to answer that question against
+    live events, since Sofascore 403s outside the production host.
+    """
+    expected = os.getenv("BILLING_SYNC_TOKEN", "").strip()
+    if not expected or token != expected:
+        raise HTTPException(status_code=403, detail="forbidden")
+    from src.api.sofascore_client import _get, BASE_URL
+    eid = event_id
+    resolved_from = "event_id"
+    if not eid:
+        if not player_id:
+            raise HTTPException(status_code=400, detail="player_id or event_id required")
+        ne = _get(f"{BASE_URL}/team/{player_id}/near-events") or {}
+        ev = ne.get("nextEvent") or {}
+        eid = ev.get("id")
+        resolved_from = "player_id -> near-events"
+        if not eid:
+            return {"ok": False, "reason": "no upcoming event", "player_id": player_id}
+    od = _get(f"{BASE_URL}/event/{eid}/odds/1/all") or {}
+    markets = od.get("markets") or []
+    out = []
+    for m in markets:
+        out.append({
+            "marketName": m.get("marketName"),
+            "marketId": m.get("marketId"),
+            "choiceGroup": m.get("choiceGroup"),
+            "isLive": m.get("isLive"),
+            "choices": [{"name": c.get("name"),
+                         "fractional": c.get("fractionalValue")}
+                        for c in (m.get("choices") or [])][:6],
+        })
+    return {"ok": True, "event_id": eid, "resolved_from": resolved_from,
+            "market_count": len(out), "markets": out}
+
+
 @app.post("/api/billing/resync")
 def billing_resync(token: str = "", limit: int = 100):
     """Rebuild the local subscriptions table from Stripe. Shared-secret gated.
@@ -3710,6 +3756,24 @@ async def prop_calculate(req: PropRequest):
                 return []
             return df.to_dict(orient="records") if hasattr(df, "to_dict") else []
 
+        # ── SPORTSBOOK PRICES (FanDuel) ─────────────────────────────────────
+        # Best-effort and last, so it can never delay or break the projection.
+        # Cached inside book_odds (board 5min, event 2min), so a board scan
+        # pricing several props on one match pays for the lookup once.
+        _book_odds = {"found": False}
+        try:
+            from src.api import book_odds as _bo
+            _book_odds = _bo.summary_for(req.player_name or "", req.opponent_name or "")
+            if _book_odds.get("found"):
+                logger.info(
+                    "BOOK_ODDS | %s v %s | ml_p=%s win1set_p=%s markets=%s",
+                    req.player_name, req.opponent_name,
+                    _book_odds.get("moneyline_p"),
+                    _book_odds.get("win_at_least_one_set_p"),
+                    _book_odds.get("market_count"))
+        except Exception:  # noqa: BLE001
+            logger.info("BOOK_ODDS | lookup failed", exc_info=False)
+
         # ── GAME SPREAD (optional) ───────────────────────────────────────────
         # Settles on the game MARGIN, so it reads off the same scenario mixture as
         # the set/match outcomes — it can never disagree with them. Only computed
@@ -3793,6 +3857,21 @@ async def prop_calculate(req: PropRequest):
             "bp_mixture_mean":      result.get("bp_mixture_mean"),
             "bp_implied_claim":     _bp_implied_claim,
             "bp_knife_edge":        _bp_knife_edge,
+            # ── SPORTSBOOK PRICES for this matchup (FanDuel) ─────────────────
+            # A pick'em line is not a market: PrizePicks and Underdog post .5 at
+            # a fixed payout to split action, so "our projection vs the line" has
+            # never been a comparison against a probability. These are real
+            # two-way prices, de-vigged the same proportional way the Sofascore
+            # moneyline anchor already is, so the two are directly comparable.
+            #
+            # Scoped to matches that are ALREADY on a DFS board, because that is
+            # the only time this endpoint is called during a scan — reading the
+            # whole tour would be ~86 event calls for props we never price.
+            #
+            # Enrichment, never a dependency: book_odds swallows its own failures
+            # and returns {"found": False}, so an unreachable book cannot break a
+            # projection that works without it.
+            "book_odds":            _book_odds,
             # Win-prob anchor (model / de-vigged market / blended) + anchored flag.
             "bp_model_wp":          result.get("bp_model_wp"),
             "bp_market_wp":         result.get("bp_market_wp"),
