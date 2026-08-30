@@ -1325,6 +1325,19 @@ _STAR_INELIGIBLE_PROPS = set()      # nothing is banned outright; see _star_elig
 STAR_PTGW_MIN_OPP_WP    = 85.0   # opponent win prob for a PTGW UNDER to lead
 STAR_PTGW_MIN_RATE_GAMES = 40    # service games behind the player's hold rate
 
+# ── BREAK POINTS WON: the one prop that may lead below the uniform bar ───────
+# 70, not 80, and NOTHING else gets this. BP confidence stopped meaning what the
+# other props' confidence means when A2 made it half scenario-mixture P(side):
+# P(side) rarely clears 0.85 on a real prop, while a data-quality composite sits
+# in the high 80s/90s whenever the data is good. Ranked against each other on one
+# 80 bar, BP could not compete — its board volume fell 69% per slate day after A2
+# while every other prop rose 45-230%, and no BP play has led the card since.
+#
+# This is a scale correction, not a lowered standard: a BP play at 70 carries the
+# same strength of claim as another prop at 80, measured on a different ruler.
+# BP also owns the tightest absolute projection error of any prop we run (1.56).
+STAR_BP_MIN_CONF = float(os.getenv("STAR_BP_MIN_CONF", "70") or "70")
+
 
 def _star_eligible(pk: dict) -> bool:
     """v2: a play may hold the ⭐ Pick-of-the-Day slot iff it clears the uniform
@@ -1362,6 +1375,16 @@ def _star_eligible(pk: dict) -> bool:
         _fav_wp = max(pk.get("p1_win_prob") or 0, pk.get("p2_win_prob") or 0)
         if _fav_wp < STAR_TOTAL_GAMES_MIN_WP or not pk.get("tg_anchored"):
             return False
+    # Break Points Won clears at a LOWER bar than every other prop, and is the only
+    # prop that does. Its confidence is half scenario-mixture P(side) since the A2
+    # rebuild, and a probability rarely clears 0.85 on a real prop, while every
+    # other prop's confidence is a data-quality composite that sits in the high
+    # 80s/90s on good data. Held to a common 80 the two scales are not comparable,
+    # and BP simply stopped reaching the top: board volume fell 69% per slate day
+    # after A2 while every other prop rose 45-230%. A BP play at 70 is not a weaker
+    # play than an Aces play at 80 — it is the same claim measured differently.
+    if pk.get("prop_type") == "Break Points Won":
+        return (pk.get("confidence") or 0) >= STAR_BP_MIN_CONF
     return (pk.get("confidence") or 0) >= POTD_THRESHOLD
 
 
@@ -1380,6 +1403,23 @@ def _promote_star(ordered: list):
     honest output is no ⭐, not the least-bad one wearing the badge."""
     if not ordered:
         return ordered, False
+    # BREAK POINTS WON GETS FIRST REFUSAL ON THE ⭐, ahead of higher-confidence
+    # plays. Confidence is not a common currency across props — BP's is half
+    # P(side) while the rest are data-quality composites — so "highest number
+    # leads" was silently ranking BP last on a ruler it cannot win on. Ordering
+    # only: no confidence is changed, and an ineligible BP play still cannot lead.
+    _bp_idx = next((i for i, p in enumerate(ordered)
+                    if p.get("prop_type") == "Break Points Won" and _star_eligible(p)), None)
+    if _bp_idx is not None:
+        if _bp_idx != 0:
+            _bp = ordered.pop(_bp_idx)
+            log.info("POD_BP_PRIORITY | %s Break Points Won (conf %s) promoted over "
+                     "%s %s (conf %s) — BP leads the card whenever it is ⭐-eligible",
+                     _bp.get("player"), _bp.get("confidence"),
+                     ordered[0].get("player"), ordered[0].get("prop_type"),
+                     ordered[0].get("confidence"))
+            ordered = [_bp] + ordered
+        return ordered, True
     if _star_eligible(ordered[0]):
         return ordered, True
     blocked = ordered[0]
