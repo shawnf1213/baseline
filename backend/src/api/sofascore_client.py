@@ -2638,7 +2638,7 @@ def _frac_to_decimal(frac):
         return None
 
 
-def get_match_moneyline_prob(player_id, opponent_id=None, tour: str = "ATP") -> dict:
+def _sofascore_moneyline_prob(player_id, opponent_id=None, tour: str = "ATP") -> dict:
     """Market win probability for the SELECTED player, de-vigged from the two-way
     'Full time' moneyline of their upcoming Sofascore event (proportional method).
 
@@ -3125,3 +3125,55 @@ def format_h2h_table(df: pd.DataFrame, p1_name: str) -> pd.DataFrame:
     if expected.issubset(set(df.columns)):
         return df[list(expected)].copy()
     return df.copy()
+
+
+def get_match_moneyline_prob(player_id, opponent_id=None, tour: str = "ATP",
+                             player_name: str = "", opponent_name: str = "") -> dict:
+    """De-vigged market win probability, from Sofascore, then FanDuel.
+
+    WHY A SECOND SOURCE. Sofascore reads the odds off the player's NEXT
+    scheduled event, and returns nothing when that event does not exist yet, has
+    already started, or simply carries no odds. Measured on the 2026-08-31 US
+    Open slate that was 1 match in 8 — the anchor was recorded at 100% coverage
+    on 2026-07-29, so it has collapsed, and every scenario-mixture prop (Break
+    Points, Fantasy Score, PTGW) silently fell back to the model's own win
+    probability without one.
+
+    That fallback is not harmless. On the same slate the unanchored model sat
+    27-37 points below the market: Berrettini/Wawrinka model 54.6% vs FanDuel
+    91.4%, Darderi/Wendelken 55.7% vs 83.5%. A mixture fed a coin flip puts real
+    weight on "loses in straight sets", which is the low-break bucket, and that
+    is what turned the 8/31 Noskova Break Points pick into an UNDER against a
+    player who broke six times.
+
+    THE TWO SOURCES AGREE WHERE BOTH EXIST — Auger-Aliassime/Hijikata: Sofascore
+    0.8811, FanDuel 0.8861 — which is the evidence that this is a coverage gap
+    being filled, not two different markets being mixed.
+
+    Sofascore stays first: it is already de-vigged the same proportional way, it
+    needs no name matching, and it is the source every existing consumer was
+    calibrated against. FanDuel is only consulted when Sofascore yields nothing.
+    """
+    out = _sofascore_moneyline_prob(player_id, opponent_id, tour)
+    if isinstance(out, dict) and isinstance(out.get("market_p1"), (int, float)):
+        out.setdefault("source", "sofascore")
+        return out
+    if not (player_name and opponent_name):
+        return out
+    try:
+        from . import book_odds
+        s = book_odds.summary_for(player_name, opponent_name)
+        p = s.get("moneyline_p") if s.get("found") else None
+        if isinstance(p, (int, float)) and 0.0 < p < 1.0:
+            logger.info("MONEYLINE_FALLBACK | %s v %s | sofascore=%s -> fanduel p=%.4f",
+                        player_name, opponent_name,
+                        (out or {}).get("reason") or "none", p)
+            return {"market_p1": round(p, 4), "market_p2": round(1.0 - p, 4),
+                    "overround": None, "event_id": s.get("event_id"),
+                    # book_odds matched on BOTH surnames, so the price is for this
+                    # pairing by construction — the wrong-opponent case Sofascore
+                    # has to guard against cannot arise here.
+                    "opponent_matches": True, "reason": None, "source": "fanduel"}
+    except Exception:  # noqa: BLE001
+        logger.info("moneyline fanduel fallback failed", exc_info=False)
+    return out

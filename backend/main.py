@@ -2635,7 +2635,8 @@ async def prop_calculate(req: PropRequest):
             # own estimate exactly as before.
             _ace_ml = await asyncio.to_thread(
                 get_match_moneyline_prob,
-                req.player_id, req.opponent_id, req.tour)
+                req.player_id, req.opponent_id, req.tour,
+                req.player_name or "", req.opponent_name or "")
             _ace_mkt_wp = _ace_ml.get("market_p1") if isinstance(_ace_ml, dict) else None
             # The moneyline is read off the player's NEXT scheduled event. If that
             # event is against somebody else, the price describes a different match
@@ -2710,7 +2711,8 @@ async def prop_calculate(req: PropRequest):
             _tg_model_proj = float(result.get("projection") or 0.0)
             _tg_line = await asyncio.to_thread(
                 get_match_total_games_line,
-                req.player_id, req.opponent_id, req.tour)
+                req.player_id, req.opponent_id, req.tour,
+                req.player_name or "", req.opponent_name or "")
             _tg_book = (_tg_line or {}).get("book_line")
             if _tg_book is not None and _tg_model_proj > 0:
                 _tg_blended = (TG_MARKET_WEIGHT * float(_tg_book)
@@ -2778,7 +2780,8 @@ async def prop_calculate(req: PropRequest):
             _model_wp = (_tg_r.get("p1_win_prob") or 50.0) / 100.0
             _ml = await asyncio.to_thread(
                 get_match_moneyline_prob,
-                req.player_id, req.opponent_id, req.tour)
+                req.player_id, req.opponent_id, req.tour,
+                req.player_name or "", req.opponent_name or "")
             _mkt_wp = _ml.get("market_p1") if isinstance(_ml, dict) else None
             _anchored = isinstance(_mkt_wp, (int, float))
             if _anchored:
@@ -2988,7 +2991,8 @@ async def prop_calculate(req: PropRequest):
                 # model's underdog-skewed read. No moneyline -> model-only.
                 _ptgw_model_wp = (tg_result.get("p1_win_prob") or 50.0) / 100.0
                 _ptgw_ml = await asyncio.to_thread(
-                    get_match_moneyline_prob, req.player_id, req.opponent_id, req.tour)
+                    get_match_moneyline_prob, req.player_id, req.opponent_id, req.tour,
+                req.player_name or "", req.opponent_name or "")
                 _ptgw_mkt_wp = _ptgw_ml.get("market_p1") if isinstance(_ptgw_ml, dict) else None
                 _ptgw_anchored = isinstance(_ptgw_mkt_wp, (int, float))
                 if _ptgw_anchored:
@@ -3072,7 +3076,8 @@ async def prop_calculate(req: PropRequest):
                 if isinstance(_bp_base, (int, float)) and _bp_base > 0 and req.prop_line is not None:
                     _bp_model_wp = (bp_result.get("p1_win_prob") or 50.0) / 100.0
                     _bp_ml = await asyncio.to_thread(
-                        get_match_moneyline_prob, req.player_id, req.opponent_id, req.tour)
+                        get_match_moneyline_prob, req.player_id, req.opponent_id, req.tour,
+                req.player_name or "", req.opponent_name or "")
                     _bp_mkt_wp = _bp_ml.get("market_p1") if isinstance(_bp_ml, dict) else None
                     _bp_anchored = isinstance(_bp_mkt_wp, (int, float))
                     if _bp_anchored:
