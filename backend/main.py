@@ -1642,19 +1642,118 @@ def billing_config():
     return billing.config_status()
 
 
+def _client_ip(req: Request) -> str:
+    """The visitor's real address.
+
+    req.client.host is the LAST proxy, not the visitor — behind Vercel and
+    Railway that is a datacenter address shared by everyone, which would make
+    every visitor look like the same person. X-Forwarded-For is a chain the
+    proxies append to; the visitor is the leftmost entry.
+
+    Spoofable by a client that sets the header itself, so this is an abuse
+    SIGNAL, not an identity. Never gate anything that matters on it alone.
+    """
+    xff = (req.headers.get("x-forwarded-for") or "").split(",")
+    ip = (xff[0] if xff else "").strip()
+    if not ip:
+        ip = (req.headers.get("x-real-ip") or "").strip()
+    if not ip and req.client:
+        ip = req.client.host or ""
+    return ip[:64]
+
+
+def _visitor_key(req: Request) -> str:
+    """Hashed, salted visitor key for the anonymous preview clock.
+
+    Salted with the app secret so the table cannot be reversed into a list of
+    visiting addresses by anyone who gets a copy of it — this table needs to
+    RECOGNISE a repeat visitor, never to identify one.
+    """
+    import hashlib
+    secret = os.getenv("APP_SESSION_SECRET", "") or "baseline"
+    return hashlib.sha256(f"{secret}|{_client_ip(req)}".encode()).hexdigest()
+
+
+# How long an anonymous visitor may browse before the paywall closes.
+PREVIEW_WINDOW_SECONDS = int(os.getenv("PREVIEW_WINDOW_SECONDS", "120") or "120")
+# 0 = the free look is once, ever. Any positive value reopens it that many hours
+# after it first started. Kept at 0 to match the brief, but it is the knob to
+# reach for if support starts hearing "I only looked for ten seconds".
+PREVIEW_RESET_HOURS = float(os.getenv("PREVIEW_RESET_HOURS", "0") or "0")
+
+
+@app.get("/api/preview/status")
+async def preview_status(req: Request):
+    """How much free-look time this visitor has left.
+
+    THE CLOCK IS SERVER-SIDE AND STARTS ON FIRST CONTACT. A refresh, a new tab, a
+    private window and a cleared browser all resolve to the same row, because the
+    key is the request's address rather than anything the browser stores. A timer
+    held in localStorage or a cookie resets in every one of those cases, which is
+    the exact bypass this closes.
+
+    Entitled users never see this: the frontend checks its session first and only
+    falls back to the preview when there is no subscription behind it.
+    """
+    from src import database
+    out = database.preview_touch(_visitor_key(req), PREVIEW_WINDOW_SECONDS,
+                                 reset_hours=PREVIEW_RESET_HOURS)
+    return {
+        "allowed": bool(out.get("allowed")),
+        "remaining_seconds": int(out.get("remaining") or 0),
+        "window_seconds": PREVIEW_WINDOW_SECONDS,
+        "expired": not bool(out.get("allowed")),
+    }
+
+
+@app.post("/api/preview/reset")
+async def preview_reset(req: Request, token: str = ""):
+    """Clear the CALLER's preview clock. Shared-secret gated.
+
+    Support tool, and the only way to test the gate twice from one address.
+    """
+    expected = os.getenv("BILLING_SYNC_TOKEN", "").strip()
+    if not expected or token != expected:
+        raise HTTPException(status_code=403, detail="forbidden")
+    from src import database
+    return {"ok": database.preview_reset(_visitor_key(req))}
+
+
+@app.get("/api/billing/ip-history")
+async def billing_ip_history(ip: str = "", token: str = ""):
+    """Subscriptions already started from an address. Shared-secret gated.
+
+    The abuse question email cannot answer: a second free trial from an address
+    that already has one. A new email address is free to create; a new address is
+    not quite as free.
+    """
+    expected = os.getenv("BILLING_SYNC_TOKEN", "").strip()
+    if not expected or token != expected:
+        raise HTTPException(status_code=403, detail="forbidden")
+    from src import database
+    rows = database.trials_from_ip(ip.strip())
+    return {"ip": ip, "count": len(rows), "subscriptions": rows}
+
+
 @app.post("/api/billing/checkout")
 async def billing_checkout(req: Request):
     """Create a Checkout Session and return its URL."""
     from src import billing
     body = await req.json()
     plan = (body.get("plan") or "").lower()
+    ip = _client_ip(req)
+    # Remembered against the session id so the webhook — which arrives from
+    # Stripe and therefore carries STRIPE's address, not the customer's — can
+    # stamp the real signup IP onto the subscription when it lands.
     out = billing.create_checkout_session(
         plan=plan,
         discord_id=str(body.get("discord_id") or ""),
         email=str(body.get("email") or ""),
+        signup_ip=ip,
     )
     if out.get("error"):
         raise HTTPException(status_code=400, detail=out["error"])
+    logger.info("CHECKOUT_START | plan=%s ip=%s", plan, ip or "-")
     return out
 
 

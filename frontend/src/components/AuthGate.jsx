@@ -48,6 +48,26 @@ const Btn = ({ onClick, children, primary, disabled }) => (
   }}>{children}</button>
 )
 
+// ── FREE LOOK, ON THE SERVER'S CLOCK ────────────────────────────────────────
+// An unentitled visitor gets a short browse before the paywall closes. The
+// countdown is NOT kept here: a timer in localStorage dies with a refresh, one
+// in memory dies with a new tab, and neither exists at all in a private window —
+// those three are exactly the bypasses this is meant to close. The server keys
+// the clock on the request's address and only ever tells us how long is left.
+//
+// Fails CLOSED to the normal gate if the check errors: an unreachable preview
+// endpoint should show the paywall, not hand out unlimited access.
+async function gateOrPreview(fallbackPhase, me) {
+  try {
+    const p = (await api.get('/api/preview/status')).data || {}
+    if (p.allowed && (p.remaining_seconds || 0) > 0) {
+      return { phase: 'preview', me, left: p.remaining_seconds,
+               next: fallbackPhase }
+    }
+  } catch { /* fall through to the gate */ }
+  return { phase: fallbackPhase, me }
+}
+
 export default function AuthGate({ children }) {
   const [state, setState] = useState({ phase: 'loading' })
   const [busy, setBusy] = useState(false)
@@ -110,17 +130,17 @@ export default function AuthGate({ children }) {
       return
     }
     const tok = localStorage.getItem(SESSION_KEY) || ''
-    if (!tok) { setState({ phase: 'landing' }); return }
+    if (!tok) { setState(await gateOrPreview('landing')); return }
     try {
       const me = (await api.get('/api/auth/me', {
         headers: { Authorization: `Bearer ${tok}` },
       })).data || {}
       if (me.active) { setState({ phase: 'in', me }); return }
-      if (me.authenticated) { setState({ phase: 'paywall', me }); return }
+      if (me.authenticated) { setState(await gateOrPreview('paywall', me)); return }
       localStorage.removeItem(SESSION_KEY)
-      setState({ phase: 'landing' })
+      setState(await gateOrPreview('landing'))
     } catch {
-      setState({ phase: 'landing' })
+      setState(await gateOrPreview('landing'))
     }
   }, [])
 
@@ -147,6 +167,41 @@ export default function AuthGate({ children }) {
       document.removeEventListener('visibilitychange', onVis)
     }
   }, [check])
+
+  // PREVIEW COUNTDOWN. Ticks locally once a second so the number moves, but
+  // RE-ASKS THE SERVER every 10s and takes its answer as final — the local tick
+  // is display only. Without the re-ask, pausing JS in devtools or putting the
+  // machine to sleep would stretch the window; with it, the deadline is the
+  // server's and the browser cannot argue.
+  useEffect(() => {
+    if (state.phase !== 'preview') return
+    let alive = true
+    const tick = setInterval(() => {
+      if (!alive) return
+      setState(s => (s.phase === 'preview'
+        ? { ...s, left: Math.max(0, (s.left || 0) - 1) } : s))
+    }, 1000)
+    const poll = setInterval(async () => {
+      try {
+        const p = (await api.get('/api/preview/status')).data || {}
+        if (!alive) return
+        if (!p.allowed || (p.remaining_seconds || 0) <= 0) {
+          setState(s => ({ phase: s.next || 'landing', me: s.me }))
+        } else {
+          setState(s => (s.phase === 'preview'
+            ? { ...s, left: p.remaining_seconds } : s))
+        }
+      } catch { /* keep the local countdown; it still expires on its own */ }
+    }, 10000)
+    return () => { alive = false; clearInterval(tick); clearInterval(poll) }
+  }, [state.phase])
+
+  // Local countdown reaching zero closes the window even if a poll is in flight.
+  useEffect(() => {
+    if (state.phase === 'preview' && (state.left || 0) <= 0) {
+      setState(s => ({ phase: s.next || 'landing', me: s.me }))
+    }
+  }, [state.phase, state.left])
 
   const connectDiscord = async () => {
     setBusy(true)
@@ -211,6 +266,52 @@ export default function AuthGate({ children }) {
   // Discord auth not configured yet — keep the app usable behind the old gate
   // rather than locking everyone out mid-setup.
   if (state.phase === 'legacy') return <PasswordGate>{children}</PasswordGate>
+
+  // FREE LOOK: the whole app, with a bar counting down to the paywall. Showing
+  // the real product beats a screenshot tour — but it ends on the server's
+  // clock, not on anything this page can be talked out of.
+  if (state.phase === 'preview') {
+    const left = Math.max(0, state.left || 0)
+    const mm = String(Math.floor(left / 60)).padStart(1, '0')
+    const ss = String(left % 60).padStart(2, '0')
+    const pct = Math.max(0, Math.min(100, (left / 120) * 100))
+    return (
+      <div style={{ minHeight: '100vh' }}>
+        <div style={{
+          position: 'sticky', top: 0, zIndex: 2000,
+          background: 'linear-gradient(90deg,#0d1a0d,#0a0a0a)',
+          borderBottom: '1px solid #1e1e1e', padding: '8px 14px',
+          display: 'flex', alignItems: 'center', gap: 12,
+        }}>
+          <div style={{
+            fontFamily: "'Barlow Condensed', sans-serif", fontWeight: 800, fontSize: 12,
+            letterSpacing: 1.2, textTransform: 'uppercase', color: '#00E676',
+            whiteSpace: 'nowrap',
+          }}>
+            Free preview · {mm}:{ss}
+          </div>
+          <div style={{ flex: 1, height: 4, background: '#1e1e1e', borderRadius: 999 }}>
+            <div style={{
+              width: `${pct}%`, height: '100%', borderRadius: 999,
+              background: left <= 30 ? '#FF4444' : '#00E676',
+              transition: 'width 1s linear',
+            }} />
+          </div>
+          <button
+            onClick={() => setState(s => ({ phase: s.next || 'landing', me: s.me }))}
+            style={{
+              background: '#00E676', color: '#052e16', border: 'none',
+              borderRadius: 999, padding: '7px 14px', fontWeight: 800,
+              fontSize: 12, letterSpacing: 0.8, textTransform: 'uppercase',
+              cursor: 'pointer', whiteSpace: 'nowrap',
+            }}>
+            Subscribe
+          </button>
+        </div>
+        {children}
+      </div>
+    )
+  }
 
   if (state.phase === 'in') {
     const m = state.me || {}

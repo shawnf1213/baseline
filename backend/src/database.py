@@ -179,6 +179,40 @@ try:
         cancel_at_period_end = Column(Integer, default=0)        # 0/1
         created_at          = Column(DateTime(timezone=True), server_default=func.now())
         updated_at          = Column(DateTime(timezone=True), server_default=func.now())
+        # The IP the trial was started from, kept RAW and deliberately so: the
+        # question it answers is "has this address already taken a free trial
+        # under a different email", and a hash cannot be eyeballed during an
+        # abuse review. Personal data under GDPR — it needs a line in the privacy
+        # policy and should not outlive its purpose.
+        signup_ip           = Column(String, default="", index=True)
+
+    class PreviewSession(Base):
+        """One row per anonymous visitor's free look at the app.
+
+        WHY SERVER-SIDE: a timer in the browser is a suggestion. Anything held in
+        localStorage or a cookie dies with a refresh at best and an incognito
+        window at worst, which is exactly the bypass this is meant to close. The
+        clock therefore lives here, and the browser only ever asks how much is
+        left.
+
+        KEYED ON A HASHED IP, NOT A COOKIE. A private window carries no cookies
+        and no storage, so the only thing that survives it is the address the
+        request came from. Hashed because this table only needs to recognise a
+        repeat visitor, never to identify one — unlike Subscription.signup_ip
+        above, which exists to be read by a human.
+
+        WHAT THIS CANNOT DO, stated plainly so nobody assumes otherwise: an IP is
+        not a person. Everyone behind one office NAT or one mobile carrier CGNAT
+        shares a window, and anyone who flips on a VPN or switches to cell data
+        gets a fresh one. This raises the cost of a bypass; it does not make it
+        impossible, and no client-side scheme does better.
+        """
+        __tablename__ = "preview_sessions"
+        id          = Column(Integer, primary_key=True, autoincrement=True)
+        visitor_key = Column(String, nullable=False, unique=True, index=True)
+        first_seen  = Column(DateTime(timezone=True), server_default=func.now())
+        last_seen   = Column(DateTime(timezone=True), server_default=func.now())
+        hits        = Column(Integer, default=0)
 
     _SQLALCHEMY_OK = True
 except Exception as exc:  # pragma: no cover — missing dep shouldn't crash the app
@@ -187,6 +221,7 @@ except Exception as exc:  # pragma: no cover — missing dep shouldn't crash the
     Pick = None  # type: ignore
     CacheEntry = None  # type: ignore
     Subscription = None  # type: ignore
+    PreviewSession = None  # type: ignore
 
 
 def init_db() -> None:
@@ -213,6 +248,12 @@ def init_db() -> None:
                     "VARCHAR DEFAULT 'potd'"))
                 conn.execute(text(
                     "ALTER TABLE picks ADD COLUMN IF NOT EXISTS confidence_breakdown VARCHAR"))
+                # signup_ip: the subscriptions table already exists in production,
+                # so create_all above will not add this. Existing rows stay blank —
+                # the IP was never captured for them and inventing one would be
+                # worse than an honest gap in the abuse history.
+                conn.execute(text(
+                    "ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS signup_ip VARCHAR"))
                 # pre_guard: every row that already exists when this column is
                 # first created predates the degraded-fetch cache guard, so it is
                 # backfilled to 1 exactly once. NULL is the "never seen" marker —
@@ -857,3 +898,120 @@ def record_summary() -> dict:
         "demon":    _seg([p for p in pp if (p.get("odds_type") or "standard") == "demon"]),
     }
     return summary
+
+
+# ── Anonymous preview window ────────────────────────────────────────────────
+def preview_reset(visitor_key: str) -> bool:
+    """Clear one visitor's preview clock. Support use: someone who genuinely lost
+    their window to a shared office IP has no other way back."""
+    if not _READY or PreviewSession is None:
+        return False
+    try:
+        with _session() as s:
+            row = (s.query(PreviewSession)
+                     .filter(PreviewSession.visitor_key == visitor_key).one_or_none())
+            if row is None:
+                return False
+            s.delete(row)
+            return True
+    except Exception:  # noqa: BLE001
+        logger.exception("preview_reset failed")
+        return False
+
+
+def preview_touch(visitor_key: str, window_seconds: int,
+                  reset_hours: float = 0.0) -> dict:
+    """Start or read an anonymous visitor's free-look clock.
+
+    THE CLOCK STARTS ON FIRST CONTACT AND NEVER RESTARTS. first_seen is written
+    once and only read afterwards, so a refresh, a new tab, a private window and
+    a cleared browser all land on the same row and the same deadline. That is the
+    entire point: a browser-held timer resets in all four cases.
+
+    Returns remaining seconds and whether the window is still open. Fails OPEN
+    (grants the window) when the DB is unavailable — a database outage should
+    not lock every visitor out of the marketing preview.
+    """
+    from datetime import datetime, timezone
+    if not _READY or PreviewSession is None:
+        return {"ok": False, "allowed": True, "remaining": window_seconds,
+                "reason": "preview store unavailable — failing open"}
+    try:
+        with _session() as s:
+            row = (s.query(PreviewSession)
+                     .filter(PreviewSession.visitor_key == visitor_key).one_or_none())
+            now = datetime.now(timezone.utc)
+            if row is None:
+                row = PreviewSession(visitor_key=visitor_key, hits=1)
+                s.add(row)
+                s.flush()
+                started = row.first_seen or now
+            else:
+                started = row.first_seen or now
+                row.hits = (row.hits or 0) + 1
+                row.last_seen = now
+            if started.tzinfo is None:
+                started = started.replace(tzinfo=timezone.utc)
+            elapsed = (now - started).total_seconds()
+            # A LAPSED WINDOW MAY REOPEN. reset_hours=0 means the free look is
+            # once ever, which is the strictest reading and also punishes the
+            # person who browsed for 40 seconds, got interrupted, and came back
+            # next week to a wall. Above 0, the clock restarts once that long has
+            # passed since it began.
+            if reset_hours > 0 and elapsed > reset_hours * 3600.0:
+                row.first_seen = now
+                row.hits = 1
+                started, elapsed = now, 0.0
+            remaining = max(0.0, window_seconds - elapsed)
+            return {"ok": True, "allowed": remaining > 0,
+                    "remaining": int(remaining), "elapsed": int(elapsed),
+                    "hits": row.hits or 1}
+    except Exception:  # noqa: BLE001
+        logger.exception("preview_touch failed")
+        return {"ok": False, "allowed": True, "remaining": window_seconds,
+                "reason": "preview lookup failed — failing open"}
+
+
+def trials_from_ip(ip: str) -> list:
+    """Every subscription already started from this address.
+
+    The anti-abuse read: a second free trial from an address that has one is the
+    signal, and email alone cannot see it because a new address is free to make.
+    """
+    if not _READY or Subscription is None or not ip:
+        return []
+    try:
+        with _session() as s:
+            rows = (s.query(Subscription)
+                      .filter(Subscription.signup_ip == ip)
+                      .order_by(Subscription.created_at.desc()).all())
+            return [{"stripe_sub_id": r.stripe_sub_id, "status": r.status,
+                     "app_email": r.app_email, "discord_id": r.discord_id,
+                     "created_at": r.created_at.isoformat() if r.created_at else None}
+                    for r in rows]
+    except Exception:  # noqa: BLE001
+        logger.exception("trials_from_ip failed")
+        return []
+
+
+def set_signup_ip(stripe_sub_id: str, ip: str) -> bool:
+    """Stamp the signup IP onto a subscription once it exists.
+
+    Separate from upsert_subscription because the IP is known at CHECKOUT time
+    (the browser is talking to us) while the subscription id only exists after
+    Stripe's webhook — the two facts arrive from different directions.
+    """
+    if not _READY or Subscription is None or not (stripe_sub_id and ip):
+        return False
+    try:
+        with _session() as s:
+            row = (s.query(Subscription)
+                     .filter(Subscription.stripe_sub_id == stripe_sub_id).one_or_none())
+            if row is None:
+                return False
+            if not (row.signup_ip or ""):
+                row.signup_ip = ip[:64]
+            return True
+    except Exception:  # noqa: BLE001
+        logger.exception("set_signup_ip failed")
+        return False

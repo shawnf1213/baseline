@@ -155,8 +155,37 @@ def config_status() -> dict:
     }
 
 
+# Checkout starts (browser -> us, we see the real IP) and the webhook that
+# confirms them (Stripe -> us, we see Stripe's IP) arrive from opposite
+# directions minutes apart. A Payment Link cannot carry metadata, so the address
+# is parked here and claimed when the subscription appears. Bounded and in-memory
+# on purpose: losing it on a redeploy costs one unlogged IP, while persisting it
+# would mean storing addresses for people who never subscribe at all.
+_PENDING_IPS: dict = {}
+_PENDING_MAX = 500
+
+
+def _remember_pending_ip(discord_id: str = "", email: str = "", ip: str = "") -> None:
+    if not ip:
+        return
+    for key in (f"d:{discord_id}" if discord_id else "", f"e:{(email or '').lower()}" if email else ""):
+        if key:
+            _PENDING_IPS[key] = ip
+    if len(_PENDING_IPS) > _PENDING_MAX:
+        for k in list(_PENDING_IPS)[:len(_PENDING_IPS) - _PENDING_MAX]:
+            _PENDING_IPS.pop(k, None)
+
+
+def claim_pending_ip(discord_id: str = "", email: str = "") -> str:
+    """The address a checkout was started from, if we parked one."""
+    for key in (f"d:{discord_id}" if discord_id else "", f"e:{(email or '').lower()}" if email else ""):
+        if key and key in _PENDING_IPS:
+            return _PENDING_IPS.get(key) or ""
+    return ""
+
+
 def create_checkout_session(plan: str, discord_id: str = "",
-                            email: str = "") -> dict:
+                            email: str = "", signup_ip: str = "") -> dict:
     """Create a Stripe-hosted Checkout Session. Returns {url} or {error}.
 
     discord_id rides along in metadata so the webhook can link the resulting
@@ -181,8 +210,13 @@ def create_checkout_session(plan: str, discord_id: str = "",
         # touching Discord. They are identified by the EMAIL Stripe collects,
         # and the checkout session id hands them a logged-in app session on the
         # way back (see claim_session).
-        logger.info("payment link issued plan=%s discord=%s", plan_key,
-                    discord_id or "-")
+        # A Payment Link cannot carry arbitrary metadata, so the IP is recorded
+        # HERE against the email/discord we have, and reconciled onto the
+        # subscription when its webhook lands. Weaker than the session path, but
+        # the trial link is a Payment Link and it is the one that gets abused.
+        _remember_pending_ip(discord_id=discord_id, email=email, ip=signup_ip)
+        logger.info("payment link issued plan=%s discord=%s ip=%s", plan_key,
+                    discord_id or "-", signup_ip or "-")
         return {"url": link, "via": "payment_link"}
 
     price = PLANS.get(plan_key)
@@ -202,9 +236,16 @@ def create_checkout_session(plan: str, discord_id: str = "",
             allow_promotion_codes=True,
             # Metadata lands on BOTH the session and the subscription, so the
             # link survives even if we only ever see the subscription event.
-            metadata={"discord_id": discord_id or "", "plan": plan},
+            # signup_ip rides in SUBSCRIPTION metadata, not just the session's:
+            # the session is transient and we may only ever see a subscription
+            # event, and the address is the one fact the webhook cannot recover
+            # on its own (a webhook arrives from STRIPE's address, never the
+            # buyer's). Without this the trial-abuse check has nothing to read.
+            metadata={"discord_id": discord_id or "", "plan": plan,
+                      "signup_ip": signup_ip or ""},
             subscription_data={"metadata": {"discord_id": discord_id or "",
-                                            "plan": plan}},
+                                            "plan": plan,
+                                            "signup_ip": signup_ip or ""}},
             **({"customer_email": email} if email else {}),
         )
         logger.info("checkout session created plan=%s discord=%s", plan,
@@ -350,9 +391,22 @@ def apply_event(event) -> dict:
         if not rec["stripe_sub_id"]:
             return {"ok": False, "reason": "event carried no subscription id"}
         saved = db.upsert_subscription(rec)
-        logger.info("subscription %s -> %s (discord=%s plan=%s)",
+        # Signup IP, stamped AFTER the row exists. Prefer the address that rode in
+        # on subscription metadata (the session path); fall back to whatever the
+        # Payment Link path parked, since a Payment Link cannot carry metadata.
+        # Written once and never overwritten — the FIRST address is the one that
+        # answers "where was this trial started from".
+        _ip = (md.get("signup_ip") or "").strip()
+        if not _ip:
+            _ip = claim_pending_ip(discord_id=rec["discord_id"])
+        if _ip:
+            try:
+                db.set_signup_ip(rec["stripe_sub_id"], _ip)
+            except Exception:  # noqa: BLE001
+                logger.exception("could not stamp signup_ip")
+        logger.info("subscription %s -> %s (discord=%s plan=%s ip=%s)",
                     rec["stripe_sub_id"], rec["status"],
-                    rec["discord_id"] or "-", rec["plan"] or "-")
+                    rec["discord_id"] or "-", rec["plan"] or "-", _ip or "-")
         return {"ok": bool(saved), "handled": etype, "status": rec["status"]}
 
     return {"ok": True, "handled": None, "ignored": etype}
