@@ -3141,10 +3141,19 @@ def get_match_moneyline_prob(player_id, opponent_id=None, tour: str = "ATP",
 
     That fallback is not harmless. On the same slate the unanchored model sat
     27-37 points below the market: Berrettini/Wawrinka model 54.6% vs FanDuel
-    91.4%, Darderi/Wendelken 55.7% vs 83.5%. A mixture fed a coin flip puts real
-    weight on "loses in straight sets", which is the low-break bucket, and that
-    is what turned the 8/31 Noskova Break Points pick into an UNDER against a
-    player who broke six times.
+    91.4%, Darderi/Wendelken 55.7% vs 83.5%. A win probability that far from the
+    market mis-weights every scenario in the mixture.
+
+    CORRECTION (2026-08-31): an earlier version of this note, and the commit
+    message for 6e3ba5f, claimed the missing anchor is what produced the 8/31
+    Noskova Break Points UNDER. THAT IS WRONG and the mixture was re-run to check
+    it. Anchoring that pick makes it WORSE, not better: at p_sel 0.51 the mean is
+    3.27 and P(over 5) is 0.141; at a market-anchored 0.85 the mean is 3.63 and
+    P(over) FALLS to 0.119, because weight concentrates on "wins in straight
+    sets", whose WTA scaled mean (3.62) is the LOWEST of the two winning buckets
+    — a blowout has fewer games and so fewer chances to break. The anchor gap is
+    real and worth fixing on its own merits; it is not the explanation for that
+    pick.
 
     THE TWO SOURCES AGREE WHERE BOTH EXIST — Auger-Aliassime/Hijikata: Sofascore
     0.8811, FanDuel 0.8861 — which is the evidence that this is a coverage gap
