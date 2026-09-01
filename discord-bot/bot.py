@@ -1981,7 +1981,72 @@ def _pick_to_record(p: dict, group: str = "potd") -> dict:
         "confidence_breakdown": _breakdown_json(p),
         # standard vs demon — so the results tracker / recaps / hit rates segment.
         "odds_type": (p.get("odds_type") or "standard"),
+        # What the model actually used. See _model_inputs_json.
+        "model_inputs": _model_inputs_json(p),
     }
+
+
+# Props whose stored model_projection is a FAIR LINE (the 50/50 point of a
+# scenario mixture), not an expected value. Recorded per pick because this
+# changed silently at the A2 rebuild and nothing marked the boundary: a
+# retrospective error metric that mixes the two is comparing a mean against a
+# median and will report noise as a broken model.
+_FAIR_LINE_PROPS = {"Break Points Won"}
+
+
+def _model_inputs_json(p: dict) -> str:
+    """Compact JSON of WHAT THE MODEL USED, for later measurement.
+
+    Not diagnostics — these are the inputs a future question will need and which
+    CANNOT be recovered afterwards. Re-running the model later re-runs today's
+    code against today's statistics, which is a different pick: the stats have
+    moved, the model has changed, and a market anchor present at pick time may
+    be gone by the time anyone looks.
+
+    Everything here is read from the calculate response the pick was actually
+    built from. Empty string when unavailable; truncated so one row cannot bloat.
+    """
+    try:
+        d = (p.get("data") or {})
+        if not d:
+            return ""
+        prop = p.get("prop_type") or ""
+        out = {
+            # THE FIELD THAT MATTERS MOST: what kind of number model_projection is.
+            "projection_kind": "fair_line" if prop in _FAIR_LINE_PROPS else "mean",
+            # The outcome anchor — which drives every scenario mixture.
+            "p_sel": (d.get("bp_blended_wp") or d.get("fs_blended_wp")
+                      or d.get("ptgw_blended_wp")),
+            "market_wp": (d.get("bp_market_wp") or d.get("fs_market_wp")
+                          or d.get("ptgw_market_wp")),
+            "model_wp": (d.get("bp_model_wp") or d.get("fs_model_wp")
+                         or d.get("ptgw_model_wp")),
+            "anchored": (d.get("bp_anchored") if prop == "Break Points Won"
+                         else d.get("fs_anchored")),
+            "expected_sets": d.get("expected_sets"),
+            # Serve inputs — Fantasy Score consumes both at face value.
+            "ace_proj": d.get("fs_ace_proj"),
+            "df_proj": d.get("fs_df_proj"),
+            # Hold rates: the games-margin identity is built from these.
+            "player_hold": d.get("player_hold_rate_pct") or d.get("player_hold_rate"),
+            "opp_hold": d.get("opp_hold_rate_pct"),
+            # BP internals — bp_base_proj is the C1–C6 SUB-TOTAL, which is NOT the
+            # value the FS games margin consumes. Both are stored so the next
+            # analysis cannot confuse them again.
+            "bp_base_proj": d.get("bp_base_proj"),
+            "bp_mixture_mean": d.get("bp_mixture_mean"),
+            "bp_fair_line": d.get("bp_fair_line"),
+            "bp_p_over": d.get("bp_p_over"),
+            # Total Games market blend.
+            "tg_book_line": d.get("tg_book_line"),
+            "tg_model_proj": d.get("tg_model_proj"),
+            "tg_blended_proj": d.get("tg_blended_proj"),
+            "match_format": d.get("match_format_label"),
+        }
+        out = {k: v for k, v in out.items() if v is not None}
+        return json.dumps(out, separators=(",", ":"))[:2000]
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 def _breakdown_json(p: dict) -> str:

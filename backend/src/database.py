@@ -97,6 +97,23 @@ try:
         # show the final number next to each prop. NULL = not recorded (older rows
         # or manual grades from matches the resolver couldn't fetch).
         result_value = Column(Float, nullable=True)
+        # WHAT THE MODEL ACTUALLY USED, captured at pick time.
+        #
+        # Every retrospective analysis before this had to re-run today's code
+        # against today's statistics to reconstruct a pick made days ago — which
+        # is not the pick. The stats have moved, the model has changed, and an
+        # anchor present then may be absent now. That is how a whole evening of
+        # diagnostics went wrong: `model_projection` silently changed meaning
+        # (a mean before the A2 rebuild, the fair line after), so regressing
+        # outcomes against it compared two different quantities; and a games
+        # margin was measured against `bp_base_proj` when the code consumed
+        # `project_break_points()["projection"]`.
+        #
+        # projection_kind is the field that fixes the first of those: it records
+        # WHAT KIND OF NUMBER model_projection is, so nobody has to infer it from
+        # a date. The rest record the inputs a later question will want and which
+        # cannot be recovered afterwards.
+        model_inputs = Column(String)
 
         def to_dict(self) -> dict:
             return {
@@ -122,6 +139,7 @@ try:
                 "excluded_from_record": int(self.excluded_from_record or 0),
                 "model_version": (self.model_version or "pre-a2"),
                 "result_value": self.result_value,
+                "model_inputs": self.model_inputs,
             }
 
     class CacheEntry(Base):
@@ -254,6 +272,10 @@ def init_db() -> None:
                 # worse than an honest gap in the abuse history.
                 conn.execute(text(
                     "ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS signup_ip VARCHAR"))
+                # Existing rows stay NULL: the inputs were never captured for them
+                # and inventing values would be worse than an honest gap.
+                conn.execute(text(
+                    "ALTER TABLE picks ADD COLUMN IF NOT EXISTS model_inputs VARCHAR"))
                 # pre_guard: every row that already exists when this column is
                 # first created predates the degraded-fetch cache guard, so it is
                 # backfilled to 1 exactly once. NULL is the "never seen" marker —
@@ -373,6 +395,7 @@ def log_pick(rec: dict) -> dict:
                 board_policy_version=(rec.get("board_policy_version") or "v2"),
                 odds_type=(rec.get("odds_type") or "standard"),
                 model_version=(rec.get("model_version") or MODEL_VERSION),
+                model_inputs=(rec.get("model_inputs") or None),
             )
             s.add(row)
             s.flush()

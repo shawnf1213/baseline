@@ -218,6 +218,9 @@ class ResultLogRequest(BaseModel):
     confidence_breakdown: str = ""       # JSON snapshot of the confidence components
     odds_type: str = "standard"          # "standard" or "demon"
     board_policy_version: str = "v2"     # board qualification policy in force
+    # JSON snapshot of WHAT THE MODEL ACTUALLY USED at pick time. Not diagnostics
+    # — this is what makes a pick measurable after the fact. See the column.
+    model_inputs: str = ""
 
 
 class ResultUpdateRequest(BaseModel):
