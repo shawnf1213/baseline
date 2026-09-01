@@ -2838,6 +2838,18 @@ async def prop_calculate(req: PropRequest):
                 _fs_gw = _fs_S * _fs_hp_f + _fs_bp_won                    # holds + breaks
                 _fs_gl = _fs_S * _fs_ho_f + _fs_S * (1.0 - _fs_hp_f)      # opp holds + player's service losses
                 _fs_games_margin = _fs_gw - _fs_gl
+                # NOTE (2026-09-01): replacing the BP term with the accounting
+                # identity S*(1-opp_hold) was tried and REVERTED. The identity
+                # argument is sound -- games won plus games lost must equal the
+                # match total, which forces that term -- but the diagnostic behind
+                # it compared bp_base_proj (the C1-C6 SUB-TOTAL shipped in the API
+                # response) against the implied breaks, while the value actually
+                # used here is project_break_points()["projection"], the full
+                # chain. The measured "-3.97 break under-credit" was therefore the
+                # wrong field, and live the change moved FS projections DOWN 1-2
+                # rather than up ~4 as predicted -- degrading projection accuracy
+                # on a prop that wins 59.8%. Redo the measurement against the
+                # right field before attempting this again.
                 logger.info("FS_GAMES_MARGIN | %s | total=%.1f hold=%.0f%%/%.0f%% BP_won=%.2f "
                             "-> games %.1f-%.1f margin=%+.2f", req.player_name or "player",
                             _fs_total, _fs_hp, _fs_ho, _fs_bp_won, _fs_gw, _fs_gl, _fs_games_margin)
