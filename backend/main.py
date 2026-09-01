@@ -2715,8 +2715,7 @@ async def prop_calculate(req: PropRequest):
             _tg_model_proj = float(result.get("projection") or 0.0)
             _tg_line = await asyncio.to_thread(
                 get_match_total_games_line,
-                req.player_id, req.opponent_id, req.tour,
-                req.player_name or "", req.opponent_name or "")
+                req.player_id, req.opponent_id, req.tour)
             _tg_book = (_tg_line or {}).get("book_line")
             if _tg_book is not None and _tg_model_proj > 0:
                 _tg_blended = (TG_MARKET_WEIGHT * float(_tg_book)
