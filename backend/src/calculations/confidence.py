@@ -175,16 +175,35 @@ def calculate_confidence(
     # (overall data is less surface-relevant, so it counts at ~25%).
     eff_n = n + min(overall_n, 60) * 0.25
 
+    # ── BANDS SET FROM THE REALISED DISTRIBUTION, NOT ROUND NUMBERS ──────────
+    # The old top band awarded the full 60 at eff_n > 40. Measured across 724
+    # graded picks, eff_n runs p10=37, median=61, p90=84 — so 86% of every pick
+    # ever made scored the maximum, and this component contributed a near
+    # constant. A term that assigns the same value to almost every row cannot
+    # rank anything, which is why confidence stopped predicting outcomes: raising
+    # the board floor from 65 to 80 moved the hit rate 53.6% -> 54.6%.
+    #
+    # The bands below sit on the measured percentiles, so a pick has to be in the
+    # genuinely deep-data tail to score 60. Deliberately NOT a straight percentile
+    # rescale: that would drop the median score from 60 to ~44 and, against a
+    # fixed 65 board floor, would empty the board. This keeps the top anchored and
+    # lengthens the LOWER tail, which is where the discrimination was missing.
     if eff_n < 5:
         sample_score, sample_label = 0, f"{n} surf / {overall_n} overall (stat-rich) —very limited data"
-    elif eff_n <= 10:
-        sample_score, sample_label = 20, f"{n} surf / {overall_n} overall (stat-rich) —small effective sample"
     elif eff_n <= 20:
-        sample_score, sample_label = 35, f"{n} surf / {overall_n} overall (stat-rich) —moderate effective sample"
-    elif eff_n <= 40:
-        sample_score, sample_label = 50, f"{n} surf / {overall_n} overall (stat-rich) —good effective sample"
-    else:
-        sample_score, sample_label = 60, f"{n} surf / {overall_n} overall (stat-rich) —large effective sample"
+        sample_score, sample_label = 25, f"{n} surf / {overall_n} overall (stat-rich) —small effective sample"
+    elif eff_n < 37:                      # below the 10th percentile
+        sample_score, sample_label = 38, f"{n} surf / {overall_n} overall (stat-rich) —thin for this tour"
+    elif eff_n < 45:                      # p10-p25
+        sample_score, sample_label = 46, f"{n} surf / {overall_n} overall (stat-rich) —below-median sample"
+    elif eff_n < 61:                      # p25-median
+        sample_score, sample_label = 52, f"{n} surf / {overall_n} overall (stat-rich) —typical sample"
+    elif eff_n < 75:                      # median-p75
+        sample_score, sample_label = 56, f"{n} surf / {overall_n} overall (stat-rich) —above-median sample"
+    elif eff_n < 84:                      # p75-p90
+        sample_score, sample_label = 58, f"{n} surf / {overall_n} overall (stat-rich) —deep sample"
+    else:                                 # p90+
+        sample_score, sample_label = 60, f"{n} surf / {overall_n} overall (stat-rich) —exceptional sample"
     breakdown["sample_size"] = {"score": sample_score, "max": 60, "label": sample_label}
     total += sample_score
 
@@ -278,12 +297,23 @@ def calculate_confidence(
     # printed e.g. "Strong opponent data (330 surface matches)" — awarding a full
     # +10 — for an opponent with 38 usable matches, or 1 during a stats outage.
     o_n = opp_ta_career_matches
-    if o_n > 10:
-        opp_score, opp_label = 10, f"Strong opponent data ({o_n} stat-rich surface matches)"
+    # Same recalibration as sample_size, same reason. o_n runs p10=20, median=40,
+    # p90=68 across 724 graded picks, so the old "> 10 wins full marks" gave 97%
+    # of picks an identical +10 and the term ranked nothing.
+    if o_n >= 68:                         # p90+
+        opp_score, opp_label = 10, f"Exceptional opponent data ({o_n} stat-rich surface matches)"
+    elif o_n >= 40:                       # median-p90
+        opp_score, opp_label = 8, f"Strong opponent data ({o_n} stat-rich surface matches)"
+    elif o_n >= 27:                       # p25-median
+        opp_score, opp_label = 6, f"Typical opponent data ({o_n} stat-rich surface matches)"
+    elif o_n >= 20:                       # p10-p25
+        opp_score, opp_label = 3, f"Below-median opponent data ({o_n} stat-rich surface matches)"
+    elif o_n >= 10:
+        opp_score, opp_label = 0, f"Thin opponent data ({o_n} stat-rich surface matches)"
     elif o_n >= 5:
-        opp_score, opp_label = 0, f"Moderate opponent data ({o_n} stat-rich surface matches)"
+        opp_score, opp_label = -5, f"Limited opponent data ({o_n} stat-rich surface matches)"
     else:
-        opp_score, opp_label = -10, f"Limited opponent data ({o_n} stat-rich surface matches)"
+        opp_score, opp_label = -10, f"Very limited opponent data ({o_n} stat-rich surface matches)"
     breakdown["opponent"] = {"score": opp_score, "max": 10, "label": opp_label}
     total += opp_score
 
@@ -338,6 +368,20 @@ def calculate_confidence(
     total += ss_career_score
 
     # ── 8. SS last-5 surface match depth ──────────────────────────────────────
+    # INERT — THIS TERM CANNOT DISCRIMINATE AND IS LEFT ONLY TO HOLD THE SCALE.
+    # The input is "stat-rich matches in the LAST-5 log", so it is capped at 5 by
+    # construction, and across 724 graded picks every percentile from p10 to p90
+    # is exactly 5. It awards the same +5 to essentially every pick.
+    #
+    # NOT removed, because dropping it would shift every confidence down by a flat
+    # 5 without separating anything — a scale change dressed up as a fix. Making
+    # it real means re-basing on a window that can actually vary (last-20 rather
+    # than last-5), which needs the caller to pass a different count and is not a
+    # same-night change. Flagged here so it is not mistaken for a live signal.
+    #
+    # source_agreement below has the same problem (98.2% of picks at its ceiling)
+    # but is binary by nature — TA available, tiers agree — so it is honestly a
+    # data-availability flag rather than a matchup signal.
     ss_m = ss_recent_surface_matches   # stat-rich matches in last-5 log
     if ss_m >= 5:
         ss_score, ss_label = 5, f"SS last-5: {ss_m} stat-rich surface matches"
