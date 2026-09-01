@@ -70,6 +70,10 @@ from src.api.sofascore_client import (
 # FS market anchor (1A): weight on the de-vigged market win prob when blending
 # with the model prob. blended = w·market + (1−w)·model.
 WINPROB_MARKET_WEIGHT = 0.7
+
+# Model win-probability de-compression lives in props.py so the ace chain,
+# which blends internally, shares one definition with the mixture props.
+from src.calculations.props import decompress_win_prob as _decompress_wp
 # Total Games market anchor: weight on the sportsbook's "Total games won" O/U line
 # when blending with the model's total-games projection.
 # blended = w·book_line + (1−w)·model_proj. |model − book| > this many games flags
@@ -2786,7 +2790,8 @@ async def prop_calculate(req: PropRequest):
             _anchored = isinstance(_mkt_wp, (int, float))
             if _anchored:
                 _blended_wp = (WINPROB_MARKET_WEIGHT * _mkt_wp
-                               + (1.0 - WINPROB_MARKET_WEIGHT) * _model_wp)
+                               + (1.0 - WINPROB_MARKET_WEIGHT)
+                               * _decompress_wp(_model_wp))
             else:
                 _blended_wp = _model_wp
             logger.info("FS_WINPROB | %s | model=%.3f market=%s blended=%.3f anchored=%s (%s)",
@@ -2997,7 +3002,8 @@ async def prop_calculate(req: PropRequest):
                 _ptgw_anchored = isinstance(_ptgw_mkt_wp, (int, float))
                 if _ptgw_anchored:
                     _ptgw_blended = (WINPROB_MARKET_WEIGHT * _ptgw_mkt_wp
-                                     + (1.0 - WINPROB_MARKET_WEIGHT) * _ptgw_model_wp)
+                                     + (1.0 - WINPROB_MARKET_WEIGHT)
+                                     * _decompress_wp(_ptgw_model_wp))
                 else:
                     _ptgw_blended = _ptgw_model_wp
                 logger.info("PTGW_WINPROB | %s | model=%.3f market=%s blended=%.3f anchored=%s",
@@ -3082,7 +3088,8 @@ async def prop_calculate(req: PropRequest):
                     _bp_anchored = isinstance(_bp_mkt_wp, (int, float))
                     if _bp_anchored:
                         _bp_blended = (WINPROB_MARKET_WEIGHT * _bp_mkt_wp
-                                       + (1.0 - WINPROB_MARKET_WEIGHT) * _bp_model_wp)
+                                       + (1.0 - WINPROB_MARKET_WEIGHT)
+                                       * _decompress_wp(_bp_model_wp))
                     else:
                         _bp_blended = _bp_model_wp
                     _bp_pw = max(0.02, min(0.98, _bp_blended))

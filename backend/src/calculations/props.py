@@ -1,3 +1,4 @@
+import os
 import logging
 import math
 
@@ -426,7 +427,7 @@ def project_aces(
     if _gap_anchored:
         _model_wp = _safe(p_prob, 50.0) / 100.0
         _blended_wp = (market_weight * float(market_wp)
-                       + (1.0 - market_weight) * _model_wp)
+                       + (1.0 - market_weight) * decompress_win_prob(_model_wp))
         win_prob_gap = abs(2.0 * _blended_wp - 1.0) * 100.0
     expected_sets, comp_label = _expected_sets_from_gap(win_prob_gap, is_bo5)
     # Sets-scaling denominator for aces. The per-match ace average is taken
@@ -1694,6 +1695,51 @@ def surface_affinity(stats: dict, held_out: bool = True):
         return None
     n = stats.get("surface_matches") or stats.get("matches_played") or 0
     return raw * min(1.0, n / _AFFINITY_FULL_SAMPLE)
+
+
+# ── DE-COMPRESSING THE MODEL'S OWN WIN PROBABILITY ──────────────────────────
+# Regressed against the de-vigged market across a live slate:
+#
+#     model = 0.264 + 0.462 x market      R2 = 0.728
+#
+# R2 of 0.73 says the model is NOT wrong -- it tracks the market closely. The
+# slope of 0.46 says it moves less than half as far, collapsing toward a fixed
+# point of 0.491. At a market price of 0.90 it says 0.68; at 0.10 it says 0.31.
+# Measured on ten consecutive matches it pulled toward the coin flip in TEN of
+# ten, in both directions.
+#
+# That is a units problem, not an information problem, and the distinction is
+# the whole point. Raising WINPROB_MARKET_WEIGHT would "fix" the anchor by
+# discarding the model's opinion -- converging on the book, which is the one
+# thing that cannot produce an edge. Rescaling instead puts the model back on
+# the market's scale and its DISAGREEMENTS SURVIVE: Fery reads 0.546 compressed
+# (invisible against a 0.238 market) and 0.620 corrected, which is a real,
+# large, tradeable disagreement. The book prices the outcome; our statistics
+# only get to argue with it if they are denominated in the same units.
+#
+# Clamped hard: extrapolating a fitted line to the tails is where this would
+# hurt, and no tennis match is a 99% lock.
+#
+# PROVISIONAL -- fitted on n=10 from a single slate. Refit on a larger sample
+# before trusting the exact slope. WINPROB_DECOMPRESS=0 disables it entirely.
+WINPROB_DECOMPRESS = os.getenv("WINPROB_DECOMPRESS", "1").strip() not in ("0", "false", "False")
+_WP_SLOPE  = float(os.getenv("WINPROB_SLOPE", "0.462") or "0.462")
+_WP_CENTER = float(os.getenv("WINPROB_CENTER", "0.491") or "0.491")
+_WP_CLAMP_LO, _WP_CLAMP_HI = 0.03, 0.97
+
+
+def decompress_win_prob(model_wp):
+    """Put the model's win probability back on the market's scale.
+
+    Returns the input unchanged when disabled or not a number, so every caller
+    can apply it unconditionally.
+    """
+    if not WINPROB_DECOMPRESS or not isinstance(model_wp, (int, float)):
+        return model_wp
+    if _WP_SLOPE <= 0:
+        return model_wp
+    out = 0.5 + (float(model_wp) - _WP_CENTER) / _WP_SLOPE
+    return max(_WP_CLAMP_LO, min(_WP_CLAMP_HI, out))
 
 
 def _estimate_win_prob(p_stats: dict, o_stats: dict,
