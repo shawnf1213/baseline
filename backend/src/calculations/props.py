@@ -2631,6 +2631,12 @@ _FS_MARGIN_BOUNDS = {
     "best_of_3": {"S1": (2.0, 12.0), "S2": (-4.0, 11.0), "S3": (-11.0, 4.0), "S4": (-12.0, -2.0)},
     "best_of_5": {"S1": (3.0, 18.0), "S2": (-6.0, 16.5), "S3": (-16.5, 6.0), "S4": (-18.0, -3.0)},
 }
+# Win probability above which the Fantasy Score games-margin center is floored
+# at the win-prob-conditioned fit. See the floor itself for the reasoning; 0.70
+# keeps this to clear favourites, where the failure was demonstrated. Set to 1.1
+# to disable.
+FS_MARGIN_FLOOR_MIN_WP = float(os.getenv("FS_MARGIN_FLOOR_MIN_WP", "0.70") or "0.70")
+
 FS_CONF_CEILING = 80   # composite high-variance prop — ceiling until the ledger says more
 FS_DIVERGENCE_CONF_CAP = 70   # cap when model & book disagree on the OUTCOME (point 4)
 
@@ -2752,6 +2758,35 @@ def fantasy_score_mixture(p_sel, ace_proj, df_proj, expected_sets, prop_line,
     #     any bk_scale, so breakability moves the SPREAD only. bk_scale=1 when unknown.
     m_tour = sum(p[s] * fitted_margin[s] for s in ("S1", "S2", "S3", "S4"))
     center = float(player_games_margin) if player_games_margin is not None else m_tour
+    # ── A CLEAR FAVOURITE CANNOT HAVE A BELOW-AVERAGE GAMES MARGIN ───────────
+    # player_games_margin is built from SEASON hold rates, which describe each
+    # player against their AVERAGE opponent — not against this one. In a big
+    # mismatch that understates the margin badly, because the favourite holds far
+    # more and breaks far more than their season line. Pegula (WTA #3) vs Kenin
+    # (#110) at a 98.4% market-anchored win probability produced a center of 2.2
+    # — a 7-6 7-6 margin — and a Fantasy Score of 19.0 against a 25 line. A real
+    # 6-3 6-0 scores exactly 25.
+    #
+    # The arithmetic makes it worse on the WTA side. The center reduces to
+    # S·(2·hold_player − hold_opp − 1) + breaks, and that middle term is ~0.00 at
+    # ATP hold rates (0.85 vs 0.70) but ~−0.20 at WTA rates (0.70 vs 0.60), so it
+    # subtracts on every women's match.
+    #
+    # m_tour is ALREADY conditioned on the win probability (the scenario weights
+    # p[s] are functions of p_sel), so it is the right floor: whatever else is
+    # true, a player the market makes a heavy favourite should not be projected
+    # below the average margin for their own win probability. Verified one-sided
+    # — Medvedev at 0.977 computes 7.38 against an m_tour of 4.59 and is left
+    # untouched, so the hold rates can still add information ABOVE the fit; they
+    # just can no longer subtract below it.
+    #
+    # Gated to CLEAR FAVOURITES. Applied to underdogs it would lift a legitimate
+    # blowout-loss margin (Molcan −6.42 → −1.23) and damage UNDER picks that
+    # currently work, so the blast radius is deliberately the half of the board
+    # where the failure was demonstrated.
+    if player_games_margin is not None and p_sel >= FS_MARGIN_FLOOR_MIN_WP:
+        if center < m_tour:
+            center = m_tour
     bk_scale = 1.0
     if isinstance(mean_hold, (int, float)) and fitted_margin["S1"] > 1e-6:
         tgt = max(float(need), min(5.0 * need, 10.0 * need * (1.0 - float(mean_hold))))
