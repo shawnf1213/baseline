@@ -2033,12 +2033,42 @@ def _expected_sets(tour: str, court: str, p1_wr: float = 50.0, p2_wr: float = 50
 #   S1 win-in-straights · S2 win-in-decider · S3 lose-in-decider · S4 lose-straights
 _PTGW_SCEN_FIT = {
     "ATP": {"p3_win": 0.429, "p3_lose": 0.379,
-            "scen": {"S1": (12.36, 1.03), "S2": (16.88, 2.10),
-                     "S3": (13.24, 2.80), "S4": (7.37, 2.24)}},
+            "scen": {"S1": (12.53, 0.63), "S2": (16.49, 1.70),
+                     "S3": (13.74, 2.36), "S4": (7.15, 2.31)}},
     "WTA": {"p3_win": 0.316, "p3_lose": 0.393,
-            "scen": {"S1": (12.28, 0.69), "S2": (15.85, 1.71),
-                     "S3": (13.01, 2.31), "S4": (6.29, 2.26)}},
+            "scen": {"S1": (12.36, 0.55), "S2": (15.88, 1.68),
+                     "S3": (12.74, 2.31), "S4": (5.99, 2.39)}},
 }
+# REFIT 2026-09-02 from 7,516 WTA and 4,381 ATP completed best-of-three matches —
+# five seasons of the four slams (women only; the men's slams are BO5 and belong
+# to _PTGW_SCEN_BO5) plus the WTA 1000 / ATP Masters hard- and clay-court events.
+# Retirements and walkovers are EXCLUDED and every counted set must be a legal
+# completed set (6-x with x<=4, 7-5, or 7-6); without those two filters a
+# retirement enters as a "straight-sets win" with the loser on 3-4 games, which
+# biases the loser cells DOWN and manufactures exactly the error described below.
+#
+# WHY: the previous values compressed the games MARGIN on both tours. The winner
+# cells were close to right, but the LOSER cells (S4 on both tours, S3 on WTA)
+# sat ~0.3 games too high, so every scenario's margin came out short:
+#
+#   straight-sets margin   WTA  measured 6.38  was 5.99   (+0.39)
+#                          ATP  measured 5.38  was 4.99   (+0.39)
+#   three-set margin       WTA  measured 3.14  was 2.84   (+0.30)
+#                          ATP  measured 2.75  was 3.64   (-0.89)
+#
+# The margin is what Fantasy Score is built on (FS = 10 + games margin + 3*set
+# margin + 0.5*(aces - DF)), so a WTA favourite's straight-sets FS was ~0.4 low
+# on the games term alone. That is REAL but SMALL -- it does not close the ~3
+# point gap to a typical book Fantasy Score line, which is a separate finding:
+# across 1,398 matches by the actual WTA top 10, only 4.6% of their matches
+# cleared FS 25, and even CONDITIONAL on a straight-sets win only 19.3% cleared
+# 24. The book prices near the modal blowout; the mixture projects the mean.
+#
+# Standard errors are 0.008-0.06 games, so these cells are pinned far tighter
+# than the corrections themselves (5-14 se). p3_win / p3_lose are NOT refit here
+# -- they are conditional on the player's win probability and an unconditional
+# three-set share cannot identify them. The measured shares (WTA 34.9%, ATP
+# 36.7%) do bracket the fitted pairs, so they are left alone.
 # FITTED 2026-09-02 from 2,474 real ATP Grand Slam main-draw best-of-five
 # matches — five seasons each of the Australian Open, Roland Garros, Wimbledon
 # and the US Open, giving 4,948 player-observations. This replaces the "BO5 SANE
