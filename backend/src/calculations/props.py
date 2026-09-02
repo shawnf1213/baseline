@@ -1986,14 +1986,36 @@ _PTGW_SCEN_FIT = {
             "scen": {"S1": (12.28, 0.69), "S2": (15.85, 1.71),
                      "S3": (13.01, 2.31), "S4": (6.29, 2.26)}},
 }
-# BO5 SANE FALLBACK (spec-sanctioned): tour-level slates are ~all BO3, and the GS
-# BO5 sample (ATP n=92, WTA n=0) is too thin to fit. Winner minimum is 18 games
-# (3 sets × 6), not 12 — the whole distribution shifts up. Values are the BO3
-# shape scaled to the BO5 set structure; flagged as fallback, not fit.
+# FITTED 2026-09-02 from 2,474 real ATP Grand Slam main-draw best-of-five
+# matches — five seasons each of the Australian Open, Roland Garros, Wimbledon
+# and the US Open, giving 4,948 player-observations. This replaces the "BO5 SANE
+# FALLBACK" that preceded it, which was the BO3 shape scaled to the five-set
+# structure because the then-available sample (ATP n=92) was too thin to fit.
+# The whole US Open ran on those unfitted numbers.
+#
+# What the fit changed, against the old fallback values:
+#   S1 18.62 (was 18.6)  mean was already right; sd 0.85 vs 1.4 — the old spread
+#                        was 65% too wide. Winning three sets is tightly bounded:
+#                        the floor is 18 and only tiebreak sets push above it.
+#   S2 24.12 (was 26.0)  1.88 too high
+#   S3 19.44 (was 20.5)  1.06 too high, and sd 4.49 vs 3.6 — losing a long match
+#                        is the most variable outcome in the sport, not the least
+#   S4 10.04 (was 11.2)  1.16 too high
+#
+# Three of four scenario means were over-stated, so every BO5 games-won
+# projection carried an upward bias before this.
+#
+# p3_win / p3_lose are LEFT AS THEY WERE, deliberately. Unconditionally the data
+# gives 0.558 for both (1,381 of 2,474 matches went past the minimum), which
+# confirms p3_win = 0.55 almost exactly. p3_lose = 0.45 is not the unconditional
+# rate — it encodes the modelled asymmetry that a favourite who loses tends to
+# lose closer, and the raw counts cannot distinguish it because every long match
+# contributes one S2 and one S3 by construction. Fitting that needs conditioning
+# on win probability, which this sample was not cut for.
 _PTGW_SCEN_BO5 = {
     "p3_win": 0.55, "p3_lose": 0.45,   # "3 sets" here means "went past the minimum"
-    "scen": {"S1": (18.6, 1.4), "S2": (26.0, 3.2),
-             "S3": (20.5, 3.6), "S4": (11.2, 3.0)},
+    "scen": {"S1": (18.62, 0.85), "S2": (24.12, 2.81),
+             "S3": (19.44, 4.49), "S4": (10.04, 2.99)},
 }
 # Win-prob modulation of the 3-set split: a more dominant favourite wins in
 # straights more often (lower P(3|win)) and, on the rare loss, loses closer
@@ -2449,10 +2471,29 @@ _BP_SCEN_FIT = {
     "WTA": {"scen": {"S1": (4.73, 1.25), "S2": (5.90, 1.70),
                      "S3": (4.32, 2.08), "S4": (1.86, 1.34)}},
 }
-# BO5 fallback (tour slates ~all BO3; GS BO5 too sparse) — BO3 shape lifted to the
-# longer format. Flagged fallback, not fit.
-_BP_SCEN_BO5 = {"scen": {"S1": (4.2, 1.8), "S2": (5.2, 2.3),
-                         "S3": (2.6, 2.0), "S4": (1.0, 1.3)}}
+# FITTED 2026-09-02 from 420 real ATP Grand Slam best-of-five matches (840
+# player-observations), sampled across three seasons each of the Australian
+# Open, Roland Garros, Wimbledon and the US Open. Break counts come from the
+# match's own "Break points converted" statistic. This replaces a fallback that
+# was the BO3 shape lifted to the longer format because the slam sample was
+# considered too sparse to fit.
+#
+# Against the old fallback values:
+#   S1 4.80 (was 4.20)  0.60 too LOW — the biggest miss
+#   S2 5.21 (was 5.20)  mean essentially exact
+#   S3 3.16 (was 2.60)  0.56 too LOW
+#   S4 1.10 (was 1.00)  close
+# Every standard deviation was too wide (1.52 vs 1.8, 1.93 vs 2.3, 1.87 vs 2.0,
+# 1.05 vs 1.3), so the old table was both low and over-dispersed — it understated
+# breaks and then blurred the estimate.
+#
+# The real data confirms the ordering that makes this prop counter-intuitive:
+# S2 (5.21, win in a decider) is ABOVE S1 (4.80, win in straights). A longer
+# match offers more return games, so making a player a bigger favourite can
+# LOWER their expected break count. Anyone reasoning "dominant, therefore more
+# breaks" is reading it backwards, and now there is a fitted number saying so.
+_BP_SCEN_BO5 = {"scen": {"S1": (4.80, 1.52), "S2": (5.21, 1.93),
+                         "S3": (3.16, 1.87), "S4": (1.10, 1.05)}}
 # Population outcome-blind mean breaks/match (probability-weighted over the fit
 # buckets) — the neutral baseline for the matchup scale (base_proj / base_pop).
 #
