@@ -110,6 +110,59 @@ _GPS_FIT = {           # (intercept, slope) — games_per_set = a + b * combined
 _GPS_MIN, _GPS_MAX = 8.3, 11.0
 
 
+
+# ── OPPONENT ADJUSTMENT (log5) ──────────────────────────────────────────────
+# THE GAP THIS CLOSES: every rate in this module is a player's SEASON average,
+# measured against the field. Nothing asked what happens against the specific
+# opponent in front of them. That single omission produced three separate
+# failures — an ace chain that prices a big server the same against any
+# returner, a break-point projection that reads the opponent's break-points-faced
+# against THEIR average opponent rather than against this returner, and a
+# Fantasy Score games margin that put Pegula (WTA #3) at a 7-6 7-6 margin
+# against the world #110 because it used her season hold rate of ~70% when she
+# holds ~90% in that matchup.
+#
+# log5 (Bill James) is the standard answer and it has the property that matters:
+# it is EXACTLY NEUTRAL against a league-average opponent. Work in odds space,
+# multiply the player's odds by the opponent's complementary odds, divide out the
+# league baseline so it is not counted twice:
+#
+#     odds_player   = h / (1 - h)          h = player's hold rate
+#     odds_opponent = (1 - r) / r          r = opponent's return-games-won rate
+#     odds_league   = H / (1 - H)          H = tour average hold
+#     adjusted      = odds_player x odds_opponent / odds_league
+#
+# When r equals the league return rate (1 - H), odds_opponent collapses to
+# odds_league and the player's own rate is returned untouched. That is why this
+# cannot silently shift the whole board: it only moves a rate to the extent the
+# opponent differs from average, which is precisely the information that was
+# missing.
+def opponent_adjusted_hold(player_hold_pct, opp_return_pct, tour="ATP"):
+    """Player's expected hold rate (%) against THIS opponent, via log5.
+
+    Returns the player's own rate unchanged when either input is missing or
+    degenerate — an opponent adjustment must never be the reason a projection
+    fails, and an unadjusted rate is the honest fallback.
+    """
+    from ..constants import ATP_TOUR_AVERAGES, WTA_TOUR_AVERAGES
+    avg = WTA_TOUR_AVERAGES if (tour or "").upper() == "WTA" else ATP_TOUR_AVERAGES
+    H = _safe(avg.get("service_games_won"), 64.0) / 100.0
+    if not isinstance(player_hold_pct, (int, float)) or not isinstance(opp_return_pct, (int, float)):
+        return player_hold_pct
+    h = float(player_hold_pct) / 100.0
+    r = float(opp_return_pct) / 100.0
+    # Degenerate inputs would divide by zero or blow the odds up; a rate of 0 or
+    # 1 is a data artefact, never a real season hold rate.
+    if not (0.02 < h < 0.98 and 0.02 < r < 0.98 and 0.02 < H < 0.98):
+        return player_hold_pct
+    odds = (h / (1.0 - h)) * ((1.0 - r) / r) / (H / (1.0 - H))
+    adj = odds / (1.0 + odds)
+    # Clamp to what tennis actually produces. Even a total mismatch does not put
+    # a hold rate outside this band over a match, and an unclamped log5 can run
+    # away when both inputs sit at their own extremes.
+    return max(25.0, min(95.0, adj * 100.0))
+
+
 def _games_per_set(combined_hold: float, tour: str = "ATP") -> float:
     """Expected games per set from the combined hold rate, per tour. See the fit
     note above — especially the R^2: this is a conditional mean over a noisy

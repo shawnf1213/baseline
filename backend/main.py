@@ -128,6 +128,7 @@ from src.calculations.props import (
     game_spread_mixture,
     project_player_games_won,
     project_fantasy_score,
+    opponent_adjusted_hold,
     FS_DIVERGENCE_CONF_CAP,
     surface_affinity,
     generate_scouting_report,
@@ -2827,8 +2828,28 @@ async def prop_calculate(req: PropRequest):
                 match_format=match_fmt, court=court_for_calc,
                 player_ta=player_ta_props, opponent_ta=opponent_ta_props)
             _fs_total = _tg_r.get("projection")
-            _fs_hp = p1_s.get("service_games_won_pct")
-            _fs_ho = p2_s.get("service_games_won_pct")
+            # ── HOLD RATES ADJUSTED FOR THIS OPPONENT, NOT THE FIELD ─────────
+            # These were raw season hold rates, i.e. each player measured against
+            # their AVERAGE opponent. In a mismatch that is the wrong number on
+            # both sides at once: Pegula holds ~90% against the world #110, not
+            # her season 70%, and the margin built from those rates put a 98%
+            # favourite at a 7-6 7-6 scoreline.
+            #
+            # log5 combines each player's rate with the other's complementary
+            # rate and divides out the tour baseline, so an average opponent
+            # returns the rate unchanged and only a genuine mismatch moves it.
+            _fs_hp_raw = p1_s.get("service_games_won_pct")
+            _fs_ho_raw = p2_s.get("service_games_won_pct")
+            _fs_hp = opponent_adjusted_hold(
+                _fs_hp_raw, p2_s.get("return_games_won_pct"), req.tour)
+            _fs_ho = opponent_adjusted_hold(
+                _fs_ho_raw, p1_s.get("return_games_won_pct"), req.tour)
+            if (isinstance(_fs_hp, (int, float)) and isinstance(_fs_hp_raw, (int, float))
+                    and abs(_fs_hp - _fs_hp_raw) > 0.05):
+                logger.info("FS_HOLD_ADJ | %s | hold %.1f -> %.1f | opp hold %.1f -> %.1f",
+                            req.player_name or "player", _fs_hp_raw, _fs_hp,
+                            _fs_ho_raw if isinstance(_fs_ho_raw, (int, float)) else -1,
+                            _fs_ho if isinstance(_fs_ho, (int, float)) else -1)
             _fs_bp_won = _fs_bp_r.get("projection")
             # Breakability (shared 3-set overlay): mean service-hold fraction.
             _fs_mean_hold = (((_fs_hp + _fs_ho) / 2.0) / 100.0
