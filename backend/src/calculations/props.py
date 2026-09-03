@@ -2096,7 +2096,33 @@ _PTGW_SCEN_FIT = {
 # contributes one S2 and one S3 by construction. Fitting that needs conditioning
 # on win probability, which this sample was not cut for.
 _PTGW_SCEN_BO5 = {
-    "p3_win": 0.55, "p3_lose": 0.45,   # "3 sets" here means "went past the minimum"
+    # p3 REFIT 2026-09-03 (was 0.55 / 0.45). Measured on 4,240 player-observations
+    # from five seasons of ATP Grand Slam best-of-five (retirements excluded).
+    # "3 sets" here means "went past the minimum" — four or five sets.
+    #
+    # Overall P(4+ sets) = 0.568, so the old pair averaged 0.50 and ran ~7 points
+    # low. More important, the old pair was ASYMMETRIC at an even matchup (0.55
+    # vs 0.45) when the data says the two are the same number there:
+    #
+    #   rank advantage        P(4+|WIN)   P(4+|LOSE)   games when losing
+    #   underdog by 100+        0.712       0.491          14.18
+    #   even (+/-30)            0.591       0.592          15.80
+    #   favourite by 100-300    0.500       0.738          17.93
+    #
+    # The asymmetry belongs entirely to the win-prob gap term below, not to the
+    # base: a favourite who loses was in a battle (0.738), an underdog who loses
+    # usually did not extend it (0.491), and at parity both sit at 0.59.
+    #
+    # This is what produced Schoolkate UNDER 15.5 at proj 5 on 9/3 (he won 18).
+    # The chain gave him p3_lose = 0.32 against a measured 0.491 for his bucket,
+    # putting ~50% of the weight on S4 (lose in straights, 10.04 games) when it
+    # belonged on S3 (lose in four or five, 19.44).
+    #
+    # NOTE: p3 is shared machinery — _scenario_p3 feeds PTGW, Fantasy Score and
+    # Break Points, so this moves all three. That is intended (they must not
+    # disagree about how long the same match runs), but it is a wide change.
+    # The BO3 table is NOT refit here; this sample is best-of-five only.
+    "p3_win": 0.59, "p3_lose": 0.59,
     "scen": {"S1": (18.62, 0.85), "S2": (24.12, 2.81),
              "S3": (19.44, 4.49), "S4": (10.04, 2.99)},
 }
