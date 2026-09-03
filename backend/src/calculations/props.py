@@ -2673,29 +2673,7 @@ def bp_scenario_mixture(p_sel, prop_line, base_proj, tour="ATP",
         "S4": (1.0 - p_sel) * (1.0 - p3_lose),  # lose in 2
     }
     bfit = (_BP_SCEN_BO5 if is_bo5 else _BP_SCEN_FIT.get(tour, _BP_SCEN_FIT["ATP"]))["scen"]
-    # BASELINE MUST MATCH THE SCALE OF base_proj (fixed 2026-09-03).
-    #
-    # base_proj arrives WITHOUT C8, deliberately — main.py excludes the
-    # expected-sets multiplier because the S1-S4 scenarios already model match
-    # length, and applying both would double-count it. That makes base_proj a
-    # PER-MATCH figure on the scale C1 came from (the opponent's break points
-    # faced per match, drawn from a mostly best-of-three history).
-    #
-    # Dividing that by the BEST-OF-FIVE population (3.2) compared a per-match
-    # numerator against a per-BO5-match denominator, so every best-of-five
-    # matchup measured 1.59x less breakable than it is — the same 1.59 that C8
-    # was deliberately left out to avoid.
-    #
-    # Svrcina v Darderi, 9/3: the projector chain ended at 5.51 (C1 7.48 BP
-    # faced x C3 0.40 conversion, +0.54 momentum, x1.54 for BO5), which is close
-    # to the 6 he actually got. The mixture then received base_proj 3.585
-    # against a 3.2 baseline -> scale 1.12, "average matchup", and shipped a
-    # fair line of 2.1 at 86% confidence. Against the per-match baseline the
-    # scale is 3.585/2.01 = 1.78, which is what the inputs actually say: both
-    # players hold poorly and Darderi faces 7.5 break points a match.
-    #
-    # Only best-of-five moves; the BO3 branch already used this baseline.
-    base_pop = _BP_BASE_POP.get(tour, _BP_BASE_POP["ATP"])
+    base_pop = _BP_BASE_POP_BO5 if is_bo5 else _BP_BASE_POP.get(tour, _BP_BASE_POP["ATP"])
     base_scale = (base_proj / base_pop) if (base_pop and base_proj) else 1.0
     base_scale = max(_BP_SCALE_LO, min(_BP_SCALE_HI, base_scale))
     lw = BP_LOSS_MATCHUP_WEIGHT if loss_weight is None else float(loss_weight)
