@@ -2255,21 +2255,21 @@ def _ranked_stats(prop_type: str, data: dict) -> str:
         # games from two ITF matches — displayed beside a 36-match count, and
         # flatly contradicting the 26% win probability on the same card. A reader
         # can only calibrate a rate against its denominator, so below the minimum
-        # we say the sample is thin instead of printing a number that reads as
-        # elite. Suppressing beats implying.
+        # the stat is DROPPED entirely.
+        #
+        # It used to print the rate with an "(only N games — thin)" caveat, which
+        # on the 9/3 Pick of the Day rendered as "Hold 85% (only 0 games — thin)"
+        # twice — a made-up number and an apology for it, on the most prominent
+        # card we post. Showing the rate anyway is the worse half of that: a
+        # reader takes "Hold 85%" and skips the parenthetical. If the denominator
+        # is too small to trust the number, there is no number to show.
         sg_n = ps.get("service_games_n")
         rg_n = ps.get("return_games_n")
         parts = []
         if isinstance(sg_n, (int, float)) and sg_n >= MIN_GAMES_FOR_RATE:
             parts.append(f"Hold **{_pct(ps.get('service_games_won_pct'))}**")
-        elif ps.get("service_games_won_pct") is not None:
-            parts.append(f"Hold _{_pct(ps.get('service_games_won_pct'))} "
-                         f"(only {sg_n or 0:g} games — thin)_")
         if isinstance(rg_n, (int, float)) and rg_n >= MIN_GAMES_FOR_RATE:
             parts.append(f"Ret games won **{_pct(ps.get('return_games_won_pct'))}**")
-        elif ps.get("return_games_won_pct") is not None:
-            parts.append(f"Ret _{_pct(ps.get('return_games_won_pct'))} "
-                         f"(only {rg_n or 0:g} games — thin)_")
         return " · ".join(parts)
     if prop_type == "Total Games":
         ch = data.get("combined_hold")
@@ -2651,6 +2651,18 @@ async def _post_daily_picks(channel, track: bool = True) -> str:
                      _before, len(ranked) + len(slip))
         if ranked:
             ranked, has_star = pick_of_day._promote_star(ranked)
+        # A slip is a PAIR. If the filter above took out one leg, what's left is
+        # not a 3x — on 9/3 a single leg (Trungelliti) posted under the 3x header.
+        # Re-cut from the full evaluated pool, minus the stale plays and minus the
+        # ⭐ and its match, exactly as the original cut did. Only if that still
+        # can't find two independent legs does the 3x drop for the day.
+        if len(slip) < 2:
+            _pool = [p for p in (bundle.get("pool") or [])
+                     if (pick_of_day._norm(p.get("player")), p.get("prop_type")) not in _open]
+            slip = pick_of_day._select_slip(
+                _pool, ranked[:1] if (ranked and has_star) else [])
+            log.info("daily picks: slip lost a leg to the pending filter — re-cut "
+                     "from %d remaining plays -> %d leg(s)", len(_pool), len(slip))
 
     if not ranked:
         no_play = discord.Embed(description=MSG_NO_PICK_DAILY, color=COLOR_NEUTRAL)
@@ -2715,6 +2727,12 @@ async def _post_daily_picks(channel, track: bool = True) -> str:
         await _log_picks_pending(ranked, group="potd")
 
     # Baseline 3x — a SEPARATE post right after the ranked list.
+    # TWO LEGS OR NOTHING. `if slip:` posted a one-leg slip on 9/3 under the 3x
+    # header, then raised IndexError on slip[1] in the return line below — so the
+    # malformed embed shipped and the handler died after it. A one-leg 3x is not
+    # a 3x; if the re-cut above could not find a pair, there is no slip today.
+    if len(slip) < 2:
+        slip = []
     if slip:
         if track:
             await _log_picks_pending(slip, group="3x")
@@ -2724,7 +2742,7 @@ async def _post_daily_picks(channel, track: bool = True) -> str:
 
     if track:
         _start_line_monitor(channel, ranked + slip)   # monitor every play + both legs
-    slip_note = (f" + 3x [{slip[0]['player']}, {slip[1]['player']}]"
+    slip_note = (f" + 3x [{', '.join(p['player'] for p in slip)}]"
                  if slip else " (no 3x — thin pool)")
     return f"posted {len(ranked)} ranked, ⭐ {ranked[0]['player']} {ranked[0]['prop_type']}{slip_note}"
 

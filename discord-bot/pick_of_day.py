@@ -186,7 +186,15 @@ SLIP_MIN_CONF  = 70   # a 3x leg must clear this (above the board floor)
 POTD_THRESHOLD = 80   # uniform Pick-of-the-Day bar, every eligible prop
 # The ⭐ exclusions: Double Faults never leads the card, and neither does any DEMON
 # (its boosted payout structure is not part of the standard public POTD record).
-POD_STAR_EXCLUDE_PROPS = {"Double Faults"}
+#
+# Player Total Games Won joins the permanent block (2026-09-03). It is hard-capped
+# at 80 confidence and built from several compounding models, so every strong one
+# pins to exactly the bar and they tie — which makes the ⭐ an edge-magnitude
+# contest rather than a confidence one. The 9/3 card is the case: Schoolkate UNDER
+# 15.5 led at conf 80 on a 13% win probability with a hold and return rate that
+# both rested on ZERO service games. It still populates the board and the 3x at
+# full weight; it just cannot be the headline play.
+POD_STAR_EXCLUDE_PROPS = {"Double Faults", "Player Total Games Won"}
 # PROBATION (Fix C3, 2026-07-23): Fantasy Score is a composite scenario-mixture prop
 # that has NOT been out-of-sample backtested. It stays enabled and board/3x eligible,
 # but cannot hold the ⭐ until a calibration backtest certifies it (projected P(over)
@@ -1509,8 +1517,15 @@ async def generate_ranked_and_slip() -> dict:
         slip = _select_slip(ordered, ordered[:1] if has_star else [])
         # Post only the top-N plays (⭐ + the next best), even though the whole
         # board was evaluated.
+        #
+        # ``pool`` is the FULL evaluated board. The caller drops plays that are
+        # still awaiting a result, and that filter can take out one of the two
+        # slip legs — on 9/3 it did, and the survivor posted alone as a one-leg
+        # "3x". A slip is a PAIR by definition, so the caller has to be able to
+        # re-cut it, and _select_slip draws from the whole board rather than the
+        # top-N. Handing back only ``ranked`` left it nothing to re-cut from.
         return {"ranked": ordered[:MAX_RANKED_PLAYS], "slip": slip,
-                "thin_slate": thin_slate, "has_star": has_star}
+                "pool": ordered, "thin_slate": thin_slate, "has_star": has_star}
     except Exception as exc:  # noqa: BLE001 — total isolation
         log.exception("POD generate_ranked_and_slip failed: %s", exc)
         return {"ranked": [], "slip": [], "thin_slate": False, "has_star": False}
