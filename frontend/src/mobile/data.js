@@ -372,7 +372,19 @@ export function derivePicks(record, source = 'prizepicks', slate = null) {
   const days = [...byDate.entries()]
     .sort((a, b) => (a[0] < b[0] ? 1 : -1))
     .map(([date, rows]) => {
-      rows.sort((a, b) => (b.confidence ?? -1) - (a.confidence ?? -1))
+      // BOARD ORDER, not confidence order. The bot logs a board by writing
+      // ranked[0] (the ⭐ Pick of the Day) first and the rest in rank order, so
+      // ascending id IS the posted order. Sorting by confidence cannot
+      // reproduce it, because the star bar is per-prop: Break Points Won may
+      // lead at >= 70 while Player Total Games Won is blocked from the slot
+      // entirely. On the 9/3 board that put Schoolkate (PTGW, 80) at the top of
+      // the app and the real POTD, Popyrin (BP, 76), fourth — the app
+      // contradicting the card subscribers were sent. Confidence stays as the
+      // tiebreak for rows that somehow share an id or lack one.
+      rows.sort((a, b) => {
+        if (a.id != null && b.id != null && a.id !== b.id) return a.id - b.id
+        return (b.confidence ?? -1) - (a.confidence ?? -1)
+      })
       let w = 0, l = 0, pending = 0
       for (const r of rows) {
         if (r.result === 'W' || r.result === 'PUSH') w++
