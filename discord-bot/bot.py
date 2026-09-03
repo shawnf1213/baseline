@@ -4087,61 +4087,6 @@ def _slate_date_of(p: dict) -> str:
     return _d.strftime("%Y-%m-%d")
 
 
-# A match that slid to another day is filed under the day it was actually
-# PLAYED, not the day it was originally carded. The boundary is 6 AM ET on the
-# day after the slate date: a match that started late on the card's own day and
-# graded just after midnight is still that day's result, while a genuinely
-# postponed match (rain, suspension, a re-schedule) grades a day or more later
-# and belongs to the following day's list.
-#
-# Without this, a postponed pick held its original day's recap open FOREVER —
-# the day could never satisfy "every pick settled", so it never posted and then
-# aged out of the three-day look-back. Requested 2026-09-03 (user): a match
-# delayed more than ~24h goes in the following day's list.
-_RECAP_SLIDE_CUTOFF_HOUR = 6      # ET, morning after the slate date
-
-
-def _recap_date_of(p: dict) -> str:
-    """The day this pick belongs to IN THE RECAP.
-
-    Normally the slate date (the day it was carded). If the pick graded after
-    6 AM ET on the day AFTER that, the match slid, and it is filed under the
-    6 AM→6 AM day it actually resolved.
-
-    Returns None for a pick that is still UNRESOLVED past that cutoff: it has
-    slid but we do not yet know to which day, so it belongs to no day and must
-    not block one. It picks up a real date as soon as it grades."""
-    base = _slate_date_of(p)
-    if not base:
-        return None
-    try:
-        _b = datetime.datetime.strptime(base, "%Y-%m-%d")
-        cutoff = datetime.datetime(
-            _b.year, _b.month, _b.day, _RECAP_SLIDE_CUTOFF_HOUR,
-            tzinfo=POD_TZINFO) + datetime.timedelta(days=1)
-    except Exception:  # noqa: BLE001
-        return base
-
-    raw = p.get("resolved_at")
-    if not raw:
-        # Unresolved. Still its own day until the cutoff passes; after that the
-        # match has slid and this pick stops blocking the day it was carded on.
-        return base if datetime.datetime.now(POD_TZINFO) < cutoff else None
-    try:
-        _r = datetime.datetime.fromisoformat(
-            str(raw).replace("Z", "+00:00"))
-        if _r.tzinfo is None:
-            _r = _r.replace(tzinfo=datetime.timezone.utc)
-        _r = _r.astimezone(POD_TZINFO)
-    except Exception:  # noqa: BLE001
-        return base
-    if _r <= cutoff:
-        return base
-    # Slid. File under the 6 AM→6 AM day it actually graded, so a match played
-    # late on the following day still lands on that day rather than the one after.
-    return (_r - datetime.timedelta(hours=_RECAP_SLIDE_CUTOFF_HOUR)).strftime("%Y-%m-%d")
-
-
 def daily_recap_embed(rec: dict, target_date: str = None,
                       source: str = "prizepicks") -> discord.Embed:
     """Date-based daily recap. Header 'M/D PrizePicks Recap', that date's picks with
@@ -4179,7 +4124,7 @@ def daily_recap_embed(rec: dict, target_date: str = None,
     # with the readiness check and the carryover line, which are both slate-based.
     graded = [p for p in picks
               if p.get("result") in ("W", "L", "PUSH", "VOID")
-              and _recap_date_of(p) == target_date]
+              and _slate_date_of(p) == target_date]
     today = graded
 
     # CASHED = W + PUSH — a push didn't miss, so it counts as cashed. The
@@ -4208,7 +4153,7 @@ def daily_recap_embed(rec: dict, target_date: str = None,
         for p in picks:
             if p.get("excluded_from_record"):
                 continue
-            _sd = _recap_date_of(p)
+            _sd = _slate_date_of(p)
             if not _sd or not (_win_start <= _sd <= target_date):
                 continue
             _r = p.get("result")
@@ -4295,7 +4240,7 @@ def daily_recap_embed(rec: dict, target_date: str = None,
         # — while 8/2 lost its 3x block entirely. Slate date can't drift like that,
         # and since a day only posts once every pick is settled, the slip is always
         # complete by the time its recap goes out.
-        _legs = [p for p in _legs_all if _recap_date_of(p) == target_date]
+        _legs = [p for p in _legs_all if _slate_date_of(p) == target_date]
         if any(p.get("result") not in ("W", "L", "PUSH", "VOID") for p in _legs):
             _legs = []                        # slip still has a live leg — hold it
         if _legs:
@@ -4741,28 +4686,6 @@ async def _resolve_all_pending() -> int:
 # therefore holds its recap until it grades or is voided — void it manually
 # (VOID = DNP) to release the day.
 _GRADED_RESULTS = ("W", "L", "PUSH", "VOID")
-# SETTLED, for deciding whether a DAY may recap. Wider than _GRADED_RESULTS by
-# one state: NEEDS REVIEW.
-#
-# NEEDS REVIEW is TERMINAL. The resolver assigns it when it has given up on a
-# pick — unsupported prop, player not resolved, stats error, completed match not
-# found — and nothing re-drives it, so it never becomes W/L/PUSH/VOID on its
-# own. Treating it as "still pending" meant one unscoreable pick held its whole
-# day forever, and since the recap only looks back three days, that day then
-# aged out and could NEVER post.
-#
-# That is exactly what happened: the track record went silent after 8/31. The
-# 9/1 card had three NEEDS REVIEW picks (Choinski, Jović, Bergs) and Underdog's
-# 9/1 had one (Taberner), so neither book's 9/1 recap could ever fire; 8/29 and
-# 8/30 were stuck the same way and are now permanently out of the window. Three
-# days of results were invisible because of four picks the grader could not
-# score.
-#
-# A day is now ready when every pick has reached a terminal state, scoreable or
-# not. This does NOT inflate the record: daily_recap_embed tallies only
-# W/L/PUSH/VOID, so an unscored pick is omitted from the day's numbers rather
-# than counted as a win.
-_SETTLED_RESULTS = _GRADED_RESULTS + ("NEEDS REVIEW",)
 
 # ONE-OFF (2026-08-03, user): hold these days and release them TOGETHER. 8/2 was
 # fully settled while 8/3 still had matches running, and the user wants both to
@@ -4873,8 +4796,8 @@ async def _maybe_post_ready_recap():
     picks = _books[0][1]                      # batch hold below is PrizePicks-only
 
     def _day_ready(d):
-        dp = [p for p in picks if _recap_date_of(p) == d]
-        return bool(dp) and not [p for p in dp if p.get("result") not in _SETTLED_RESULTS]
+        dp = [p for p in picks if _slate_date_of(p) == d]
+        return bool(dp) and not [p for p in dp if p.get("result") not in _GRADED_RESULTS]
 
     # ONE-OFF BATCH HOLD — release the listed days together or not at all.
     # PRIZEPICKS ONLY (2026-08-04): it must not gate another book. Underdog
@@ -4916,22 +4839,15 @@ async def _maybe_post_ready_recap():
                 log.info("recap: %s %s complete but the 8 AM wave may still add "
                          "picks — holding until 9 AM", _src, day)
                 continue
-            day_picks = [p for p in _src_picks if _recap_date_of(p) == day]
+            day_picks = [p for p in _src_picks if _slate_date_of(p) == day]
             if not day_picks:
                 continue
-            blocking = [p for p in day_picks if p.get("result") not in _SETTLED_RESULTS]
+            blocking = [p for p in day_picks if p.get("result") not in _GRADED_RESULTS]
             if blocking:
                 log.info("recap: %s %s NOT ready — %d pick(s) still pending: %s",
                          _src, day, len(blocking),
                          ", ".join((p.get("player") or "?") for p in blocking[:5]))
                 continue
-            _unscored = [p for p in day_picks if p.get("result") == "NEEDS REVIEW"]
-            if _unscored:
-                log.warning("recap: %s %s posting with %d UNSCORED pick(s) the "
-                            "grader could not settle (omitted from the day's "
-                            "numbers): %s", _src, day, len(_unscored),
-                            ", ".join(f"{p.get('player')} {p.get('prop_type')}"
-                                      for p in _unscored[:5]))
             if await _post_recap_for(channel, day,
                                      f"all {len(day_picks)} plays settled", _src):
                 return                          # one recap per pass
