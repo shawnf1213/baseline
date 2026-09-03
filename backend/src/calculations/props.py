@@ -3405,8 +3405,25 @@ def project_total_games(
     # Left ON for best-of-three: it was fitted there (Sorribes Tormo at Targu
     # Mures, an unanchored lower-tier match) and the equivalent measurement for
     # BO3 has not been done. Set TG_LOPSIDED_BO5=1 to restore the old behaviour.
+    # RECALIBRATED 2026-09-03 for best-of-three, from 9,840 completed WTA and ATP
+    # main-tour BO3 matches (slams + WTA 1000 / ATP Masters, retirements out).
+    # The effect is REAL here — unlike BO5, where it measured flat — but it is an
+    # order of magnitude smaller than what was being applied:
+    #
+    #     WTA  gps  gap 0-20  9.38 -> gap 150+  9.13   (-0.25)
+    #     ATP  gps  gap 0-20  9.92 -> gap 150+  9.71   (-0.21)
+    #     (straight-sets only: WTA 9.27 -> 9.00, ATP 9.82 -> 9.54)
+    #
+    # So the most lopsided matches in tennis lose about a QUARTER of a game per
+    # set. The old curve (0.05/pp, cap 3.2) subtracted 2.4 games per set at a
+    # typical heavy-favourite gap of 70pp — roughly ten times the measured
+    # effect, and ~5 games off a two-set total. The cap is now 0.35 with a
+    # 0.005/pp slope, which reaches ~0.24 at a 70pp gap and ~0.34 at 90pp,
+    # matching the measured range.
+    #
+    # The floor below (6.5) is now unreachable and kept only as a guard.
     _lopsided_bo5 = (os.getenv("TG_LOPSIDED_BO5", "0") or "0").strip() in ("1", "true", "True")
-    _lopsided_gps = -min(3.2, max(0.0, win_prob_gap - 22.0) * 0.05)
+    _lopsided_gps = -min(0.35, max(0.0, win_prob_gap - 22.0) * 0.005)
     if _lopsided_gps < 0 and (not is_bo5 or _lopsided_bo5):
         games_per_set = max(6.5, games_per_set + _lopsided_gps)
         logger.info("TG_LOPSIDED | gap=%.1fpp | gps %+.2f (blowout = fewer games) -> %.2f",
