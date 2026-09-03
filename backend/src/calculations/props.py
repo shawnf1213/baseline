@@ -3893,6 +3893,40 @@ def project_break_points(
         else:
             c2_source        = f"tour_gated({c2_delta_pct:+.1%},{c2_basis})"
 
+    # ── ABSOLUTE TOUR-RELATIVE RETURN QUALITY (2026-09-03, user) ──────────────
+    # Everything above measures a returner against THEMSELVES — their surface
+    # form versus their own career — and uses the tour average only as a boolean
+    # gate. So a returner who is simply weak in absolute terms scores 1.0, and
+    # the projection treats them as tour-average.
+    #
+    # C1 is the opponent's break points faced AGAINST AN AVERAGE RETURNER, so
+    # this is the missing half of the identity: how many chances THIS returner
+    # actually converts out of that pool. Popyrin returns 13.43% of return games
+    # against an ATP average of 20% — a third below tour — and came out of the
+    # block above at exactly 1.00 (his surface-vs-career delta was -4.8%, inside
+    # the +/-5% deadband). Betting his UNDER is betting a weak return game
+    # against a strong server, and nothing in the chain expressed that.
+    #
+    # SHRUNK, and deliberately conservative. The raw ratio is 0.67 for Popyrin
+    # and 1.76 for Svrcina; applying it whole would swing projections further
+    # than a single-season return rate can justify, and return rates are not
+    # opponent-adjusted (a Challenger returner faces weaker serves). K=0.5 with
+    # a +/-25% bound is a first pass -- it needs the same leave-one-out fit the
+    # hold side got before the coefficient is trusted. Set RET_TOUR_K=0 to
+    # disable.
+    #
+    # Direction check on the two 9/3 picks with known outcomes: Popyrin
+    # (weak returner) moves DOWN, strengthening the UNDER that won; Svrcina
+    # (35.1% return games, well above the corrected 20% average) moves UP,
+    # toward the OVER that was right. Both correct.
+    _RET_TOUR_K = float(os.getenv("RET_TOUR_K", "0.5") or "0.5")
+    if (_RET_TOUR_K > 0 and surf_ret_avg is not None
+            and isinstance(_tour_ret_avg, (int, float)) and _tour_ret_avg > 0):
+        _ratio = surf_ret_avg / _tour_ret_avg
+        _c2_tour = max(0.75, min(1.25, 1.0 + _RET_TOUR_K * (_ratio - 1.0)))
+        c2_returner_mult *= _c2_tour
+        c2_source += f"+tour_rel(x{_c2_tour:.3f} @{surf_ret_avg:.1f}vs{_tour_ret_avg:.1f})"
+
     logger.info(
         "BP_C2 | player=%s | surf_ret=%.1f%% | career_ret=%.1f%% | "
         "delta=%.1f%% | c2=%.3f | source=%s",

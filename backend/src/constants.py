@@ -389,8 +389,19 @@ ATP_TOUR_AVERAGES = {
     "net_pts_won":                  60.0,
     "double_faults":                 3.0,
     # ── tour-relative serve/return baselines (Step 1) ──
-    "service_games_won":            64.0,
-    "return_games_won":             36.0,
+    # CORRECTED 2026-09-03: these are service/return GAMES, and held POINTS-scale
+    # values (64/36). Real ATP service-GAMES-won is ~80% — measured from match
+    # statistics: Fritz 88.0, Tabilo 82.5, Opelka 80.6, Popyrin 79.6, Darderi
+    # 77.0, Svrcina 65.9. The codebase's other reference already said so
+    # (_P3_HOLD_REF = {"ATP": 0.80, "WTA": 0.68}); these two disagreed with it by
+    # 16 points.
+    #
+    # The effect was to mis-rank every returner. Judged against a 36% "average",
+    # Svrcina's 35.1% return games read as slightly BELOW par when a 20% average
+    # makes him one of the better returners on tour — which suppressed exactly
+    # the break-point projections that were coming in low.
+    "service_games_won":            80.0,
+    "return_games_won":             20.0,
     "first_serve_pct":              62.0,
     "second_serve_pts_won":         54.0,
     "bp_generated_per_match":        5.5,
@@ -408,8 +419,10 @@ WTA_TOUR_AVERAGES = {
     "net_pts_won":                  55.0,
     "double_faults":                4.0,
     # ── tour-relative serve/return baselines (Step 1) ──
-    "service_games_won":            57.0,
-    "return_games_won":             43.0,
+    # CORRECTED 2026-09-03 alongside the ATP pair above — same points-for-games
+    # mix-up (was 57/43). WTA service-GAMES-won is ~68%, per _P3_HOLD_REF.
+    "service_games_won":            68.0,
+    "return_games_won":             32.0,
     "first_serve_pct":              62.0,
     "second_serve_pts_won":         50.0,
     "bp_generated_per_match":        7.2,
