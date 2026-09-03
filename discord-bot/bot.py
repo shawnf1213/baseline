@@ -4686,6 +4686,28 @@ async def _resolve_all_pending() -> int:
 # therefore holds its recap until it grades or is voided — void it manually
 # (VOID = DNP) to release the day.
 _GRADED_RESULTS = ("W", "L", "PUSH", "VOID")
+# SETTLED, for deciding whether a DAY may recap. Wider than _GRADED_RESULTS by
+# one state: NEEDS REVIEW.
+#
+# NEEDS REVIEW is TERMINAL. The resolver assigns it when it has given up on a
+# pick — unsupported prop, player not resolved, stats error, completed match not
+# found — and nothing re-drives it, so it never becomes W/L/PUSH/VOID on its
+# own. Treating it as "still pending" meant one unscoreable pick held its whole
+# day forever, and since the recap only looks back three days, that day then
+# aged out and could NEVER post.
+#
+# That is exactly what happened: the track record went silent after 8/31. The
+# 9/1 card had three NEEDS REVIEW picks (Choinski, Jović, Bergs) and Underdog's
+# 9/1 had one (Taberner), so neither book's 9/1 recap could ever fire; 8/29 and
+# 8/30 were stuck the same way and are now permanently out of the window. Three
+# days of results were invisible because of four picks the grader could not
+# score.
+#
+# A day is now ready when every pick has reached a terminal state, scoreable or
+# not. This does NOT inflate the record: daily_recap_embed tallies only
+# W/L/PUSH/VOID, so an unscored pick is omitted from the day's numbers rather
+# than counted as a win.
+_SETTLED_RESULTS = _GRADED_RESULTS + ("NEEDS REVIEW",)
 
 # ONE-OFF (2026-08-03, user): hold these days and release them TOGETHER. 8/2 was
 # fully settled while 8/3 still had matches running, and the user wants both to
@@ -4797,7 +4819,7 @@ async def _maybe_post_ready_recap():
 
     def _day_ready(d):
         dp = [p for p in picks if _slate_date_of(p) == d]
-        return bool(dp) and not [p for p in dp if p.get("result") not in _GRADED_RESULTS]
+        return bool(dp) and not [p for p in dp if p.get("result") not in _SETTLED_RESULTS]
 
     # ONE-OFF BATCH HOLD — release the listed days together or not at all.
     # PRIZEPICKS ONLY (2026-08-04): it must not gate another book. Underdog
@@ -4842,12 +4864,19 @@ async def _maybe_post_ready_recap():
             day_picks = [p for p in _src_picks if _slate_date_of(p) == day]
             if not day_picks:
                 continue
-            blocking = [p for p in day_picks if p.get("result") not in _GRADED_RESULTS]
+            blocking = [p for p in day_picks if p.get("result") not in _SETTLED_RESULTS]
             if blocking:
                 log.info("recap: %s %s NOT ready — %d pick(s) still pending: %s",
                          _src, day, len(blocking),
                          ", ".join((p.get("player") or "?") for p in blocking[:5]))
                 continue
+            _unscored = [p for p in day_picks if p.get("result") == "NEEDS REVIEW"]
+            if _unscored:
+                log.warning("recap: %s %s posting with %d UNSCORED pick(s) the "
+                            "grader could not settle (omitted from the day's "
+                            "numbers): %s", _src, day, len(_unscored),
+                            ", ".join(f"{p.get('player')} {p.get('prop_type')}"
+                                      for p in _unscored[:5]))
             if await _post_recap_for(channel, day,
                                      f"all {len(day_picks)} plays settled", _src):
                 return                          # one recap per pass
