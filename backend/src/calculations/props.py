@@ -3382,10 +3382,39 @@ def project_total_games(
     # baseline, so the most lopsided matches in tennis were floored at roughly
     # 7.7 games per set — about 16 games — when the real answer is 13. The cap
     # was doing the floor's job badly; the floor does it exactly.
+    # MEASURED 2026-09-03 — NOT APPLIED TO BEST-OF-FIVE. Across 2,124 completed
+    # ATP Grand Slam best-of-five matches (five seasons, retirements excluded),
+    # games-per-set inside a straight-sets win is FLAT against dominance:
+    #
+    #     rank gap 0-20   loser 10.24 -> 28.86 total / 3 sets = 9.62 gps
+    #     rank gap 250+   loser 10.16 -> 28.78 total / 3 sets = 9.59 gps
+    #
+    # A mismatch removes SETS, which expected_sets already prices; it does not
+    # compress the games inside a set. Trimming both charged the same shortening
+    # twice, and at slam gaps the second charge is large: Schoolkate (gap 68.8pp)
+    # lost 2.34 gps, taking the match total from 33.2 to 22.4 -- below almost
+    # every real best-of-five, where even a straight-sets rout totals 28.66.
+    #
+    # That number is then consumed by project_player_games_won as
+    # games_combined, where avg_gps = total/expected_sets = 6.79, the winner is
+    # floored at 6.0 games per set, and the LOSER receives the remainder --
+    # 0.79 games per lost set. Hence UNDER 15.5 at proj 5 and UNDER 10.5 at
+    # proj 3, when a straight-sets BO5 loser really averages 10.16 games and
+    # only 6.2% win fewer than six.
+    #
+    # Left ON for best-of-three: it was fitted there (Sorribes Tormo at Targu
+    # Mures, an unanchored lower-tier match) and the equivalent measurement for
+    # BO3 has not been done. Set TG_LOPSIDED_BO5=1 to restore the old behaviour.
+    _lopsided_bo5 = (os.getenv("TG_LOPSIDED_BO5", "0") or "0").strip() in ("1", "true", "True")
     _lopsided_gps = -min(3.2, max(0.0, win_prob_gap - 22.0) * 0.05)
-    if _lopsided_gps < 0:
+    if _lopsided_gps < 0 and (not is_bo5 or _lopsided_bo5):
         games_per_set = max(6.5, games_per_set + _lopsided_gps)
         logger.info("TG_LOPSIDED | gap=%.1fpp | gps %+.2f (blowout = fewer games) -> %.2f",
+                    win_prob_gap, _lopsided_gps, games_per_set)
+    elif _lopsided_gps < 0:
+        logger.info("TG_LOPSIDED | gap=%.1fpp | BO5 — gps trim %+.2f NOT applied "
+                    "(expected_sets already prices the mismatch; measured flat at "
+                    "9.6 gps across all rank gaps) -> %.2f",
                     win_prob_gap, _lopsided_gps, games_per_set)
 
     # ── Raw total games ───────────────────────────────────────────────────────
