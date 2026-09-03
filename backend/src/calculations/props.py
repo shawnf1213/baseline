@@ -2249,6 +2249,44 @@ _SQRT2 = 2.0 ** 0.5
 # never doing that job. All it did was stop losing scenarios from shrinking.
 _PTGW_SCALE_LO, _PTGW_SCALE_HI = 0.50, 1.30
 
+# ── MATCH LENGTH NO LONGER RESCALES THE SCENARIO MEANS (2026-09-03) ──────────
+# The dependency between Total Games and Player Total Games Won ran the wrong
+# way, and it produced impossible projections for heavy underdogs: Schoolkate
+# UNDER 15.5 at proj 5, Sweeny UNDER 10.5 at proj 3.
+#
+# The WINNER'S games are nearly deterministic and the LOSER'S carry the
+# variance. This fit says so itself -- in BO5 the straight-sets winner is
+# 18.62 +/- 0.85 while the loser is 10.04 +/- 2.99, three and a half times the
+# spread. So total = winner + loser is approximately 18.6 + loser: the match
+# total and the loser's games carry THE SAME INFORMATION.
+#
+# Deriving the loser from the total therefore estimates the thing we already
+# know (the winner, +/-0.85) and backs out the thing we do not (the loser,
+# +/-2.99) by subtraction. Because the winner is pinned at its floor it can
+# absorb nothing, so 100% of any error in the length estimate lands on the
+# loser, amplified ~3x: for Schoolkate, games_combined 28 -> 24 (a 14% change)
+# moved the projection 7.7 -> 3.5 (55%).
+#
+# It was fed a bad number too. Standalone Total Games projected 33.2 for that
+# match; re-running the length model with the PTGW win probability forced in
+# returned 22.4 -- below almost every real best-of-five, where a straight-sets
+# rout averages 28.66 (winner 18.62 + loser 10.04). 22.4 minus a pinned 18
+# leaves 4.4.
+#
+# Match length still enters, through the SCENARIO PROBABILITIES: _scenario_p3
+# already uses mean_hold and games_combined to make a decider more or less
+# likely. That is the honest channel and it is untouched. Rescaling the
+# per-scenario MEANS on top of it charged the model for the same shortening
+# twice -- which the comment at the _implied_total block already identified,
+# and tried to fix by changing the denominator rather than by removing the
+# second charge.
+#
+# With the rescale off, scale == 1.0 reproduces the fitted table exactly
+# (BO5 S4 = 28.66 - 18.62 = 10.04; ATP BO3 S4 = 19.68 - 12.53 = 7.15), so the
+# projection falls back on the fit plus the opponent-adjusted hold/break rates.
+# Set PTGW_LENGTH_RESCALE=1 to restore the old behaviour.
+PTGW_LENGTH_RESCALE = (os.getenv("PTGW_LENGTH_RESCALE", "0") or "0").strip() in ("1", "true", "True")
+
 
 def _ptgw_base_pop(tour="ATP", is_bo5=False) -> float:
     """Population-average MATCH total (both players' games) implied by the fit.
@@ -2337,11 +2375,15 @@ def ptgw_scenario_mixture(p_sel, prop_line, tour="ATP", match_format="best_of_3"
     # than by a correction applied afterwards.
     _implied_total = ((p["S1"] + p["S4"]) * (scen["S1"][0] + scen["S4"][0])
                       + (p["S2"] + p["S3"]) * (scen["S2"][0] + scen["S3"][0]))
-    if (isinstance(games_combined, (int, float)) and games_combined > 0
+    if (PTGW_LENGTH_RESCALE
+            and isinstance(games_combined, (int, float)) and games_combined > 0
             and _implied_total > 0):
         scale = max(_PTGW_SCALE_LO, min(_PTGW_SCALE_HI,
                                         games_combined / _implied_total))
     else:
+        # Default since 2026-09-03: no rescale. Match length reaches this model
+        # through the scenario PROBABILITIES (_scenario_p3), not by stretching
+        # the per-scenario means — see PTGW_LENGTH_RESCALE above.
         scale = 1.0
 
     # ── THE LOSER ABSORBS THE LENGTH, AND IT IS AN IDENTITY NOT A FIT ────────
