@@ -50,8 +50,21 @@ PROP_MAP = {
     "Games Won":         "Player Total Games Won",
     "Games Played":      "Total Games",         # match total, both players
     "Sets Won":          "Sets Won",
+    # (exclusions live in EXCLUDE_PROPS below, not by deleting entries here —
+    #  the mapping stays so re-enabling is a one-line change)
     "Sets Played":       "Sets Played",
 }
+
+# Props dropped at parse time, so they never reach the Underdog board.
+# MIRRORS pick_of_day._POD_EXCLUDE_PROPS — the two boards are parsed by separate
+# code, so an exclusion has to be stated in both places or it only half-applies.
+# Keep them in sync.
+#
+# Double Faults is OUT (2026-09-03, user) pending a fix: highest-variance prop
+# we carry, and its projections have not been re-validated since the
+# serve/return tour averages were found to be on the wrong scale.
+EXCLUDE_PROPS = {"Double Faults"}
+
 # Markets we deliberately do NOT carry: 1st Set Games Won/Played, Tiebreakers
 # Played, and the serve-point splits (First Serve Points Won, First Serves In,
 # Break Points Saved, Serve/Second Serve Points Won, Second Serve Attempts,
@@ -133,7 +146,7 @@ def parse_tennis(board: dict = None, straight_only: bool = True) -> list:
                 continue
             disp = st.get("display_stat")
             prop = PROP_MAP.get(disp)
-            if not prop:
+            if not prop or prop in EXCLUDE_PROPS:
                 skipped[disp] = skipped.get(disp, 0) + 1
                 continue
             game = solo.get(app.get("match_id")) or {}

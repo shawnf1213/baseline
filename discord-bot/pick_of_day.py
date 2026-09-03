@@ -257,11 +257,21 @@ _env_excl = os.getenv("POD_EXCLUDE", "")
 if _env_excl.strip():
     _POD_EXCLUDE |= {_norm(x) for x in _env_excl.split(",") if x.strip()}
 
-# Prop types excluded from the BOARD entirely. v2: this is now EMPTY. Double
-# Faults used to be board-excluded; under v2 it populates the ranked board and 3x
-# normally and is blocked ONLY from the ⭐ slot (POD_STAR_EXCLUDE_PROPS). No prop
-# is barred from the board itself.
-_POD_EXCLUDE_PROPS = set()
+# Prop types excluded from the BOARD entirely. Filtered at the earliest point
+# (the candidate loop below), so an excluded prop can never reach the ranked
+# board, the 3x, or the ⭐ slot — this is a stronger bar than
+# POD_STAR_EXCLUDE_PROPS, which only blocks the headline.
+#
+# Double Faults is OUT again (2026-09-03, user) pending a fix. It was
+# board-excluded under v1, restored under v2, and is now withdrawn: it is the
+# highest-variance prop we carry (Tier 3, never ⭐, capped confidence) and its
+# projections have not been re-validated since the serve/return tour averages
+# were found to be on the wrong scale — DF depends on second-serve and
+# service-game rates that draw from the same stats.
+#
+# Re-enable by removing it here once the projection is fixed and backtested;
+# nothing else needs to change.
+_POD_EXCLUDE_PROPS = {"Double Faults"}
 
 
 def _is_excluded(name: str) -> bool:
