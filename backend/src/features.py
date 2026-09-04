@@ -48,12 +48,27 @@ PROP_FIELD = {
 _GS_NAMES = ("australian open", "roland garros", "french open", "wimbledon", "us open")
 
 
-def _fantasy_score(m: dict):
+def _fantasy_score(m: dict, tour: str = None):
     """PrizePicks tennis Fantasy Score from a completed-match record:
         FS = 10 + (games_won − games_lost) + 3·(sets_won − sets_lost)
              + 0.5·aces − 0.5·double_faults
     Sets are reconstructed from the result + sets_played: the match winner takes
-    `need` sets (3 at a Grand Slam / any 4-5 set match, else 2), the loser the rest.
+    `need` sets, the loser the rest.
+
+    `need` IS TOUR-DEPENDENT AT A SLAM. Only the MEN'S draw is best-of-five —
+    the women's is best-of-three at every Grand Slam. Matching the tournament
+    name alone (fixed 2026-09-03) made every WTA slam match best-of-five, so a
+    straight-sets WINNER got sets_won=3 / sets_lost=-1, a margin of 4 instead of
+    2, and each set is worth 3 points:
+
+        WTA slam WIN   margin 4 vs 2   -> +6 too HIGH
+        WTA slam LOSS  margin -4 vs -2 -> -6 too LOW
+
+    Swiatek beat Podoroska 2-0 at the 2026 US Open and graded 29 against a true
+    23, turning an UNDER 24.5 winner into a recorded loss. sets_played >= 4 is
+    still sufficient on its own (only a best-of-five can reach four sets), so
+    the tour only has to gate the Grand Slam name test.
+
     Returns None if the core fields are missing (→ NEEDS REVIEW, never a guess)."""
     gw = m.get("total_games_won")
     tmg = m.get("total_match_games")
@@ -62,7 +77,8 @@ def _fantasy_score(m: dict):
         return None
     games_lost = tmg - gw
     tourney = (m.get("tournament") or "").lower()
-    is_bo5 = sp >= 4 or any(g in tourney for g in _GS_NAMES)
+    is_bo5 = sp >= 4 or ((tour or "").upper() == "ATP"
+                         and any(g in tourney for g in _GS_NAMES))
     need = 3 if is_bo5 else 2
     won = bool(m.get("won"))
     sets_won = need if won else (sp - need)
@@ -343,7 +359,7 @@ def resolve_pick(player: str, opponent: str, prop_type: str,
     # first pass at this graded any unexceeded LESS as a win, which would have
     # quietly inflated the record on every retirement.
     if best.get("match_ended_early"):
-        _early_val = (_fantasy_score(best) if is_fs
+        _early_val = (_fantasy_score(best, p.get("tour")) if is_fs
                       else _break_points_saved(best) if is_bps
                       else _val(best, field))
         _ln = (lean or "").upper()
@@ -399,7 +415,7 @@ def resolve_pick(player: str, opponent: str, prop_type: str,
                 "partial_value": _early_val, **_base}
 
     if is_fs:
-        value = _fantasy_score(best)
+        value = _fantasy_score(best, p.get("tour"))
     elif is_bps:
         value = _break_points_saved(best)
     else:
