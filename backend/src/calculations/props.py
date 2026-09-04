@@ -2032,10 +2032,25 @@ def _expected_sets(tour: str, court: str, p1_wr: float = 50.0, p2_wr: float = 50
 # and per-scenario (player games-won) mean & sd.
 #   S1 win-in-straights · S2 win-in-decider · S3 lose-in-decider · S4 lose-straights
 _PTGW_SCEN_FIT = {
-    "ATP": {"p3_win": 0.429, "p3_lose": 0.379,
+    # p3 REFIT 2026-09-03 from 7,160 ATP and 12,556 WTA best-of-three
+    # player-observations (five seasons, slams + Masters/WTA1000, retirements
+    # excluded). Measured at an EVEN matchup, where the two legs are the same
+    # number — the asymmetry belongs to the gap term, not the base:
+    #
+    #        P(3|WIN) / P(3|LOSE) at even        was            overall P(3)
+    #   ATP        0.378 / 0.375            0.429 / 0.379          0.369
+    #   WTA        0.384 / 0.383            0.316 / 0.393          0.353
+    #
+    # WTA's p3_win was 0.068 LOW, which under-counted three-set wins and so
+    # under-counted games and breaks for every WTA winner.
+    #
+    # The gap SLOPE is deliberately unchanged (see _PTGW_GAP_K) — a rank-gap fit
+    # of it is biased toward zero and disagrees with what elite favourites
+    # actually do.
+    "ATP": {"p3_win": 0.377, "p3_lose": 0.377,
             "scen": {"S1": (12.53, 0.63), "S2": (16.49, 1.70),
                      "S3": (13.74, 2.36), "S4": (7.15, 2.31)}},
-    "WTA": {"p3_win": 0.316, "p3_lose": 0.393,
+    "WTA": {"p3_win": 0.384, "p3_lose": 0.384,
             "scen": {"S1": (12.36, 0.55), "S2": (15.88, 1.68),
                      "S3": (12.74, 2.31), "S4": (5.99, 2.39)}},
 }
@@ -2130,6 +2145,19 @@ _PTGW_SCEN_BO5 = {
 # straights more often (lower P(3|win)) and, on the rare loss, loses closer
 # (higher P(3|lose)). Light linear overlay on the empirical base, clamped. This is
 # the only MODELLED (non-fit) layer; the base rates and games distributions are data.
+# LEFT AT 0.60 (2026-09-03). A rank-gap fit of this slope returned ~0.43 (BO5)
+# and ~0.18 (BO3), and BOTH are biased toward zero: rank advantage is a poor
+# proxy for win probability at the extremes, where it compresses. A 300-place
+# edge is not a 95% favourite, so bucketing on it flattens the true curve.
+#
+# The check that exposed it: WTA elite favourites. Sabalenka has 116 straight-set
+# wins in 166 matches, so at roughly an 80% match-win rate she wins in straights
+# ~87% of the time she wins — P(3|win) ~= 0.13. At p_sel 0.85 the fitted 0.18
+# gives 0.321 (68% straights) while 0.60 gives 0.174 (83%), which is the number
+# that matches reality.
+#
+# The BASES are unaffected — those were measured at EVEN matchups, the one place
+# rank gap is a sound stand-in for win probability, and they are what changed.
 _PTGW_GAP_K = 0.60
 _PTGW_P3_MIN, _PTGW_P3_MAX = 0.12, 0.62
 # Breakability overlay on the 3-set split (2026-07-25). The win-prob gap is NOT the
