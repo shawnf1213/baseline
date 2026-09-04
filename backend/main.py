@@ -2012,6 +2012,24 @@ async def billing_portal(req: Request):
     return out
 
 
+
+def _display_wp(result: dict):
+    """The win probability to SHOW, in percent.
+
+    Prefers the market-anchored blend each scenario-mixture prop actually
+    projected off, falling back to the model's own read when the prop is
+    unanchored (no moneyline) or does not blend. Order is deliberate: at most
+    one of these keys is ever set on a given response, since a response carries
+    exactly one prop.
+    """
+    for k in ("bp_blended_wp", "ptgw_blended_wp", "fs_blended_wp"):
+        v = result.get(k)
+        if isinstance(v, (int, float)):
+            return round(float(v) * 100.0, 1)
+    v = result.get("p1_win_prob")
+    return round(float(v), 1) if isinstance(v, (int, float)) else None
+
+
 @app.post("/api/prop/calculate")
 async def prop_calculate(req: PropRequest):
     try:
@@ -3088,6 +3106,7 @@ async def prop_calculate(req: PropRequest):
                 result["ptgw_market_wp"] = round(_ptgw_mkt_wp, 4) if _ptgw_anchored else None
                 result["ptgw_blended_wp"] = round(_ptgw_blended, 4)
                 result["ptgw_anchored"] = _ptgw_anchored
+                result["ptgw_blended_wp"] = round(_ptgw_blended, 4)
                 # Carry the affinity differential + win prob forward. PTGW's own
                 # projector doesn't compute them — it consumes the Total Games
                 # projection's — but the underdog games-won confidence penalty
@@ -3167,6 +3186,7 @@ async def prop_calculate(req: PropRequest):
                     # wants, since it lists Momentum Bonus as its own line.
                     result["bp_base_proj"] = round(_bp_base, 3)
                     result["bp_model_wp"] = round(_bp_model_wp, 4)
+                    result["bp_blended_wp"] = round(_bp_blended, 4)
                     result["bp_market_wp"] = round(_bp_mkt_wp, 4) if _bp_anchored else None
                     result["bp_blended_wp"] = round(_bp_blended, 4)
                     result["bp_anchored"] = _bp_anchored
@@ -4234,8 +4254,22 @@ async def prop_calculate(req: PropRequest):
             "expected_sets":         result.get("expected_sets"),
             "competitiveness":       result.get("competitiveness"),
             "win_prob_gap":          result.get("win_prob_gap"),
-            "p1_win_prob":           result.get("p1_win_prob"),
-            "p2_win_prob":           result.get("p2_win_prob"),
+            # DISPLAYED win probability = the one the projection actually USED.
+            #
+            # result["p1_win_prob"] is the model's own unanchored read, carried
+            # over from the Total Games projector. Every scenario-mixture prop
+            # then blends it with the de-vigged market (WINPROB_MARKET_WEIGHT)
+            # and projects off THAT, so the card was quoting a number the maths
+            # had already overruled. Michelsen v Merida, 9/3 POTD: the card read
+            # 39% (model) while the market had him a 60% favourite and the
+            # projection used the 50.5% blend — so it showed the pick's own
+            # player as a heavy underdog when nothing in the model believed that.
+            #
+            # The guards below still read result["p1_win_prob"] unchanged; this
+            # only fixes what is SHOWN.
+            "p1_win_prob":           _display_wp(result),
+            "p2_win_prob":           (None if _display_wp(result) is None
+                                      else round(100.0 - _display_wp(result), 1)),
             "avg_historical_sets":   result.get("avg_historical_sets"),
             "per_set_scale":         result.get("per_set_scale"),
             "is_bo5":                result.get("is_bo5", _is_atp_gs),
