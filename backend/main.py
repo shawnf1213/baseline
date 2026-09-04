@@ -2855,6 +2855,12 @@ async def prop_calculate(req: PropRequest):
             _fs_mean_hold = (((_fs_hp + _fs_ho) / 2.0) / 100.0
                              if isinstance(_fs_hp, (int, float)) and isinstance(_fs_ho, (int, float))
                              else None)
+            # Hold ASYMMETRY — a separate axis from the level. 70/70 and 85/55
+            # average the same but are different matches (grind vs blowout), and
+            # the gap moves decider rate harder than the level does.
+            _fs_hold_gap = (abs(_fs_hp - _fs_ho) / 100.0
+                            if isinstance(_fs_hp, (int, float)) and isinstance(_fs_ho, (int, float))
+                            else None)
             _fs_games_margin = None
             if all(isinstance(x, (int, float)) for x in (_fs_total, _fs_hp, _fs_ho, _fs_bp_won)) and _fs_total > 0:
                 _fs_S = _fs_total / 2.0                     # each player serves ~half the games
@@ -2887,6 +2893,7 @@ async def prop_calculate(req: PropRequest):
                 player_name=req.player_name or "player",
                 player_games_margin=_fs_games_margin,
                 mean_hold=_fs_mean_hold,
+                hold_gap=_fs_hold_gap,
                 trace=_ctrace,
             )
             # Carry win prob forward for the guard/display, like PTGW does.
@@ -3134,11 +3141,16 @@ async def prop_calculate(req: PropRequest):
                     _bp_mean_hold = (((_bp_hp + _bp_ho) / 2.0) / 100.0
                                      if isinstance(_bp_hp, (int, float)) and isinstance(_bp_ho, (int, float))
                                      else None)
+                    # Hold ASYMMETRY (see the FS site for the reasoning).
+                    _bp_hold_gap = (abs(_bp_hp - _bp_ho) / 100.0
+                                    if isinstance(_bp_hp, (int, float)) and isinstance(_bp_ho, (int, float))
+                                    else None)
                     _bp_mix = bp_scenario_mixture(
                         _bp_pw, req.prop_line, _bp_base, req.tour, match_fmt,
-                        mean_hold=_bp_mean_hold)
+                        mean_hold=_bp_mean_hold, hold_gap=_bp_hold_gap)
                     _bp_fair = bp_fair_line(_bp_pw, _bp_base, req.tour, match_fmt,
-                                            mean_hold=_bp_mean_hold)
+                                            mean_hold=_bp_mean_hold,
+                                            hold_gap=_bp_hold_gap)
                     result["projection"] = round(_bp_fair, 1)
                     result["bp_p_over"] = round(_bp_mix["p_over"], 4)
                     result["bp_scenario_probs"] = _bp_mix["scenario_probs"]
