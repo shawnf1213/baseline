@@ -56,9 +56,10 @@ MAX_CONCURRENT  = 4       # parallelise backend calcs so the full board (100+ pr
                           # evaluates inside the pre-gen window. CALC_RETRIES with
                           # backoff absorbs the occasional 502 under light concurrency.
 MATCH_THRESHOLD = 0.80    # fuzzy name-match threshold
-MAX_RANKED_PLAYS = 12     # post the top-12 ranked plays (delivered as two pages of
-                          # 6 by the bot). The 3x still draws its legs from the
-                          # full evaluated pool.
+MAX_RANKED_PLAYS = 8      # post the top-8 ranked plays (2026-09-03, user: 12 -> 8).
+                          # The bot pages at 6, so a full board is one page of 6
+                          # plus a short second page. The 3x still draws its legs
+                          # from the full evaluated pool.
 MAX_PROPS       = 130     # evaluate (nearly) the whole board — the ranked list
                           # must show EVERY qualifying play, and the daily run is a
                           # pre-generated 10-min job, so a low cap would silently
@@ -126,20 +127,23 @@ FS_ENABLED = os.getenv("FS_ENABLED", "true").strip().lower() in (
 # Raised 2 -> 3 (2026-07-29, user): the per-prop caps, not MAX_RANKED_PLAYS, were
 # capping the board at ~6 plays. Loosened so a full 12-play board can fill while no
 # single prop type dominates it.
-PTGW_MAX_PER_BOARD = 3
-# Total Games (match total) floods the board: it's a match-level stat with many
-# qualifying lines and, since the games_per_set fit, a low-information prop capped
-# at 80. Left uncapped it crowds out the props the model is actually built around.
-# Keep only the highest-ranked few per board.
-TOTAL_GAMES_MAX_PER_BOARD = 4   # 3 -> 4 (2026-07-29, user: fill a 12-play board)
-# Fantasy Score is a composite scenario-mixture prop still on probation (7/23 audit
-# C2/C3): enabled and board-eligible, but NOT star-eligible until backtested, and
-# capped so it can't crowd the board while uncertified.
-FS_MAX_PER_BOARD = 4            # 2 -> 4 (2026-07-29, user: fill a 12-play board)
-# Double Faults is the highest-variance prop we carry (Tier 3, never ⭐). Cap it per
-# board (matching FS) so the least-reliable prop can't dominate the list, and bar it
-# from 3x slip legs entirely (see _select_slip). 7/23 audit follow-up.
-DF_MAX_PER_BOARD = 2
+# ── UNIFORM PER-PROP BOARD CAP (2026-09-03, user) ────────────────────────────
+# At most BOARD_MAX_PER_PROP of any one prop type on a board, so no single prop
+# can fill the list. Replaces four separately hand-tuned caps (PTGW 3, Total
+# Games 4, Fantasy Score 4, Double Faults 2) that had drifted apart and left
+# Aces uncapped entirely.
+#
+# BREAK POINTS WON IS EXEMPT. It is the prop the model is built around, carries
+# the tightest absolute projection error we measure, and is the only prop
+# allowed to lead the card below the uniform bar (STAR_BP_MIN_CONF). Capping it
+# at two would throw away the plays with the most edge to make room for props
+# that have less.
+BOARD_MAX_PER_PROP = 2
+BOARD_PROP_CAP_EXEMPT = {"Break Points Won"}
+
+# (PTGW_MAX_PER_BOARD / TOTAL_GAMES_MAX_PER_BOARD / FS_MAX_PER_BOARD /
+#  DF_MAX_PER_BOARD were retired here — BOARD_MAX_PER_PROP replaces all four.
+#  The PTGW block below still runs, but only to FLAG a correlated cluster.)
 
 
 # ── Thin-slate mode ──────────────────────────────────────────────────────────
@@ -1139,17 +1143,11 @@ async def _rank_board(props: list = None):
     ordered = _match_kept
 
     # ── Part 3 slate-correlation guard (only meaningful once PTGW_ENABLED) ────
-    # Cap PTGW at PTGW_MAX_PER_BOARD (keep the highest-ranked), and flag when the
+    # Flag when the
     # surviving PTGW picks all imply the same match direction (e.g. all "favourite
     # wins in straights") — a correlated cluster that is really one bet repeated.
     if PTGW_ENABLED:
         _ptgw = [pk for pk in ordered if pk.get("prop_type") == "Player Total Games Won"]
-        if len(_ptgw) > PTGW_MAX_PER_BOARD:
-            _drop = set(id(pk) for pk in _ptgw[PTGW_MAX_PER_BOARD:])
-            log.info("POD_PTGW_CORR | %d PTGW picks > cap %d — dropping %d lowest-ranked",
-                     len(_ptgw), PTGW_MAX_PER_BOARD, len(_drop))
-            ordered = [pk for pk in ordered if id(pk) not in _drop]
-            _ptgw = _ptgw[:PTGW_MAX_PER_BOARD]
         if len(_ptgw) >= 2:
             _dirs = {_lean_dir(pk) for pk in _ptgw}
             if len(_dirs) == 1:
@@ -1158,36 +1156,24 @@ async def _rank_board(props: list = None):
                 log.info("POD_PTGW_CORR | %d PTGW picks ALL %s — correlated cluster flagged",
                          len(_ptgw), next(iter(_dirs)))
 
-    # ── Total Games board cap ────────────────────────────────────────────────
-    # Keep only the highest-ranked TOTAL_GAMES_MAX_PER_BOARD Total Games plays; the
-    # rest are dropped so the board isn't dominated by a low-information prop. A TG
-    # play can hold the ⭐ only under the 90%-favourite + anchored gate (_star_eligible).
-    _tg = [pk for pk in ordered if pk.get("prop_type") == "Total Games"]
-    if len(_tg) > TOTAL_GAMES_MAX_PER_BOARD:
-        _drop = set(id(pk) for pk in _tg[TOTAL_GAMES_MAX_PER_BOARD:])
-        log.info("POD_TG_CAP | %d Total Games picks > cap %d — dropping %d lowest-ranked",
-                 len(_tg), TOTAL_GAMES_MAX_PER_BOARD, len(_drop))
-        ordered = [pk for pk in ordered if id(pk) not in _drop]
-
-    # ── Fantasy Score board cap (Fix C2) ──────────────────────────────────────
-    # FS is a composite scenario-mixture prop still on probation (not star-eligible
-    # until backtested — see _select_potd). Cap it so it can't crowd the board while
-    # uncertified; keep the highest-ranked FS_MAX_PER_BOARD.
-    _fs = [pk for pk in ordered if pk.get("prop_type") == "Fantasy Score"]
-    if len(_fs) > FS_MAX_PER_BOARD:
-        _drop = set(id(pk) for pk in _fs[FS_MAX_PER_BOARD:])
-        log.info("POD_FS_CAP | %d Fantasy Score picks > cap %d — dropping %d lowest-ranked",
-                 len(_fs), FS_MAX_PER_BOARD, len(_drop))
-        ordered = [pk for pk in ordered if id(pk) not in _drop]
-
-    # ── Double Faults board cap (7/23 audit follow-up) ────────────────────────
-    # Highest-variance prop (Tier 3); cap it like FS so the least-reliable prop
-    # can't dominate the board. Excess DF picks are logged, not posted.
-    _df = [pk for pk in ordered if pk.get("prop_type") == "Double Faults"]
-    if len(_df) > DF_MAX_PER_BOARD:
-        _drop = set(id(pk) for pk in _df[DF_MAX_PER_BOARD:])
-        log.info("POD_DF_CAP | %d Double Faults picks > cap %d — dropping %d lowest-ranked",
-                 len(_df), DF_MAX_PER_BOARD, len(_drop))
+    # ── UNIFORM PER-PROP CAP ─────────────────────────────────────────────────
+    # At most BOARD_MAX_PER_PROP of any one prop type, Break Points Won exempt.
+    # `ordered` is already ranked, so walking it in order keeps the best of each
+    # and drops the tail. One pass replaces the four per-prop blocks that used to
+    # live here (PTGW 3 / Total Games 4 / Fantasy Score 4 / Double Faults 2).
+    _counts, _drop = {}, set()
+    for pk in ordered:
+        _pt = pk.get("prop_type")
+        if _pt in BOARD_PROP_CAP_EXEMPT:
+            continue
+        _counts[_pt] = _counts.get(_pt, 0) + 1
+        if _counts[_pt] > BOARD_MAX_PER_PROP:
+            _drop.add(id(pk))
+    if _drop:
+        _over = {k: v for k, v in _counts.items() if v > BOARD_MAX_PER_PROP}
+        log.info("POD_PROP_CAP | cap %d/prop (exempt: %s) — dropping %d play(s); over cap: %s",
+                 BOARD_MAX_PER_PROP, ", ".join(sorted(BOARD_PROP_CAP_EXEMPT)),
+                 len(_drop), ", ".join(f"{k} x{v}" for k, v in sorted(_over.items())))
         ordered = [pk for pk in ordered if id(pk) not in _drop]
     return ordered, thin_slate
 
