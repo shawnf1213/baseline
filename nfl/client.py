@@ -89,6 +89,24 @@ def current_season(today: _dt.date = None) -> int:
     return today.year - 1 if today.month <= 2 else today.year
 
 
+def current_week(today: _dt.date = None) -> int:
+    """Which NFL week a date falls in, 1-18.
+
+    Week 1 opens on the Thursday after Labor Day (the first Monday in
+    September), so the season start is derived rather than hardcoded to a date
+    that would silently drift a year later. Clamped to [1, 18]: the postseason
+    is not a week this module prices, and a preseason date reads as week 1.
+    """
+    today = today or _dt.date.today()
+    year = current_season(today)
+    sep1 = _dt.date(year, 9, 1)
+    labor_day = sep1 + _dt.timedelta(days=(7 - sep1.weekday()) % 7)  # first Monday
+    kickoff = labor_day + _dt.timedelta(days=3)                      # Thursday
+    if today < kickoff:
+        return 1
+    return max(1, min(18, ((today - kickoff).days // 7) + 1))
+
+
 def _cache_path(dataset: str, season: int, ext: str) -> str:
     os.makedirs(CACHE_DIR, exist_ok=True)
     return os.path.join(CACHE_DIR, f"{dataset}_{season}.{ext}")

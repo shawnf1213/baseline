@@ -179,7 +179,17 @@ def _project_with_usage(_props, u, prop, game, season):
     try:
         team = (game or {}).get("player_team")
         tend = _usage.team_tendency(team, season) if team else {}
-        opp = (_rat.opponent_factor((game or {}).get("opponent_team"), prop)
+        # SEASONS PASSED EXPLICITLY — the backtest must never take the
+        # production default. opponent_factor now blends the prior season with
+        # the current one to date, keyed off TODAY, which is meaningless here and
+        # would be lookahead. Pinning it to [season - 1] is what this file's
+        # header already promises ("Team ratings come from the PRIOR season").
+        #
+        # This was wrong before the blend existed, too: the old default resolved
+        # to current_season() - 1, so a 2024 backtest was adjusting for defences
+        # rated on 2025 — a season that had not been played yet.
+        opp = (_rat.opponent_factor((game or {}).get("opponent_team"), prop,
+                                    seasons=[season - 1])
                if (game or {}).get("opponent_team") else {"factor": 1.0})
         of = opp.get("factor", 1.0)
         v = _vol.team_volume((game or {}).get("player_spread"),

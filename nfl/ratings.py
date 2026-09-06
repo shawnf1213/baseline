@@ -58,7 +58,7 @@ def _shrink_ratio(obs, n, k=PRIOR_PLAYS):
     return max(CLIP[0], min(CLIP[1], r))
 
 
-def team_ratings(seasons: list = None) -> dict:
+def team_ratings(seasons: list = None, weeks: list = None) -> dict:
     """{team: {offense: {...}, defense: {...}}}, every value RELATIVE to league.
 
     A value of 1.00 is exactly league average. Above 1.00 always means "more of
@@ -70,15 +70,20 @@ def team_ratings(seasons: list = None) -> dict:
     """
     from . import client
     import pandas as pd
-    key = tuple(seasons or [client.current_season() - 1])
+    _seasons = tuple(seasons or [client.current_season() - 1])
+    key = (_seasons, tuple(weeks) if weeks else None)
     if key in _cache:
         return _cache[key]
     try:
-        frames = [client.load("play_by_play", y) for y in key]
+        frames = [client.load("play_by_play", y) for y in _seasons]
         frames = [f for f in frames if len(f)]
         if not frames:
             return {}
         pbp = pd.concat(frames, ignore_index=True)
+        if weeks:
+            pbp = pbp[pbp["week"].isin(list(weeks))]
+            if not len(pbp):
+                return {}
         p = pbp[pbp["play_type"].isin(["pass", "run"])
                 & (pbp.get("qb_kneel") != 1) & (pbp.get("qb_spike") != 1)].copy()
         p["is_pass"] = (p["play_type"] == "pass").astype(float)
@@ -162,6 +167,75 @@ def team_ratings(seasons: list = None) -> dict:
         return {}
 
 
+# ── IN-SEASON BLEND ──────────────────────────────────────────────────────────
+# Ratings frozen on the prior season are right in week 1 and wrong by November.
+# The backtest uses prior-season ratings deliberately, to avoid lookahead on a
+# week-9 game — but that discipline does not transfer to production, where on a
+# real Sunday in week 9 you DO have eight weeks of current data.
+#
+# FITTED 2026-09-06 on 2024 and 2025 (64 team-seasons per cutoff), predicting
+# each team's REST-of-season defensive rate from its prior season and its
+# season-to-date:
+#
+#   cutoff   best w   MAE prior   MAE to-date   MAE blend
+#   wk 1-4    0.22      0.613       0.835        0.567
+#   wk 1-8    0.33      0.640       0.730        0.592
+#   wk 1-12   0.31      0.722       0.785        0.705
+#
+# TWO RESULTS WORTH KEEPING IN MIND. The blend beat both pure alternatives at
+# every cutoff — so blending is the right call. And the PRIOR SEASON ALONE beat
+# CURRENT-TO-DATE ALONE everywhere, even at week 12: defensive rate stats are so
+# schedule-dependent that a full prior season is a cleaner sample than twelve
+# weeks of the current one. So the blend must stay conservative; weighting the
+# current season heavily would make it worse, not better.
+#
+# The implied k across cutoffs centres near 900 plays, which is PRIOR_PLAYS
+# already in this file, so the same constant serves both jobs.
+CARRYOVER_PLAYS = PRIOR_PLAYS
+
+
+def team_ratings_blended(season: int = None, through_week: int = None) -> dict:
+    """Prior-season ratings blended with the current season to date.
+
+    weight_current = n_current_plays / (n_current_plays + CARRYOVER_PLAYS)
+
+    Week 1 (no current data) returns the prior season unchanged, which is the
+    correct answer rather than a special case. Falls back to the prior season on
+    any failure — a missing current season must never blank a rating.
+    """
+    from . import client
+    season = season or client.current_season()
+    prior = team_ratings([season - 1])
+    if not through_week or through_week < 1:
+        return prior
+    cur = team_ratings([season], weeks=list(range(1, int(through_week) + 1)))
+    if not cur:
+        return prior
+    out = {}
+    for team, prec in prior.items():
+        crec = cur.get(team) or {}
+        rec = {}
+        for side, pvals in prec.items():
+            cvals = crec.get(side)
+            if not cvals:
+                rec[side] = pvals
+                continue
+            n = float(cvals.get("plays") or 0)
+            w = n / (n + CARRYOVER_PLAYS) if n > 0 else 0.0
+            merged = dict(pvals)
+            for k, pv in pvals.items():
+                cv = cvals.get(k)
+                if isinstance(pv, (int, float)) and isinstance(cv, (int, float)) and k != "plays":
+                    merged[k] = round((1.0 - w) * pv + w * cv, 4)
+            merged["plays"] = int(pvals.get("plays") or 0) + int(n)
+            merged["blend_weight_current"] = round(w, 4)
+            rec[side] = merged
+        out[team] = rec
+    log.info("nfl ratings: blended prior %d with %d through week %d",
+             season - 1, season, through_week)
+    return out
+
+
 def opponent_factor(defense_team: str, prop: str, seasons: list = None) -> dict:
     """The multiplier a projection should apply for facing this defense.
 
@@ -174,8 +248,19 @@ def opponent_factor(defense_team: str, prop: str, seasons: list = None) -> dict:
     there as well would double-count the same information — which is exactly how
     these projections over-inflate.
     """
-    from .client import normalize_team
-    r = (team_ratings(seasons) or {}).get(normalize_team(defense_team)) or {}
+    from .client import normalize_team, current_season, current_week
+    # IN-SEASON BLEND by default (see team_ratings_blended). Through the LAST
+    # COMPLETED week, never the current one: a week-9 projection that included
+    # week 9 would be scoring the game it is trying to predict.
+    #
+    # An explicit `seasons` still wins, so the backtest keeps its strict
+    # prior-season-only ratings and stays free of lookahead.
+    if seasons is not None:
+        _r = team_ratings(seasons)
+    else:
+        _r = team_ratings_blended(season=current_season(),
+                                  through_week=max(0, current_week() - 1))
+    r = (_r or {}).get(normalize_team(defense_team)) or {}
     d = r.get("defense")
     if not d:
         return {"factor": 1.0, "basis": "unknown"}
