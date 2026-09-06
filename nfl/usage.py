@@ -473,3 +473,119 @@ def defense_splits(player: str, prop: str = "receiving_yards",
     except Exception as exc:  # noqa: BLE001
         log.exception("nfl defense_splits failed for %r: %s", player, exc)
         return {}
+
+
+# ── FEATURES 3-4: COVERAGE SPLITS ────────────────────────────────────────────
+# WHAT THE DATA SUPPORTS, AND WHAT IT DOES NOT.
+#
+# pbp_participation gives the 11 defenders on every play, and man/zone on 99.9%
+# of targets (17,570 of 17,582 in 2025). It does NOT give coverage ASSIGNMENT —
+# there is no field saying which defender covered which receiver. So a true
+# shadow model ("their CB1 travels with our WR1") would rest on an assumption,
+# not an observation, and is deliberately not built here.
+#
+# What IS observable is the effect that assumption is a proxy for. Shadowing
+# matters in MAN coverage; in zone a receiver is passed between defenders and
+# the individual matchup largely dissolves. So a receiver's man-vs-zone split,
+# crossed with how much man a defence actually plays, captures the same signal
+# from measured quantities:
+#
+#     league 2025: 12,154 zone targets (69%) vs 5,416 man (31%)
+#     a top receiver carries 170-208 labelled targets, so both tiers are real
+#
+# A receiver who is materially worse against man, facing a man-heavy defence, is
+# the matchup you were reaching for — and it is checkable rather than assumed.
+_COVERAGE_MIN_TARGETS = 12
+
+
+def coverage_splits(player: str, season: int = None) -> dict:
+    """A receiver's production against MAN vs ZONE coverage.
+
+    Joins play-by-play targets to pbp_participation on (game_id, play_id).
+    Returns {} when the player has too few labelled targets. Never raises.
+    """
+    from . import client
+    import pandas as pd
+    try:
+        season = season or client.current_season()
+        pbp = client.load("play_by_play", season)
+        part = client.load("pbp_participation", season)
+        if not len(pbp) or not len(part):
+            return {}
+        tg = pbp[(pbp["play_type"] == "pass") & pbp["receiver_player_name"].notna()][
+            ["game_id", "play_id", "receiver_player_name", "yards_gained",
+             "complete_pass", "air_yards"]]
+        pt = part[["nflverse_game_id", "play_id", "defense_man_zone_type"]]
+        m = tg.merge(pt, left_on=["game_id", "play_id"],
+                     right_on=["nflverse_game_id", "play_id"], how="inner")
+        # nflverse abbreviates the receiver name in play-by-play ("J.Chase"),
+        # so match on last name + first initial rather than the display name.
+        parts = str(player).split()
+        if len(parts) < 2:
+            return {}
+        want = f"{parts[0][0]}.{parts[-1]}"
+        d = m[m["receiver_player_name"] == want]
+        if len(d) < _COVERAGE_MIN_TARGETS:
+            return {}
+
+        def agg(sel):
+            g = d[sel]
+            n = len(g)
+            if not n:
+                return None
+            return {"targets": int(n),
+                    "yards_per_target": round(float(g["yards_gained"].sum()) / n, 3),
+                    "catch_rate": round(float(g["complete_pass"].fillna(0).mean()), 4),
+                    "adot": round(float(g["air_yards"].mean()), 2)
+                            if g["air_yards"].notna().any() else None}
+
+        man = agg(d["defense_man_zone_type"] == "MAN_COVERAGE")
+        zone = agg(d["defense_man_zone_type"] == "ZONE_COVERAGE")
+        overall = agg(d["defense_man_zone_type"].notna())
+        # man_delta: his yards per target against MAN relative to his own
+        # overall. Below 1.0 means man coverage suppresses him.
+        man_delta = (round(man["yards_per_target"] / overall["yards_per_target"], 3)
+                     if (man and overall and overall["yards_per_target"]) else None)
+        return {"player": player, "season": season,
+                "man": man, "zone": zone, "overall": overall,
+                "man_delta": man_delta,
+                "man_share_faced": (round(man["targets"] / overall["targets"], 3)
+                                    if (man and overall) else None)}
+    except Exception as exc:  # noqa: BLE001
+        log.exception("nfl coverage_splits failed for %r: %s", player, exc)
+        return {}
+
+
+def team_coverage_tendency(team: str, season: int = None) -> dict:
+    """How much MAN coverage a defence plays, relative to the league.
+
+    The other half of the matchup: a receiver's man weakness only matters
+    against a defence that actually plays it. League 2025 is ~31% man.
+    """
+    from . import client
+    try:
+        season = season or client.current_season()
+        pbp = client.load("play_by_play", season)
+        part = client.load("pbp_participation", season)
+        if not len(pbp) or not len(part):
+            return {}
+        tg = pbp[pbp["play_type"] == "pass"][["game_id", "play_id", "defteam"]]
+        pt = part[["nflverse_game_id", "play_id", "defense_man_zone_type"]]
+        m = tg.merge(pt, left_on=["game_id", "play_id"],
+                     right_on=["nflverse_game_id", "play_id"], how="inner")
+        m = m[m["defense_man_zone_type"].notna()]
+        if not len(m):
+            return {}
+        lg = float((m["defense_man_zone_type"] == "MAN_COVERAGE").mean())
+        d = m[m["defteam"] == team]
+        if len(d) < 100:
+            return {"team": team, "man_rate": None, "league_man_rate": round(lg, 4),
+                    "basis": "insufficient plays"}
+        mr = float((d["defense_man_zone_type"] == "MAN_COVERAGE").mean())
+        return {"team": team, "plays": int(len(d)),
+                "man_rate": round(mr, 4),
+                "league_man_rate": round(lg, 4),
+                "man_rate_rel": round(mr / lg, 3) if lg else None}
+    except Exception as exc:  # noqa: BLE001
+        log.exception("nfl team_coverage_tendency failed for %r: %s", team, exc)
+        return {}
