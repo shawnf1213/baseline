@@ -347,3 +347,129 @@ def _snap_ratio(player: str, season: int = None, before_week: int = None) -> dic
     except Exception as exc:  # noqa: BLE001
         log.warning("nfl snap ratio failed for %r: %s", player, str(exc)[:140])
         return {}
+
+
+# ── FEATURE 2: PRODUCTION BY DEFENCE QUALITY ─────────────────────────────────
+# A season average hides WHO it was earned against. Two receivers at 60 yards a
+# game are not the same bet if one did it against bottom-ten pass defences and
+# the other against top-ten. This splits a player's own game log by the quality
+# of the defence he faced, so the projection's opponent adjustment can be
+# checked against what he has actually done rather than assumed to apply evenly.
+#
+# THE RATING USED IS THE ONE KNOWABLE BEFORE THAT GAME — the PRIOR season's,
+# same discipline as the backtest. Rating a week-3 game with the defence's
+# finished season would be scoring it with information nobody had at kickoff.
+#
+# Tier edges are on the league-relative rating, where 1.000 is average and ABOVE
+# 1.000 means the defence ALLOWS MORE (i.e. is worse):
+DEF_TIER_TOUGH = 0.97      # allows 3%+ less than average
+DEF_TIER_SOFT = 1.03       # allows 3%+ more
+
+# Which defensive rating governs which prop.
+_PROP_DEF_FIELD = {
+    "receiving_yards": "pass_yds_per_att",
+    "receptions": "completion_pct",
+    "rush_yards": "rush_yds_per_att",
+    "pass_yards": "pass_yds_per_att",
+}
+# Per-game production column and its volume driver, so the split separates
+# "he saw fewer targets" from "he did less with them".
+_PROP_COLS = {
+    "receiving_yards": ("receiving_yards", "targets"),
+    "receptions": ("receptions", "targets"),
+    "rush_yards": ("rushing_yards", "carries"),
+    "pass_yards": ("passing_yards", "attempts"),
+}
+
+
+def defense_splits(player: str, prop: str = "receiving_yards",
+                   season: int = None, before_week: int = None) -> dict:
+    """A player's production against tough / average / soft defences.
+
+    Returns {} when the player has no usable history. Never raises.
+
+    `resilience` is the headline: his RATE against tough defences divided by his
+    rate against everyone. Below 1.0 means his production is padded by soft
+    matchups; near 1.0 means it holds up. It is a rate, not a per-game total, so
+    it is not contaminated by his team simply throwing less in hard games.
+    """
+    from . import client, ratings as _rat
+    import pandas as pd
+    try:
+        season = season or client.current_season()
+        prod_col, vol_col = _PROP_COLS.get(prop, (None, None))
+        field = _PROP_DEF_FIELD.get(prop)
+        if not prod_col or not field:
+            return {}
+        rows = []
+        for yr in (season, season - 1):
+            df = client.load("stats_player_week", yr)
+            if not len(df):
+                continue
+            d = df[(df.get("season_type") == "REG")
+                   & (df.get("player_display_name") == player)]
+            if before_week and yr == season:
+                d = d[d["week"] < before_week]
+            if not len(d):
+                continue
+            # Ratings as they were KNOWABLE before this season started.
+            rt = _rat.team_ratings([yr - 1])
+            for _, r in d.iterrows():
+                opp = r.get("opponent_team")
+                rec = (rt.get(opp) or {}).get("defense") if opp else None
+                if not rec:
+                    continue
+                rows.append({
+                    "opp": opp,
+                    "def_rating": float(rec.get(field, 1.0)),
+                    "prod": float(r.get(prod_col) or 0.0),
+                    "vol": float(r.get(vol_col) or 0.0) if vol_col else 0.0,
+                })
+        if len(rows) < 4:
+            return {}
+        f = pd.DataFrame(rows)
+
+        def agg(sel, label):
+            g = f[sel]
+            if not len(g):
+                return None
+            v = float(g["vol"].sum())
+            return {"games": int(len(g)),
+                    "per_game": round(float(g["prod"].mean()), 2),
+                    "volume_per_game": round(float(g["vol"].mean()), 2),
+                    "per_unit": round(float(g["prod"].sum()) / v, 3) if v else None,
+                    "mean_def_rating": round(float(g["def_rating"].mean()), 4)}
+
+        tough = agg(f["def_rating"] <= DEF_TIER_TOUGH, "tough")
+        avg = agg((f["def_rating"] > DEF_TIER_TOUGH) & (f["def_rating"] < DEF_TIER_SOFT), "average")
+        soft = agg(f["def_rating"] >= DEF_TIER_SOFT, "soft")
+        all_v = float(f["vol"].sum())
+        overall_rate = (float(f["prod"].sum()) / all_v) if all_v else None
+        resilience = (tough["per_unit"] / overall_rate
+                      if (tough and tough.get("per_unit") and overall_rate) else None)
+        # SHRUNK TOWARD 1.0 BY SAMPLE SIZE, and this is the value to consume.
+        # A tough-defence tier holds 2-5 games in a season and a half, so the raw
+        # ratio swings wildly: Chase came out at 1.548 on five games and Kupp at
+        # 0.522 on two. Neither is a stable property of the player, and feeding
+        # the raw number into a projection would inject precisely the noise the
+        # rest of this module guards against.
+        #
+        # k IS NOT FITTED. 8 games is a stated prior, chosen so a 4-game tier
+        # carries a third of its raw signal, and it needs a proper fit against
+        # rest-of-season outcomes before anything CONSUMES this. Both values are
+        # returned so the fit can be run without changing callers.
+        RESILIENCE_PRIOR_GAMES = 8.0
+        n_tough = (tough or {}).get("games") or 0
+        resilience_shrunk = (
+            1.0 + (resilience - 1.0) * (n_tough / (n_tough + RESILIENCE_PRIOR_GAMES))
+            if resilience is not None else None)
+        return {"player": player, "prop": prop, "games": int(len(f)),
+                "overall_per_unit": round(overall_rate, 3) if overall_rate else None,
+                "tough": tough, "average": avg, "soft": soft,
+                "resilience_raw": round(resilience, 3) if resilience is not None else None,
+                "resilience": (round(resilience_shrunk, 3)
+                               if resilience_shrunk is not None else None),
+                "resilience_n": n_tough}
+    except Exception as exc:  # noqa: BLE001
+        log.exception("nfl defense_splits failed for %r: %s", player, exc)
+        return {}
