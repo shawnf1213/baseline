@@ -162,6 +162,35 @@ def player_usage(player: str, season: int = None, position: str = None,
         ts = (_weighted(ts_vals.fillna(0).tolist(), w)
               if ts_vals is not None else None)
 
+        # ── ROLE WITHIN THE OFFENCE ─────────────────────────────────────────
+        # Target share alone says how OFTEN the ball goes his way; it says
+        # nothing about WHERE. A slot receiver and a field-stretcher can share
+        # 22% of targets and project to very different yardage, and the
+        # difference shows up in air yards rather than in target count.
+        #
+        #   aDOT             air yards per target — his route depth
+        #   air_yards_share  his share of the team's total air yards
+        #   wopr             1.5*target_share + 0.7*air_yards_share, the
+        #                    standard composite of volume AND depth
+        #   racr             receiving yards per air yard — efficiency at
+        #                    converting depth into production
+        #
+        # All four are already computed per game by nflverse, so this reads
+        # them rather than re-deriving from play-by-play. Recency-weighted like
+        # every other rate here. REPORTED, not yet consumed by the projection —
+        # whether they improve it is a backtest question, not an assumption.
+        ays_vals = hist.get("air_yards_share")
+        ays = (_weighted(ays_vals.fillna(0).tolist(), w)
+               if ays_vals is not None else None)
+        rec_air = wsum("receiving_air_yards")
+        adot = (rec_air / tgt) if tgt else None
+        racr_vals = hist.get("racr")
+        racr = (_weighted(racr_vals.fillna(0).tolist(), w)
+                if racr_vals is not None else None)
+        wopr_vals = hist.get("wopr")
+        wopr = (_weighted(wopr_vals.fillna(0).tolist(), w)
+                if wopr_vals is not None else None)
+
         out = {
             "player": player, "position": pos,
             "games": n,
@@ -223,6 +252,22 @@ def player_usage(player: str, season: int = None, position: str = None,
             _shrink(pass_yds / cmp_ if cmp_ else None, cmp_, 10.85, k=80.0), 3)
         out["pass_td_rate"] = round(pass_tds / att, 4) if att else 0.0
         out["int_rate"] = round(ints / att, 4) if att else 0.0
+
+        # Role block — see the aDOT comment above. Shrunk where a rate, raw
+        # where a share, and None rather than 0.0 when the player has no
+        # receiving role at all (a QB's aDOT is not zero, it is undefined).
+        out["role"] = {
+            "adot": round(adot, 2) if adot else None,
+            "air_yards_share": round(ays, 4) if ays else None,
+            "wopr": round(wopr, 4) if wopr else None,
+            # RACR is receiving yards / air yards, so it is only meaningful
+            # when air yards are positive and non-trivial. A running back
+            # catching screens behind the line has an aDOT near zero and can go
+            # NEGATIVE — Achane came out at -3.439, which is not an efficiency,
+            # it is a division artefact. Gated to a real downfield role.
+            "racr": (round(racr, 3) if (racr and adot and adot >= 1.0) else None),
+            "air_yards_per_game": round(rec_air / wn, 1) if wn and rec_air else None,
+        }
         return out
     except Exception as exc:  # noqa: BLE001
         log.exception("nfl usage failed for %r: %s", player, exc)
