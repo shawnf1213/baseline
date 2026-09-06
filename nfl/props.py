@@ -125,6 +125,99 @@ def cv_for(prop: str, volume: float = None) -> float:
 COUNT_PROPS = ("receptions",)
 
 
+# ── PLAYER-SPECIFIC MATCHUP FACTOR (features 2-4) ────────────────────────────
+# The team-level opponent_factor says how much this DEFENCE allows. These two
+# say how much THIS PLAYER has historically handled it — the part a league-wide
+# defensive rating cannot know.
+#
+# BOTH ARE APPLIED TO THE RATE, never to volume, for the same reason
+# opponent_factor is: the volume term already carries the opponent through the
+# spread, and multiplying it again would double-count.
+#
+# BOUNDED HARD. These are built from small samples (2-5 games for the defence
+# tier, 42-65 targets for man coverage) and are corrections, not drivers. A
+# +/-12% band lets a real effect through and stops a two-game fluke from
+# rewriting a projection.
+MATCHUP_MIN, MATCHUP_MAX = 0.88, 1.12
+
+# How much of the coverage delta to apply. man_delta is measured on a receiver's
+# own targets, so it is already player-specific; the weight scales it by how
+# much man the DEFENCE actually plays relative to league. A receiver who loses
+# 20% to man, facing a defence that plays it at the league rate, gets the full
+# 20% * (his man share faced). Facing a zone-heavy defence he gets almost none.
+COVERAGE_W = 1.0
+
+# RESILIENCE IS OFF, AND THIS IS A MEASURED DECISION, NOT AN OVERSIGHT.
+#
+# Consuming defence_splits() resilience made the model WORSE on five of eight
+# prop-seasons. Coverage only touches the receiving props, so rush and pass
+# yards isolate the resilience term cleanly — and both got worse in BOTH years:
+#
+#            2025 vs baseline   2024 vs baseline
+#   rush_yards      -0.43%           -0.62%
+#   pass_yards      -1.40%           -0.27%
+#
+# Pass yards 2025 fell to -0.90% against a plain season average, i.e. the model
+# LOST to the trivial baseline on that prop. The cause is the sample: a
+# tough-defence tier holds 2-5 games, so the ratio is mostly noise, and the
+# shrinkage toward 1.0 was not enough to contain it.
+#
+# It stays computed and REPORTED — defense_splits() is genuinely informative to
+# read on a card, and the tier rates are real. It is simply not multiplied into
+# a projection until the shrinkage prior is fitted against rest-of-season
+# outcomes rather than stated. Set RESILIENCE_W above 0 to re-enable.
+RESILIENCE_W = 0.0
+
+
+def matchup_factor(player: str, prop: str, opponent: str, season: int = None,
+                   before_week: int = None) -> dict:
+    """Player-vs-this-opponent rate multiplier. Always returns a factor.
+
+    1.000 with an explanatory basis when there is not enough history — an
+    unknown matchup must not silently become a favourable one.
+    """
+    from . import usage as _usage
+    out = {"factor": 1.0, "resilience": None, "coverage": None, "basis": []}
+    try:
+        # ── feature 2: does his production hold up against good defences ────
+        spl = _usage.defense_splits(player, prop, season=season,
+                                    before_week=before_week) or {}
+        res = spl.get("resilience")          # already shrunk toward 1.0
+        if isinstance(res, (int, float)) and spl.get("resilience_n"):
+            out["resilience"] = res
+            out["basis"].append(f"resilience {res} (n={spl.get('resilience_n')})")
+
+        # ── features 3-4: man/zone, weighted by how much man they play ──────
+        cov_f = None
+        if prop in ("receiving_yards", "receptions"):
+            cs = _usage.coverage_splits(player, season=season,
+                                        before_week=before_week) or {}
+            md = cs.get("man_delta")
+            tend = _usage.team_coverage_tendency(opponent, season=season,
+                                                 before_week=before_week) or {}
+            mr, lg = tend.get("man_rate"), tend.get("league_man_rate")
+            if (isinstance(md, (int, float)) and isinstance(mr, (int, float))
+                    and isinstance(lg, (int, float)) and lg > 0):
+                # Only the man share of the game is exposed to his man delta.
+                cov_f = 1.0 + COVERAGE_W * mr * (md - 1.0)
+                out["coverage"] = round(cov_f, 4)
+                out["basis"].append(
+                    f"man_delta {md} x def man_rate {mr}")
+
+        f = 1.0
+        if out["resilience"] is not None and RESILIENCE_W > 0:
+            f *= 1.0 + RESILIENCE_W * (out["resilience"] - 1.0)
+        if cov_f is not None:
+            f *= cov_f
+        out["factor"] = round(max(MATCHUP_MIN, min(MATCHUP_MAX, f)), 4)
+        out["basis"] = "; ".join(out["basis"]) or "no player history"
+        return out
+    except Exception:  # noqa: BLE001
+        log.exception("nfl matchup_factor failed for %r", player)
+        return {"factor": 1.0, "resilience": None, "coverage": None,
+                "basis": "error"}
+
+
 def _gamma_sf(x: float, mean: float, cv: float) -> float:
     """P(X > x) for a gamma with this mean and coefficient of variation.
 
@@ -223,6 +316,11 @@ def project(player: str, prop: str, line: float = None, game: dict = None,
         opp = (_rat.opponent_factor(opponent, prop) if opponent
                else {"factor": 1.0, "basis": "no opponent supplied"})
         of = opp.get("factor", 1.0)
+        # PLAYER-SPECIFIC layer on top of the team-level defensive rating: how
+        # this player has actually handled good defences (feature 2) and man
+        # coverage (features 3-4). Rate only, bounded, and 1.000 when unknown.
+        mf = matchup_factor(player, prop, opponent, season=season)
+        of = of * mf.get("factor", 1.0)
         vol = _vol.team_volume(spread, total,
                                own_pass_rate=tend.get("pass_rate"),
                                own_plays=tend.get("plays_per_game"))

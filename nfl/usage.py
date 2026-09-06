@@ -497,8 +497,48 @@ def defense_splits(player: str, prop: str = "receiving_yards",
 # the matchup you were reaching for — and it is checkable rather than assumed.
 _COVERAGE_MIN_TARGETS = 12
 
+# Joined targets-with-coverage, cached per (season, before_week). The merge is
+# 45k participation rows against 17k targets and it does NOT change within a
+# call — recomputing it per player made a board scan and the backtest
+# unusable (~10,000 merges). Keyed on before_week too, so the backtest's
+# week-gated views stay separate from the full-season one.
+_COV_CACHE = {}
 
-def coverage_splits(player: str, season: int = None) -> dict:
+
+def _coverage_frame(season: int, before_week: int = None):
+    """Targets joined to man/zone, cached. Empty frame on any failure."""
+    from . import client
+    import pandas as pd
+    key = (season, before_week)
+    if key in _COV_CACHE:
+        return _COV_CACHE[key]
+    try:
+        pbp = client.load("play_by_play", season)
+        part = client.load("pbp_participation", season)
+        if not len(pbp) or not len(part):
+            _COV_CACHE[key] = pd.DataFrame()
+            return _COV_CACHE[key]
+        if before_week and "week" in pbp.columns:
+            pbp = pbp[pbp["week"] < before_week]
+        if not len(pbp):
+            _COV_CACHE[key] = pd.DataFrame()
+            return _COV_CACHE[key]
+        tg = pbp[pbp["play_type"] == "pass"][
+            ["game_id", "play_id", "receiver_player_name", "yards_gained",
+             "complete_pass", "air_yards", "defteam"]]
+        pt = part[["nflverse_game_id", "play_id", "defense_man_zone_type"]]
+        m = tg.merge(pt, left_on=["game_id", "play_id"],
+                     right_on=["nflverse_game_id", "play_id"], how="inner")
+        _COV_CACHE[key] = m
+        return m
+    except Exception:  # noqa: BLE001
+        log.exception("nfl coverage frame failed")
+        _COV_CACHE[key] = pd.DataFrame()
+        return _COV_CACHE[key]
+
+
+def coverage_splits(player: str, season: int = None,
+                    before_week: int = None) -> dict:
     """A receiver's production against MAN vs ZONE coverage.
 
     Joins play-by-play targets to pbp_participation on (game_id, play_id).
@@ -508,16 +548,9 @@ def coverage_splits(player: str, season: int = None) -> dict:
     import pandas as pd
     try:
         season = season or client.current_season()
-        pbp = client.load("play_by_play", season)
-        part = client.load("pbp_participation", season)
-        if not len(pbp) or not len(part):
+        m = _coverage_frame(season, before_week)
+        if not len(m):
             return {}
-        tg = pbp[(pbp["play_type"] == "pass") & pbp["receiver_player_name"].notna()][
-            ["game_id", "play_id", "receiver_player_name", "yards_gained",
-             "complete_pass", "air_yards"]]
-        pt = part[["nflverse_game_id", "play_id", "defense_man_zone_type"]]
-        m = tg.merge(pt, left_on=["game_id", "play_id"],
-                     right_on=["nflverse_game_id", "play_id"], how="inner")
         # nflverse abbreviates the receiver name in play-by-play ("J.Chase"),
         # so match on last name + first initial rather than the display name.
         parts = str(player).split()
@@ -556,7 +589,8 @@ def coverage_splits(player: str, season: int = None) -> dict:
         return {}
 
 
-def team_coverage_tendency(team: str, season: int = None) -> dict:
+def team_coverage_tendency(team: str, season: int = None,
+                           before_week: int = None) -> dict:
     """How much MAN coverage a defence plays, relative to the league.
 
     The other half of the matchup: a receiver's man weakness only matters
@@ -565,14 +599,9 @@ def team_coverage_tendency(team: str, season: int = None) -> dict:
     from . import client
     try:
         season = season or client.current_season()
-        pbp = client.load("play_by_play", season)
-        part = client.load("pbp_participation", season)
-        if not len(pbp) or not len(part):
+        m = _coverage_frame(season, before_week)
+        if not len(m):
             return {}
-        tg = pbp[pbp["play_type"] == "pass"][["game_id", "play_id", "defteam"]]
-        pt = part[["nflverse_game_id", "play_id", "defense_man_zone_type"]]
-        m = tg.merge(pt, left_on=["game_id", "play_id"],
-                     right_on=["nflverse_game_id", "play_id"], how="inner")
         m = m[m["defense_man_zone_type"].notna()]
         if not len(m):
             return {}

@@ -85,11 +85,12 @@ def run(season: int = 2025, props: list = None, first_week: int = 6,
                 home_spread = -float(sl) if home_fav_positive else float(sl)
             gmap[(g["week"], g["home"])] = {
                 "player_team": g["home"], "opponent_team": g["away"],
-                "player_spread": home_spread, "total": g["total_line"]}
+                "player_spread": home_spread, "total": g["total_line"],
+                "week": g["week"]}
             gmap[(g["week"], g["away"])] = {
                 "player_team": g["away"], "opponent_team": g["home"],
                 "player_spread": (-home_spread if home_spread is not None else None),
-                "total": g["total_line"]}
+                "total": g["total_line"], "week": g["week"]}
 
         # Ratings from the PRIOR season only — no lookahead.
         _rat.team_ratings([season - 1])
@@ -192,6 +193,15 @@ def _project_with_usage(_props, u, prop, game, season):
                                     seasons=[season - 1])
                if (game or {}).get("opponent_team") else {"factor": 1.0})
         of = opp.get("factor", 1.0)
+        # Player-specific matchup layer (features 2-4). before_week is passed so
+        # the splits see only completed weeks — without it the backtest would be
+        # scoring a projection with the very games it is predicting.
+        _wk = (game or {}).get("week")
+        _optm = (game or {}).get("opponent_team")
+        if _optm and _wk:
+            of *= _props.matchup_factor(u.get("player"), prop, _optm,
+                                        season=season,
+                                        before_week=int(_wk)).get("factor", 1.0)
         v = _vol.team_volume((game or {}).get("player_spread"),
                              (game or {}).get("total"),
                              own_pass_rate=tend.get("pass_rate"),
