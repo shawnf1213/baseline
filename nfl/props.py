@@ -354,11 +354,15 @@ def project(player: str, prop: str, line: float = None, game: dict = None,
             # A back's carries scale with his team's rush attempts, which is
             # exactly the term the mixture moves MOST — and in the opposite
             # direction to the passing props on the same team.
+            # Fallbacks come from volume.NEUTRAL, not from literals. Both
+            # this and backtest.py had 63.0 / 0.57 / 27.0 written inline, which
+            # went stale the moment NEUTRAL["plays"] was corrected to 60.71.
             share = (u["carries_per_game"] /
-                     (tend.get("plays_per_game", 63.0) *
-                      (1 - tend.get("pass_rate", 0.57)))) if tend else None
+                     (tend.get("plays_per_game", _vol.NEUTRAL["plays"]) *
+                      (1 - tend.get("pass_rate", _vol.NEUTRAL["pass_rate"])))
+                     ) if tend else None
             share = share if share and 0 < share < 1 else (
-                u["carries_per_game"] / 27.0)
+                u["carries_per_game"] / _vol.neutral_rush_att())
             carries = vol["rush_att"] * min(0.95, max(0.0, share))
             ypc_adj = u["yards_per_carry"] * of
             mu = carries * ypc_adj

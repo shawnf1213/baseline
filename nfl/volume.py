@@ -95,6 +95,15 @@ PLAYS_MULT = {
 TARGETS_PER_DROPBACK = 0.8904
 
 
+# League-average RUSH attempts per team-game, derived from NEUTRAL rather than
+# written down separately. props.py and backtest.py both need a fallback carry
+# share when a team has no tendency data, and both had `27.0` hardcoded — a
+# fourth copy of a number that lives in NEUTRAL, and one that silently went
+# stale when NEUTRAL["plays"] was corrected 63.0 -> 60.71.
+def neutral_rush_att() -> float:
+    return NEUTRAL["plays"] * (1.0 - NEUTRAL["pass_rate"])
+
+
 def _phi(x: float) -> float:
     """Standard normal CDF — delegates to the shared helper.
 

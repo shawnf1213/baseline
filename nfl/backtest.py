@@ -214,9 +214,11 @@ def _project_with_usage(_props, u, prop, game, season):
             return att * (u["completion_pct"] * of) * u["yards_per_completion"]
         if prop == "rush_yards":
             share = (u["carries_per_game"] /
-                     (tend.get("plays_per_game", 63.0) *
-                      (1 - tend.get("pass_rate", 0.57)))) if tend else None
-            share = share if share and 0 < share < 1 else u["carries_per_game"] / 27.0
+                     (tend.get("plays_per_game", _vol.NEUTRAL["plays"]) *
+                      (1 - tend.get("pass_rate", _vol.NEUTRAL["pass_rate"])))
+                     ) if tend else None
+            share = (share if share and 0 < share < 1
+                     else u["carries_per_game"] / _vol.neutral_rush_att())
             return v["rush_att"] * min(0.95, max(0.0, share)) * u["yards_per_carry"] * of
         targets = v.get("targets", v["pass_att"]) * u["target_share"]
         if prop == "receptions":
