@@ -165,14 +165,28 @@ def depth_rank(player: str, season: int = None, before_week: int = None):
                         d = d[d["dt"] <= cut]
                     d = d.sort_values("dt").groupby("gsis_id").tail(1)
                     rank_col, pos_col = "pos_rank", "pos_abb"
-                else:                                             # <=2024 schema
-                    if before_week and "week" in d.columns:
-                        d = d[d["week"] < int(before_week)]
-                    if "week" in d.columns:
-                        d = d.sort_values("week")
-                    d = d.groupby("gsis_id").tail(1)
-                    rank_col = "depth_team" if "depth_team" in d.columns else None
-                    pos_col = "position" if "position" in d.columns else None
+                else:
+                    # <=2024 SCHEMA: NOT USABLE AS A ROLE RANK, and returning it
+                    # anyway is worse than returning nothing.
+                    #
+                    # depth_team takes only '1','2','3', and 150 distinct
+                    # receivers carry depth_team == '1' across 2024 — about 4.7
+                    # per team. It marks "first string" at several WR spots, not
+                    # the WR1. 2025's pos_rank is far finer: 53 distinct players
+                    # at WR/rank 1, ~1.6 per team.
+                    #
+                    # Mixing them collapsed the fitted WR1 target-share prior
+                    # from 0.2449 (2025 alone) to 0.1684 (both seasons) — not
+                    # sampling noise, just two different definitions of "1"
+                    # averaged together. It is also why role priors measured
+                    # WORST on 2024: those ranks were nearly random.
+                    #
+                    # So the coarse schema yields no rank. A caller gets None
+                    # and falls back to the flat prior, which is honest.
+                    log.info("nfl depth_rank: %s uses the coarse pre-2025 "
+                             "depth-chart schema — no usable role rank", season)
+                    _DEPTH_CACHE[key] = {}
+                    return (None, None)
                 if not rank_col or not pos_col or not len(d):
                     _DEPTH_CACHE[key] = {}
                 else:
