@@ -89,6 +89,13 @@ def current_season(today: _dt.date = None) -> int:
     return today.year - 1 if today.month <= 2 else today.year
 
 
+def _week_start(season: int, week: int) -> _dt.date:
+    """Kickoff date of a given NFL week — the Thursday after Labor Day, +7/week."""
+    sep1 = _dt.date(season, 9, 1)
+    labor_day = sep1 + _dt.timedelta(days=(7 - sep1.weekday()) % 7)
+    return labor_day + _dt.timedelta(days=3 + 7 * (max(1, int(week)) - 1))
+
+
 def current_week(today: _dt.date = None) -> int:
     """Which NFL week a date falls in, 1-18.
 

@@ -68,6 +68,54 @@ SNAP_RATIO_CLIP = (0.70, 1.40)
 
 # Position baselines, used as the prior when a player has no history. Measured
 # from 2023-2025 regular season, players with >= 8 games.
+# ── ROLE-TIERED PRIORS (2026-09-06) ──────────────────────────────────────────
+# The single POSITION_PRIOR below is the ALL-position average, and shrinking
+# toward it is the largest remaining source of bias. Every player the board
+# posts a line for is a STARTER, and the average WR is not: the population
+# includes WR3s, WR4s and practice-squad callups.
+#
+# Measured on 2025 (players with 6+ games, joined to the depth chart):
+#
+#            rank 1    rank 2    rank 3    rank 4    ALL      prior in use
+#   WR       0.2449    0.1736    0.1026    0.0696    0.1188   0.150
+#   TE       0.1655    0.0758    0.0482    0.0319    0.0968   0.115
+#   RB       0.1041    0.0592    0.0258    0.0328    0.0602   0.075
+#
+# So a WR1 was shrunk toward 0.150 when his real prior is 0.2449 — 39% low —
+# and the eligible board is almost entirely rank 1-2. That is the -2.07 yard
+# receiving bias: targets came in 3.5% light and yards per target was already
+# exact (ratio 0.9912 vs 0.9653), so the error was volume, not efficiency.
+#
+# This is what a person reading the game does instinctively — a WR1 is not an
+# "average WR" — and it DOES remove the bias: receiving went -2.16 -> -1.22.
+#
+# BUT IT MAKES MAE WORSE, so it ships OFF:
+#
+#                      flat prior   role prior
+#   2025 receiving       +1.46%       +0.99%
+#   2025 receptions      +1.21%       +0.61%
+#   2024 receiving       +0.76%       -0.25%
+#
+# A bias-variance trade-off, and the measurement says the flat prior's
+# OVER-shrinkage was paying for itself. Moving the prior next to the observed
+# value means it barely pulls, so the estimate tracks a noisier raw share: less
+# bias, more variance, worse net error. The remaining -1.22 yards is a price
+# worth paying for the variance reduction.
+#
+# Kept, computed and reported (depth_rank / target_share_prior are on every
+# usage dict) because the ROLE is real and useful to read — and because a
+# better-fitted version might yet win. Two things would need to change: fit the
+# tiers on BOTH seasons rather than 32-37 players from 2025, and try a PARTIAL
+# blend toward the role tier instead of replacing the prior outright.
+# Set NFL_ROLE_PRIOR=1 to enable.
+ROLE_PRIOR_ENABLED = os.getenv("NFL_ROLE_PRIOR", "0").strip() in ("1", "true", "True")
+
+ROLE_PRIOR_TARGET_SHARE = {
+    "WR": {1: 0.2449, 2: 0.1736, 3: 0.1026, 4: 0.0696},
+    "TE": {1: 0.1655, 2: 0.0758, 3: 0.0482, 4: 0.0319},
+    "RB": {1: 0.1041, 2: 0.0592, 3: 0.0258, 4: 0.0328},
+}
+
 POSITION_PRIOR = {
     "WR":  {"target_share": 0.150, "catch_rate": 0.640, "yards_per_target": 8.10,
             "carry_share": 0.010, "yards_per_carry": 6.20},
@@ -78,6 +126,98 @@ POSITION_PRIOR = {
     "QB":  {"target_share": 0.000, "catch_rate": 0.000, "yards_per_target": 0.00,
             "carry_share": 0.090, "yards_per_carry": 4.60},
 }
+
+
+_DEPTH_CACHE = {}
+
+
+def depth_rank(player: str, season: int = None, before_week: int = None):
+    """(position abbreviation, depth rank) from the depth chart, or (None, None).
+
+    Dated, so the backtest can ask what the chart said BEFORE a given week
+    rather than what it says now — a week-6 projection must not know that a
+    player was promoted in week 12.
+    """
+    from . import client
+    import pandas as pd
+    season = season or client.current_season()
+    key = (season, before_week)
+    if key not in _DEPTH_CACHE:
+        try:
+            dc = client.load("depth_charts", season)
+            if not len(dc):
+                # Preseason: the current year has no chart yet, so use last
+                # year's rather than losing the role entirely.
+                dc = client.load("depth_charts", season - 1)
+            if not len(dc):
+                _DEPTH_CACHE[key] = {}
+            else:
+                d = dc.copy()
+                # TWO SCHEMAS. nflverse changed the depth-chart format: 2024 and
+                # earlier carry season/week/depth_team/position, 2025 onward
+                # carry dt/pos_rank/pos_abb. Handling only the newer one made
+                # every pre-2025 backtest silently fall back to the flat prior,
+                # which is exactly the bias this feature exists to remove.
+                if "pos_rank" in d.columns:                       # 2025+ schema
+                    d["dt"] = pd.to_datetime(d["dt"], errors="coerce", utc=True)
+                    if before_week:
+                        cut = pd.Timestamp(client._week_start(season, before_week), tz="UTC")
+                        d = d[d["dt"] <= cut]
+                    d = d.sort_values("dt").groupby("gsis_id").tail(1)
+                    rank_col, pos_col = "pos_rank", "pos_abb"
+                else:                                             # <=2024 schema
+                    if before_week and "week" in d.columns:
+                        d = d[d["week"] < int(before_week)]
+                    if "week" in d.columns:
+                        d = d.sort_values("week")
+                    d = d.groupby("gsis_id").tail(1)
+                    rank_col = "depth_team" if "depth_team" in d.columns else None
+                    pos_col = "position" if "position" in d.columns else None
+                if not rank_col or not pos_col or not len(d):
+                    _DEPTH_CACHE[key] = {}
+                else:
+                    tbl = {}
+                    for _, r in d.iterrows():
+                        gid = r.get("gsis_id")
+                        if not gid:
+                            continue
+                        try:
+                            rk = int(r.get(rank_col))
+                        except (TypeError, ValueError):
+                            continue
+                        tbl[gid] = (r.get(pos_col), rk)
+                    _DEPTH_CACHE[key] = tbl
+        except Exception:  # noqa: BLE001
+            log.exception("nfl depth_rank failed")
+            _DEPTH_CACHE[key] = {}
+    table = _DEPTH_CACHE[key]
+    if not table:
+        return (None, None)
+    # players are keyed by gsis_id; resolve the name once per season
+    from . import client as _c
+    ids = _name_to_gsis(season)
+    gid = ids.get(player)
+    return table.get(gid, (None, None)) if gid else (None, None)
+
+
+_NAME_ID_CACHE = {}
+
+
+def _name_to_gsis(season: int) -> dict:
+    if season in _NAME_ID_CACHE:
+        return _NAME_ID_CACHE[season]
+    from . import client
+    out = {}
+    try:
+        wk = client.load("stats_player_week", season)
+        if not len(wk):
+            wk = client.load("stats_player_week", season - 1)
+        if len(wk):
+            out = dict(zip(wk["player_display_name"], wk["player_id"]))
+    except Exception:  # noqa: BLE001
+        log.exception("nfl name->gsis failed")
+    _NAME_ID_CACHE[season] = out
+    return out
 
 
 def _shrink(obs, n, prior, k=PRIOR_GAMES):
@@ -136,7 +276,15 @@ def player_usage(player: str, season: int = None, position: str = None,
 
         pos = position or (hist["position"].dropna().iloc[-1]
                            if hist["position"].notna().any() else "WR")
-        prior = POSITION_PRIOR.get(pos, POSITION_PRIOR["WR"])
+        prior = dict(POSITION_PRIOR.get(pos, POSITION_PRIOR["WR"]))
+        # ROLE-TIERED TARGET-SHARE PRIOR. The flat position prior is the
+        # ALL-position average and every player the board posts is a starter,
+        # so shrinking a WR1 toward the all-WR mean drags him ~39% low. See
+        # ROLE_PRIOR_TARGET_SHARE for the measured tiers.
+        _dpos, _drank = depth_rank(player, season=season, before_week=before_week)
+        _tier = ROLE_PRIOR_TARGET_SHARE.get(pos, {}).get(int(_drank)) if _drank else None
+        if _tier and ROLE_PRIOR_ENABLED:
+            prior["target_share"] = _tier
 
         # Recency weights: most recent game weight 1, halving every
         # RECENCY_HALFLIFE games back.
@@ -257,6 +405,8 @@ def player_usage(player: str, season: int = None, position: str = None,
         # Role block — see the aDOT comment above. Shrunk where a rate, raw
         # where a share, and None rather than 0.0 when the player has no
         # receiving role at all (a QB's aDOT is not zero, it is undefined).
+        out["depth_rank"] = int(_drank) if _drank else None
+        out["target_share_prior"] = round(prior["target_share"], 4)
         out["role"] = {
             "adot": round(adot, 2) if adot else None,
             "air_yards_share": round(ays, 4) if ays else None,
