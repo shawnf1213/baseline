@@ -277,6 +277,73 @@ def _nb_over(mu: float, line: float, cv: float) -> dict:
     return _odds.count_over_under(mu, line, dispersion=dispersion)
 
 
+
+def projection_mean(u: dict, prop: str, vol: dict, tend: dict, of: float = 1.0):
+    """(mu, drivers) — THE per-prop projection maths, in ONE place.
+
+    SHARED BY PRODUCTION AND THE BACKTEST ON PURPOSE. Both used to carry their
+    own copy of this, which agreed only for as long as every change was made
+    twice. A backtest that measures a different model than production runs is
+    worse than no backtest, because it reports confidence in code that is not
+    the code being shipped.
+
+    Takes everything already resolved by the caller — usage, the game-script
+    volume mixture, the team's tendency and the opponent/matchup rate factor —
+    so it contains no I/O and no lookups, only the arithmetic.
+    """
+    from . import volume as _v
+    if prop == "pass_yards":
+        # A QB gets HIS OWN attempts scaled by the script, not the team's total.
+        # Assigning the whole team's pass volume over-projected every
+        # quarterback by 17 yards a game (+8%) in backtest: it silently credits
+        # him with snaps taken by a backup, and with attempts he never made in
+        # games he left early.
+        _neutral = (vol["plays"] * vol["pass_rate"]) or 1.0
+        script_ratio = vol["pass_att"] / _neutral
+        att = (u["pass_att_per_game"] * script_ratio
+               if u.get("pass_att_per_game") else vol["pass_att"])
+        # Decomposed so the defence hits ACCURACY, which is what a secondary
+        # actually suppresses, rather than a blended Y/A.
+        comp_pct = u["completion_pct"] * of
+        ypc_ = u["yards_per_completion"]
+        return att * comp_pct * ypc_, {
+            "pass_attempts": round(att, 1),
+            "completion_pct": round(comp_pct, 4),
+            "yards_per_completion": ypc_,
+            "yards_per_attempt": round(comp_pct * ypc_, 3)}
+
+    if prop == "rush_yards":
+        # A back's carries scale with his team's rush attempts, which is the
+        # term the mixture moves MOST — and in the opposite direction to the
+        # passing props on the same team. Fallbacks come from volume.NEUTRAL,
+        # never from literals.
+        share = (u["carries_per_game"] /
+                 (tend.get("plays_per_game", _v.NEUTRAL["plays"]) *
+                  (1 - tend.get("pass_rate", _v.NEUTRAL["pass_rate"])))
+                 ) if tend else None
+        share = share if share and 0 < share < 1 else (
+            u["carries_per_game"] / _v.neutral_rush_att())
+        carries = vol["rush_att"] * min(0.95, max(0.0, share))
+        ypc_adj = u["yards_per_carry"] * of
+        return carries * ypc_adj, {
+            "carries": round(carries, 1),
+            "carry_share": round(share, 3),
+            "yards_per_carry": round(ypc_adj, 3)}
+
+    # TARGETS, not dropbacks — target_share is a share of team TARGETS.
+    # See volume.TARGETS_PER_DROPBACK.
+    targets = vol.get("targets", vol["pass_att"]) * u["target_share"]
+    if prop == "receptions":
+        cr = u["catch_rate"] * of
+        return targets * cr, {"targets": round(targets, 1),
+                              "target_share": u["target_share"],
+                              "catch_rate": round(cr, 4)}
+    ypt = u["yards_per_target"] * of
+    return targets * ypt, {"targets": round(targets, 1),
+                           "target_share": u["target_share"],
+                           "yards_per_target": round(ypt, 3)}
+
+
 def project(player: str, prop: str, line: float = None, game: dict = None,
             season: int = None) -> dict:
     """Project one NFL game prop.
@@ -330,61 +397,7 @@ def project(player: str, prop: str, line: float = None, game: dict = None,
         # neutral baseline. Applying it to a PLAYER's measured per-game volume
         # keeps him anchored to what he actually does, instead of handing him
         # 100% of the team's snaps.
-        _neutral = (vol["plays"] * vol["pass_rate"]) or 1.0
-        script_ratio = vol["pass_att"] / _neutral
-
-        if prop == "pass_yards":
-            # A QB gets HIS OWN attempts scaled by the script, not the team's
-            # total. Assigning the whole team's pass volume over-projected every
-            # quarterback by 17 yards a game (+8%) in backtest: it silently
-            # credits him with snaps taken by a backup, and with the attempts he
-            # never made in games he left early.
-            att = (u["pass_att_per_game"] * script_ratio
-                   if u.get("pass_att_per_game") else vol["pass_att"])
-            # Decomposed so the defence hits accuracy, which is what a
-            # secondary actually suppresses, rather than a blended Y/A.
-            comp_pct = u["completion_pct"] * of
-            ypc_ = u["yards_per_completion"]
-            mu = att * comp_pct * ypc_
-            drivers = {"pass_attempts": round(att, 1),
-                       "completion_pct": round(comp_pct, 4),
-                       "yards_per_completion": ypc_,
-                       "yards_per_attempt": round(comp_pct * ypc_, 3)}
-        elif prop == "rush_yards":
-            # A back's carries scale with his team's rush attempts, which is
-            # exactly the term the mixture moves MOST — and in the opposite
-            # direction to the passing props on the same team.
-            # Fallbacks come from volume.NEUTRAL, not from literals. Both
-            # this and backtest.py had 63.0 / 0.57 / 27.0 written inline, which
-            # went stale the moment NEUTRAL["plays"] was corrected to 60.71.
-            share = (u["carries_per_game"] /
-                     (tend.get("plays_per_game", _vol.NEUTRAL["plays"]) *
-                      (1 - tend.get("pass_rate", _vol.NEUTRAL["pass_rate"])))
-                     ) if tend else None
-            share = share if share and 0 < share < 1 else (
-                u["carries_per_game"] / _vol.neutral_rush_att())
-            carries = vol["rush_att"] * min(0.95, max(0.0, share))
-            ypc_adj = u["yards_per_carry"] * of
-            mu = carries * ypc_adj
-            drivers = {"carries": round(carries, 1),
-                       "carry_share": round(share, 3),
-                       "yards_per_carry": round(ypc_adj, 3)}
-        else:
-            # TARGETS, not dropbacks — target_share is a share of team TARGETS.
-            # See volume.TARGETS_PER_DROPBACK.
-            targets = vol.get("targets", vol["pass_att"]) * u["target_share"]
-            if prop == "receptions":
-                cr = u["catch_rate"] * of
-                mu = targets * cr
-                drivers = {"targets": round(targets, 1),
-                           "target_share": u["target_share"],
-                           "catch_rate": round(cr, 4)}
-            else:
-                ypt = u["yards_per_target"] * of
-                mu = targets * ypt
-                drivers = {"targets": round(targets, 1),
-                           "target_share": u["target_share"],
-                           "yards_per_target": round(ypt, 3)}
+        mu, drivers = projection_mean(u, prop, vol, tend, of)
 
         # Volume driver for this prop — the term CV scales with.
         _vol_driver = (drivers.get("pass_attempts") or drivers.get("targets")

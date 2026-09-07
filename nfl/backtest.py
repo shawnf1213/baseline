@@ -206,23 +206,11 @@ def _project_with_usage(_props, u, prop, game, season):
                              (game or {}).get("total"),
                              own_pass_rate=tend.get("pass_rate"),
                              own_plays=tend.get("plays_per_game"))
-        neutral = (v["plays"] * v["pass_rate"]) or 1.0
-        script_ratio = v["pass_att"] / neutral
-        if prop == "pass_yards":
-            att = (u["pass_att_per_game"] * script_ratio
-                   if u.get("pass_att_per_game") else v["pass_att"])
-            return att * (u["completion_pct"] * of) * u["yards_per_completion"]
-        if prop == "rush_yards":
-            share = (u["carries_per_game"] /
-                     (tend.get("plays_per_game", _vol.NEUTRAL["plays"]) *
-                      (1 - tend.get("pass_rate", _vol.NEUTRAL["pass_rate"])))
-                     ) if tend else None
-            share = (share if share and 0 < share < 1
-                     else u["carries_per_game"] / _vol.neutral_rush_att())
-            return v["rush_att"] * min(0.95, max(0.0, share)) * u["yards_per_carry"] * of
-        targets = v.get("targets", v["pass_att"]) * u["target_share"]
-        if prop == "receptions":
-            return targets * u["catch_rate"] * of
-        return targets * u["yards_per_target"] * of
+        # ONE COPY OF THE MATHS. This used to restate the whole per-prop
+        # projection, so the backtest and production agreed only for as long as
+        # every change was made in both — and a backtest that scores a different
+        # model than production runs is worse than no backtest at all.
+        mu, _ = _props.projection_mean(u, prop, v, tend, of)
+        return mu
     except Exception:  # noqa: BLE001
         return None
