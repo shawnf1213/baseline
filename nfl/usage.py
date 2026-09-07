@@ -21,6 +21,7 @@ window is reported so a caller can see how thin it is.
 """
 
 import logging
+import os
 
 log = logging.getLogger("baseline.nfl.usage")
 
@@ -274,6 +275,33 @@ def player_usage(player: str, season: int = None, position: str = None,
         return {}
 
 
+# ── A KNOWN-WRONG INPUT, DELIBERATELY LEFT WRONG (2026-09-06) ────────────────
+# team_tendency counts plays as attempts + carries. Pass ATTEMPTS EXCLUDE SACKS,
+# and a sack is a dropback, so every team's play count is ~2.3 low. Measured
+# against play-by-play: MIN 52.59 vs 55.5, KC 59.65 vs 61.6, BUF 61.29 vs 63.3 —
+# a uniform -2.3, exactly the league sack rate. Setting the flag also fixes the
+# pass RATE, which excluded sacks from the numerator while the module's own
+# NEUTRAL comment defines pass rate as including them.
+#
+# CORRECTING IT MADE THE MODEL WORSE, and that is the finding worth keeping:
+#
+#                    MAE 2025      MAE 2024      bias 2025
+#   receiving_yards  -1.64%        -1.52%        +0.70 -> +2.61
+#   receptions       -1.82%        -1.79%        +0.09 -> +0.27
+#   rush_yards       +0.04%        +0.08%        unchanged
+#
+# The model was unbiased BECAUSE two errors cancelled: volume ~4% low, and
+# something in the receiving chain ~4% high. Fixing one unmasks the other, and
+# the projection then runs 2.6 yards hot. The compensating term has not been
+# found — target_share shrinkage and yards_per_target are the candidates.
+#
+# So this stays OFF until the second error is located, rather than shipping a
+# change that is right in principle and worse in practice. NEUTRAL["plays"] in
+# volume.py was corrected 63.0 -> 60.71 in the same pass and is NOT gated: it is
+# the week-1 fallback, it was measured directly, and it moves the opposite way.
+COUNT_SACKS_AS_PLAYS = os.getenv("NFL_COUNT_SACKS", "0").strip() in ("1", "true", "True")
+
+
 def team_tendency(team: str, season: int = None) -> dict:
     """A team's own pace and pass rate, for feeding volume.team_volume().
 
@@ -292,12 +320,28 @@ def team_tendency(team: str, season: int = None) -> dict:
                 continue
             att = float(d.get("attempts").fillna(0).sum())
             car = float(d.get("carries").fillna(0).sum())
+            # SACKS ARE PASS PLAYS. `attempts` excludes them, so plays computed
+            # as attempts+carries omitted ~2.3 dropbacks a game and every team's
+            # volume came out ~4% low. Measured against play-by-play: model MIN
+            # 52.59 vs truth 55.5, KC 59.65 vs 61.6, BUF 61.29 vs 63.3 — a
+            # uniform -2.3, which is exactly the league sack rate.
+            #
+            # It skewed the pass RATE the same way, and inconsistently with the
+            # module's own NEUTRAL, whose comment says pass rate is the "share of
+            # plays that are pass attempts (incl. sacks)". The two halves of the
+            # volume model were using different definitions of a pass play.
+            # OFF BY DEFAULT — see COUNT_SACKS_AS_PLAYS below. The fix is
+            # correct; shipping it alone measurably degrades the model.
+            sk = (float(d.get("sacks_suffered").fillna(0).sum())
+                  if (COUNT_SACKS_AS_PLAYS and "sacks_suffered" in d) else 0.0)
             g = len(d)
-            if not g or (att + car) <= 0:
+            plays = att + car + sk
+            if not g or plays <= 0:
                 continue
             return {"team": team, "season": yr, "games": g,
-                    "plays_per_game": round((att + car) / g, 2),
-                    "pass_rate": round(att / (att + car), 4)}
+                    "plays_per_game": round(plays / g, 2),
+                    "pass_rate": round((att + sk) / plays, 4),
+                    "sacks_per_game": round(sk / g, 2)}
         return {}
     except Exception as exc:  # noqa: BLE001
         log.warning("nfl team_tendency failed for %r: %s", team, str(exc)[:140])

@@ -44,7 +44,13 @@ BLOWOUT = 14.0          # points; the band where play-calling actually changes
 # League-neutral fallbacks, used only when a game has no market line. Measured
 # from 2025 regular-season play-by-play (see fit_scenarios()).
 NEUTRAL = {
-    "plays": 63.0,          # offensive plays per team per game
+    # 63.0 -> 60.71, measured 2026-09-06 from 2025 play-by-play (pass+run,
+    # kneels and spikes excluded). The old value was 2.3 plays high, which is
+    # the same magnitude as the sack undercount fixed in team_tendency — the two
+    # errors pointed in OPPOSITE directions, so a team with data projected ~4%
+    # low while a team without data (i.e. every team in week 1, when this
+    # fallback is what actually runs) projected ~4% high.
+    "plays": 60.71,         # offensive plays per team per game
     "pass_rate": 0.570,     # share of plays that are pass attempts (incl. sacks)
 }
 
