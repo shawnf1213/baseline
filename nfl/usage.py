@@ -283,7 +283,8 @@ def player_usage(player: str, season: int = None, position: str = None,
 # pass RATE, which excluded sacks from the numerator while the module's own
 # NEUTRAL comment defines pass rate as including them.
 #
-# CORRECTING IT MADE THE MODEL WORSE, and that is the finding worth keeping:
+# RESOLVED 2026-09-06 — the counterpart error was found, so this is now ON.
+# Correcting it ALONE made the model worse:
 #
 #                    MAE 2025      MAE 2024      bias 2025
 #   receiving_yards  -1.64%        -1.52%        +0.70 -> +2.61
@@ -295,11 +296,13 @@ def player_usage(player: str, season: int = None, position: str = None,
 # the projection then runs 2.6 yards hot. The compensating term has not been
 # found — target_share shrinkage and yards_per_target are the candidates.
 #
-# So this stays OFF until the second error is located, rather than shipping a
-# change that is right in principle and worse in practice. NEUTRAL["plays"] in
-# volume.py was corrected 63.0 -> 60.71 in the same pass and is NOT gated: it is
-# the week-1 fallback, it was measured directly, and it moves the opposite way.
-COUNT_SACKS_AS_PLAYS = os.getenv("NFL_COUNT_SACKS", "0").strip() in ("1", "true", "True")
+# The counterpart was TARGETS_PER_DROPBACK in volume.py: the receiving chain
+# multiplied target_share by pass ATTEMPTS as though every attempt produced a
+# target. It does not — throwaways, spikes and batted balls do not. Measured on
+# 2025: 30.84 targets per 32.25 attempts (0.9563) per 34.64 dropbacks (0.8904).
+# So targets were 4.4% high, cancelling the 4% low play count. With both fixed
+# the two stop hiding each other, and this flag defaults ON.
+COUNT_SACKS_AS_PLAYS = os.getenv("NFL_COUNT_SACKS", "1").strip() in ("1", "true", "True")
 
 
 def team_tendency(team: str, season: int = None) -> dict:

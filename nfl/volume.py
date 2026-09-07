@@ -78,6 +78,23 @@ PLAYS_MULT = {
 }
 
 
+# NOT EVERY DROPBACK PRODUCES A TARGET. A sack has no receiver, and neither does
+# a throwaway, a spike or a batted ball. The receiving chain multiplies a
+# player's target_share — a share of TEAM TARGETS — by this team's pass volume,
+# so feeding it dropbacks (or even attempts) overstates his targets.
+#
+# Measured on 2025 play-by-play, per team-game:
+#     dropbacks 34.64   sacks 2.39   attempts 32.25   TARGETS 30.84
+#     targets / attempts  = 0.9563
+#     targets / dropbacks = 0.8904
+#
+# pass_rate here includes sacks (see NEUTRAL), so pass_att is DROPBACKS and the
+# dropback ratio is the right one. This was the error that cancelled the sack
+# undercount in team_tendency: targets ran 4.4% high, volume 4% low, and the
+# model looked unbiased because the two offset.
+TARGETS_PER_DROPBACK = 0.8904
+
+
 def _phi(x: float) -> float:
     """Standard normal CDF — delegates to the shared helper.
 
@@ -151,10 +168,12 @@ def team_volume(spread: float, total: float = None,
         plays = plays0 * PLAYS_MULT[s]
         pr = min(0.85, max(0.30, pr0 * PASS_RATE_MULT[s]))
         per[s] = {"plays": plays, "pass_rate": pr,
-                  "pass_att": plays * pr, "rush_att": plays * (1.0 - pr)}
+                  "pass_att": plays * pr, "rush_att": plays * (1.0 - pr),
+                  "targets": plays * pr * TARGETS_PER_DROPBACK}
 
     pass_att = sum(w[s] * per[s]["pass_att"] for s in SCENARIOS)
     rush_att = sum(w[s] * per[s]["rush_att"] for s in SCENARIOS)
+    targets = sum(w[s] * per[s]["targets"] for s in SCENARIOS)
     # Spread of the volume itself — the thing a point estimate hides. A pick'em
     # game and a 10-point spread can share a mean and have very different tails.
     var_pass = sum(w[s] * (per[s]["pass_att"] - pass_att) ** 2 for s in SCENARIOS)
@@ -163,6 +182,7 @@ def team_volume(spread: float, total: float = None,
         "weights": {k: round(v, 4) for k, v in w.items()},
         "pass_att": round(pass_att, 2),
         "rush_att": round(rush_att, 2),
+        "targets": round(targets, 2),
         "pass_att_sd": round(var_pass ** 0.5, 2),
         "rush_att_sd": round(var_rush ** 0.5, 2),
         "plays": round(plays0, 1),

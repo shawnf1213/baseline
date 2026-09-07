@@ -366,7 +366,9 @@ def project(player: str, prop: str, line: float = None, game: dict = None,
                        "carry_share": round(share, 3),
                        "yards_per_carry": round(ypc_adj, 3)}
         else:
-            targets = vol["pass_att"] * u["target_share"]
+            # TARGETS, not dropbacks — target_share is a share of team TARGETS.
+            # See volume.TARGETS_PER_DROPBACK.
+            targets = vol.get("targets", vol["pass_att"]) * u["target_share"]
             if prop == "receptions":
                 cr = u["catch_rate"] * of
                 mu = targets * cr

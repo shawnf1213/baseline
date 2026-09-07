@@ -218,7 +218,7 @@ def _project_with_usage(_props, u, prop, game, season):
                       (1 - tend.get("pass_rate", 0.57)))) if tend else None
             share = share if share and 0 < share < 1 else u["carries_per_game"] / 27.0
             return v["rush_att"] * min(0.95, max(0.0, share)) * u["yards_per_carry"] * of
-        targets = v["pass_att"] * u["target_share"]
+        targets = v.get("targets", v["pass_att"]) * u["target_share"]
         if prop == "receptions":
             return targets * u["catch_rate"] * of
         return targets * u["yards_per_target"] * of
