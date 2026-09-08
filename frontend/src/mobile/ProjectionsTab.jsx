@@ -8,6 +8,138 @@ import { PROP_TYPES, SURFACES, shortProp, hitStrip, fmt } from './data'
 import { calcProp, fetchHistory } from '../utils/api'
 import { TOURNAMENT_CONFIG } from '../utils/constants'
 
+
+// ── SERVE / RETURN STAT BLOCK ────────────────────────────────────────────────
+// The gap this closes: Discord's /prop card carries a per-player stat table —
+// break points generated, conversion, hold and return rates, serve splits,
+// archetype — and the app showed none of it. Same endpoint, same payload; the
+// fields were already in the response and simply were not rendered. A projection
+// you cannot interrogate is a number to take on faith, which is the opposite of
+// the point.
+//
+// PROP-AWARE, and deliberately the SAME rows as the bot (bot.py::_prop_stats),
+// so the two surfaces cannot show different evidence for the same number.
+// Precision matches bot.py::_pct / _num EXACTLY \u2014 0 decimals on percentages,
+// 1 on counts. Rendering 82.4% here against Discord's 82% would be the same
+// disagreement this block exists to remove, only smaller.
+const pct = (v) => (typeof v === 'number' ? `${v.toFixed(0)}%` : '\u2014')
+const num = (v) => (typeof v === 'number' ? v.toFixed(1) : '\u2014')
+const hand = (h) => {
+  const u = String(h || '').toUpperCase()
+  return u.startsWith('L') ? 'Left-handed' : u.startsWith('R') ? 'Right-handed' : null
+}
+// >35% earns the marker, same threshold as the bot.
+const tbCell = (r) => (typeof r !== 'number' ? '\u2014'
+  : `${r.toFixed(0)}%${r > 35 ? '  \u{1F3AF} SPECIALIST' : ''}`)
+
+// Row sets are a LINE-FOR-LINE mirror of bot.py::_prop_stats. Not "similar" --
+// identical, because the two surfaces run the same engine and must therefore
+// justify a projection with the same evidence. If you change one, change both.
+function statRows(prop, res, surface) {
+  const ps = res.player_stats || {}
+  const os = res.opponent_stats || {}
+  const sfx = surface && surface !== 'All' ? ` (${surface})` : ''
+  let p, o
+  switch (prop) {
+    case 'Aces':
+      p = [[`Aces/Match${sfx}`, num(ps.aces)], ['1st Serve %', pct(ps.first_serve_pct)],
+           ['1st Srv Won', pct(ps.first_serve_pts_won)]]
+      o = [[`Aces Conceded/Match${sfx}`, num(res.opponent_ace_against)],
+           ['Return 1st Won', pct(os.return_first_serve_pts_won)],
+           [`Own Aces/Match${sfx}`, num(os.aces)]]
+      break
+    case 'Double Faults':
+      p = [['DFs/Match', num(ps.double_faults)], ['2nd Srv Won', pct(ps.second_serve_pts_won)],
+           ['1st Serve %', pct(ps.first_serve_pct)]]
+      o = [['Return 2nd Won', pct(os.return_second_serve_pts_won)],
+           ['DFs/Match', num(os.double_faults)]]
+      break
+    case 'Break Points Won':
+      p = [['BP Generated/Match', num(res.bp_generated_per_match)],
+           ['BP Gen (Quality-Adj)', num(res.bp_generated_quality_adj)],
+           ['BP Conversion', pct(res.bp_blended_conv_pct ?? ps.bp_converted)],
+           ['Service Games Won', pct(ps.service_games_won_pct)],
+           ['Return Games Won', pct(ps.return_games_won_pct)]]
+      o = [['BP Faced/Match', num(res.bp_blended_opp_faced)],
+           ['Service Games Won', pct(os.service_games_won_pct)],
+           ['Hold Rate', pct(res.opp_hold_rate_pct)],
+           ['Server Quality', res.opp_server_quality_tier || res.opp_serve_tier || '\u2014'],
+           ['1st Srv Won', pct(os.first_serve_pts_won)],
+           ['2nd Srv Won', pct(os.second_serve_pts_won)]]
+      break
+    case 'Break Points Saved':
+      // Drivers of (games broken) x (save rate). Serve-point splits and win rate
+      // are deliberately absent here, exactly as in the bot.
+      p = [['Service Games Won', pct(ps.service_games_won_pct)],
+           ['Hold vs This Opp', pct(res.bps_effective_hold)],
+           ['BP Saved', pct(res.bps_save_rate ?? ps.bp_saved)],
+           ['BP Faced/Match', num(ps.bp_faced_count)],
+           ['Proj. BP Faced', num(res.bps_faced_proj)]]
+      o = [['Return Games Won', pct(os.return_games_won_pct)],
+           ['BP Created/Match', num(os.return_bp_opportunities)],
+           ['BP Conversion', pct(os.bp_converted)],
+           ['Service Games Won', pct(os.service_games_won_pct)]]
+      break
+    case 'Player Total Games Won':
+      p = [['Hold Rate', pct(res.player_hold_rate)],
+           ['Break Rate vs Opp', pct(res.player_break_rate)]]
+      o = [['Hold Rate', pct(res.opp_hold_rate_g)], ['Win Rate', pct(os.win_rate)]]
+      break
+    default:   // Total Games, and Fantasy Score which the bot also routes here
+      p = [['1st Srv Won', pct(ps.first_serve_pts_won)],
+           ['2nd Srv Won', pct(ps.second_serve_pts_won)], ['Win Rate', pct(ps.win_rate)]]
+      o = [['1st Srv Won', pct(os.first_serve_pts_won)],
+           ['2nd Srv Won', pct(os.second_serve_pts_won)], ['Win Rate', pct(os.win_rate)]]
+  }
+  // Tiebreak rate is suppressed for Break Points Saved: reaching 6-6 is a
+  // match-length signal, not a serve-pressure one.
+  if (prop !== 'Break Points Saved') {
+    if (res.player_tiebreak_rate != null) p.push(['Tiebreak Rate', tbCell(res.player_tiebreak_rate)])
+    if (res.opponent_tiebreak_rate != null) o.push(['Tiebreak Rate', tbCell(res.opponent_tiebreak_rate)])
+  }
+  return [p, o]
+}
+
+function StatColumn({ name, rows, arch, hd, serve }) {
+  return (
+    <div style={{ flex: 1, minWidth: 0 }}>
+      <div style={{ fontSize: 12, fontWeight: 700, color: T.white, marginBottom: 8,
+                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        {name}
+      </div>
+      {rows.map(([lbl, val]) => (
+        <div key={lbl} style={{ display: 'flex', justifyContent: 'space-between',
+                                gap: 8, fontSize: 11.5, marginBottom: 5, alignItems: 'baseline' }}>
+          <span style={{ color: T.muted2, minWidth: 0, overflow: 'hidden',
+                         textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{lbl}</span>
+          <span style={{ color: T.white, fontWeight: 700, textAlign: 'right' }}>{val}</span>
+        </div>
+      ))}
+      {serve && <div style={{ fontSize: 11, color: T.muted, marginTop: 6 }}>{'\u{1F3BE} '}{serve}</div>}
+      {arch && <div style={{ fontSize: 11, color: T.muted, marginTop: 4, fontStyle: 'italic' }}>{arch}</div>}
+      {hd && <div style={{ fontSize: 11, color: T.muted2, marginTop: 2 }}>{'\u270B '}{hd}</div>}
+    </div>
+  )
+}
+
+function StatBlock({ prop, res, surface, playerName, opponentName }) {
+  const [pRows, oRows] = statRows(prop, res, surface)
+  return (
+    <Card style={{ padding: 14, marginBottom: 10 }}>
+      <div style={{ fontSize: 9.5, fontFamily: T.cond, fontWeight: 800, letterSpacing: 1,
+                    textTransform: 'uppercase', color: T.muted2, marginBottom: 10 }}>
+        Serve &amp; return
+      </div>
+      <div style={{ display: 'flex', gap: 14 }}>
+        <StatColumn name={playerName} rows={pRows} arch={res.player_archetype}
+                    hd={hand(res.player_handedness)} serve={res.player_serve_profile} />
+        <StatColumn name={opponentName} rows={oRows} arch={res.opponent_archetype}
+                    hd={hand(res.opponent_handedness)} serve={res.opponent_serve_profile} />
+      </div>
+    </Card>
+  )
+}
+
 // ── PROJECTIONS ──────────────────────────────────────────────────────────────
 // The bot's /prop command, in the app. Same inputs (player, opponent, prop,
 // surface, line), same engine (/api/prop/calculate), same answer — so a number
@@ -459,6 +591,11 @@ export default function ProjectionsTab() {
             <Stat label="Win prob"
                   value={res.p1_win_prob != null ? `${Math.round(res.p1_win_prob)}%` : '—'} />
           </Card>
+
+          {/* The evidence behind the number — the same rows Discord shows. */}
+          <StatBlock prop={prop} res={res} surface={surface}
+                     playerName={player?.name || 'Player'}
+                     opponentName={opponent?.name || 'Opponent'} />
 
           {/* Hit rate across windows, then every game with the line through it. */}
           <HitWindows hist={hist} lean={lean} line={ln} />
