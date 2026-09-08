@@ -91,97 +91,80 @@ def _caveats(row: dict) -> list:
     return out
 
 
-def _matchup_short(row: dict) -> str:
-    """Render the matchup as SF @ LAR, not the two full club names.
+# Tennis board conventions, reproduced exactly (bot.py::_ranked_line,
+# _stamped_footer, LEAN_DOT). The two boards must read as the same kind of post,
+# not as two products — user, 2026-09-08: "make the nfl format follow the tennis
+# board scan format".
+LEAN_DOT = {"OVER": "🟢", "UNDER": "🔴"}
+FOOTER_PROJECTION = "Baseline · Model projections, not betting advice"
 
-    Full club names are most of the line width on a phone, and every reader of
-    this board already reads abbreviations on the book itself.
+# Prop names shortened for the list view, same reason tennis shortens its own:
+# the full name is a big share of the line width on a phone.
+# The books' own casing. book.title() renders "Prizepicks", which is not how
+# either the book or the tennis board writes it.
+BOOK_LABEL = {"prizepicks": "PrizePicks", "underdog": "Underdog"}
+
+PROP_SHORT = {
+    "pass_yards": "Pass Yards",
+    "rush_yards": "Rush Yards",
+    "receiving_yards": "Rec Yards",
+    "receptions": "Receptions",
+}
+
+
+def _ranked_line(row: dict, rank: int) -> str:
+    """One ranked play — two short lines that do not wrap on a phone.
+
+    Byte-for-byte the tennis layout: the player on line one, then the play in
+    bold uppercase behind its lean dot, with the projection and confidence in
+    plain weight beside it. THE PLAY IS THE HEADLINE; if everything is bold,
+    nothing is.
+
+    Edge is deliberately omitted, exactly as in tennis — it is projection minus
+    line, so it is derivable from what is already shown and was costing the
+    width that forced a third wrapped line.
     """
-    m = row.get("matchup") or ""
-    a, b = row.get("away_abbr"), row.get("home_abbr")
-    if a and b:
-        return f"{a} @ {b}"
-    return m
-
-
-def _shared_caveats(rows: list) -> list:
-    """Caveats that apply to EVERY row, so they can be said once.
-
-    The first board repeated "prior-season usage only" on all six plays, which
-    is six lines saying one thing and trains the eye to skip the warning
-    entirely. A caveat that is universal belongs at the bottom once; a caveat
-    that distinguishes one play from another belongs on that play.
-    """
-    if not rows:
-        return []
-    out = []
-    if all(r.get("prior_season_only") for r in rows):
-        out.append("⚠️ All priced on prior-season usage — no current-season "
-                   "games played yet.")
-    if all(not r.get("script_applied") for r in rows):
-        out.append("No spread available — league-neutral volume.")
-    return out
-
-
-def _play_line(row: dict, rank: int, skip: set) -> str:
-    """One play, three lines at most. `skip` holds caveats already said once."""
     lean = _side(row)
-    arrow = "🔼" if lean == "OVER" else "🔽"
-    prob = _prob(row)
-    head = (f"`{rank}` **{row.get('player')}** — "
-            f"{PROP_LABEL.get(row.get('prop'), row.get('prop'))}")
-    body = f"{arrow} **{lean} {_fmt(row.get('line'))}** · proj {_fmt(row.get('projection'))}"
-    if prob:
-        body += f" · {prob * 100:.0f}%"
-    mu = _matchup_short(row)
-    if mu:
-        body += f" · {mu}"
-    out = [head, body]
-    for c in _caveats(row):
-        if c not in skip:
-            out.append(f"_{c}_")
-    return NL.join(out)
+    proj = row.get("projection")
+    conf = row.get("win_prob")
+    l1 = f"**{rank}. {row.get('player')}**"
+    play = (f"{lean} {row.get('line'):g} "
+            f"{PROP_SHORT.get(row.get('prop'), row.get('prop') or '')}").upper()
+    bits = [f"{LEAN_DOT.get(lean, '⚪')} **{play}**"]
+    if isinstance(proj, (int, float)):
+        bits.append(f"Proj {proj:.1f}")
+    if isinstance(conf, (int, float)):
+        bits.append(f"{conf * 100:.0f}%")
+    return l1 + NL + " · ".join(bits)
 
 
 def build_board_embed(rows: list, book: str, shadow: bool = True,
-                      date_label: str = None, max_plays: int = 8):
-    """The board embed. Returns None when there is nothing to post.
+                      date_label: str = None, max_plays: int = 8,
+                      when=None):
+    """The board embed, in the tennis board's shape.
 
-    Plays go in ONE description block rather than one embed field each. Fields
-    each carry their own padding, so six of them turned a six-play board into a
-    screen and a half of mostly whitespace.
+    Returns None when there is nothing to post — an EMPTY board is not an error
+    and is not posted. See nfl.board's data-sufficiency gate.
 
-    An EMPTY board is not an error and is not posted — see nfl.board's
-    data-sufficiency gate. Early in the season that is the expected state.
+    `shadow` no longer prints a banner over the plays. It still picks the colour
+    and is still the thing that decides whether the scheduled task pings, but the
+    board itself is now just the board: the user asked for the scan "without
+    extra text or warnings", and the tennis board carries none either.
     """
+    import datetime
     import discord
     if not rows:
         return None
     shown = rows[:max_plays]
-    shared = _shared_caveats(shown)
-    skip = set()
-    if any(c.startswith("⚠️ All priced") for c in shared):
-        skip.add("⚠️ prior-season usage only — no current-season games")
-    if any(c.startswith("No spread") for c in shared):
-        skip.add("no spread available — league-neutral volume")
-
-    title = f"NFL Board · {book.title()}"
-    if date_label:
-        title += f" · {date_label}"
-    head = ("_Shadow mode — not posted plays. Watched against real results "
-            "before it counts._" + NL + NL) if shadow else ""
-    body = (NL + NL).join(_play_line(r, i, skip)
-                          for i, r in enumerate(shown, 1))
-    tail = (NL + NL + NL.join(shared)) if shared else ""
-
+    d = when or datetime.datetime.now()
+    label = date_label or f"{d.month}/{d.day}"
+    title = f"🏈 {label} {BOOK_LABEL.get(book, book.title())} Board"
     e = discord.Embed(
-        title=("🕶️ SHADOW — " if shadow else "") + title,
+        title=title,
         color=COLOR_SHADOW if shadow else COLOR,
-        description=(head + body + tail)[:4096])
-    foot = f"{len(shown)} play" + ("s" if len(shown) != 1 else "")
-    if len(rows) > len(shown):
-        foot += f" of {len(rows)}"
-    e.set_footer(text=f"{foot} · {book}")
+        description=(NL + NL).join(_ranked_line(r, i)
+                                   for i, r in enumerate(shown, 1)))
+    e.set_footer(text=f"{FOOTER_PROJECTION} • {label}")
     return e
 
 
