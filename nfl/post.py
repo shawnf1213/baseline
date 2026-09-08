@@ -138,9 +138,101 @@ def _ranked_line(row: dict, rank: int) -> str:
     return l1 + NL + " · ".join(bits)
 
 
+def _matchup_short(row: dict) -> str:
+    """Render the matchup as SF @ LAR, not the two full club names.
+
+    Full club names are most of the line width on a phone, and every reader of
+    this board already reads abbreviations on the book itself.
+    """
+    a, b = row.get("away_abbr"), row.get("home_abbr")
+    if a and b:
+        return f"{a} @ {b}"
+    return row.get("matchup") or ""
+
+
+def build_potd_embed(row: dict, when=None):
+    """⭐ Pick of the Day — the NFL twin of the tennis POTD embed.
+
+    Same structure as tennis: the matchup, the play in bold, the supporting
+    numbers, then a Key Stats block carrying the DRIVERS of that specific
+    projection rather than a generic profile. Tennis shows ace rate and opponent
+    concession because that is what makes an aces line move; the NFL equivalent
+    is volume and efficiency, which is what the projection is literally built
+    from.
+
+    Returns None for an empty row, so a caller can post the board alone.
+    """
+    import datetime
+    import discord
+    if not row:
+        return None
+    d = when or datetime.datetime.now()
+    label = f"{d.month}/{d.day}"
+    lean = _side(row)
+    prob = _prob(row)
+    edge = row.get("edge")
+    prop = PROP_SHORT.get(row.get("prop"), row.get("prop") or "")
+
+    head = [f"**{row.get('player')}** — {prop}",
+            f"{LEAN_DOT.get(lean, '⚪')} **{lean} {row.get('line'):g}**"]
+    bits = [f"Proj {_fmt(row.get('projection'))}"]
+    if isinstance(edge, (int, float)):
+        bits.append(f"Edge {edge:+.1f}")
+    if prob:
+        bits.append(f"Conf {prob * 100:.0f}%")
+    head.append(" · ".join(bits))
+    mu = _matchup_short(row)
+    if mu:
+        head.append(mu)
+
+    e = discord.Embed(title=f"⭐ NFL PICK OF THE DAY — {label}",
+                      color=COLOR,
+                      description=NL.join(head))
+
+    # KEY STATS — the terms this number is actually made of.
+    d_ = row.get("drivers") or {}
+    stats = []
+    vol = (d_.get("targets"), "targets/g")
+    if d_.get("carries"):
+        vol = (d_.get("carries"), "carries/g")
+    if d_.get("pass_attempts"):
+        vol = (d_.get("pass_attempts"), "pass att/g")
+    if isinstance(vol[0], (int, float)):
+        stats.append(f"{vol[1].capitalize()} {vol[0]:.1f}")
+    for key, lbl in (("yards_per_target", "Yds/target"),
+                     ("yards_per_carry", "Yds/carry"),
+                     ("yards_per_attempt", "Yds/att"),
+                     ("catch_rate", "Catch rate"),
+                     ("target_share", "Target share")):
+        v = d_.get(key)
+        if isinstance(v, (int, float)):
+            stats.append(f"{lbl} {v:.0%}" if key in ("catch_rate", "target_share")
+                         else f"{lbl} {v:.2f}")
+    if stats:
+        e.add_field(name="Key Stats", value=" · ".join(stats[:4]), inline=False)
+
+    ctx = []
+    of = row.get("opponent_factor")
+    if isinstance(of, (int, float)) and abs(of - 1.0) > 0.001:
+        ctx.append(f"Opponent adj ×{of:.3f}")
+    mk = row.get("market") or {}
+    if isinstance(mk.get("spread"), (int, float)):
+        ctx.append(f"Spread {mk['spread']:+g}")
+    if isinstance(mk.get("total"), (int, float)):
+        ctx.append(f"Total {mk['total']:g}")
+    sd = row.get("sd")
+    if isinstance(sd, (int, float)):
+        ctx.append(f"Spread ± {sd:.1f}")
+    if ctx:
+        e.add_field(name="Context", value=" · ".join(ctx), inline=False)
+
+    e.set_footer(text=f"{FOOTER_PROJECTION} • {label}")
+    return e
+
+
 def build_board_embed(rows: list, book: str, shadow: bool = True,
                       date_label: str = None, max_plays: int = 8,
-                      when=None):
+                      when=None, start_rank: int = 1):
     """The board embed, in the tennis board's shape.
 
     Returns None when there is nothing to post — an EMPTY board is not an error
@@ -162,8 +254,11 @@ def build_board_embed(rows: list, book: str, shadow: bool = True,
     e = discord.Embed(
         title=title,
         color=COLOR_SHADOW if shadow else COLOR,
+        # start_rank exists because the ⭐ POTD takes #1 and the board lists
+        # from #2 — the same numbering the tennis board uses, so the two read
+        # as one drop rather than two competing lists.
         description=(NL + NL).join(_ranked_line(r, i)
-                                   for i, r in enumerate(shown, 1)))
+                                   for i, r in enumerate(shown, start_rank)))
     e.set_footer(text=f"{FOOTER_PROJECTION} • {label}")
     return e
 

@@ -3617,12 +3617,26 @@ async def _nfl_post_board(book: str) -> None:
         if ch is None:
             log.error("NFL board (%s): channel %s not visible to the bot", book, cid)
             return
-        embed = npost.build_board_embed(rows, book, shadow=shadow)
-        if embed is None:
+        # ⭐ POTD first, board from #2 — see nfl.post.build_potd_embed.
+        potd = npost.build_potd_embed(rows[0]) if rows else None
+        embed = npost.build_board_embed(rows[1:], book, shadow=shadow,
+                                        start_rank=2)
+        if potd is None and embed is None:
             return
-        # NEVER @everyone from a shadow board. A ping is a claim that the number
-        # is worth acting on, and shadow means exactly that we are not making it.
-        await ch.send(embed=embed)
+        if potd is not None:
+            await ch.send(content="@everyone", embed=potd,
+                          allowed_mentions=discord.AllowedMentions(everyone=True))
+        if embed is None:
+            log.warning("NFL board (%s): POTD only — no further plays", book)
+            _NFL_WATCH[book] = rows
+            return
+        # @everyone on the board (user, 2026-09-08). The tennis board pings the
+        # same way, and a board nobody is told about is a board nobody reads.
+        # LINE ALERTS ARE THE EXCEPTION and stay silent — they fire repeatedly
+        # through the day, and a ping per line move trains people to mute the
+        # server.
+        await ch.send(content="@everyone", embed=embed,
+                      allowed_mentions=discord.AllowedMentions(everyone=True))
         log.warning("NFL board (%s) posted %d play(s) to %s (shadow=%s)",
                     book, len(rows), cid, shadow)
         # Hand the posted rows to the line watch so alerts track what we showed.

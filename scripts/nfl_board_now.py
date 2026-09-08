@@ -42,6 +42,8 @@ async def main() -> int:
                     help="also repost the projections-channel intro")
     ap.add_argument("--alert-demo", action="store_true",
                     help="also post one line-alert card off the top row")
+    ap.add_argument("--no-ping", action="store_true",
+                    help="suppress the @everyone on boards and the intro")
     a = ap.parse_args()
 
     token = os.getenv("DISCORD_BOT_TOKEN")
@@ -82,6 +84,12 @@ async def main() -> int:
     async def on_ready():
         try:
             no_ping = discord.AllowedMentions.none()
+            # Boards and the intro PING; line changes never do. They fire
+            # repeatedly through the day and a ping per line move is how a
+            # server learns to mute you.
+            ping = (discord.AllowedMentions.none() if a.no_ping
+                    else discord.AllowedMentions(everyone=True))
+            ping_txt = None if a.no_ping else "@everyone"
             for book, rows in boards.items():
                 cid = _p.channel_for("board", book)
                 ch = client.get_channel(cid) if cid else None
@@ -91,12 +99,23 @@ async def main() -> int:
                 # An empty board posts NOTHING. Saying "no plays today" when the
                 # real reason is a dead feed or a held-back board would be a
                 # different and untrue statement.
-                e = _p.build_board_embed(rows, book, shadow=False, max_plays=a.max)
+                # ⭐ POTD FIRST, then the board from #2 — the tennis running
+                # order. The top-ranked play is already row 0; nothing is
+                # re-selected here, so the star and the list cannot disagree.
+                potd = _p.build_potd_embed(rows[0]) if rows else None
+                if potd is not None:
+                    await ch.send(content=ping_txt, embed=potd,
+                                  allowed_mentions=ping)
+                    print(f"  posted {book} POTD -> {cid}"
+                          f"{'' if a.no_ping else ' (@everyone)'}")
+                e = _p.build_board_embed(rows[1:], book, shadow=False,
+                                         max_plays=a.max, start_rank=2)
                 if e is None:
-                    print(f"  {book}: empty — nothing posted")
+                    print(f"  {book}: no board rows beyond the POTD")
                     continue
-                await ch.send(embed=e, allowed_mentions=no_ping)
-                print(f"  posted {book} board -> {cid}")
+                await ch.send(content=ping_txt, embed=e, allowed_mentions=ping)
+                print(f"  posted {book} board -> {cid}"
+                      f"{'' if a.no_ping else ' (@everyone)'}")
 
             if a.intro:
                 cid = _p.channel_for("projections")
@@ -104,9 +123,10 @@ async def main() -> int:
                 if ch is None:
                     log.error("projections channel %s not visible", cid)
                 else:
-                    await ch.send(embed=_p.build_intro_embed(),
-                                  allowed_mentions=no_ping)
-                    print(f"  posted intro -> {cid}")
+                    await ch.send(content=ping_txt, embed=_p.build_intro_embed(),
+                                  allowed_mentions=ping)
+                    print(f"  posted intro -> {cid}"
+                          f"{'' if a.no_ping else ' (@everyone)'}")
 
             if a.alert_demo:
                 rows = boards.get("prizepicks") or []
