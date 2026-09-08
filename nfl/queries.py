@@ -75,9 +75,13 @@ def _games():
     """Completed-game history with lines. Cached — it is a 2 MB download."""
     if "df" in _games_cache:
         return _games_cache["df"]
+    import io as _io
     import pandas as pd
     try:
-        df = pd.read_csv(GAMES_URL, low_memory=False)
+        from core import proxy as _px
+        _r = _px.get(GAMES_URL, "nfl", timeout=60)
+        df = (pd.read_csv(_io.StringIO(_r.text), low_memory=False) if _r is not None
+              else pd.read_csv(GAMES_URL, low_memory=False))
     except Exception as exc:  # noqa: BLE001 — Rule 2
         log.warning("nfl queries: games.csv unavailable: %s", str(exc)[:140])
         df = pd.DataFrame()

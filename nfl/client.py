@@ -138,8 +138,13 @@ def _download(url: str, path: str) -> bool:
     import requests
     try:
         tmp = path + ".part"
+        # nflverse is GitHub and has never blocked us, but it DOES rate-limit,
+        # and a board scan pulls several files. Routed the same way so one
+        # switch covers every NFL egress.
+        from core import proxy as _px
+        _pxy, _ = _px.proxies_for("nfl")
         with requests.get(url, headers=_HEADERS, timeout=TIMEOUT,
-                          stream=True) as r:
+                          stream=True, proxies=_pxy) as r:
             r.raise_for_status()
             with open(tmp, "wb") as fh:
                 for chunk in r.iter_content(1 << 20):
@@ -225,8 +230,15 @@ def get_schedule(start: str = None, end: str = None) -> list:
         params = {}
         if start:
             params["dates"] = f"{start}-{end}" if end else start
-        r = requests.get(f"{ESPN}/scoreboard", params=params or None,
-                         headers=_ESPN_HEADERS, timeout=TIMEOUT)
+        # Through the residential proxy when configured — ESPN answers 403 to
+        # Railway's datacenter range while returning 200 to a laptop, which is
+        # why /nflgame worked in every local test and was dead in production.
+        # Falls back to a direct call on any machine without credentials.
+        from core import proxy as _px
+        r = _px.get(f"{ESPN}/scoreboard", "nfl", params=params or None,
+                    headers=_ESPN_HEADERS, timeout=TIMEOUT)
+        if r is None:
+            raise RuntimeError("scoreboard request failed (proxy and direct)")
         r.raise_for_status()
         out = []
         for e in (r.json() or {}).get("events") or []:

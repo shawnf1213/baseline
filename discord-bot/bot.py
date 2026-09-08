@@ -3722,9 +3722,17 @@ async def _nfl_selfcheck() -> None:
                 except ImportError:
                     engine = None
             form = q.recent_form("Lamar Jackson", 1)
-            return engine, len(df), yr, bool(form.get("player"))
+            try:
+                from core import proxy as _px
+                pxs = _px.status()
+            except Exception:  # noqa: BLE001
+                pxs = {"configured": "import failed"}
+            return engine, len(df), yr, bool(form.get("player")), pxs
 
-        engine, rows, yr, ok = await asyncio.to_thread(_probe)
+        engine, rows, yr, ok, pxs = await asyncio.to_thread(_probe)
+        log.warning("NFL proxy: configured=%s ports=%s nfl_enabled=%s",
+                    pxs.get("configured"), pxs.get("ports"),
+                    pxs.get("nfl_enabled"))
         if ok and rows:
             log.warning("NFL selfcheck OK — parquet engine=%s, %d weekly rows "
                         "(%s), player lookup works", engine, rows, yr)

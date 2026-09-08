@@ -146,7 +146,14 @@ def fetch_prizepicks_lines() -> dict:
     guessed number.
     """
     try:
-        r = requests.get(PRIZEPICKS_URL, headers=_HEADERS, timeout=TIMEOUT)
+        # PrizePicks sits behind Cloudflare and rate-limits hard (1015 after a
+        # handful of calls from one IP). The residential proxy spreads a board
+        # scan across addresses; without credentials this is a direct call.
+        from core import proxy as _px
+        r = _px.get(PRIZEPICKS_URL, "nfl", headers=_HEADERS, timeout=TIMEOUT)
+        if r is None:
+            log.warning("nfl prizepicks: request failed (proxy and direct)")
+            return {}
         r.raise_for_status()
         board = r.json() or {}
     except Exception as exc:  # noqa: BLE001 — Rule 2
@@ -221,7 +228,11 @@ def fetch_underdog_lines() -> dict:
     the feed answers again.
     """
     try:
-        r = requests.get(BOARD_URL, headers=_HEADERS, timeout=TIMEOUT)
+        from core import proxy as _px
+        r = _px.get(BOARD_URL, "nfl", headers=_HEADERS, timeout=TIMEOUT)
+        if r is None:
+            log.warning("nfl underdog: request failed (proxy and direct)")
+            return {}
         if r.status_code == 426:
             log.warning("nfl underdog: upstream returned 426 upgrade_required — "
                         "the v6 feed is version-gated. NFL Underdog board posts "
