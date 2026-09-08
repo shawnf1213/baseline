@@ -428,6 +428,10 @@ def project(player: str, prop: str, line: float = None, game: dict = None,
             # Stated, never implied: a projection built without a spread has no
             # script mixture behind it and is a weaker claim.
             "script_applied": vol["market_known"],
+            # Surfaced so a caller can SAY why a demoted player's volume was
+            # cut, rather than silently showing a smaller number. None whenever
+            # the player has current-season games (the rescale cannot fire).
+            "role_change": u.get("role_change"),
         }
 
         if isinstance(line, (int, float)):

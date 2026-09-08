@@ -3506,6 +3506,294 @@ async def _mlb_one_shot_test():
         log.exception("MLB TEST run failed entirely (tennis unaffected)")
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# NFL — boards, projections channel, line alerts
+# ══════════════════════════════════════════════════════════════════════════════
+# Wired 2026-09-08 to the four channels the user supplied. Mirrors the MLB block
+# above in every structural way: lazy imports behind a locator, every task in its
+# own error boundary, and nothing here can reach tennis.
+#
+# READ THIS BEFORE FLIPPING NFL_ENABLED
+# -------------------------------------
+# The projection engine is sound IN-SEASON — the 2025 walk-forward backtest puts
+# it at -2.16 yards of bias on receiving yards (n=1552) and it beats both the
+# season-average and last-4-game baselines on every prop. But it is BLIND in
+# week 1, when nflverse has published no current-season performance data and
+# every projection runs on last season's usage. Measured against the live
+# 2026-09-08 PrizePicks board that produced +25.3% mean relative error,
+# concentrated entirely on players whose role changed (Isaiah Williams, WR4 on
+# the 2026 Jets, projected 31.0 receiving yards into an 8.5 line).
+#
+# nfl.board therefore holds back any play with no current-season games behind
+# it, so in week 1 these boards post NOTHING and say why in the log. That is the
+# intended behaviour, not a failure to configure. The board fills itself as real
+# games are played — no switch to flip.
+NFL_TASKS_ENABLED = os.getenv("NFL_TASKS_ENABLED", "true").strip().lower() in (
+    "1", "true", "yes", "on")
+NFL_BOARD_HOUR = int(os.getenv("NFL_BOARD_HOUR", "11") or "11")
+NFL_BOARD_MINUTE = int(os.getenv("NFL_BOARD_MINUTE", "0") or "0")
+NFL_LINE_CHECK_MINUTES = int(os.getenv("NFL_LINE_CHECK_MINUTES", "30") or "30")
+# One-shot intro post to the projections channel. Off by default so a redeploy
+# never re-pings the channel; set NFL_POST_INTRO=1 for the single announcement,
+# then unset it.
+NFL_POST_INTRO = (os.getenv("NFL_POST_INTRO", "0") or "0") not in ("0", "false", "False")
+_nfl_intro_done = False
+
+# Rows currently being watched for line movement, per book. Written by the board
+# task, read by the line watch — so an alert can only ever be about a play that
+# was actually posted.
+_NFL_WATCH = {}
+
+
+def _nfl_import(module_name: str):
+    """Import an `nfl.*` submodule, locating the package first.
+
+    Identical problem and identical fix to _mlb_import — the container layout is
+    not guaranteed, and a bare ImportError swallowed by an error boundary is how
+    a sport silently never runs.
+    """
+    import sys
+    import importlib
+    here = os.path.dirname(os.path.abspath(__file__))
+    for root in (os.path.dirname(here), here, os.getcwd(), "/app"):
+        if root and os.path.isdir(os.path.join(root, "nfl")):
+            if root not in sys.path:
+                sys.path.insert(0, root)
+            break
+    else:
+        log.error("NFL package NOT FOUND on disk (searched %s, %s, %s, /app) — "
+                  "NFL tasks will report this rather than failing silently",
+                  os.path.dirname(here), here, os.getcwd())
+    return importlib.import_module(module_name)
+
+
+async def _nfl_post_board(book: str) -> None:
+    """Scan one book and post its board to that book's channel. Never raises."""
+    try:
+        nb = _nfl_import("nfl.board")
+        npost = _nfl_import("nfl.post")
+        shadow = not getattr(_nfl_import("nfl"), "NFL_ENABLED", False)
+        rows = await asyncio.to_thread(nb.scan_board, book)
+        if not rows:
+            log.warning("NFL board (%s): nothing cleared the filters — not "
+                        "posting. Early in the season this is expected: every "
+                        "play is held back for having no current-season data.",
+                        book)
+            return
+        cid = npost.channel_for("board", book)
+        if not cid:
+            log.error("NFL board (%s): no channel configured", book)
+            return
+        ch = client.get_channel(cid)
+        if ch is None:
+            log.error("NFL board (%s): channel %s not visible to the bot", book, cid)
+            return
+        embed = npost.build_board_embed(rows, book, shadow=shadow)
+        if embed is None:
+            return
+        # NEVER @everyone from a shadow board. A ping is a claim that the number
+        # is worth acting on, and shadow means exactly that we are not making it.
+        await ch.send(embed=embed)
+        log.warning("NFL board (%s) posted %d play(s) to %s (shadow=%s)",
+                    book, len(rows), cid, shadow)
+        # Hand the posted rows to the line watch so alerts track what we showed.
+        _NFL_WATCH[book] = rows
+    except Exception:  # noqa: BLE001 — Rule 2, and tennis must never be reached
+        log.exception("NFL board (%s) failed entirely (tennis unaffected)", book)
+
+
+@tasks.loop(time=[datetime.time(hour=NFL_BOARD_HOUR, minute=NFL_BOARD_MINUTE,
+                                tzinfo=POD_TZINFO)])
+async def nfl_daily_boards():
+    """Both books' NFL boards. One book failing must not stop the other."""
+    if not NFL_TASKS_ENABLED:
+        return
+    for book in ("prizepicks", "underdog"):
+        await _nfl_post_board(book)
+
+
+@nfl_daily_boards.before_loop
+async def _before_nfl_boards():
+    await client.wait_until_ready()
+
+
+@tasks.loop(minutes=NFL_LINE_CHECK_MINUTES)
+async def nfl_line_watch():
+    """Re-check the books for movement on the plays we posted."""
+    if not NFL_TASKS_ENABLED or not _NFL_WATCH:
+        return
+    try:
+        lm = _nfl_import("nfl.line_monitor")
+        npost = _nfl_import("nfl.post")
+        nl = _nfl_import("nfl.lines")
+        cid = npost.channel_for("lines")
+        ch = client.get_channel(cid) if cid else None
+        if ch is None:
+            log.error("NFL line watch: channel %s not visible", cid)
+            return
+        for book, rows in list(_NFL_WATCH.items()):
+            try:
+                current = await asyncio.to_thread(nl.fetch_lines, book)
+                if not current:
+                    continue
+                watched = [{
+                    "player": r["player"], "prop": r.get("prop"),
+                    "line": r.get("line"), "projection": r.get("projection"),
+                    "lean": r.get("lean"), "sd": r.get("sd"), "book": book,
+                    "_key": (nl._norm(r["player"]), r.get("prop")),
+                } for r in rows if r.get("line") is not None]
+                for a in lm.detect(watched, current):
+                    # Adopt the new line FIRST, so a move is announced once
+                    # rather than on every pass after it — the tennis monitor's
+                    # hard-won rule.
+                    for r in rows:
+                        if (r.get("player") == a["player"]
+                                and r.get("prop") == a["prop"]):
+                            r["line"] = a["new_line"]
+                            r["lean"] = a["new_lean"]
+                    await ch.send(embed=npost.build_line_alert_embed(a))
+            except Exception:  # noqa: BLE001 — one book must not stop the other
+                log.exception("NFL line watch failed for %s", book)
+    except Exception:  # noqa: BLE001
+        log.exception("NFL line watch failed entirely (tennis unaffected)")
+
+
+@nfl_line_watch.before_loop
+async def _before_nfl_line_watch():
+    await client.wait_until_ready()
+
+
+async def _nfl_post_intro() -> None:
+    """One-shot 'how this works' post in the projections channel."""
+    global _nfl_intro_done
+    if _nfl_intro_done or not NFL_POST_INTRO:
+        return
+    _nfl_intro_done = True
+    try:
+        npost = _nfl_import("nfl.post")
+        cid = npost.channel_for("projections")
+        ch = client.get_channel(cid) if cid else None
+        if ch is None:
+            log.error("NFL intro: projections channel %s not visible", cid)
+            return
+        await ch.send(content="@everyone", embed=npost.build_intro_embed(),
+                      allowed_mentions=discord.AllowedMentions(everyone=True))
+        log.warning("NFL intro posted to %s", cid)
+    except Exception:  # noqa: BLE001
+        log.exception("NFL intro post failed (tennis unaffected)")
+
+
+NFL_PROJECTIONS_CHANNEL_ID = int(
+    os.getenv("NFL_PROJECTIONS_CHANNEL_ID", "1546942501812834414") or 0)
+
+NFL_PROP_CHOICES = [
+    app_commands.Choice(name="Pass Yards", value="pass_yards"),
+    app_commands.Choice(name="Rush Yards", value="rush_yards"),
+    app_commands.Choice(name="Receiving Yards", value="receiving_yards"),
+    app_commands.Choice(name="Receptions", value="receptions"),
+]
+
+
+@client.tree.command(name="nflprop",
+                     description="Get a Baseline NFL prop projection")
+@app_commands.describe(
+    player="Player name",
+    prop="Which prop to project",
+    line="The book line (e.g. 62.5). Optional — omit for a raw projection.",
+)
+@app_commands.choices(prop=NFL_PROP_CHOICES)
+@app_commands.checks.cooldown(1, 5.0, key=lambda i: i.user.id)
+async def nflprop(interaction: discord.Interaction, player: str,
+                  prop: app_commands.Choice[str], line: float = None):
+    if (NFL_PROJECTIONS_CHANNEL_ID
+            and interaction.channel_id != NFL_PROJECTIONS_CHANNEL_ID):
+        await _send_error(interaction,
+                          f"Use NFL commands in <#{NFL_PROJECTIONS_CHANNEL_ID}>.")
+        return
+    try:
+        await _enter_queue(interaction)
+    except _QueueBusy:
+        return
+    log.info("CMD /nflprop | user=%s | %s | %s | line=%s",
+             interaction.user.id, player, prop.value, line)
+    try:
+        nprops = _nfl_import("nfl.props")
+        npost = _nfl_import("nfl.post")
+        nb = _nfl_import("nfl.board")
+        nclient = _nfl_import("nfl.client")
+        nl = _nfl_import("nfl.lines")
+        # Attach the game so the script mixture applies — without it the answer
+        # is a league-neutral volume estimate and materially weaker. The team
+        # comes from the book's own board entry, which is the only place we
+        # learn who a player currently plays for.
+        game = None
+        try:
+            posted = await asyncio.to_thread(nl.fetch_lines, "prizepicks")
+            row = posted.get((nl._norm(player), prop.value))
+            if row and row.get("team"):
+                games = await asyncio.to_thread(nclient.upcoming_week)
+                game = nb._game_for(row["team"], nb._team_index(games)) or None
+        except Exception:  # noqa: BLE001 — a missing game is a weaker answer, not an error
+            log.warning("/nflprop: could not attach a game for %s", player)
+        r = await asyncio.to_thread(nprops.project, player, prop.value, line, game)
+        if not r:
+            await _send_error(
+                interaction,
+                f"No usable game log for **{player}**. Check the spelling — or "
+                f"he may not have enough games for the model to project.")
+            return
+        await interaction.followup.send(embed=npost.build_prop_embed(r),
+                                        ephemeral=True)
+    except Exception:  # noqa: BLE001 — never let a command crash the process
+        log.exception("UNHANDLED /nflprop error")
+        await _send_error(interaction, MSG_GENERIC)
+    finally:
+        _leave_queue()
+
+
+@client.tree.command(name="nflboard",
+                     description="The current ranked NFL board")
+@app_commands.describe(book="Which book's lines to price")
+@app_commands.choices(book=[
+    app_commands.Choice(name="PrizePicks", value="prizepicks"),
+    app_commands.Choice(name="Underdog", value="underdog"),
+])
+@app_commands.checks.cooldown(1, 30.0, key=lambda i: i.user.id)
+async def nflboard(interaction: discord.Interaction,
+                   book: app_commands.Choice[str] = None):
+    if (NFL_PROJECTIONS_CHANNEL_ID
+            and interaction.channel_id != NFL_PROJECTIONS_CHANNEL_ID):
+        await _send_error(interaction,
+                          f"Use NFL commands in <#{NFL_PROJECTIONS_CHANNEL_ID}>.")
+        return
+    try:
+        await _enter_queue(interaction)
+    except _QueueBusy:
+        return
+    bk = book.value if book else "prizepicks"
+    log.info("CMD /nflboard | user=%s | %s", interaction.user.id, bk)
+    try:
+        nb = _nfl_import("nfl.board")
+        npost = _nfl_import("nfl.post")
+        shadow = not getattr(_nfl_import("nfl"), "NFL_ENABLED", False)
+        rows = await asyncio.to_thread(nb.scan_board, bk)
+        embed = npost.build_board_embed(rows, bk, shadow=shadow)
+        if embed is None:
+            await _send_error(
+                interaction,
+                "No NFL plays right now. Early in the season every player is "
+                "priced off last season only, which measured +25% error against "
+                "the market — so those are held back until real games are "
+                "played. The board fills itself as the season goes on.")
+            return
+        await interaction.followup.send(embed=embed, ephemeral=True)
+    except Exception:  # noqa: BLE001
+        log.exception("UNHANDLED /nflboard error")
+        await _send_error(interaction, MSG_GENERIC)
+    finally:
+        _leave_queue()
+
+
 @tasks.loop(time=[datetime.time(hour=UNDERDOG_PREWARM_HOUR,
                                 minute=UNDERDOG_PREWARM_MINUTE, tzinfo=POD_TZINFO)])
 async def underdog_cache_prewarm():
@@ -5280,6 +5568,35 @@ async def on_ready():
                 log.warning("MLB resolve/recap every %dh", MLB_RESOLVE_EVERY_HOURS)
         except Exception:
             log.exception("failed to start MLB resolve loop (tennis unaffected)")
+        # ── NFL ──────────────────────────────────────────────────────────
+        # Same isolation as MLB: each start is its own boundary, and a broken
+        # NFL module can take down neither the other sports nor tennis.
+        try:
+            if NFL_TASKS_ENABLED and not nfl_daily_boards.is_running():
+                nfl_daily_boards.start()
+                log.warning("NFL boards scheduled at %02d:%02d %s -> pp=%s ud=%s",
+                            NFL_BOARD_HOUR, NFL_BOARD_MINUTE, POD_TZINFO,
+                            os.getenv("NFL_PP_CHANNEL_ID", "1535163281768185926"),
+                            os.getenv("NFL_UD_CHANNEL_ID", "1546942176259346482"))
+            elif not NFL_TASKS_ENABLED:
+                log.warning("NFL tasks OFF (set NFL_TASKS_ENABLED=true)")
+        except Exception:  # noqa: BLE001
+            log.exception("failed to start NFL board loop (tennis unaffected)")
+        try:
+            if NFL_TASKS_ENABLED and not nfl_line_watch.is_running():
+                nfl_line_watch.start()
+                log.warning("NFL line watch every %dm -> channel %s",
+                            NFL_LINE_CHECK_MINUTES,
+                            os.getenv("NFL_LINE_CHANGE_CHANNEL_ID",
+                                      "1546943210574708848"))
+        except Exception:  # noqa: BLE001
+            log.exception("failed to start NFL line watch (tennis unaffected)")
+        try:
+            if NFL_POST_INTRO:
+                asyncio.create_task(_nfl_post_intro())
+                log.warning("NFL_POST_INTRO=1 — one-shot intro post scheduled")
+        except Exception:  # noqa: BLE001
+            log.exception("failed to schedule NFL intro (tennis unaffected)")
         try:
             if MLB_PURGE_SLATE:
                 asyncio.create_task(_mlb_purge_once())

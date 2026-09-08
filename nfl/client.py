@@ -53,6 +53,20 @@ _HEADERS = {"User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
 _ESPN_HEADERS = {"User-Agent": "Mozilla/5.0"}
 
 _mem = {}          # in-process frame cache, keyed by (dataset, season)
+# NEGATIVE cache — datasets that are genuinely absent upstream, keyed the same
+# way, valued with the time we last tried.
+#
+# WHY THIS EXISTS: `load()` memoised only SUCCESS, so a dataset that 404s was
+# re-downloaded on every single call. That is the normal state of affairs in
+# week 1 of a new season — nflverse has published no 2026 file yet — and a
+# 374-line board scan calls load() several times per line, so the scan fired
+# well over a thousand doomed HTTP requests at GitHub before producing a row.
+#
+# The retry window is SHORT and deliberately not infinite: the current season's
+# file appears mid-season, and a bot process that runs for weeks must pick it up
+# without a restart. So an absence is trusted for NEG_TTL and then re-checked.
+_mem_neg = {}
+NEG_TTL = int(os.getenv("NFL_MISSING_TTL", "900") or 900)   # 15 minutes
 
 # ── TEAM ABBREVIATIONS DIFFER BETWEEN THE TWO SOURCES, AND SILENTLY ──────────
 # ESPN says LAR and WSH; nflverse says LA and WAS. Nothing errors when they
@@ -153,6 +167,11 @@ def load(dataset: str, season: int = None, ext: str = "parquet"):
     key = (dataset, season, ext)
     if key in _mem:
         return _mem[key]
+    # Known-absent and still inside the retry window — return empty without
+    # touching the network. See _mem_neg.
+    _missed = _mem_neg.get(key)
+    if _missed is not None and (time.time() - _missed) < NEG_TTL:
+        return pd.DataFrame()
     tag = {
         "play_by_play": "pbp",
         "stats_player_week": "stats_player",
@@ -171,12 +190,18 @@ def load(dataset: str, season: int = None, ext: str = "parquet"):
     if stale:
         url = f"{NFLVERSE}/{tag}/{dataset}_{season}.{ext}"
         if not _download(url, path) and not os.path.exists(path):
-            log.warning("nfl load: %s %s unavailable", dataset, season)
+            # Log once per retry window, not once per caller — at week 1 this
+            # fires for every player on the board otherwise.
+            if _mem_neg.get(key) is None:
+                log.warning("nfl load: %s %s unavailable — suppressing retries "
+                            "for %ds", dataset, season, NEG_TTL)
+            _mem_neg[key] = time.time()
             return pd.DataFrame()
     try:
         df = (pd.read_parquet(path) if ext == "parquet"
               else pd.read_csv(path, low_memory=False))
         _mem[key] = df
+        _mem_neg.pop(key, None)     # it exists after all
         log.info("nfl load: %s %s -> %d rows", dataset, season, len(df))
         return df
     except Exception as exc:  # noqa: BLE001

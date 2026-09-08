@@ -116,6 +116,99 @@ ROLE_PRIOR_TARGET_SHARE = {
     "RB": {1: 0.1041, 2: 0.0592, 3: 0.0258, 4: 0.0328},
 }
 
+# Backfield carry share by depth rank. Receiving props run off target share
+# above; a running back's carries do not, and using the target table for them
+# would price a lead back's ground work off his role in the passing game.
+ROLE_CARRY_SHARE = {"RB": {1: 0.480, 2: 0.220, 3: 0.100, 4: 0.050}}
+
+
+# ── ROLE-CHANGE RESCALE (week 1 blindness) ───────────────────────────────────
+# THE PROBLEM THIS SOLVES, measured against the live 2026-09-08 PrizePicks
+# board (374 standard lines, 260 priced):
+#
+#     mean relative error vs the market      +25.3%
+#     low-line receiving yards               +84.6%
+#     low-line rush yards                    +77.0%
+#     high lines (stars)                     -6.6% / +4.7%
+#
+# The same model backtests at -2.16 yards of bias in-season (2025, 1552 player
+# weeks, beating both the season-average and last-4 baselines). It is not
+# mis-specified; it is BLIND. In week 1 there is no current-season data at all,
+# so every projection runs on last season's usage. A player who was a starter in
+# 2025 and is WR4 in 2026 keeps his old volume, and the board fills with false
+# overs on exactly the players whose role changed. Isaiah Williams — WR4 on the
+# 2026 Jets — projected 31.0 receiving yards against an 8.5 line.
+#
+# The depth charts needed to see this ARE published before week 1 (nflverse
+# depth_charts_2026 exists and is timestamped daily; only the PERFORMANCE
+# datasets 404 until games are played), and depth_rank() already reads them.
+# The information was sitting there unconsumed.
+#
+# DEMOTIONS ONLY — the asymmetry is the whole result. Measured on the same 107
+# board rows that carry a depth rank in both seasons:
+#
+#     no rescale                     MAE 42.9%   bias +25.3%
+#     symmetric (up and down)        MAE 50.8%   bias +31.7%   <- WORSE
+#     demotions only                 MAE 40.5%   bias +18.3%   <- kept
+#     promotions only                MAE 53.2%   bias +38.7%   <- much worse
+#
+# Scaling promotions UP is what breaks it: Xavier Hutchinson (WR4 -> WR2) went
+# from +86% to +364%. That is football-sensible rather than a fitting artefact.
+# A player who loses his role will not repeat last year's volume — the snaps are
+# simply gone. A player who gains one does not inherit the departed starter's
+# touches wholesale; he has to earn them, and his efficiency at the new role is
+# unproven. So the factor is capped at 1.0 and can only ever cut.
+#
+# VOLUME ONLY, never efficiency. A demoted receiver sees fewer targets; he does
+# not become worse at catching them. Scaling yards-per-target would be inventing
+# a skill decline the depth chart says nothing about.
+#
+# This is a PARTIAL fix and is documented as one: it removes roughly a third of
+# the week-1 bias, leaving +18.3%. It is not a licence to post — see
+# board.REQUIRE_CURRENT_SEASON, which is what actually keeps the board honest
+# until real 2026 usage exists.
+ROLE_RESCALE_ENABLED = os.getenv("NFL_ROLE_RESCALE", "1").strip() in (
+    "1", "true", "True", "yes", "on")
+
+
+def role_change_factor(player: str, season: int = None) -> dict:
+    """How much of last season's VOLUME this player's current role still supports.
+
+    Returns {"factor": float <= 1.0, "from": rank, "to": rank, "basis": str}.
+    factor 1.0 means "no demotion detected" — same rank, a promotion, or one of
+    the two ranks unknown. Never raises, never returns > 1.0.
+    """
+    out = {"factor": 1.0, "from": None, "to": None, "basis": "no depth data"}
+    try:
+        if not ROLE_RESCALE_ENABLED:
+            out["basis"] = "role rescale disabled"
+            return out
+        from .client import current_season
+        cur = season or current_season()
+        pos_now, rank_now = depth_rank(player, season=cur)
+        pos_then, rank_then = depth_rank(player, season=cur - 1)
+        if not (rank_now and rank_then):
+            return out
+        pos = pos_now or pos_then
+        tbl = ROLE_PRIOR_TARGET_SHARE.get(pos)
+        if not tbl:
+            return out
+        a, b = tbl.get(int(rank_then)), tbl.get(int(rank_now))
+        if not (a and b):
+            return out
+        out.update({"from": int(rank_then), "to": int(rank_now)})
+        if int(rank_now) <= int(rank_then):
+            out["basis"] = (f"{pos}{rank_then} -> {pos}{rank_now}: no demotion, "
+                            f"volume left as measured")
+            return out
+        out["factor"] = round(min(b / a, 1.0), 4)
+        out["basis"] = (f"{pos}{rank_then} -> {pos}{rank_now}: prior-season volume "
+                        f"scaled to {out['factor']:.0%} of measured")
+        return out
+    except Exception as exc:  # noqa: BLE001 — Rule 2
+        log.warning("nfl role_change_factor(%r) failed: %s", player, str(exc)[:120])
+        return out
+
 POSITION_PRIOR = {
     "WR":  {"target_share": 0.150, "catch_rate": 0.640, "yards_per_target": 8.10,
             "carry_share": 0.010, "yards_per_carry": 6.20},
@@ -433,6 +526,25 @@ def player_usage(player: str, season: int = None, position: str = None,
             "racr": (round(racr, 3) if (racr and adot and adot >= 1.0) else None),
             "air_yards_per_game": round(rec_air / wn, 1) if wn and rec_air else None,
         }
+
+        # ── role-change rescale ─────────────────────────────────────────────
+        # ONLY when every game in the window is from a PRIOR season. Once the
+        # player has current-season games, those games ARE the evidence about
+        # his current role and the depth chart adds nothing — applying it then
+        # would cut volume the player has already demonstrably produced. This
+        # is also what keeps the backtest untouched: it runs with before_week
+        # inside a single season, so the window is never prior-season-only and
+        # this branch cannot fire. See role_change_factor for the measurements.
+        if out["window"] == "prior season only":
+            rc = role_change_factor(player, season=season)
+            f = rc.get("factor", 1.0)
+            out["role_change"] = rc
+            if f < 1.0:
+                for k in ("target_share", "targets_per_game", "carries_per_game",
+                          "pass_att_per_game"):
+                    if isinstance(out.get(k), (int, float)):
+                        out[k] = round(out[k] * f, 4)
+                log.info("nfl usage: %s %s", player, rc["basis"])
         return out
     except Exception as exc:  # noqa: BLE001
         log.exception("nfl usage failed for %r: %s", player, exc)
