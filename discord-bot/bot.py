@@ -5632,7 +5632,7 @@ async def on_ready():
             nfl_daily_boards.start()
             log.warning("NFL boards scheduled at %02d:%02d %s -> pp=%s ud=%s",
                         NFL_BOARD_HOUR, NFL_BOARD_MINUTE, POD_TZINFO,
-                        os.getenv("NFL_PP_CHANNEL_ID", "1535163281768185926"),
+                        os.getenv("NFL_PP_CHANNEL_ID", "1546942099268706417"),
                         os.getenv("NFL_UD_CHANNEL_ID", "1546942176259346482"))
         elif not NFL_TASKS_ENABLED:
             log.warning("NFL tasks OFF (set NFL_TASKS_ENABLED=true)")

@@ -7,12 +7,19 @@ plain Python shell, without a bot token.
 
 CHANNELS (given by the user 2026-09-08):
 
-    prizepicks board   1535163281768185926
+    prizepicks board   1546942099268706417
     underdog board     1546942176259346482
     projections        1546942501812834414   /nflprop lives here
     line changes       1546943210574708848
 
 Each is an env override so a channel move is a Railway variable, not a deploy.
+
+MIND THE DUPLICATE NAMES. The BASELINE guild has THREE channels called
+"#🥇・prizepicks" — the tennis POTD channel (1435683710329684039), an older one
+(1535163281768185926), and the NFL one above. They are indistinguishable by name
+in the client, and the first test post went to the wrong one and looked like a
+silent failure. The four ids above were created as one batch (1546942.../1546943...)
+and belong together; verify by id, never by channel name.
 
 EVERY POST SAYS WHAT IT KNEW. A projection built on prior-season usage only, or
 one whose volume was cut because the player was demoted, says so on the row.
@@ -31,7 +38,7 @@ COLOR_SHADOW = 0x4F545C   # grey, so a shadow board is obvious at a glance
 
 CHANNELS = {
     ("board", "prizepicks"): int(
-        os.getenv("NFL_PP_CHANNEL_ID", "1535163281768185926") or 0),
+        os.getenv("NFL_PP_CHANNEL_ID", "1546942099268706417") or 0),
     ("board", "underdog"): int(
         os.getenv("NFL_UD_CHANNEL_ID", "1546942176259346482") or 0),
     ("projections", None): int(
@@ -196,41 +203,53 @@ def build_line_alert_embed(alert: dict):
 
 
 def build_intro_embed():
-    """The pinned 'how this works' post for the projections channel."""
+    """The pinned 'how this works' post for the projections channel.
+
+    Deliberately the SAME SHAPE as the tennis projections intro — numbered
+    commands, the parameter list under each, one line on what it returns, a rule,
+    then the props and the closing notes. Members already read one of these; a
+    second sport should not make them learn a second layout.
+    """
     import discord
+    rule = "―" * 24
     e = discord.Embed(
-        title="NFL Projections — how this works",
+        title="🏈 NFL Projections — How To Use",
         color=COLOR,
         description=(
-            "Same engine as the tennis and MLB tools: a projection is built from "
-            "**volume × rate**, then compared against the posted line. It is not "
-            "a scrape of anyone's number."))
-    e.add_field(
-        name="Commands",
-        value=("`/nflprop player prop [line]` — project one player prop\n"
-               "`/nflboard [book]` — the current ranked board\n"
-               "Props: Pass Yards, Rush Yards, Receiving Yards, Receptions"),
-        inline=False)
-    e.add_field(
-        name="How a number is built",
-        value=("**Volume** — the team's expected plays, split pass/run by the "
-               "spread and total. A big favourite runs more; a trailing team "
-               "throws.\n"
-               "**Rate** — the player's own share and efficiency, shrunk toward "
-               "his position's baseline so a two-game hot streak doesn't become "
-               "a projection.\n"
-               "**Opponent** — applied to the *rate*, never the volume. The "
-               "spread already carries the opponent, and counting it twice is "
-               "how models talk themselves into fake edges."),
-        inline=False)
-    e.add_field(
-        name="What it will not do",
-        value=("**Demons and goblins are never priced.** Those are different "
-               "payout structures, not different opinions about a number.\n"
-               "**No play without current-season data.** In week 1 the board is "
-               "deliberately empty — projecting off last season measured +25% "
-               "error against the market, concentrated on players whose role "
-               "changed. It fills as real games are played."),
-        inline=False)
-    e.set_footer(text="Shadow mode until the model is validated against results.")
+            f"{rule}\n"
+            "**Type `/` in this channel to see every command and its options.**\n\n"
+
+            "1️⃣ `/nflprop` — Project any prop\n"
+            "player · prop type · line\n"
+            "Returns the projection, the lean, a confidence % and the edge vs "
+            "your line.\n\n"
+
+            "2️⃣ `/nflboard` — The ranked board\n"
+            "book (PrizePicks or Underdog)\n"
+            "Every line we can price right now, ranked by the model's "
+            "confidence.\n\n"
+
+            f"{rule}\n"
+            "Props: Pass Yards · Rush Yards · Receiving Yards · Receptions\n\n"
+
+            "**How a number is built**\n"
+            "Volume × rate. The team's expected plays, split pass/run by the "
+            "spread and total — a big favourite runs more, a trailing team "
+            "throws. Then the player's own share and efficiency, shrunk toward "
+            "his position's baseline so a two-game hot streak doesn't become a "
+            "projection. The opponent is applied to the *rate*, never the "
+            "volume: the spread already carries them, and counting it twice is "
+            "how models talk themselves into fake edges.\n\n"
+
+            "**What it will not do**\n"
+            "Demons and goblins are never priced — different payout structures, "
+            "not different opinions about a number. And no play without "
+            "current-season data: early in the year the board is deliberately "
+            "thin, because projecting off last season measured +25% error "
+            "against the market on players whose role changed. It fills as real "
+            "games are played.\n\n"
+
+            "Replies are private — only you see them. Keep this channel for bot "
+            "commands only.\n"
+            "_Model projections, not betting advice._"))
     return e
