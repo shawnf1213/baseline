@@ -3602,7 +3602,7 @@ async def _nfl_post_board(book: str) -> None:
         nb = _nfl_import("nfl.board")
         npost = _nfl_import("nfl.post")
         shadow = not getattr(_nfl_import("nfl"), "NFL_ENABLED", False)
-        rows = await asyncio.to_thread(nb.scan_board, book)
+        rows = await asyncio.to_thread(nb.scan_board, book, None, True, True)
         if not rows:
             log.warning("NFL board (%s): nothing cleared the filters — not "
                         "posting. Early in the season this is expected: every "
@@ -3639,8 +3639,10 @@ async def _nfl_post_board(book: str) -> None:
                       allowed_mentions=discord.AllowedMentions(everyone=True))
         log.warning("NFL board (%s) posted %d play(s) to %s (shadow=%s)",
                     book, len(rows), cid, shadow)
-        # Hand the posted rows to the line watch so alerts track what we showed.
+        # Hand the posted rows to the line watch so alerts track what we showed,
+        # and remember them so tomorrow's scan does not repeat the same cluster.
         _NFL_WATCH[book] = rows
+        await asyncio.to_thread(nb.record_posted, rows)
     except Exception:  # noqa: BLE001 — Rule 2, and tennis must never be reached
         log.exception("NFL board (%s) failed entirely (tennis unaffected)", book)
 

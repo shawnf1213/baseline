@@ -44,6 +44,8 @@ async def main() -> int:
                     help="also post one line-alert card off the top row")
     ap.add_argument("--no-ping", action="store_true",
                     help="suppress the @everyone on boards and the intro")
+    ap.add_argument("--repeat-ok", action="store_true",
+                    help="allow plays already posted today (default: hide them)")
     a = ap.parse_args()
 
     token = os.getenv("DISCORD_BOT_TOKEN")
@@ -62,7 +64,7 @@ async def main() -> int:
 
     boards = {}
     for book in ("prizepicks", "underdog"):
-        rows = _b.scan_board(book)[:a.max]
+        rows = _b.scan_board(book, exclude_posted=not a.repeat_ok)[:a.max]
         boards[book] = rows
         print(f"{book}: {len(rows)} play(s)")
         for i, r in enumerate(rows, 1):
@@ -116,6 +118,7 @@ async def main() -> int:
                 await ch.send(content=ping_txt, embed=e, allowed_mentions=ping)
                 print(f"  posted {book} board -> {cid}"
                       f"{'' if a.no_ping else ' (@everyone)'}")
+                _b.record_posted(rows)
 
             if a.intro:
                 cid = _p.channel_for("projections")

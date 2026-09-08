@@ -74,6 +74,98 @@ REQUIRE_CURRENT_SEASON = os.getenv(
     "NFL_ALLOW_PRIOR_SEASON", "0").strip() not in ("1", "true", "True", "yes", "on")
 
 
+
+# ── WHAT HAS ALREADY BEEN POSTED ─────────────────────────────────────────────
+# The board is genuinely re-scanned every run — the PrizePicks feed is fetched
+# live, no cache — and it still returned the same names, because the two things
+# that decide the ranking barely move:
+#
+#   1. The projections are FROZEN. Until 2026 games are played the usage window
+#      is "prior season only", so every player's number is identical run to run.
+#      Only the lines change, and they had not.
+#
+#   2. The ranking is a NEAR-TIE. Measured on the live board: top win_prob
+#      0.7629, 8th 0.7465 — eleven plays within 0.02 of the top, twenty-three
+#      within 0.05, sd 0.063 across 136 qualifying rows. The "top 8" is not
+#      eight best plays, it is eight samples from one large cluster.
+#
+# So a board posted twice showed the same names in a slightly different order,
+# which reads as a stuck scan. MLB solved this with board_state; NFL had no
+# equivalent. This is that: a small on-disk log of what has been posted, so a
+# later scan shows what the earlier one could not.
+#
+# DELIBERATELY FILE-BACKED, NOT A DATABASE. The bot has no NFL store, one is a
+# much larger build, and a daily board only needs to remember today. It lives in
+# the nflverse cache directory, which Railway keeps for the life of a deploy —
+# so a redeploy forgets, and the next board may repeat. That is a real limit and
+# is stated rather than hidden; the alternative was blocking the fix on a store.
+POSTED_LOG = os.path.join(
+    os.getenv("NFL_CACHE_DIR",
+              os.path.join(os.path.dirname(os.path.abspath(__file__)), "_cache")),
+    "posted.json")
+
+
+def _et_today() -> str:
+    import datetime
+    try:
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo("America/New_York")
+    except Exception:  # noqa: BLE001
+        tz = datetime.timezone(datetime.timedelta(hours=-5))
+    return datetime.datetime.now(tz).strftime("%Y-%m-%d")
+
+
+def _load_posted() -> dict:
+    import json
+    try:
+        with open(POSTED_LOG, encoding="utf-8") as fh:
+            return json.load(fh) or {}
+    except Exception:  # noqa: BLE001 — a missing or corrupt log is not an error
+        return {}
+
+
+def posted_keys(day: str = None) -> set:
+    """(player, prop) already posted on this ET day."""
+    d = _load_posted().get(day or _et_today()) or []
+    return {(r[0], r[1]) for r in d if isinstance(r, (list, tuple)) and len(r) >= 2}
+
+
+def posted_players(day: str = None) -> set:
+    """Players already posted today, on ANY prop.
+
+    Excluding by PLAYER, not by (player, prop), for the reason the MLB board
+    does the same: a receiver's yards and his receptions are the same targets,
+    so boarding both is one bet shown twice.
+    """
+    return {p for p, _ in posted_keys(day)}
+
+
+def record_posted(rows: list, day: str = None) -> None:
+    """Remember what a board posted. Never raises — a log failure must not cost
+    the post that already succeeded."""
+    import json
+    try:
+        day = day or _et_today()
+        data = _load_posted()
+        have = data.get(day) or []
+        seen = {(r[0], r[1]) for r in have if len(r) >= 2}
+        for r in rows or []:
+            k = (r.get("player"), r.get("prop"))
+            if k[0] and k not in seen:
+                have.append([k[0], k[1]])
+                seen.add(k)
+        data[day] = have
+        # Keep only the last few days; this file is a scratch pad, not history.
+        for old in sorted(data)[:-5]:
+            data.pop(old, None)
+        os.makedirs(os.path.dirname(POSTED_LOG), exist_ok=True)
+        with open(POSTED_LOG, "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+        log.info("nfl board: recorded %d posted play(s) for %s", len(rows or []), day)
+    except Exception as exc:  # noqa: BLE001 — Rule 2
+        log.warning("nfl board: could not record posted plays: %s", str(exc)[:120])
+
+
 def _team_index(games: list) -> dict:
     """team abbr -> (game, is_home). Both sides of every upcoming game."""
     from .client import normalize_team
@@ -145,7 +237,8 @@ def _rank_key(r: dict):
 
 
 def scan_board(book: str = "prizepicks", season: int = None,
-               one_per_player: bool = True) -> list:
+               one_per_player: bool = True,
+               exclude_posted: bool = False) -> list:
     """Price every supported line on ONE book. Returns ranked rows; [] on failure.
 
     Never raises — Rule 2. A book that fails returns an empty board and says so
@@ -232,6 +325,18 @@ def scan_board(book: str = "prizepicks", season: int = None,
                  book, len(keep), MIN_PROB, MIN_EDGE_SD)
         keep.sort(key=_rank_key)
 
+        # A LATER SCAN SHOWS WHAT THE EARLIER ONE COULD NOT. Without this the
+        # board repeats: the projections are frozen until real games are played
+        # and the confidences are packed into a narrow band, so the same cluster
+        # wins every time. See the POSTED_LOG note above.
+        if exclude_posted:
+            already = posted_players()
+            if already:
+                before = len(keep)
+                keep = [r for r in keep if r.get("player") not in already]
+                log.info("nfl board (%s): %d play(s) hidden — already posted "
+                         "today; showing %d that are new", book,
+                         before - len(keep), len(keep))
         if one_per_player:
             seen, dedup = set(), []
             for r in keep:

@@ -211,21 +211,11 @@ def build_potd_embed(row: dict, when=None):
     if stats:
         e.add_field(name="Key Stats", value=" · ".join(stats[:4]), inline=False)
 
-    ctx = []
-    of = row.get("opponent_factor")
-    if isinstance(of, (int, float)) and abs(of - 1.0) > 0.001:
-        ctx.append(f"Opponent adj ×{of:.3f}")
-    mk = row.get("market") or {}
-    if isinstance(mk.get("spread"), (int, float)):
-        ctx.append(f"Spread {mk['spread']:+g}")
-    if isinstance(mk.get("total"), (int, float)):
-        ctx.append(f"Total {mk['total']:g}")
-    sd = row.get("sd")
-    if isinstance(sd, (int, float)):
-        ctx.append(f"Spread ± {sd:.1f}")
-    if ctx:
-        e.add_field(name="Context", value=" · ".join(ctx), inline=False)
-
+    # The Context row (opponent adj / spread / total / sd) was REMOVED
+    # 2026-09-08 (user). Three of its four numbers are inputs the reader cannot
+    # act on, and the fourth — "Spread ± 35.1" on a 29.5 line — is the model's
+    # own uncertainty, which read like part of the pick rather than a caveat on
+    # it. Key Stats already carries what the projection is built from.
     e.set_footer(text=f"{FOOTER_PROJECTION} • {label}")
     return e
 
