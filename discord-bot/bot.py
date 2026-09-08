@@ -3692,6 +3692,52 @@ async def _before_nfl_line_watch():
     await client.wait_until_ready()
 
 
+async def _nfl_selfcheck() -> None:
+    """Prove at startup that the NFL data layer actually works IN THIS CONTAINER.
+
+    Every NFL command answered "no game log found" in production while passing on
+    a dev machine, because nflverse ships parquet and the container had no
+    parquet engine installed. pandas returned an empty frame, the empty frame
+    looked exactly like "this player has no games", and the real error sat in a
+    log line nobody was reading.
+
+    So: read one real dataset, look up one real player, and say plainly whether
+    it worked. A dependency that only breaks in production must announce itself
+    on the way up, not on a member's first command.
+    """
+    if not NFL_TASKS_ENABLED:
+        return
+    try:
+        def _probe():
+            q = _nfl_import("nfl.queries")
+            df, yr = q._weekly()
+            engine = None
+            try:
+                import pyarrow  # noqa: F401
+                engine = "pyarrow"
+            except ImportError:
+                try:
+                    import fastparquet  # noqa: F401
+                    engine = "fastparquet"
+                except ImportError:
+                    engine = None
+            form = q.recent_form("Lamar Jackson", 1)
+            return engine, len(df), yr, bool(form.get("player"))
+
+        engine, rows, yr, ok = await asyncio.to_thread(_probe)
+        if ok and rows:
+            log.warning("NFL selfcheck OK — parquet engine=%s, %d weekly rows "
+                        "(%s), player lookup works", engine, rows, yr)
+        else:
+            log.error("NFL SELFCHECK FAILED — parquet engine=%s, weekly rows=%d "
+                      "(%s), player lookup=%s. Every NFL command will report "
+                      "'no game log found' until this is fixed. If engine is "
+                      "None, pyarrow is missing from discord-bot/requirements.txt.",
+                      engine, rows, yr, ok)
+    except Exception:  # noqa: BLE001 — a self-check must never take the bot down
+        log.exception("NFL selfcheck errored (tennis unaffected)")
+
+
 async def _nfl_post_intro() -> None:
     """One-shot 'how this works' post in the projections channel."""
     global _nfl_intro_done
@@ -5795,6 +5841,12 @@ async def on_ready():
                                   "1546943210574708848"))
     except Exception:  # noqa: BLE001
         log.exception("failed to start NFL line watch (tennis unaffected)")
+    # Prove the data layer works in THIS container before anyone asks it a
+    # question — see _nfl_selfcheck.
+    try:
+        asyncio.create_task(_nfl_selfcheck())
+    except Exception:  # noqa: BLE001
+        log.exception("failed to schedule NFL selfcheck (tennis unaffected)")
     try:
         if NFL_POST_INTRO:
             asyncio.create_task(_nfl_post_intro())

@@ -1,3 +1,11 @@
 discord.py>=2.3.0
 python-dotenv>=1.0.0
 requests>=2.31.0
+# nflverse publishes its datasets as PARQUET. pandas alone cannot read one — it
+# needs an engine — and without this every NFL command answered "no game log
+# found" while the container logged:
+#   could not read stats_player_week_2025.parquet: Unable to find a usable
+#   engine; tried using: 'pyarrow', 'fastparquet'
+# It worked on a dev machine, which had pyarrow pulled in by something else, so
+# the failure only ever appeared in production. See _nfl_selfcheck in bot.py.
+pyarrow>=15.0.0
