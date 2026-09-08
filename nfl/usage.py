@@ -303,7 +303,7 @@ def depth_rank(player: str, season: int = None, before_week: int = None):
     # players are keyed by gsis_id; resolve the name once per season
     from . import client as _c
     ids = _name_to_gsis(season)
-    gid = ids.get(player)
+    gid = ids.get(_norm_player(player))
     return table.get(gid, (None, None)) if gid else (None, None)
 
 
@@ -320,7 +320,10 @@ def _name_to_gsis(season: int) -> dict:
         if not len(wk):
             wk = client.load("stats_player_week", season - 1)
         if len(wk):
-            out = dict(zip(wk["player_display_name"], wk["player_id"]))
+            # Keyed on the NORMALISED name so depth_rank resolves whatever the
+            # caller typed — the same folding player_usage does.
+            out = {_norm_player(n): i
+                   for n, i in zip(wk["player_display_name"], wk["player_id"])}
     except Exception:  # noqa: BLE001
         log.exception("nfl name->gsis failed")
     _NAME_ID_CACHE[season] = out
@@ -337,6 +340,28 @@ def _shrink(obs, n, prior, k=PRIOR_GAMES):
 def _weighted(vals, weights):
     tot = sum(weights)
     return (sum(v * w for v, w in zip(vals, weights)) / tot) if tot else None
+
+
+
+def _norm_player(s) -> str:
+    """Fold a player name for matching: accents, punctuation, case, suffixes.
+
+    Deliberately the same rules as nfl.lines._norm and nfl.queries._norm_name,
+    so a name that resolves on the board resolves in a command too.
+    """
+    import re
+    import unicodedata
+    if s is None:
+        return ""
+    s = str(s)
+    if s.lower() in ("nan", "none", "<na>"):
+        return ""
+    s = "".join(c for c in unicodedata.normalize("NFKD", s)
+                if not unicodedata.combining(c))
+    s = re.sub(r"[^a-z ]", " ", s.lower())
+    toks = [t for t in s.split()
+            if t not in ("jr", "sr", "ii", "iii", "iv", "v")]
+    return " ".join(toks).strip()
 
 
 def player_usage(player: str, season: int = None, position: str = None,
@@ -365,8 +390,14 @@ def player_usage(player: str, season: int = None, position: str = None,
             df = client.load("stats_player_week", yr)
             if not len(df):
                 continue
+            # NORMALISED match, not an exact string compare. `== player` meant
+            # "lamar jackson" found nothing while "Lamar Jackson" worked, and
+            # the user-facing message for that was "no usable game log" — which
+            # reads as "this player does not exist" rather than "check your
+            # capitalisation". Nobody types a slash command in title case.
             d = df[(df.get("season_type") == "REG")
-                   & (df.get("player_display_name") == player)]
+                   & (df["player_display_name"].astype(str).map(_norm_player)
+                      == _norm_player(player))]
             if before_week and tag == "current":
                 d = d[d["week"] < before_week]
             if len(d):
@@ -448,7 +479,13 @@ def player_usage(player: str, season: int = None, position: str = None,
                 if wopr_vals is not None else None)
 
         out = {
-            "player": player, "position": pos,
+            # The CANONICAL name from the data, not what the caller typed.
+            # Returning the input meant every downstream lookup keyed off
+            # "lamar jackson" and missed — depth_rank included, so /nflplayer
+            # showed a player with no role.
+            "player": (str(hist["player_display_name"].iloc[-1])
+                       if "player_display_name" in hist.columns else player),
+            "position": pos,
             "games": n,
             "window": ("current season" if (hist["_src"] == "current").all()
                        else "current + prior season"
@@ -730,7 +767,8 @@ def defense_splits(player: str, prop: str = "receiving_yards",
             if not len(df):
                 continue
             d = df[(df.get("season_type") == "REG")
-                   & (df.get("player_display_name") == player)]
+                   & (df["player_display_name"].astype(str).map(_norm_player)
+                      == _norm_player(player))]
             if before_week and yr == season:
                 d = d[d["week"] < before_week]
             if not len(d):

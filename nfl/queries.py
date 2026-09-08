@@ -184,6 +184,12 @@ def player_profile(name: str, season: int = None) -> dict:
             "snap_ratio": u.get("snap_ratio"),
             "role": u.get("role") or {},
             "role_change": rc or None,
+            # The depth a reader actually asks for — who he struggles against,
+            # and who he shares the ball with. Each is independently guarded, so
+            # one failing does not cost the profile.
+            "splits": opponent_splits(u["player"], season, u.get("position")),
+            "targets": favourite_targets(u["player"], season),
+            "competition": target_competition(u["player"], season),
         }
     except Exception as exc:  # noqa: BLE001 — Rule 2
         log.exception("nfl player_profile(%r) failed: %s", name, exc)
@@ -357,4 +363,162 @@ def head_to_head(team_a: str, team_b: str, limit: int = 8) -> dict:
                 "ties": ties, "total": len(out), "meetings": out[-limit:]}
     except Exception as exc:  # noqa: BLE001 — Rule 2
         log.exception("nfl head_to_head(%r,%r) failed: %s", team_a, team_b, exc)
+        return {}
+
+
+# ── DEPTH: the questions a person actually asks about a player ───────────────
+# "Who does he struggle against", "who does he throw to". A role table alone
+# answers neither, and those are the two things a reader reaches for first.
+#
+# EVERY SPLIT CARRIES ITS SAMPLE SIZE, and small ones are dropped rather than
+# shown small. One 12-yard game against a defence is not a matchup problem, and
+# rendering it as "worst vs BUF" would invent a pattern out of a single Sunday.
+# A 17-game season means most opponents are faced ONCE, so requiring two
+# meetings leaves only divisional rivals — and with three qualifying opponents
+# "best" and "worst" returned the same three teams in opposite order, which is
+# not a split, it is a sorted list wearing two hats. So single meetings count,
+# every entry carries its n, and best/worst are forced DISJOINT: if there are
+# not enough distinct opponents to populate both ends, the lists shrink rather
+# than overlap.
+MIN_SPLIT_GAMES = 1
+
+# The stat that IS the player, by position — what "a good game" means for him.
+PRIMARY_STAT = {
+    "QB": ("passing_yards", "pass yds"),
+    "RB": ("rushing_yards", "rush yds"),
+    "WR": ("receiving_yards", "rec yds"),
+    "TE": ("receiving_yards", "rec yds"),
+    "FB": ("rushing_yards", "rush yds"),
+}
+
+
+def opponent_splits(name: str, season: int = None, position: str = None):
+    """Best and worst opponents by the player's own primary stat.
+
+    Returns {"stat", "label", "best": [...], "worst": [...], "mean"} where each
+    entry is {opp, mean, n}. Opponents faced fewer than MIN_SPLIT_GAMES times
+    are excluded — see the note above.
+    """
+    try:
+        rows, yr = _player_rows(name, season)
+        if isinstance(rows, dict) or rows is None or not len(rows):
+            return {}
+        pos = position
+        if not pos and "position" in rows.columns:
+            vals = rows["position"].dropna()
+            pos = str(vals.iloc[-1]) if len(vals) else None
+        col, label = PRIMARY_STAT.get((pos or "WR").upper(),
+                                      ("receiving_yards", "rec yds"))
+        if col not in rows.columns or "opponent_team" not in rows.columns:
+            return {}
+        g = (rows[["opponent_team", col]].dropna()
+             .groupby("opponent_team")[col].agg(["mean", "count"]))
+        g = g[g["count"] >= MIN_SPLIT_GAMES]
+        if not len(g):
+            return {}
+        g = g.sort_values("mean")
+        # Split the ranking down the middle before taking the ends, so the same
+        # opponent can never appear as both a strength and a weakness.
+        k = min(3, len(g) // 2)
+        if k < 1:
+            return {}
+        worst = [{"opp": i, "mean": round(float(r["mean"]), 1),
+                  "n": int(r["count"])} for i, r in g.head(k).iterrows()]
+        best = [{"opp": i, "mean": round(float(r["mean"]), 1),
+                 "n": int(r["count"])} for i, r in g.tail(k).iloc[::-1].iterrows()]
+        return {"stat": col, "label": label, "season": yr,
+                "best": best, "worst": worst,
+                "mean": round(float(rows[col].dropna().mean()), 1)}
+    except Exception as exc:  # noqa: BLE001 — Rule 2
+        log.exception("nfl opponent_splits(%r) failed: %s", name, exc)
+        return {}
+
+
+def favourite_targets(name: str, season: int = None, limit: int = 4):
+    """Who this QB actually throws to — his receivers ranked by target share.
+
+    Only meaningful for a passer, so it returns {} for anyone else rather than
+    inventing a receiving corps for a running back. Built from the same weekly
+    logs: take the QB's team and weeks, then rank everyone who caught a pass for
+    that team in those weeks.
+    """
+    try:
+        rows, yr = _player_rows(name, season)
+        if isinstance(rows, dict) or rows is None or not len(rows):
+            return {}
+        if "team" not in rows.columns or "attempts" not in rows.columns:
+            return {}
+        # A passer, judged by what he did rather than by a position label — a
+        # label can be stale, four hundred attempts cannot.
+        if float(rows["attempts"].fillna(0).sum()) < 50:
+            return {}
+        team = str(rows["team"].dropna().iloc[-1])
+        weeks = set(int(w) for w in rows["week"].dropna().tolist())
+        df, _ = _weekly(season)
+        col = ("player_display_name" if "player_display_name" in df.columns
+               else "player_name")
+        mates = df[(df["team"] == team) & (df["week"].isin(weeks))
+                   & (df.get("season_type") == "REG")]
+        if "targets" not in mates.columns or not len(mates):
+            return {}
+        g = (mates.groupby(col)
+             .agg(targets=("targets", "sum"),
+                  rec=("receptions", "sum"),
+                  yds=("receiving_yards", "sum"),
+                  games=("week", "nunique")))
+        g = g[g["targets"] > 0].sort_values("targets", ascending=False)
+        total = float(g["targets"].sum()) or 1.0
+        out = []
+        for nm, r in g.head(limit).iterrows():
+            out.append({"player": str(nm), "targets": int(r["targets"]),
+                        "share": round(float(r["targets"]) / total, 3),
+                        "rec": int(r["rec"]), "yards": int(r["yds"]),
+                        "games": int(r["games"])})
+        return {"team": team, "season": yr, "targets": out}
+    except Exception as exc:  # noqa: BLE001 — Rule 2
+        log.exception("nfl favourite_targets(%r) failed: %s", name, exc)
+        return {}
+
+
+def target_competition(name: str, season: int = None, limit: int = 4):
+    """Who this pass-catcher shares the ball with — the mirror of the above.
+
+    A receiver's ceiling is set as much by who else is on the field as by his
+    own ability, and "third in the pecking order" is the single most useful
+    thing to know about a WR3 that a target share alone does not say.
+    """
+    try:
+        rows, yr = _player_rows(name, season)
+        if isinstance(rows, dict) or rows is None or not len(rows):
+            return {}
+        if "team" not in rows.columns or "targets" not in rows.columns:
+            return {}
+        if float(rows["targets"].fillna(0).sum()) <= 0:
+            return {}
+        team = str(rows["team"].dropna().iloc[-1])
+        weeks = set(int(w) for w in rows["week"].dropna().tolist())
+        df, _ = _weekly(season)
+        col = ("player_display_name" if "player_display_name" in df.columns
+               else "player_name")
+        mates = df[(df["team"] == team) & (df["week"].isin(weeks))
+                   & (df.get("season_type") == "REG")]
+        g = (mates.groupby(col).agg(targets=("targets", "sum"))
+             .sort_values("targets", ascending=False))
+        g = g[g["targets"] > 0]
+        total = float(g["targets"].sum()) or 1.0
+        me = _norm_name(str(rows[col].iloc[-1]))
+        out, rank = [], None
+        for i, (nm, r) in enumerate(g.head(limit).iterrows(), 1):
+            is_me = _norm_name(str(nm)) == me
+            out.append({"player": str(nm), "targets": int(r["targets"]),
+                        "share": round(float(r["targets"]) / total, 3),
+                        "is_player": is_me})
+        for i, (nm, _r) in enumerate(g.iterrows(), 1):
+            if _norm_name(str(nm)) == me:
+                rank = i
+                break
+        return {"team": team, "season": yr, "rank": rank,
+                "of": int(len(g)), "targets": out}
+    except Exception as exc:  # noqa: BLE001 — Rule 2
+        log.exception("nfl target_competition(%r) failed: %s", name, exc)
         return {}

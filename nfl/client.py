@@ -276,4 +276,63 @@ def upcoming_week(days: int = 8) -> list:
     today = _dt.date.today()
     end = today + _dt.timedelta(days=days)
     games = get_schedule(today.strftime("%Y%m%d"), end.strftime("%Y%m%d"))
-    return [g for g in games if g.get("state") == "pre"]
+    out = [g for g in games if g.get("state") == "pre"]
+    if out:
+        return out
+    # ESPN refuses datacenter IPs. It answers fine from a laptop and returns
+    # 403 Forbidden from the Railway container, so /nflgame, /nflspread and the
+    # board's whole game-script term worked in every local test and were dead in
+    # production — the same shape of bug as the missing parquet engine.
+    #
+    # nflverse's games.csv carries the identical fixtures WITH the spread and
+    # total (272 unplayed 2026 games, 112 already priced), is a plain CSV over
+    # GitHub, and is already downloaded for /nflh2h. So it is a real second
+    # source rather than a degraded one.
+    return schedule_from_games_csv(today, end)
+
+
+GAMES_CSV = ("https://github.com/nflverse/nflverse-data/releases/download/"
+             "schedules/games.csv")
+_games_csv_cache = {}
+
+
+def schedule_from_games_csv(start: _dt.date, end: _dt.date) -> list:
+    """Upcoming fixtures from nflverse, shaped exactly like get_schedule()."""
+    import pandas as pd
+    try:
+        if "df" not in _games_csv_cache:
+            _games_csv_cache["df"] = pd.read_csv(GAMES_CSV, low_memory=False)
+        df = _games_csv_cache["df"]
+        d = df[df["home_score"].isna()].copy()
+        d["_day"] = pd.to_datetime(d["gameday"], errors="coerce").dt.date
+        d = d[(d["_day"] >= start) & (d["_day"] <= end)]
+        out = []
+        for _, r in d.iterrows():
+            sl = r.get("spread_line")
+            # SIGN FLIP. games.csv states the spread POSITIVE-means-home-favoured;
+            # get_schedule (ESPN) and every consumer of this function state it
+            # NEGATIVE-means-favoured. Returning the raw number here would invert
+            # every game script on the board — favourites priced as underdogs.
+            spread_home = (-float(sl) if isinstance(sl, (int, float))
+                           and not pd.isna(sl) else None)
+            tot = r.get("total_line")
+            tot = float(tot) if isinstance(tot, (int, float)) and not pd.isna(tot) else None
+            ha, aa = str(r.get("home_team") or ""), str(r.get("away_team") or "")
+            out.append({
+                "game_id": str(r.get("game_id") or ""),
+                "name": f"{aa} at {ha}",
+                "kickoff": f"{r.get('gameday')}T{r.get('gametime') or '00:00'}",
+                "state": "pre",
+                "home": ha, "away": aa,
+                "home_abbr": normalize_team(ha), "away_abbr": normalize_team(aa),
+                "spread_home": spread_home, "total": tot,
+                "favorite": (ha if (spread_home or 0) < 0 else aa
+                             if spread_home is not None else None),
+                "source": "nflverse",
+            })
+        log.warning("nfl schedule: ESPN unavailable — using nflverse games.csv "
+                    "(%d fixture(s))", len(out))
+        return out
+    except Exception as exc:  # noqa: BLE001 — Rule 2
+        log.exception("nfl schedule fallback failed: %s", exc)
+        return []

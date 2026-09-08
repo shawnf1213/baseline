@@ -303,19 +303,32 @@ def _pct1(v):
 
 
 def build_player_embed(p: dict):
-    """/nflplayer — the answer to tennis's /player."""
+    """/nflplayer — the answer to tennis's /player.
+
+    Answers the two questions a reader actually asks after "what is his role":
+    who does he struggle against, and who does he share the ball with. A role
+    table alone answers neither.
+
+    POSITION DECIDES WHAT IS SHOWN, and that is not cosmetic. The first cut
+    printed the receiving role block for everyone, so Drake Maye — a
+    quarterback — was shown "aDOT -8.0 · air-yards share -0.1%". Those are the
+    depth and share of the passes thrown TO a player; for a passer they are a
+    division artefact, and printing them made a nonsense number look like a
+    finding.
+    """
     import discord
     if not p:
         return None
-    role = f"{p.get('depth_pos') or p.get('position') or '?'}" \
-           f"{p.get('depth_rank') if p.get('depth_rank') else ''}"
-    e = discord.Embed(title=f"{p.get('player')} · {role}", color=COLOR)
     pos = (p.get("position") or "").upper()
+    role = (f"{p.get('depth_pos') or pos or '?'}"
+            f"{p.get('depth_rank') if p.get('depth_rank') else ''}")
+    e = discord.Embed(title=f"{p.get('player')} · {role}", color=COLOR)
+
     if pos == "QB":
         rows = [("Pass att/game", _fmt(p.get("pass_att_per_game"))),
                 ("Yards/attempt", _fmt(p.get("yards_per_attempt"), 2)),
                 ("Completion %", _pct1(p.get("completion_pct")))]
-    elif pos == "RB":
+    elif pos in ("RB", "FB"):
         rows = [("Carries/game", _fmt(p.get("carries_per_game"))),
                 ("Yards/carry", _fmt(p.get("yards_per_carry"), 2)),
                 ("Targets/game", _fmt(p.get("targets_per_game"))),
@@ -327,12 +340,63 @@ def build_player_embed(p: dict):
                 ("Yards/target", _fmt(p.get("yards_per_target"), 2))]
     for name, val in rows:
         e.add_field(name=name, value=val, inline=True)
+
+    # Receiving-role metrics belong to pass CATCHERS only — see the docstring.
+    # Receiving-role metrics belong to pass CATCHERS WITH A DOWNFIELD ROLE.
+    # Gated the same way usage.py already gates RACR: a back catching screens
+    # behind the line has an aDOT near zero and an air-yards share that goes
+    # NEGATIVE (Saquon Barkley: -0.3%), which is a division artefact, not a
+    # role. Showing it put a nonsense number under a confident heading.
     r = p.get("role") or {}
-    if r.get("adot") or r.get("air_yards_share"):
+    _adot, _ays = r.get("adot"), r.get("air_yards_share")
+    if (pos != "QB" and isinstance(_adot, (int, float)) and _adot >= 1.0
+            and isinstance(_ays, (int, float)) and _ays > 0):
         e.add_field(name="Role",
-                    value=(f"aDOT {_fmt(r.get('adot'))} · "
-                           f"air-yards share {_pct1(r.get('air_yards_share'))}"),
+                    value=f"aDOT {_fmt(_adot)} · air-yards share {_pct1(_ays)}",
                     inline=False)
+
+    sp = p.get("splits") or {}
+    if sp.get("worst"):
+        lab = sp.get("label", "")
+        # n is printed on every entry. Most opponents are faced once in a
+        # 17-game season, and a single game is a fact about that Sunday rather
+        # than a matchup problem — the reader has to be able to tell which.
+        def _line(xs):
+            return " · ".join(f"**{x['opp']}** {x['mean']:g}"
+                              + (f" ({x['n']}g)" if x["n"] > 1 else "")
+                              for x in xs)
+        e.add_field(name=f"Toughest matchups ({lab})",
+                    value=_line(sp["worst"]), inline=False)
+        if sp.get("best"):
+            e.add_field(name=f"Best matchups ({lab})",
+                        value=_line(sp["best"]), inline=False)
+        if sp.get("mean") is not None:
+            e.add_field(name="Season average",
+                        value=f"{sp['mean']:g} {lab}", inline=True)
+
+    t = p.get("targets") or {}
+    if t.get("targets"):
+        e.add_field(
+            name="Throws to",
+            value="\n".join(
+                f"**{x['player']}** — {x['targets']} tgt ({x['share']:.0%}) · "
+                f"{x['rec']} rec, {x['yards']} yds" for x in t["targets"]),
+            inline=False)
+
+    # Not for a quarterback: he does not compete for targets, so ranking him
+    # among the receivers produced "Drake Maye is #14 of 14", which is true,
+    # meaningless, and reads like a criticism. His half of that question is
+    # already answered by "Throws to" above.
+    c = p.get("competition") or {}
+    if pos != "QB" and c.get("targets") and c.get("rank"):
+        e.add_field(
+            name=f"Target share on {c.get('team')} — he is #{c['rank']} of {c['of']}",
+            value=" · ".join(
+                (f"**{x['player'].split()[-1]} {x['share']:.0%}**" if x.get("is_player")
+                 else f"{x['player'].split()[-1]} {x['share']:.0%}")
+                for x in c["targets"]),
+            inline=False)
+
     if p.get("snap_ratio"):
         e.add_field(name="Snap trend", value=_fmt(p.get("snap_ratio"), 2),
                     inline=True)
