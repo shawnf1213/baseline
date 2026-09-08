@@ -36,6 +36,10 @@ log = logging.getLogger("baseline.nfl.post")
 COLOR = 0x013369          # NFL navy — distinct from tennis and the MLB blue
 COLOR_SHADOW = 0x4F545C   # grey, so a shadow board is obvious at a glance
 
+# Newline as a name. These strings are assembled by tooling that has eaten a
+# backslash escape more than once; a constant cannot be mangled that way.
+NL = chr(10)
+
 CHANNELS = {
     ("board", "prizepicks"): int(
         os.getenv("NFL_PP_CHANNEL_ID", "1546942099268706417") or 0),
@@ -87,52 +91,97 @@ def _caveats(row: dict) -> list:
     return out
 
 
-def format_play(row: dict, rank: int = None) -> str:
-    """One board line. Two rows on a phone, which is where these are read."""
+def _matchup_short(row: dict) -> str:
+    """Render the matchup as SF @ LAR, not the two full club names.
+
+    Full club names are most of the line width on a phone, and every reader of
+    this board already reads abbreviations on the book itself.
+    """
+    m = row.get("matchup") or ""
+    a, b = row.get("away_abbr"), row.get("home_abbr")
+    if a and b:
+        return f"{a} @ {b}"
+    return m
+
+
+def _shared_caveats(rows: list) -> list:
+    """Caveats that apply to EVERY row, so they can be said once.
+
+    The first board repeated "prior-season usage only" on all six plays, which
+    is six lines saying one thing and trains the eye to skip the warning
+    entirely. A caveat that is universal belongs at the bottom once; a caveat
+    that distinguishes one play from another belongs on that play.
+    """
+    if not rows:
+        return []
+    out = []
+    if all(r.get("prior_season_only") for r in rows):
+        out.append("⚠️ All priced on prior-season usage — no current-season "
+                   "games played yet.")
+    if all(not r.get("script_applied") for r in rows):
+        out.append("No spread available — league-neutral volume.")
+    return out
+
+
+def _play_line(row: dict, rank: int, skip: set) -> str:
+    """One play, three lines at most. `skip` holds caveats already said once."""
     lean = _side(row)
     arrow = "🔼" if lean == "OVER" else "🔽"
-    head = f"**{row.get('player')}** · {PROP_LABEL.get(row.get('prop'), row.get('prop'))}"
-    if rank:
-        head = f"`{rank:>2}` {head}"
     prob = _prob(row)
-    body = (f"{arrow} **{lean} {_fmt(row.get('line'))}**  ·  "
-            f"proj {_fmt(row.get('projection'))}")
+    head = (f"`{rank}` **{row.get('player')}** — "
+            f"{PROP_LABEL.get(row.get('prop'), row.get('prop'))}")
+    body = f"{arrow} **{lean} {_fmt(row.get('line'))}** · proj {_fmt(row.get('projection'))}"
     if prob:
-        body += f"  ·  {prob * 100:.0f}%"
-    if row.get("matchup"):
-        body += f"\n{row['matchup']}"
+        body += f" · {prob * 100:.0f}%"
+    mu = _matchup_short(row)
+    if mu:
+        body += f" · {mu}"
+    out = [head, body]
     for c in _caveats(row):
-        body += f"\n_{c}_"
-    return f"{head}\n{body}"
+        if c not in skip:
+            out.append(f"_{c}_")
+    return NL.join(out)
 
 
 def build_board_embed(rows: list, book: str, shadow: bool = True,
                       date_label: str = None, max_plays: int = 8):
     """The board embed. Returns None when there is nothing to post.
 
+    Plays go in ONE description block rather than one embed field each. Fields
+    each carry their own padding, so six of them turned a six-play board into a
+    screen and a half of mostly whitespace.
+
     An EMPTY board is not an error and is not posted — see nfl.board's
-    data-sufficiency gate. In week 1 that is the expected state.
+    data-sufficiency gate. Early in the season that is the expected state.
     """
     import discord
     if not rows:
         return None
     shown = rows[:max_plays]
+    shared = _shared_caveats(shown)
+    skip = set()
+    if any(c.startswith("⚠️ All priced") for c in shared):
+        skip.add("⚠️ prior-season usage only — no current-season games")
+    if any(c.startswith("No spread") for c in shared):
+        skip.add("no spread available — league-neutral volume")
+
     title = f"NFL Board · {book.title()}"
     if date_label:
         title += f" · {date_label}"
+    head = ("_Shadow mode — not posted plays. Watched against real results "
+            "before it counts._" + NL + NL) if shadow else ""
+    body = (NL + NL).join(_play_line(r, i, skip)
+                          for i, r in enumerate(shown, 1))
+    tail = (NL + NL + NL.join(shared)) if shared else ""
+
     e = discord.Embed(
         title=("🕶️ SHADOW — " if shadow else "") + title,
         color=COLOR_SHADOW if shadow else COLOR,
-        description=("_Shadow mode: these are not posted plays. The model is "
-                     "being watched against real results before it counts._"
-                     if shadow else None))
-    for i, r in enumerate(shown, 1):
-        e.add_field(name="​", value=format_play(r, i), inline=False)
-    held = len(rows) - len(shown)
-    foot = f"{len(rows)} play(s) cleared the filters"
-    if held:
-        foot += f" · showing top {len(shown)}"
-    e.set_footer(text=foot)
+        description=(head + body + tail)[:4096])
+    foot = f"{len(shown)} play" + ("s" if len(shown) != 1 else "")
+    if len(rows) > len(shown):
+        foot += f" of {len(rows)}"
+    e.set_footer(text=f"{foot} · {book}")
     return e
 
 
@@ -181,25 +230,22 @@ def build_prop_embed(r: dict, line=None):
 
 
 def build_line_alert_embed(alert: dict):
-    """A line-movement alert. `alert` comes from nfl.line_monitor."""
+    """A line-movement alert. `alert` comes from nfl.line_monitor.
+
+    Layout lives in core.alerts so tennis and NFL cannot drift — see that
+    module's docstring.
+    """
     import discord
-    moved = alert.get("new_line", 0) - alert.get("old_line", 0)
-    flipped = alert.get("flipped")
-    e = discord.Embed(
-        title=f"Line moved · {alert.get('player')}",
-        color=0xE03C31 if flipped else COLOR,
-        description=(f"**{PROP_LABEL.get(alert.get('prop'), alert.get('prop'))}**  "
-                     f"{_fmt(alert.get('old_line'))} → **{_fmt(alert.get('new_line'))}** "
-                     f"({moved:+.1f})"))
-    e.add_field(name="Projection", value=_fmt(alert.get("projection")), inline=True)
-    e.add_field(name="Lean was", value=str(alert.get("old_lean")), inline=True)
-    e.add_field(name="Lean now", value=str(alert.get("new_lean")), inline=True)
-    if flipped:
-        e.add_field(name="⚠️", value="The move crossed our projection — the lean "
-                                     "has flipped against the new line.",
-                    inline=False)
-    e.set_footer(text=f"{alert.get('book','')} · NFL")
-    return e
+    from core import alerts as _al
+    parts = _al.line_alert(
+        player=alert.get("player"),
+        prop_label=PROP_LABEL.get(alert.get("prop"), alert.get("prop")),
+        old_line=alert.get("old_line"), new_line=alert.get("new_line"),
+        projection=alert.get("projection"),
+        old_lean=alert.get("old_lean"), new_lean=alert.get("new_lean"),
+        book=alert.get("book"), sport="NFL",
+        flipped=alert.get("flipped"))
+    return _al.to_embed(parts, discord)
 
 
 def build_intro_embed():
@@ -207,8 +253,13 @@ def build_intro_embed():
 
     Deliberately the SAME SHAPE as the tennis projections intro — numbered
     commands, the parameter list under each, one line on what it returns, a rule,
-    then the props and the closing notes. Members already read one of these; a
-    second sport should not make them learn a second layout.
+    then the props and the closing notes. Members have already learned that
+    layout; a second sport should not make them learn a second one.
+
+    Kept to the commands themselves (user, 2026-09-08). An earlier version
+    carried "How a number is built" and "What it will not do" essays. They were
+    true, and they belong in documentation rather than in the card someone opens
+    to find a command.
     """
     import discord
     rule = "―" * 24
@@ -217,39 +268,231 @@ def build_intro_embed():
         color=COLOR,
         description=(
             f"{rule}\n"
-            "**Type `/` in this channel to see every command and its options.**\n\n"
+            "**Type `/` in this channel to see every command and its "
+            "options.**\n\n"
 
             "1️⃣ `/nflprop` — Project any prop\n"
             "player · prop type · line\n"
             "Returns the projection, the lean, a confidence % and the edge vs "
             "your line.\n\n"
 
-            "2️⃣ `/nflboard` — The ranked board\n"
-            "book (PrizePicks or Underdog)\n"
-            "Every line we can price right now, ranked by the model's "
-            "confidence.\n\n"
+            "2️⃣ `/nflgame` — Game outcome\n"
+            "team\n"
+            "Win probability and the projected score.\n\n"
+
+            "3️⃣ `/nflspread` — Point spread\n"
+            "team · handicap\n"
+            "Chance a team covers a handicap, e.g. -3.5.\n\n"
+
+            "4️⃣ `/nflh2h` — Head-to-head record\n"
+            "team1 · team2\n"
+            "Past meetings and the scores.\n\n"
+
+            "5️⃣ `/nflplayer` — Player profile\n"
+            "player\n"
+            "Depth-chart role, usage share and efficiency.\n\n"
+
+            "6️⃣ `/nflform` — Current form\n"
+            "player · games\n"
+            "The last few games, line by line.\n\n"
+
+            "7️⃣ `/nflhistory` — Over/under history\n"
+            "player · prop · line\n"
+            "How often he has cleared that number.\n\n"
 
             f"{rule}\n"
-            "Props: Pass Yards · Rush Yards · Receiving Yards · Receptions\n\n"
-
-            "**How a number is built**\n"
-            "Volume × rate. The team's expected plays, split pass/run by the "
-            "spread and total — a big favourite runs more, a trailing team "
-            "throws. Then the player's own share and efficiency, shrunk toward "
-            "his position's baseline so a two-game hot streak doesn't become a "
-            "projection. The opponent is applied to the *rate*, never the "
-            "volume: the spread already carries them, and counting it twice is "
-            "how models talk themselves into fake edges.\n\n"
-
-            "**What it will not do**\n"
-            "Demons and goblins are never priced — different payout structures, "
-            "not different opinions about a number. And no play without "
-            "current-season data: early in the year the board is deliberately "
-            "thin, because projecting off last season measured +25% error "
-            "against the market on players whose role changed. It fills as real "
-            "games are played.\n\n"
+            "Props: Pass Yards · Rush Yards · Receiving Yards · Receptions\n"
+            "Teams use abbreviations — `SEA`, `KC`, `PHI`.\n\n"
 
             "Replies are private — only you see them. Keep this channel for bot "
             "commands only.\n"
             "_Model projections, not betting advice._"))
+    return e
+
+
+# ── The tennis-parity command embeds ─────────────────────────────────────────
+# One per NFL analogue of a tennis command. Same restraint as the prop embed:
+# every number says what window it came from, and nothing is shown that the data
+# does not actually support.
+
+def _pct1(v):
+    return f"{v * 100:.1f}%" if isinstance(v, (int, float)) else "—"
+
+
+def build_player_embed(p: dict):
+    """/nflplayer — the answer to tennis's /player."""
+    import discord
+    if not p:
+        return None
+    role = f"{p.get('depth_pos') or p.get('position') or '?'}" \
+           f"{p.get('depth_rank') if p.get('depth_rank') else ''}"
+    e = discord.Embed(title=f"{p.get('player')} · {role}", color=COLOR)
+    pos = (p.get("position") or "").upper()
+    if pos == "QB":
+        rows = [("Pass att/game", _fmt(p.get("pass_att_per_game"))),
+                ("Yards/attempt", _fmt(p.get("yards_per_attempt"), 2)),
+                ("Completion %", _pct1(p.get("completion_pct")))]
+    elif pos == "RB":
+        rows = [("Carries/game", _fmt(p.get("carries_per_game"))),
+                ("Yards/carry", _fmt(p.get("yards_per_carry"), 2)),
+                ("Targets/game", _fmt(p.get("targets_per_game"))),
+                ("Target share", _pct1(p.get("target_share")))]
+    else:
+        rows = [("Targets/game", _fmt(p.get("targets_per_game"))),
+                ("Target share", _pct1(p.get("target_share"))),
+                ("Catch rate", _pct1(p.get("catch_rate"))),
+                ("Yards/target", _fmt(p.get("yards_per_target"), 2))]
+    for name, val in rows:
+        e.add_field(name=name, value=val, inline=True)
+    r = p.get("role") or {}
+    if r.get("adot") or r.get("air_yards_share"):
+        e.add_field(name="Role",
+                    value=(f"aDOT {_fmt(r.get('adot'))} · "
+                           f"air-yards share {_pct1(r.get('air_yards_share'))}"),
+                    inline=False)
+    if p.get("snap_ratio"):
+        e.add_field(name="Snap trend", value=_fmt(p.get("snap_ratio"), 2),
+                    inline=True)
+    rc = p.get("role_change") or {}
+    if rc.get("factor") and rc["factor"] < 1.0:
+        e.add_field(name="Role change", value=f"📉 {rc.get('basis')}", inline=False)
+    e.set_footer(text=f"{p.get('games')} games · {p.get('window')}")
+    return e
+
+
+def build_form_embed(f: dict):
+    """/nflform — the answer to tennis's /form."""
+    import discord
+    if not f:
+        return None
+    if f.get("ambiguous"):
+        return discord.Embed(
+            title="Which player?", color=COLOR_SHADOW,
+            description="That name matches several:\n" +
+                        "\n".join(f"• {n}" for n in f["ambiguous"]))
+    e = discord.Embed(title=f"{f.get('player')} · recent form", color=COLOR)
+    lines = []
+    for g in f.get("games", []):
+        wk = g.get("week")
+        opp = g.get("opponent_team") or "?"
+        bits = []
+        if g.get("targets") is not None:
+            bits.append(f"{int(g.get('receptions') or 0)}/{int(g['targets'])} "
+                        f"for {int(g.get('receiving_yards') or 0)}")
+        if g.get("carries"):
+            bits.append(f"{int(g['carries'])} car {int(g.get('rushing_yards') or 0)}")
+        if g.get("attempts"):
+            bits.append(f"{int(g.get('completions') or 0)}/{int(g['attempts'])} "
+                        f"for {int(g.get('passing_yards') or 0)}")
+        lines.append(f"`wk{wk:>2}` vs {opp:<4} " + (" · ".join(bits) or "—"))
+    e.description = "\n".join(lines) or "No games in the window."
+    e.set_footer(text=f"{f.get('season')} season")
+    return e
+
+
+def build_history_embed(h: dict):
+    """/nflhistory — the answer to tennis's /history."""
+    import discord
+    if not h:
+        return None
+    if h.get("ambiguous"):
+        return discord.Embed(
+            title="Which player?", color=COLOR_SHADOW,
+            description="That name matches several:\n" +
+                        "\n".join(f"• {n}" for n in h["ambiguous"]))
+    a, l5 = h.get("all") or {}, h.get("last5") or {}
+    e = discord.Embed(
+        title=f"{h.get('player')} · {PROP_LABEL.get(h.get('prop'), h.get('prop'))} "
+              f"{_fmt(h.get('line'))}",
+        color=COLOR)
+    if a.get("n"):
+        e.add_field(name=f"Season ({a['n']})",
+                    value=f"**{a['over']}-{a['under']}**"
+                          + (f"-{a['push']}" if a.get("push") else "")
+                          + f"  ·  {a['over'] / a['n'] * 100:.0f}% over",
+                    inline=True)
+    if l5.get("n"):
+        e.add_field(name=f"Last {l5['n']}",
+                    value=f"**{l5['over']}-{l5['under']}**"
+                          + (f"-{l5['push']}" if l5.get("push") else ""),
+                    inline=True)
+    e.add_field(name="Average", value=_fmt(h.get("mean")), inline=True)
+    vals = h.get("values") or []
+    if vals:
+        # The games themselves, not just the ratio — a hit rate with no games
+        # behind it is the easiest number here to over-read.
+        strip = " ".join(("**" + f"{v:g}" + "**") if v > h["line"] else f"{v:g}"
+                         for v in vals[-12:])
+        e.add_field(name="Game by game (bold = over)", value=strip, inline=False)
+    e.set_footer(text=f"{h.get('season')} season")
+    return e
+
+
+def build_game_embed(g: dict):
+    """/nflgame — the answer to tennis's /match."""
+    import discord
+    if not g:
+        return None
+    e = discord.Embed(title=g.get("matchup") or f"{g.get('team')} vs {g.get('opponent')}",
+                      color=COLOR)
+    if g.get("win_prob") is not None:
+        e.add_field(name=f"{g.get('team')} win",
+                    value=f"**{g['win_prob'] * 100:.0f}%**", inline=True)
+        e.add_field(name=f"{g.get('opponent')} win",
+                    value=f"{(1 - g['win_prob']) * 100:.0f}%", inline=True)
+    if g.get("proj_for") is not None:
+        e.add_field(name="Projected score",
+                    value=f"**{g['proj_for']:.1f} – {g['proj_against']:.1f}**",
+                    inline=True)
+    e.add_field(name="Market",
+                value=f"spread {_fmt(g.get('spread'))} · total {_fmt(g.get('total'))}",
+                inline=False)
+    # Said plainly rather than implied: this is the market's own number turned
+    # into a probability, not a disagreement with it.
+    e.set_footer(text="From the posted spread and total — a reading aid, not an "
+                      "edge. The edge is in the player props.")
+    return e
+
+
+def build_spread_embed(s: dict):
+    """/nflspread — the answer to tennis's /spread."""
+    import discord
+    if not s:
+        return None
+    hc = s.get("handicap")
+    e = discord.Embed(
+        title=f"{s.get('team')} {hc:+.1f} · cover chance",
+        color=COLOR,
+        description=s.get("matchup"))
+    e.add_field(name="Covers", value=f"**{s['cover_prob'] * 100:.0f}%**", inline=True)
+    e.add_field(name="Expected margin",
+                value=f"{s.get('expected_margin'):+.1f}", inline=True)
+    e.add_field(name="Market spread", value=_fmt(s.get("spread")), inline=True)
+    e.set_footer(text=f"Normal around the market's margin, sd {s.get('margin_sd')} "
+                      f"(measured on 5,431 games). At the posted number this is "
+                      f"~50% by construction.")
+    return e
+
+
+def build_h2h_embed(h: dict):
+    """/nflh2h — the answer to tennis's /h2h."""
+    import discord
+    if not h:
+        return None
+    a, b = h.get("team_a"), h.get("team_b")
+    e = discord.Embed(title=f"{a} vs {b} · head to head", color=COLOR)
+    if not h.get("meetings"):
+        e.description = "No meetings on record."
+        return e
+    e.add_field(name="Record",
+                value=f"**{a} {h.get('a_wins')} — {h.get('b_wins')} {b}**"
+                      + (f" ({h['ties']} tie)" if h.get("ties") else ""),
+                inline=False)
+    rows = []
+    for m in h["meetings"]:
+        mark = "" if not m.get("winner") else ("**" + m["winner"] + "**")
+        rows.append(f"`{m['season']} wk{m['week']:>2}`  {m['away']} {m['away_score']} "
+                    f"@ {m['home']} {m['home_score']}  → {mark or 'tie'}")
+    e.add_field(name=f"Last {len(rows)} of {h.get('total')}",
+                value="\n".join(rows), inline=False)
     return e

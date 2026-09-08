@@ -2127,11 +2127,40 @@ def _start_line_monitor(channel, picks: list):
             log.warning("line monitor: channel %s not found — alerts fall back to the "
                         "board channel", LINE_ALERT_CHANNEL_ID)
 
-        async def _post_alert(text):
+        async def _post_alert(payload):
             # Informational and repeat-firing — post WITHOUT an @everyone ping.
             # Mentions are suppressed entirely so a stray @everyone in the text
             # can't ping either.
-            await _alert_channel.send(text, allowed_mentions=discord.AllowedMentions.none())
+            #
+            # Accepts BOTH shapes on purpose. The monitor now sends a dict so the
+            # alert renders as the same card NFL uses (core.alerts, so the two
+            # cannot drift), but a plain string still works — and if anything at
+            # all goes wrong building the embed we fall back to the text the dict
+            # carries. An alert that fails to render must still be delivered;
+            # silence here looks exactly like "the line never moved".
+            none = discord.AllowedMentions.none()
+            if isinstance(payload, dict):
+                text = payload.get("text") or ""
+                try:
+                    from core import alerts as _al
+                    parts = _al.line_alert(
+                        player=payload.get("player"),
+                        prop_label=payload.get("prop_label"),
+                        old_line=payload.get("old_line"),
+                        new_line=payload.get("new_line"),
+                        projection=payload.get("projection"),
+                        old_lean=payload.get("old_lean"),
+                        new_lean=payload.get("new_lean"),
+                        book=payload.get("book"), sport=payload.get("sport"),
+                        extra=payload.get("extra"))
+                    await _alert_channel.send(embed=_al.to_embed(parts, discord),
+                                              allowed_mentions=none)
+                    return
+                except Exception:  # noqa: BLE001
+                    log.exception("line alert embed failed — posting as text")
+                    await _alert_channel.send(text, allowed_mentions=none)
+                    return
+            await _alert_channel.send(payload, allowed_mentions=none)
 
         _line_monitor_task = asyncio.create_task(
             line_monitor.monitor(picks, pick_of_day.current_board_lines, _post_alert))
@@ -3751,44 +3780,163 @@ async def nflprop(interaction: discord.Interaction, player: str,
         _leave_queue()
 
 
-@client.tree.command(name="nflboard",
-                     description="The current ranked NFL board")
-@app_commands.describe(book="Which book's lines to price")
-@app_commands.choices(book=[
-    app_commands.Choice(name="PrizePicks", value="prizepicks"),
-    app_commands.Choice(name="Underdog", value="underdog"),
-])
-@app_commands.checks.cooldown(1, 30.0, key=lambda i: i.user.id)
-async def nflboard(interaction: discord.Interaction,
-                   book: app_commands.Choice[str] = None):
+async def _nfl_guard(interaction) -> bool:
+    """Channel check + queue admission, shared by every NFL command."""
     if (NFL_PROJECTIONS_CHANNEL_ID
             and interaction.channel_id != NFL_PROJECTIONS_CHANNEL_ID):
         await _send_error(interaction,
                           f"Use NFL commands in <#{NFL_PROJECTIONS_CHANNEL_ID}>.")
-        return
+        return False
     try:
         await _enter_queue(interaction)
     except _QueueBusy:
+        return False
+    return True
+
+
+async def _nfl_reply(interaction, embed, empty_msg: str) -> None:
+    if embed is None:
+        await _send_error(interaction, empty_msg)
         return
-    bk = book.value if book else "prizepicks"
-    log.info("CMD /nflboard | user=%s | %s", interaction.user.id, bk)
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+# /nflboard was REMOVED (user, 2026-09-08). The scheduled boards already post
+# to the two book channels, so a command that reprints the same list added a
+# second way to ask the same question — and the projections channel is for
+# asking about a player, not for re-reading the board. nfl.board.scan_board
+# stays: the scheduled tasks are its real caller.
+
+
+@client.tree.command(name="nflplayer",
+                     description="Role, usage and efficiency profile")
+@app_commands.describe(player="Player name")
+@app_commands.checks.cooldown(1, 5.0, key=lambda i: i.user.id)
+async def nflplayer(interaction: discord.Interaction, player: str):
+    if not await _nfl_guard(interaction):
+        return
+    log.info("CMD /nflplayer | user=%s | %s", interaction.user.id, player)
     try:
-        nb = _nfl_import("nfl.board")
+        q = _nfl_import("nfl.queries")
         npost = _nfl_import("nfl.post")
-        shadow = not getattr(_nfl_import("nfl"), "NFL_ENABLED", False)
-        rows = await asyncio.to_thread(nb.scan_board, bk)
-        embed = npost.build_board_embed(rows, bk, shadow=shadow)
-        if embed is None:
-            await _send_error(
-                interaction,
-                "No NFL plays right now. Early in the season every player is "
-                "priced off last season only, which measured +25% error against "
-                "the market — so those are held back until real games are "
-                "played. The board fills itself as the season goes on.")
-            return
-        await interaction.followup.send(embed=embed, ephemeral=True)
+        r = await asyncio.to_thread(q.player_profile, player)
+        await _nfl_reply(interaction, npost.build_player_embed(r),
+                         f"No usable game log for **{player}**. Check the "
+                         f"spelling, or he may not have enough games yet.")
     except Exception:  # noqa: BLE001
-        log.exception("UNHANDLED /nflboard error")
+        log.exception("UNHANDLED /nflplayer error")
+        await _send_error(interaction, MSG_GENERIC)
+    finally:
+        _leave_queue()
+
+
+@client.tree.command(name="nflform", description="Recent game-by-game trend")
+@app_commands.describe(player="Player name",
+                       games="How many recent games (default 6)")
+@app_commands.checks.cooldown(1, 5.0, key=lambda i: i.user.id)
+async def nflform(interaction: discord.Interaction, player: str,
+                  games: int = 6):
+    if not await _nfl_guard(interaction):
+        return
+    log.info("CMD /nflform | user=%s | %s | n=%s", interaction.user.id, player, games)
+    try:
+        q = _nfl_import("nfl.queries")
+        npost = _nfl_import("nfl.post")
+        r = await asyncio.to_thread(q.recent_form, player, max(1, min(17, games)))
+        await _nfl_reply(interaction, npost.build_form_embed(r),
+                         f"No game log found for **{player}**.")
+    except Exception:  # noqa: BLE001
+        log.exception("UNHANDLED /nflform error")
+        await _send_error(interaction, MSG_GENERIC)
+    finally:
+        _leave_queue()
+
+
+@client.tree.command(name="nflhistory",
+                     description="How often he has cleared a number")
+@app_commands.describe(player="Player name", prop="Which prop",
+                       line="The number to test against")
+@app_commands.choices(prop=NFL_PROP_CHOICES)
+@app_commands.checks.cooldown(1, 5.0, key=lambda i: i.user.id)
+async def nflhistory(interaction: discord.Interaction, player: str,
+                     prop: app_commands.Choice[str], line: float):
+    if not await _nfl_guard(interaction):
+        return
+    log.info("CMD /nflhistory | user=%s | %s | %s %s",
+             interaction.user.id, player, prop.value, line)
+    try:
+        q = _nfl_import("nfl.queries")
+        npost = _nfl_import("nfl.post")
+        r = await asyncio.to_thread(q.line_history, player, prop.value, line)
+        await _nfl_reply(interaction, npost.build_history_embed(r),
+                         f"No game log found for **{player}**.")
+    except Exception:  # noqa: BLE001
+        log.exception("UNHANDLED /nflhistory error")
+        await _send_error(interaction, MSG_GENERIC)
+    finally:
+        _leave_queue()
+
+
+@client.tree.command(name="nflgame", description="Win probability and projected score")
+@app_commands.describe(team="Team abbreviation, e.g. SEA")
+@app_commands.checks.cooldown(1, 5.0, key=lambda i: i.user.id)
+async def nflgame(interaction: discord.Interaction, team: str):
+    if not await _nfl_guard(interaction):
+        return
+    log.info("CMD /nflgame | user=%s | %s", interaction.user.id, team)
+    try:
+        q = _nfl_import("nfl.queries")
+        npost = _nfl_import("nfl.post")
+        r = await asyncio.to_thread(q.game_outcome, team)
+        await _nfl_reply(interaction, npost.build_game_embed(r),
+                         f"No upcoming game found for **{team}**. Use the team "
+                         f"abbreviation, e.g. `SEA`, `KC`, `PHI`.")
+    except Exception:  # noqa: BLE001
+        log.exception("UNHANDLED /nflgame error")
+        await _send_error(interaction, MSG_GENERIC)
+    finally:
+        _leave_queue()
+
+
+@client.tree.command(name="nflspread", description="Chance a team covers a handicap")
+@app_commands.describe(team="Team abbreviation, e.g. SEA",
+                       handicap="The handicap, e.g. -3.5")
+@app_commands.checks.cooldown(1, 5.0, key=lambda i: i.user.id)
+async def nflspread(interaction: discord.Interaction, team: str,
+                    handicap: float):
+    if not await _nfl_guard(interaction):
+        return
+    log.info("CMD /nflspread | user=%s | %s %s", interaction.user.id, team, handicap)
+    try:
+        q = _nfl_import("nfl.queries")
+        npost = _nfl_import("nfl.post")
+        r = await asyncio.to_thread(q.spread_cover, team, handicap)
+        await _nfl_reply(interaction, npost.build_spread_embed(r),
+                         f"No upcoming game with a posted spread for **{team}**.")
+    except Exception:  # noqa: BLE001
+        log.exception("UNHANDLED /nflspread error")
+        await _send_error(interaction, MSG_GENERIC)
+    finally:
+        _leave_queue()
+
+
+@client.tree.command(name="nflh2h", description="Head-to-head record")
+@app_commands.describe(team1="Team abbreviation, e.g. SEA",
+                       team2="Team abbreviation, e.g. NE")
+@app_commands.checks.cooldown(1, 5.0, key=lambda i: i.user.id)
+async def nflh2h(interaction: discord.Interaction, team1: str, team2: str):
+    if not await _nfl_guard(interaction):
+        return
+    log.info("CMD /nflh2h | user=%s | %s vs %s", interaction.user.id, team1, team2)
+    try:
+        q = _nfl_import("nfl.queries")
+        npost = _nfl_import("nfl.post")
+        r = await asyncio.to_thread(q.head_to_head, team1, team2)
+        await _nfl_reply(interaction, npost.build_h2h_embed(r),
+                         f"No meetings found for **{team1}** vs **{team2}**. Use "
+                         f"team abbreviations, e.g. `SEA` and `NE`.")
+    except Exception:  # noqa: BLE001
+        log.exception("UNHANDLED /nflh2h error")
         await _send_error(interaction, MSG_GENERIC)
     finally:
         _leave_queue()

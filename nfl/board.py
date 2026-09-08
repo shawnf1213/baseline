@@ -116,6 +116,9 @@ def _game_for(team: str, idx: dict) -> dict:
         "game_id": g.get("game_id"),
         "kickoff": g.get("kickoff"),
         "matchup": g.get("name"),
+        # Abbreviations too — the board renders "SF @ LAR", not two club names.
+        "away_abbr": g.get("away_abbr"),
+        "home_abbr": g.get("home_abbr"),
     }
 
 
@@ -187,6 +190,8 @@ def scan_board(book: str = "prizepicks", season: int = None,
                 "team": ln.get("team"),
                 "board_position": ln.get("position"),
                 "matchup": game.get("matchup"),
+                "away_abbr": game.get("away_abbr"),
+                "home_abbr": game.get("home_abbr"),
                 "kickoff": game.get("kickoff"),
                 "game_id": game.get("game_id"),
                 "win_prob": p,

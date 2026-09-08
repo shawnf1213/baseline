@@ -67,6 +67,27 @@ def _recompute_lean(projection, line):
     return "PUSH"
 
 
+
+def _extra_fields(projection, old_line, new_line):
+    """Tennis-only extras for the alert card: what the move did to the edge.
+
+    NFL has no equivalent yet, which is exactly why core.alerts takes these as
+    free-form fields instead of fixing one schema for every sport.
+    """
+    if not isinstance(projection, (int, float)):
+        return []
+    old_e, new_e = abs(projection - old_line), abs(projection - new_line)
+    out = []
+    if abs(new_e - old_e) >= 0.05:
+        arrow = "ð»" if new_e < old_e else "ðº"
+        out.append(("Edge", f"{arrow} {old_e:.1f} â {new_e:.1f}"))
+    else:
+        out.append(("Edge", f"{new_e:.1f}"))
+    if new_e < COINFLIP_EDGE:
+        out.append(("ð", "Coin flip â avoid"))
+    return out
+
+
 async def monitor(picks: list, get_lines, post_alert, interval: int = INTERVAL_SECONDS):
     """Watch ``picks`` for line movement until each match starts.
 
@@ -222,8 +243,22 @@ async def monitor(picks: list, get_lines, post_alert, interval: int = INTERVAL_S
                     f"**{a['original']:g} → {cur:g}**\n"
                     + " · ".join(bits)
                 )
+                # Hand the poster STRUCTURED data as well as the text. bot.py
+                # renders the same card NFL uses (core.alerts); the text stays
+                # in the payload so a rendering failure still posts something
+                # rather than swallowing the alert.
+                payload = {
+                    "text": msg,
+                    "player": p.get("player"),
+                    "prop_label": _prop_short,
+                    "old_line": a["original"], "new_line": cur,
+                    "projection": proj,
+                    "old_lean": orig_lean or None, "new_lean": new_lean,
+                    "book": "prizepicks", "sport": "Tennis",
+                    "extra": _extra_fields(proj, a["original"], cur),
+                }
                 try:
-                    await post_alert(msg)
+                    await post_alert(payload)
                     log.info("Line alert posted: %s %s %.1f->%.1f",
                              p.get("player"), p.get("prop_type"), a["original"], cur)
                 except Exception:  # noqa: BLE001
