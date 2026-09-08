@@ -5568,35 +5568,6 @@ async def on_ready():
                 log.warning("MLB resolve/recap every %dh", MLB_RESOLVE_EVERY_HOURS)
         except Exception:
             log.exception("failed to start MLB resolve loop (tennis unaffected)")
-        # ── NFL ──────────────────────────────────────────────────────────
-        # Same isolation as MLB: each start is its own boundary, and a broken
-        # NFL module can take down neither the other sports nor tennis.
-        try:
-            if NFL_TASKS_ENABLED and not nfl_daily_boards.is_running():
-                nfl_daily_boards.start()
-                log.warning("NFL boards scheduled at %02d:%02d %s -> pp=%s ud=%s",
-                            NFL_BOARD_HOUR, NFL_BOARD_MINUTE, POD_TZINFO,
-                            os.getenv("NFL_PP_CHANNEL_ID", "1535163281768185926"),
-                            os.getenv("NFL_UD_CHANNEL_ID", "1546942176259346482"))
-            elif not NFL_TASKS_ENABLED:
-                log.warning("NFL tasks OFF (set NFL_TASKS_ENABLED=true)")
-        except Exception:  # noqa: BLE001
-            log.exception("failed to start NFL board loop (tennis unaffected)")
-        try:
-            if NFL_TASKS_ENABLED and not nfl_line_watch.is_running():
-                nfl_line_watch.start()
-                log.warning("NFL line watch every %dm -> channel %s",
-                            NFL_LINE_CHECK_MINUTES,
-                            os.getenv("NFL_LINE_CHANGE_CHANNEL_ID",
-                                      "1546943210574708848"))
-        except Exception:  # noqa: BLE001
-            log.exception("failed to start NFL line watch (tennis unaffected)")
-        try:
-            if NFL_POST_INTRO:
-                asyncio.create_task(_nfl_post_intro())
-                log.warning("NFL_POST_INTRO=1 — one-shot intro post scheduled")
-        except Exception:  # noqa: BLE001
-            log.exception("failed to schedule NFL intro (tennis unaffected)")
         try:
             if MLB_PURGE_SLATE:
                 asyncio.create_task(_mlb_purge_once())
@@ -5649,6 +5620,39 @@ async def on_ready():
             log.exception("failed to schedule MLB test run (tennis unaffected)")
     else:
         log.warning("MLB startup: MLB_TASKS_ENABLED is FALSE — no MLB tasks")
+
+    # ── NFL ──────────────────────────────────────────────────────────────
+    # DELIBERATELY OUTSIDE the MLB_TASKS_ENABLED block. The first cut of this
+    # nested it there and NFL silently never started, because MLB is currently
+    # switched off — one sport's kill switch must never gate another's. Each
+    # start below is its own error boundary, and a broken NFL module can reach
+    # neither the other sports nor tennis.
+    try:
+        if NFL_TASKS_ENABLED and not nfl_daily_boards.is_running():
+            nfl_daily_boards.start()
+            log.warning("NFL boards scheduled at %02d:%02d %s -> pp=%s ud=%s",
+                        NFL_BOARD_HOUR, NFL_BOARD_MINUTE, POD_TZINFO,
+                        os.getenv("NFL_PP_CHANNEL_ID", "1535163281768185926"),
+                        os.getenv("NFL_UD_CHANNEL_ID", "1546942176259346482"))
+        elif not NFL_TASKS_ENABLED:
+            log.warning("NFL tasks OFF (set NFL_TASKS_ENABLED=true)")
+    except Exception:  # noqa: BLE001
+        log.exception("failed to start NFL board loop (tennis unaffected)")
+    try:
+        if NFL_TASKS_ENABLED and not nfl_line_watch.is_running():
+            nfl_line_watch.start()
+            log.warning("NFL line watch every %dm -> channel %s",
+                        NFL_LINE_CHECK_MINUTES,
+                        os.getenv("NFL_LINE_CHANGE_CHANNEL_ID",
+                                  "1546943210574708848"))
+    except Exception:  # noqa: BLE001
+        log.exception("failed to start NFL line watch (tennis unaffected)")
+    try:
+        if NFL_POST_INTRO:
+            asyncio.create_task(_nfl_post_intro())
+            log.warning("NFL_POST_INTRO=1 — one-shot intro post scheduled")
+    except Exception:  # noqa: BLE001
+        log.exception("failed to schedule NFL intro (tennis unaffected)")
     # Cache pre-warm — 30 min before generation. Started SEPARATELY from the POTD
     # trigger so a pre-warm failure can never stop the picks from being posted.
     if not daily_cache_prewarm.is_running():
