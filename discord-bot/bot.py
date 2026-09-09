@@ -2152,7 +2152,7 @@ def _start_line_monitor(channel, picks: list):
                         old_lean=payload.get("old_lean"),
                         new_lean=payload.get("new_lean"),
                         book=payload.get("book"), sport=payload.get("sport"),
-                        extra=payload.get("extra"))
+                        note=payload.get("note"))
                     await _alert_channel.send(embed=_al.to_embed(parts, discord),
                                               allowed_mentions=none)
                     return

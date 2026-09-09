@@ -38,12 +38,21 @@ def _fmt(v, nd=1):
 
 def line_alert(player, prop_label, old_line, new_line, projection=None,
                old_lean=None, new_lean=None, book=None, sport=None,
-               extra=None, flipped=None):
+               extra=None, flipped=None, note=None):
     """Parts for one line-movement card.
 
     Returns {title, description, color, fields: [(name, value, inline)], footer}.
-    `extra` is an optional list of (name, value) appended after the standard
-    three, for whatever a sport measures that the others do not.
+
+    THE THREE INLINE FIELDS ARE FIXED — Projection, Lean was, Lean now. Discord
+    lays inline fields out three to a row, so a fourth wraps onto its own line
+    and the card stops matching the other sport's. Tennis had one (an edge
+    delta) and the two boards immediately looked like different products, which
+    is the thing this shared module exists to prevent.
+
+    `note` is the escape hatch for anything a sport needs to say: a full-width
+    row under the three, the same shape the flip warning uses. `extra` still
+    appends inline fields and is kept for a caller that genuinely wants them,
+    but adding one WILL break the layout parity — do it deliberately.
     """
     if flipped is None:
         flipped = bool(old_lean and new_lean
@@ -64,6 +73,8 @@ def line_alert(player, prop_label, old_line, new_line, projection=None,
     if flipped:
         fields.append(("⚠️", "The move crossed our projection — the lean has "
                              "flipped against the new line.", False))
+    if note:
+        fields.append(("🛑", str(note), False))
 
     foot = " · ".join(p for p in (book, sport) if p)
     return {"title": f"Line moved · {player}",

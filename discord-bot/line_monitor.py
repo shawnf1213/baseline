@@ -68,24 +68,20 @@ def _recompute_lean(projection, line):
 
 
 
-def _extra_fields(projection, old_line, new_line):
-    """Tennis-only extras for the alert card: what the move did to the edge.
-
-    NFL has no equivalent yet, which is exactly why core.alerts takes these as
-    free-form fields instead of fixing one schema for every sport.
-    """
-    if not isinstance(projection, (int, float)):
-        return []
-    old_e, new_e = abs(projection - old_line), abs(projection - new_line)
-    out = []
-    if abs(new_e - old_e) >= 0.05:
-        arrow = "ð»" if new_e < old_e else "ðº"
-        out.append(("Edge", f"{arrow} {old_e:.1f} â {new_e:.1f}"))
-    else:
-        out.append(("Edge", f"{new_e:.1f}"))
-    if new_e < COINFLIP_EDGE:
-        out.append(("ð", "Coin flip â avoid"))
-    return out
+# The "Edge 2.0 -> 3.0" row is GONE (user, 2026-09-09). Two things were wrong
+# with it. It rendered as mojibake, because the script that inserted it ran
+# .encode().decode("unicode_escape") and turned every emoji into four latin-1
+# characters. And it was a FOURTH inline field where NFL has three, so Discord
+# wrapped it onto its own row and the two sports stopped looking alike — the
+# opposite of why the layout was shared in the first place.
+#
+# The number itself was also ambiguous: "2.0 -> 3.0" is the distance from our
+# projection to the line before and after the move, which nobody reads off a
+# card unprompted. The card already shows the projection and both lines, so a
+# reader who wants that arithmetic has it.
+#
+# The COIN FLIP call survives, because it is the one case where the advice
+# actually changes — as a full-width note, like the flip warning.
 
 
 async def monitor(picks: list, get_lines, post_alert, interval: int = INTERVAL_SECONDS):
@@ -255,7 +251,10 @@ async def monitor(picks: list, get_lines, post_alert, interval: int = INTERVAL_S
                     "projection": proj,
                     "old_lean": orig_lean or None, "new_lean": new_lean,
                     "book": "prizepicks", "sport": "Tennis",
-                    "extra": _extra_fields(proj, a["original"], cur),
+                    "note": ("Coin flip — the move left almost no edge; "
+                             "avoid."
+                             if (isinstance(proj, (int, float))
+                                 and abs(proj - cur) < COINFLIP_EDGE) else None),
                 }
                 try:
                     await post_alert(payload)
