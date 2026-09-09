@@ -526,3 +526,125 @@ def target_competition(name: str, season: int = None, limit: int = 4):
     except Exception as exc:  # noqa: BLE001 — Rule 2
         log.exception("nfl target_competition(%r) failed: %s", name, exc)
         return {}
+
+
+# ── AUTOCOMPLETE SUPPORT ─────────────────────────────────────────────────────
+# Tennis commands offer a picker; NFL asked people to type a name exactly, so
+# "lamarr jackson" (a typo) and "lamar jackson" (right) both returned nothing
+# and looked identical to the user. A picker removes the whole class of problem
+# — you cannot mistype a name you selected.
+#
+# ENTIRELY LOCAL. Discord gives an autocomplete callback about three seconds;
+# the tennis one has to go to Sofascore through a proxy and races that deadline.
+# This reads the weekly frame that is already in memory after the first command,
+# so it answers in microseconds and cannot time out.
+_search_cache = {}
+
+
+def _search_index(season: int = None):
+    """[(display name, normalised, position, team, volume)] sorted by volume.
+
+    Volume is total touches — it decides who appears first when several players
+    match. Someone typing "jackson" almost always wants the quarterback, not the
+    fourth-string safety, and alphabetical order would bury him.
+    """
+    df, yr = _weekly(season)
+    key = yr
+    if key in _search_cache:
+        return _search_cache[key]
+    out = []
+    try:
+        if len(df):
+            col = ("player_display_name" if "player_display_name" in df.columns
+                   else "player_name")
+            cols = {c: c for c in ("targets", "carries", "attempts") if c in df.columns}
+            g = df.groupby(col)
+            for name, sub in g:
+                nm = str(name)
+                if not nm or nm.lower() in ("nan", "none"):
+                    continue
+                vol = 0.0
+                for c in cols:
+                    try:
+                        vol += float(sub[c].fillna(0).sum())
+                    except Exception:  # noqa: BLE001
+                        pass
+                pos = ""
+                if "position" in sub.columns:
+                    v = sub["position"].dropna()
+                    pos = str(v.iloc[-1]) if len(v) else ""
+                team = ""
+                if "team" in sub.columns:
+                    v = sub["team"].dropna()
+                    team = str(v.iloc[-1]) if len(v) else ""
+                out.append((nm, _norm_name(nm), pos, team, vol))
+            out.sort(key=lambda t: -t[4])
+    except Exception as exc:  # noqa: BLE001 — Rule 2
+        log.exception("nfl search index failed: %s", exc)
+    _search_cache[key] = out
+    return out
+
+
+def search_players(query: str, limit: int = 25, season: int = None) -> list:
+    """Players matching `query`, best first. [] on anything unexpected.
+
+    Prefix matches outrank substring matches, and within each group the busier
+    player wins — so "jack" surfaces Lamar Jackson before Theo Jackson.
+    """
+    try:
+        q = _norm_name(query)
+        if not q:
+            return []
+        idx = _search_index(season)
+        starts, contains = [], []
+        for nm, norm, pos, team, vol in idx:
+            if norm.startswith(q) or any(p.startswith(q) for p in norm.split()):
+                starts.append((nm, pos, team))
+            elif q in norm:
+                contains.append((nm, pos, team))
+            if len(starts) >= limit:
+                break
+        out = starts + contains
+        return [{"name": n, "position": p, "team": t} for n, p, t in out[:limit]]
+    except Exception as exc:  # noqa: BLE001 — Rule 2
+        log.exception("nfl search_players(%r) failed: %s", query, exc)
+        return []
+
+
+# Team codes for the team-based commands. nflverse convention, which is what
+# normalize_team() folds ESPN's variants into.
+TEAMS = {
+    "ARI": "Arizona Cardinals", "ATL": "Atlanta Falcons",
+    "BAL": "Baltimore Ravens", "BUF": "Buffalo Bills",
+    "CAR": "Carolina Panthers", "CHI": "Chicago Bears",
+    "CIN": "Cincinnati Bengals", "CLE": "Cleveland Browns",
+    "DAL": "Dallas Cowboys", "DEN": "Denver Broncos",
+    "DET": "Detroit Lions", "GB": "Green Bay Packers",
+    "HOU": "Houston Texans", "IND": "Indianapolis Colts",
+    "JAX": "Jacksonville Jaguars", "KC": "Kansas City Chiefs",
+    "LA": "Los Angeles Rams", "LAC": "Los Angeles Chargers",
+    "LV": "Las Vegas Raiders", "MIA": "Miami Dolphins",
+    "MIN": "Minnesota Vikings", "NE": "New England Patriots",
+    "NO": "New Orleans Saints", "NYG": "New York Giants",
+    "NYJ": "New York Jets", "PHI": "Philadelphia Eagles",
+    "PIT": "Pittsburgh Steelers", "SEA": "Seattle Seahawks",
+    "SF": "San Francisco 49ers", "TB": "Tampa Bay Buccaneers",
+    "TEN": "Tennessee Titans", "WAS": "Washington Commanders",
+}
+
+
+def search_teams(query: str, limit: int = 25) -> list:
+    """Teams matching an abbreviation OR a club name.
+
+    Nobody remembers whether the Commanders are WAS or WSH, or that the Rams are
+    LA rather than LAR in nflverse's convention. Matching the full name too
+    means the picker resolves it for them.
+    """
+    q = (query or "").strip().lower()
+    out = []
+    for abbr, name in sorted(TEAMS.items(), key=lambda kv: kv[1]):
+        if not q or q in abbr.lower() or q in name.lower():
+            out.append({"abbr": abbr, "name": name})
+        if len(out) >= limit:
+            break
+    return out

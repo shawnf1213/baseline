@@ -3738,20 +3738,26 @@ async def _nfl_selfcheck() -> None:
                 except ImportError:
                     engine = None
             form = q.recent_form("Lamar Jackson", 1)
+            # Warm the autocomplete index HERE, not on a member's first
+            # keystroke. Building it takes ~5s and Discord allows an
+            # autocomplete callback about 3, so a cold index would have shown
+            # "Loading options failed" to whoever typed first.
+            n_idx = len(q._search_index())
             try:
                 from core import proxy as _px
                 pxs = _px.status()
             except Exception:  # noqa: BLE001
                 pxs = {"configured": "import failed"}
-            return engine, len(df), yr, bool(form.get("player")), pxs
+            return engine, len(df), yr, bool(form.get("player")), pxs, n_idx
 
-        engine, rows, yr, ok, pxs = await asyncio.to_thread(_probe)
+        engine, rows, yr, ok, pxs, n_idx = await asyncio.to_thread(_probe)
         log.warning("NFL proxy: configured=%s ports=%s nfl_enabled=%s",
                     pxs.get("configured"), pxs.get("ports"),
                     pxs.get("nfl_enabled"))
         if ok and rows:
             log.warning("NFL selfcheck OK — parquet engine=%s, %d weekly rows "
-                        "(%s), player lookup works", engine, rows, yr)
+                        "(%s), player lookup works, %d players indexed for "
+                        "autocomplete", engine, rows, yr, n_idx)
         else:
             log.error("NFL SELFCHECK FAILED — parquet engine=%s, weekly rows=%d "
                       "(%s), player lookup=%s. Every NFL command will report "
@@ -3785,6 +3791,49 @@ async def _nfl_post_intro() -> None:
 NFL_PROJECTIONS_CHANNEL_ID = int(
     os.getenv("NFL_PROJECTIONS_CHANNEL_ID", "1546942501812834414") or 0)
 
+async def nfl_player_autocomplete(interaction: discord.Interaction, current: str):
+    """Player picker for the NFL commands.
+
+    Tennis has had one all along; NFL asked people to type a name exactly, so a
+    typo ("lamarr jackson") and a real miss produced the same "no game log
+    found" and there was no way to tell which had happened. You cannot mistype
+    a name you selected from a list.
+
+    Entirely local — the weekly frame is already in memory — so it answers in
+    under a millisecond and cannot hit Discord's ~3s deadline. Never raises: an
+    autocomplete that throws shows the user "Loading options failed".
+    """
+    try:
+        cur = (current or "").strip()
+        if len(cur) < 2:
+            return []
+        q = _nfl_import("nfl.queries")
+        hits = await asyncio.to_thread(q.search_players, cur, 25)
+        out = []
+        for h in hits:
+            bits = [b for b in (h.get("position"), h.get("team")) if b]
+            label = h["name"] + (f" ({' '.join(bits)})" if bits else "")
+            out.append(app_commands.Choice(name=label[:100], value=h["name"][:100]))
+        return out[:25]
+    except Exception:  # noqa: BLE001
+        log.exception("nfl player autocomplete failed")
+        return []
+
+
+async def nfl_team_autocomplete(interaction: discord.Interaction, current: str):
+    """Team picker. Matches the abbreviation OR the club name, because nobody
+    remembers that nflverse calls the Rams LA and the Commanders WAS."""
+    try:
+        q = _nfl_import("nfl.queries")
+        hits = await asyncio.to_thread(q.search_teams, (current or "").strip(), 25)
+        return [app_commands.Choice(name=f"{h['name']} ({h['abbr']})"[:100],
+                                    value=h["abbr"])
+                for h in hits][:25]
+    except Exception:  # noqa: BLE001
+        log.exception("nfl team autocomplete failed")
+        return []
+
+
 NFL_PROP_CHOICES = [
     app_commands.Choice(name="Pass Yards", value="pass_yards"),
     app_commands.Choice(name="Rush Yards", value="rush_yards"),
@@ -3798,9 +3847,10 @@ NFL_PROP_CHOICES = [
 @app_commands.describe(
     player="Player name",
     prop="Which prop to project",
-    line="The book line (e.g. 62.5). Optional — omit for a raw projection.",
+    line="The book line, e.g. 62.5",
 )
 @app_commands.choices(prop=NFL_PROP_CHOICES)
+@app_commands.autocomplete(player=nfl_player_autocomplete)
 @app_commands.checks.cooldown(1, 5.0, key=lambda i: i.user.id)
 async def nflprop(interaction: discord.Interaction, player: str,
                   prop: app_commands.Choice[str], line: float = None):
@@ -3881,6 +3931,7 @@ async def _nfl_reply(interaction, embed, empty_msg: str) -> None:
 @client.tree.command(name="nflplayer",
                      description="Role, usage and efficiency profile")
 @app_commands.describe(player="Player name")
+@app_commands.autocomplete(player=nfl_player_autocomplete)
 @app_commands.checks.cooldown(1, 5.0, key=lambda i: i.user.id)
 async def nflplayer(interaction: discord.Interaction, player: str):
     if not await _nfl_guard(interaction):
@@ -3903,6 +3954,7 @@ async def nflplayer(interaction: discord.Interaction, player: str):
 @client.tree.command(name="nflform", description="Recent game-by-game trend")
 @app_commands.describe(player="Player name",
                        games="How many recent games (default 6)")
+@app_commands.autocomplete(player=nfl_player_autocomplete)
 @app_commands.checks.cooldown(1, 5.0, key=lambda i: i.user.id)
 async def nflform(interaction: discord.Interaction, player: str,
                   games: int = 6):
@@ -3927,6 +3979,7 @@ async def nflform(interaction: discord.Interaction, player: str,
 @app_commands.describe(player="Player name", prop="Which prop",
                        line="The number to test against")
 @app_commands.choices(prop=NFL_PROP_CHOICES)
+@app_commands.autocomplete(player=nfl_player_autocomplete)
 @app_commands.checks.cooldown(1, 5.0, key=lambda i: i.user.id)
 async def nflhistory(interaction: discord.Interaction, player: str,
                      prop: app_commands.Choice[str], line: float):
@@ -3948,7 +4001,8 @@ async def nflhistory(interaction: discord.Interaction, player: str,
 
 
 @client.tree.command(name="nflgame", description="Win probability and projected score")
-@app_commands.describe(team="Team abbreviation, e.g. SEA")
+@app_commands.describe(team="Team")
+@app_commands.autocomplete(team=nfl_team_autocomplete)
 @app_commands.checks.cooldown(1, 5.0, key=lambda i: i.user.id)
 async def nflgame(interaction: discord.Interaction, team: str):
     if not await _nfl_guard(interaction):
@@ -3971,6 +4025,7 @@ async def nflgame(interaction: discord.Interaction, team: str):
 @client.tree.command(name="nflspread", description="Chance a team covers a handicap")
 @app_commands.describe(team="Team abbreviation, e.g. SEA",
                        handicap="The handicap, e.g. -3.5")
+@app_commands.autocomplete(team=nfl_team_autocomplete)
 @app_commands.checks.cooldown(1, 5.0, key=lambda i: i.user.id)
 async def nflspread(interaction: discord.Interaction, team: str,
                     handicap: float):
@@ -3991,8 +4046,9 @@ async def nflspread(interaction: discord.Interaction, team: str,
 
 
 @client.tree.command(name="nflh2h", description="Head-to-head record")
-@app_commands.describe(team1="Team abbreviation, e.g. SEA",
-                       team2="Team abbreviation, e.g. NE")
+@app_commands.describe(team1="Team",
+                       team2="Team")
+@app_commands.autocomplete(team1=nfl_team_autocomplete, team2=nfl_team_autocomplete)
 @app_commands.checks.cooldown(1, 5.0, key=lambda i: i.user.id)
 async def nflh2h(interaction: discord.Interaction, team1: str, team2: str):
     if not await _nfl_guard(interaction):
