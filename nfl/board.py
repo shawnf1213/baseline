@@ -40,11 +40,14 @@ log = logging.getLogger("baseline.nfl.board")
 # is noise. Yardage props and count props live on different scales, so the
 # threshold is expressed in STANDARD DEVIATIONS, not yards — 4 yards on a 90-yard
 # receiving line is nothing, 4 receptions on a 4.5 line is everything.
-MIN_EDGE_SD = 0.20
+# Env-tunable, because how much filtering is right depends on how big the slate
+# is. On a 13-game Sunday a strict threshold still leaves plenty; on a
+# two-game Wednesday it can empty the board entirely.
+MIN_EDGE_SD = float(os.getenv("NFL_MIN_EDGE_SD", "0.10") or 0.10)
 
 # Confidence floor on the side the model likes. 0.50 is a coin flip by
 # definition, so anything near it is not a play regardless of edge.
-MIN_PROB = 0.53
+MIN_PROB = float(os.getenv("NFL_MIN_PROB", "0.52") or 0.52)
 
 # ── THE DATA-SUFFICIENCY GATE ────────────────────────────────────────────────
 # A row whose usage window is "prior season only" is priced entirely on LAST
@@ -166,6 +169,74 @@ def record_posted(rows: list, day: str = None) -> None:
         log.warning("nfl board: could not record posted plays: %s", str(exc)[:120])
 
 
+# ── THE SLATE: WHICH GAMES THIS BOARD IS ABOUT ───────────────────────────────
+# The 9/9 board carried plays from SIX different days, including a week-2 game
+# nine days out (DJ Moore, DET at BUF on 9/18). upcoming_week() returns an
+# eight-day window — right for warming a cache, wrong for a board that says
+# "9/9" at the top and pings everyone.
+#
+# AND THE DATES ARE UTC. NE at SEA is stamped 2026-09-10T00:20Z, which is
+# 8:20pm ET on the NINTH — so a naive string compare on the kickoff drops the
+# one game that actually plays tonight and keeps the ones that do not. Every
+# comparison here converts to ET first.
+SLATE_TZ = "America/New_York"
+
+
+def _et_date(kickoff: str):
+    """ET calendar date of a kickoff timestamp, or None."""
+    import datetime
+    if not kickoff:
+        return None
+    try:
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo(SLATE_TZ)
+    except Exception:  # noqa: BLE001
+        tz = datetime.timezone(datetime.timedelta(hours=-4))
+    txt = str(kickoff).strip().replace("Z", "+00:00")
+    try:
+        dt = datetime.datetime.fromisoformat(txt)
+    except ValueError:
+        try:
+            dt = datetime.datetime.fromisoformat(txt[:19])
+        except ValueError:
+            return None
+    if dt.tzinfo is None:
+        # games.csv gives a local kickoff with no zone; it is already ET.
+        return dt.date()
+    return dt.astimezone(tz).date()
+
+
+def slate_date(when=None):
+    """Today's ET date — the default slate a board is about."""
+    import datetime
+    try:
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo(SLATE_TZ)
+    except Exception:  # noqa: BLE001
+        tz = datetime.timezone(datetime.timedelta(hours=-4))
+    return (when or datetime.datetime.now(tz)).date()
+
+
+def games_on(games: list, day=None, window_days: int = 0) -> list:
+    """Games kicking off on `day` (ET), or within window_days after it.
+
+    window_days=0 means strictly that day. It exists because the NFL week is
+    not a day: a Thursday board is one game, a Sunday board is a dozen, and a
+    Tuesday board is correctly empty.
+    """
+    import datetime
+    day = day or slate_date()
+    out = []
+    for g in games or []:
+        d = _et_date(g.get("kickoff"))
+        if d is None:
+            continue
+        delta = (d - day).days
+        if 0 <= delta <= max(0, window_days):
+            out.append(g)
+    return out
+
+
 def _team_index(games: list) -> dict:
     """team abbr -> (game, is_home). Both sides of every upcoming game."""
     from .client import normalize_team
@@ -238,7 +309,8 @@ def _rank_key(r: dict):
 
 def scan_board(book: str = "prizepicks", season: int = None,
                one_per_player: bool = True,
-               exclude_posted: bool = False) -> list:
+               exclude_posted: bool = False,
+               day=None, window_days: int = None) -> list:
     """Price every supported line on ONE book. Returns ranked rows; [] on failure.
 
     Never raises — Rule 2. A book that fails returns an empty board and says so
@@ -256,14 +328,38 @@ def scan_board(book: str = "prizepicks", season: int = None,
             log.exception("nfl board (%s): schedule unavailable; pricing without "
                           "game script", book)
             games = []
+        # SCOPE TO THE SLATE before anything is priced. Without this the board
+        # mixes tonight's game with next Sunday's and one from the week after.
+        # Default +1 day. The NFL slate is not a calendar day: a Wednesday
+        # opener and the Thursday game that follows it are one drop to a reader,
+        # and a board titled "9/9" that showed only one of them read as broken.
+        _win = (int(os.getenv("NFL_SLATE_WINDOW_DAYS", "1") or 1)
+                if window_days is None else window_days)
+        _day = day or slate_date()
+        allg = games
+        games = games_on(games, _day, _win)
+        log.info("nfl board (%s): slate %s (+%dd) -> %d of %d upcoming game(s)",
+                 book, _day, _win, len(games), len(allg))
+        if not games and allg:
+            log.warning("nfl board (%s): no games on %s — nothing to price. "
+                        "The next kickoff is %s.", book, _day,
+                        min((_et_date(g.get("kickoff")) for g in allg
+                             if _et_date(g.get("kickoff"))), default="unknown"))
         idx = _team_index(games)
         if not idx:
             log.warning("nfl board (%s): no upcoming games — every row will be "
                         "unscripted", book)
 
-        rows, skipped, no_usage = [], 0, 0
+        rows, skipped, no_usage, off_slate = [], 0, 0, 0
         for (_nkey, prop), ln in posted.items():
             game = _game_for(ln.get("team"), idx)
+            if not game:
+                # Not playing on this slate. Previously these were priced
+                # anyway, unscripted, and ranked below the scripted rows — so
+                # they still reached the board when it was thin. A player who
+                # is not playing today does not belong on today's board at all.
+                off_slate += 1
+                continue
             r = _props.project(ln["player"], prop, line=ln["line"],
                                game=game or None, season=season)
             if not r:
@@ -295,9 +391,9 @@ def scan_board(book: str = "prizepicks", season: int = None,
             })
             rows.append(r)
 
-        log.info("nfl board (%s): priced %d of %d line(s) — %d no usage, "
-                 "%d below volume floor", book, len(rows), len(posted),
-                 no_usage, skipped)
+        log.info("nfl board (%s): priced %d of %d line(s) — %d not on this "
+                 "slate, %d no usage, %d below volume floor", book, len(rows),
+                 len(posted), off_slate, no_usage, skipped)
 
         # Filters applied AFTER pricing so the log above reports true coverage.
         # Evidence gate FIRST — see REQUIRE_CURRENT_SEASON. A play with no
