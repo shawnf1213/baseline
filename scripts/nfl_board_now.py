@@ -44,6 +44,8 @@ async def main() -> int:
                     help="also post one line-alert card off the top row")
     ap.add_argument("--no-ping", action="store_true",
                     help="suppress the @everyone on boards and the intro")
+    ap.add_argument("--only-intro", action="store_true",
+                    help="post ONLY the projections intro — no board scan")
     ap.add_argument("--repeat-ok", action="store_true",
                     help="allow plays already posted today (default: hide them)")
     a = ap.parse_args()
@@ -63,7 +65,9 @@ async def main() -> int:
     from nfl import post as _p, lines as _l
 
     boards = {}
-    for book in ("prizepicks", "underdog"):
+    # --only-intro skips the scan entirely rather than scanning and discarding.
+    # A board scan is a live PrizePicks fetch, and that feed rate-limits.
+    for book in (() if a.only_intro else ("prizepicks", "underdog")):
         rows = _b.scan_board(book, exclude_posted=not a.repeat_ok)[:a.max]
         boards[book] = rows
         print(f"{book}: {len(rows)} play(s)")
@@ -120,7 +124,7 @@ async def main() -> int:
                       f"{'' if a.no_ping else ' (@everyone)'}")
                 _b.record_posted(rows)
 
-            if a.intro:
+            if a.intro or a.only_intro:
                 cid = _p.channel_for("projections")
                 ch = client.get_channel(cid) if cid else None
                 if ch is None:
