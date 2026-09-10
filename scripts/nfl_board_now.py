@@ -123,6 +123,15 @@ async def main() -> int:
                 print(f"  posted {book} board -> {cid}"
                       f"{'' if a.no_ping else ' (@everyone)'}")
                 _b.record_posted(rows)
+                # Persist for the recap. Separate from record_posted, which is
+                # only a same-day repeat guard and dies with the container.
+                try:
+                    from nfl import store as _st, recap as _rc
+                    _st.log_board(rows, book, _rc.et_today(),
+                                  potd_player=(rows[0]["player"] if rows else None),
+                                  shadow=True)
+                except Exception:  # noqa: BLE001 — a store failure must not cost the post
+                    log.exception("nfl store logging failed (post already sent)")
 
             if a.intro or a.only_intro:
                 cid = _p.channel_for("projections")

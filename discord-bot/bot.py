@@ -3643,6 +3643,16 @@ async def _nfl_post_board(book: str) -> None:
         # and remember them so tomorrow's scan does not repeat the same cluster.
         _NFL_WATCH[book] = rows
         await asyncio.to_thread(nb.record_posted, rows)
+        # Persist for the recap. NOT posted anywhere — the recap is built but
+        # deliberately not wired to the track-record channel yet (user).
+        try:
+            nstore = _nfl_import("nfl.store")
+            nrecap = _nfl_import("nfl.recap")
+            await asyncio.to_thread(
+                nstore.log_board, rows, book, nrecap.et_today(),
+                rows[0]["player"] if rows else None, shadow)
+        except Exception:  # noqa: BLE001 — never cost the post
+            log.exception("NFL store logging failed (board already posted)")
     except Exception:  # noqa: BLE001 — Rule 2, and tennis must never be reached
         log.exception("NFL board (%s) failed entirely (tennis unaffected)", book)
 
