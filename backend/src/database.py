@@ -1177,3 +1177,74 @@ def _nfl_dict(r) -> dict:
         v = getattr(r, c.name)
         out[c.name] = v.isoformat() if hasattr(v, "isoformat") else v
     return out
+
+
+# ── ACCOUNT DELETION (App Store guideline 5.1.1(v)) ──────────────────────────
+# Apple requires an app that creates accounts to let the user delete one FROM
+# INSIDE THE APP. "Email support" is an explicit rejection.
+#
+# WHAT DELETE MEANS HERE, and the honest limits:
+#
+#   subscriptions      the identity columns are CLEARED and the row is marked
+#                      deleted. The row itself stays, because it is the record
+#                      of a real payment: Stripe has it either way, tax and
+#                      chargeback handling need it, and destroying it would
+#                      break reconciliation without making the person any more
+#                      forgotten. discord_id, app_email and signup_ip — the
+#                      personal data — are what actually go.
+#   preview_sessions   NOT touched, and that is correct rather than an
+#                      oversight. It is keyed on a HASHED IP with no account
+#                      identity on it at all — no discord id, no email — so
+#                      there is nothing there belonging to this person to
+#                      delete, and hunting for their row by address would mean
+#                      re-identifying someone in the one table built not to.
+#
+# DELETION DOES NOT CANCEL BILLING, and the caller is told so rather than left
+# to discover it on the next invoice. Cancelling silently would be worse: it
+# throws away time the person has already paid for.
+def delete_account(discord_id: str = "", email: str = "") -> dict:
+    """Erase the personal data tied to one identity. Returns what was touched.
+
+    The caller MUST have proven this identity — see the endpoint. Nothing here
+    authenticates; it does what it is told.
+    """
+    out = {"ok": False, "subscriptions": 0,
+           "active_subscription": False, "reason": ""}
+    if not is_ready():
+        out["reason"] = "database unavailable"
+        return out
+    did, mail = (discord_id or "").strip(), (email or "").strip().lower()
+    if not did and not mail:
+        out["reason"] = "no identity supplied"
+        return out
+    try:
+        import datetime
+        now = datetime.datetime.now(datetime.timezone.utc)
+        with _session() as s:
+            q = s.query(Subscription)
+            rows = [r for r in q.all()
+                    if (did and (r.discord_id or "") == did)
+                    or (mail and (r.app_email or "").lower() == mail)]
+            for r in rows:
+                # Still inside a paid period? Say so; do not cancel it here.
+                if r.current_period_end is not None:
+                    end = r.current_period_end
+                    if end.tzinfo is None:
+                        end = end.replace(tzinfo=datetime.timezone.utc)
+                    if end > now and (r.status or "") in ("active", "trialing",
+                                                          "past_due"):
+                        out["active_subscription"] = True
+                r.discord_id = ""
+                r.app_email = ""
+                r.signup_ip = ""
+                r.status = "deleted" if (r.status or "") != "deleted" else r.status
+                out["subscriptions"] += 1
+            s.commit()
+        out["ok"] = True
+        logger.warning("account deleted: subs=%d active_sub=%s",
+                       out["subscriptions"], out["active_subscription"])
+        return out
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("delete_account failed: %s", exc)
+        out["reason"] = str(exc)[:200]
+        return out

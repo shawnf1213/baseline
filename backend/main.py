@@ -1633,6 +1633,51 @@ def auth_me(req: Request):
 
 
 
+# ── ACCOUNT DELETION (App Store guideline 5.1.1(v)) ──────────────────────────
+# Apple requires in-app account deletion for any app that creates accounts;
+# "contact support" is an explicit rejection.
+#
+# THE IDENTITY COMES FROM THE SIGNED SESSION TOKEN, NEVER FROM THE BODY. A
+# delete endpoint that accepts a caller-supplied discord id or email is a
+# one-request account-wipe of anyone whose id you can guess — a far worse
+# version of the unauthenticated DELETE /api/results/{pick_id} already in this
+# file. There is deliberately no way to name someone else's account here.
+@app.post("/api/account/delete")
+def account_delete(req: Request, payload: dict = Body(default=None)):
+    from src import database, discord_auth
+    tok = req.headers.get("authorization", "").replace("Bearer ", "").strip()
+    data = discord_auth.read_session(tok)
+    if not data or data.get("sub") in (None, "", "state"):
+        raise HTTPException(status_code=401, detail="sign in first")
+
+    # Typed confirmation, checked server-side. The client shows a confirm
+    # dialog, but a destructive endpoint must not depend on the client having
+    # done so — this is irreversible and there is no undo.
+    if not isinstance(payload, dict) or str(payload.get("confirm", "")).upper() != "DELETE":
+        raise HTTPException(status_code=400,
+                            detail='send {"confirm": "DELETE"} to proceed')
+
+    kind = (data.get("k") or "discord")
+    sub = str(data["sub"])
+    res = (database.delete_account(email=sub) if kind == "email"
+           else database.delete_account(discord_id=sub))
+    if not res.get("ok"):
+        raise HTTPException(status_code=503,
+                            detail=res.get("reason") or "could not delete")
+    # Say plainly that billing is untouched. Cancelling here would throw away
+    # time already paid for; leaving it unsaid would surprise them on the next
+    # invoice. Neither is acceptable, so it is reported.
+    return {"ok": True,
+            "deleted": {"subscriptions": res.get("subscriptions", 0)},
+            "billing_still_active": res.get("active_subscription", False),
+            "note": ("Your personal data has been removed. A paid subscription "
+                     "is NOT cancelled by deleting your account — manage or "
+                     "cancel it from the billing portal, or it will renew."
+                     if res.get("active_subscription") else
+                     "Your personal data has been removed. No active "
+                     "subscription was found.")}
+
+
 # ── MAGIC-LINK SIGN-IN (subscribers without Discord) ─────────────────────────
 @app.get("/api/auth/magic/config")
 def magic_config():
