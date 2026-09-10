@@ -43,7 +43,7 @@ sys.modules["streamlit.runtime"] = types.ModuleType("streamlit.runtime")
 # ---------------------------------------------------------------------------
 # Normal imports (after mock)
 # ---------------------------------------------------------------------------
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -241,6 +241,44 @@ async def results_log(req: ResultLogRequest):
     if not stored:
         return {"ok": False, "error": "results DB unavailable"}
     return {"ok": True, "pick": stored}
+
+
+# ── NFL results ──────────────────────────────────────────────────────────────
+# Separate endpoints against a separate table, same database. Not a `sport=`
+# parameter on the tennis routes: one shared path is how a filter gets
+# forgotten and an NFL row ends up in the public tennis record.
+@app.post("/api/nfl/results/log")
+async def nfl_results_log(payload: dict = Body(...)):
+    """Insert NFL picks as PENDING. Body: {"picks": [ ... ]}."""
+    from src import database
+    rows = payload.get("picks") or []
+    n = database.nfl_log_picks(rows)
+    return {"ok": database.is_ready(), "written": n, "submitted": len(rows)}
+
+
+@app.get("/api/nfl/results/pending")
+async def nfl_results_pending():
+    from src import database
+    return {"pending": database.nfl_pending()}
+
+
+@app.post("/api/nfl/results/update")
+async def nfl_results_update(payload: dict = Body(...)):
+    from src import database
+    ok = database.nfl_update_result(payload.get("pick_id"),
+                                    payload.get("result"),
+                                    payload.get("value"))
+    return {"ok": ok}
+
+
+@app.get("/api/nfl/results/record")
+async def nfl_results_record(slate_date: str = None, book: str = None,
+                             since_days: int = None):
+    """Every NFL pick, for the recap. Read-only."""
+    from src import database
+    return {"picks": database.nfl_picks(slate_date=slate_date, book=book,
+                                        since_days=since_days),
+            "ready": database.is_ready()}
 
 
 @app.get("/api/results/health")

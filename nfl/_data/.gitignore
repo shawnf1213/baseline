@@ -1,3 +1,0 @@
-# picks.json IS committed on purpose — it is the record, and it has to be
-# readable both from a laptop and inside the container. See nfl/store.py.
-!picks.json

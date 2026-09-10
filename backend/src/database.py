@@ -43,6 +43,47 @@ try:
     from sqlalchemy.orm import declarative_base, sessionmaker
     Base = declarative_base()
 
+    class NflPick(Base):
+        """NFL picks — SEPARATE TABLE, SAME DATABASE.
+
+        Deliberately not the tennis `picks` table and deliberately not a `sport`
+        column on it. Two sports in one table means every tennis query has to
+        remember to filter, and the first one that forgets silently pools an NFL
+        record into the public tennis one. MLB made the same call with
+        mlb_picks; this mirrors it.
+
+        Same DATABASE_URL, so there is no second Postgres to provision and the
+        bot reaches it exactly the way it reaches the tennis record — over the
+        backend's HTTP API, which works from a container and a laptop alike.
+        """
+        __tablename__      = "nfl_picks"
+        id                 = Column(Integer, primary_key=True, autoincrement=True)
+        book               = Column(String, default="prizepicks")
+        slate_date         = Column(String, nullable=False)   # ET YYYY-MM-DD
+        player             = Column(String, nullable=False)
+        team               = Column(String, default="")
+        opponent           = Column(String, default="")
+        prop_type          = Column(String, nullable=False)
+        line               = Column(Float)
+        model_projection   = Column(Float)
+        lean               = Column(String)                   # OVER / UNDER
+        confidence         = Column(Float)                    # model prob, its own side
+        edge               = Column(Float)
+        result             = Column(String, default="PENDING")  # W/L/PUSH/VOID/PENDING
+        result_value       = Column(Float)
+        is_potd            = Column(Integer, default=0)
+        # WHAT THE MODEL KNEW WHEN IT PRICED THIS. A record that cannot say
+        # whether a pick ran on prior-season usage cannot answer the only
+        # question worth asking of an early-season NFL board.
+        usage_window       = Column(String, default="")
+        prior_season_only  = Column(Integer, default=0)
+        shadow             = Column(Integer, default=1)
+        season             = Column(Integer)
+        week               = Column(Integer)
+        generated_at       = Column(DateTime(timezone=True), server_default=func.now())
+        resolved_at        = Column(DateTime(timezone=True), nullable=True)
+        excluded_from_record = Column(Integer, default=0)
+
     class Pick(Base):
         __tablename__ = "picks"
         id               = Column(Integer, primary_key=True, autoincrement=True)
@@ -1038,3 +1079,101 @@ def set_signup_ip(stripe_sub_id: str, ip: str) -> bool:
     except Exception:  # noqa: BLE001
         logger.exception("set_signup_ip failed")
         return False
+
+
+# ── NFL ──────────────────────────────────────────────────────────────────────
+# Same shape as the tennis helpers above, against nfl_picks. Kept as separate
+# functions rather than a `sport=` argument on the tennis ones: a shared code
+# path is exactly how a filter gets forgotten and an NFL row lands in the public
+# tennis record.
+def nfl_log_picks(rows: list) -> int:
+    """Insert NFL picks as PENDING. Dedupes on (book, slate_date, player, prop).
+
+    Returns rows written. A retry or a re-post must never double-count a play —
+    the easiest way there is to make a win rate look better than it was.
+    """
+    if not is_ready() or not rows:
+        return 0
+    try:
+        with _session() as s:
+            n = 0
+            for rec in rows:
+                key = (rec.get("book") or "prizepicks", rec.get("slate_date"),
+                       rec.get("player"), rec.get("prop_type"))
+                if not key[2] or not key[1]:
+                    continue
+                dupe = s.query(NflPick).filter(
+                    NflPick.book == key[0], NflPick.slate_date == key[1],
+                    NflPick.player == key[2], NflPick.prop_type == key[3]).first()
+                if dupe:
+                    continue
+                s.add(NflPick(**{k: v for k, v in rec.items()
+                                 if k in NflPick.__table__.columns.keys()}))
+                n += 1
+            s.commit()
+            return n
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("nfl_log_picks failed: %s", exc)
+        return 0
+
+
+def nfl_pending() -> list:
+    if not is_ready():
+        return []
+    try:
+        with _session() as s:
+            rows = s.query(NflPick).filter(NflPick.result == "PENDING").order_by(
+                NflPick.id).all()
+            return [_nfl_dict(r) for r in rows]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("nfl_pending failed: %s", exc)
+        return []
+
+
+def nfl_update_result(pick_id: int, result: str, value=None) -> bool:
+    if not is_ready():
+        return False
+    try:
+        with _session() as s:
+            row = s.get(NflPick, int(pick_id))
+            if row is None:
+                return False
+            row.result = result
+            row.result_value = value
+            row.resolved_at = func.now()
+            s.commit()
+            return True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("nfl_update_result failed: %s", exc)
+        return False
+
+
+def nfl_picks(slate_date: str = None, book: str = None,
+              since_days: int = None) -> list:
+    if not is_ready():
+        return []
+    try:
+        import datetime
+        with _session() as s:
+            q = s.query(NflPick).filter(NflPick.excluded_from_record == 0)
+            if slate_date:
+                q = q.filter(NflPick.slate_date == slate_date)
+            if book:
+                q = q.filter(NflPick.book == book)
+            if since_days:
+                cut = (datetime.date.today()
+                       - datetime.timedelta(days=int(since_days))).isoformat()
+                q = q.filter(NflPick.slate_date >= cut)
+            return [_nfl_dict(r) for r in
+                    q.order_by(NflPick.slate_date, NflPick.id).all()]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("nfl_picks failed: %s", exc)
+        return []
+
+
+def _nfl_dict(r) -> dict:
+    out = {}
+    for c in r.__table__.columns:
+        v = getattr(r, c.name)
+        out[c.name] = v.isoformat() if hasattr(v, "isoformat") else v
+    return out

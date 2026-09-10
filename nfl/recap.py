@@ -90,8 +90,8 @@ def resolve(slate_date: str = None, book: str = None, season: int = None,
     out = {"graded": 0, "pending": 0, "void": 0, "checked": 0,
            "store": _store.available()}
     if not out["store"]:
-        out["error"] = ("no NFL_DATABASE_URL configured — nothing is being "
-                        "persisted, so there is nothing to grade")
+        out["error"] = ("the backend results API is unreachable, so nothing "
+                        "is being persisted and there is nothing to grade")
         return out
     try:
         rows = _store.pending(book=book, slate_date=slate_date)
@@ -183,8 +183,8 @@ def format_recap(rec: dict, title: str = "NFL Recap") -> str:
     would imply it is one edit away from being posted.
     """
     if not rec.get("available"):
-        return (f"{title}\nNo store configured (NFL_DATABASE_URL unset), so no "
-                f"picks have been recorded.")
+        return (f"{title}\nThe backend results API is unreachable, so no "
+                f"picks can be read.")
     if not rec.get("n"):
         return f"{title}\nNo picks recorded for that range."
     lines = [title, "=" * len(title)]
@@ -231,7 +231,7 @@ def format_recap(rec: dict, title: str = "NFL Recap") -> str:
                 f"{star}{str(p.get('player'))[:21]:21s} "
                 f"{str(p.get('lean') or ''):>5} "
                 f"{(p.get('line') if p.get('line') is not None else 0):6.1f} "
-                f"{(p.get('projection') or 0):6.1f} "
+                f"{(p.get('model_projection') or 0):6.1f} "
                 f"{(p.get('result_value') if p.get('result_value') is not None else 0):7.1f}"
                 f"  {p.get('result')}")
     # Anything priced on last season's usage is flagged, because a record that
