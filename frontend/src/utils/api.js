@@ -57,6 +57,13 @@ export const fetchNextMatch = (player_id, tour, signal) =>
   api.get('/api/player/next-match', { params: { player_id, tour }, signal }).then(r => r.data)
 // The full public pick log — the mobile Board re-frames today's rows from this
 // as neutral research data (the full PrizePicks market is not persisted server-side).
+// The NFL record — every play the bot posted, with its result. There is no
+// NFL equivalent of /api/prop/calculate: the nfl/ package ships with the BOT,
+// not the backend, so the backend can serve what was posted but cannot price
+// something new.
+export const fetchNflRecord = (signal) =>
+  api.get('/api/nfl/results/record', { signal }).then(r => r.data)
+
 export const fetchRecord    = (signal) =>
   api.get('/api/results/record', { signal }).then(r => r.data)
 

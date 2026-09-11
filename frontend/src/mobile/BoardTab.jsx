@@ -5,6 +5,7 @@ import FilterSheet from './FilterSheet'
 import { shortProp, startTimeLabel, fmt } from './data'
 import { projectRow, cachedProjection } from './project'
 import { useBookmarks, propBookmarkId } from './useBookmarks'
+import NflBoard from './NflBoard'
 
 const DEFAULT_FILTERS = { prop: 'All', tour: 'All', surface: 'All', sort: 'start' }
 const PROJECT_CAP = 120  // auto-project the whole current view (throttled in project.js)
@@ -34,6 +35,11 @@ const BOOKS = [
 ]
 
 export default function BoardTab({ boards, book, setBook, loading, error, onOpenPlayer }) {
+  // SPORT LIVES HERE, NOT IN THE NAV. Seven bottom-tabs is already a crowded
+  // rail, and "which sport" is a filter on the board rather than a different
+  // place in the app — the same shape as the PrizePicks/Underdog switch that
+  // is already on this screen.
+  const [sport, setSport] = useState('tennis')
   const [filters, setFilters] = useState(DEFAULT_FILTERS)
   const [sheet, setSheet] = useState(false)
   const { has, toggle } = useBookmarks()
@@ -69,6 +75,41 @@ export default function BoardTab({ boards, book, setBook, loading, error, onOpen
   const activeCount = ['prop', 'tour', 'surface'].filter(k => filters[k] !== 'All').length
   const projecting = filtered.slice(0, PROJECT_CAP).some(r => proj[r.key]?.loading)
 
+  const SportSwitch = (
+    <div style={{ display: 'flex', gap: 6, marginBottom: 14 }}>
+      {[['tennis', '🎾 Tennis'], ['nfl', '🏈 NFL']].map(([k, label]) => {
+        const on = sport === k
+        return (
+          <button key={k} onClick={() => setSport(k)} style={{
+            flex: 1, minHeight: 40, borderRadius: 12, cursor: 'pointer',
+            background: on ? 'rgba(0,230,118,0.12)' : T.card,
+            color: on ? T.green : T.muted,
+            border: `1px solid ${on ? T.green : T.border}`,
+            fontFamily: T.cond, fontWeight: 800, fontSize: 14,
+            letterSpacing: 0.8, textTransform: 'uppercase',
+          }}>{label}</button>
+        )
+      })}
+    </div>
+  )
+
+  // The NFL board is a DIFFERENT KIND OF VIEW, not the tennis board with other
+  // rows in it. Tennis prices the live book board through /api/prop/calculate;
+  // NFL has no such endpoint (the model ships with the bot, not the backend),
+  // so what it shows is what was actually posted, with results. Filters and
+  // bookmarks belong to the tennis shape and are deliberately not drawn here.
+  if (sport === 'nfl') {
+    return (
+      <div style={{ paddingBottom: 8 }}>
+        <div style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 26,
+                      color: T.white, letterSpacing: 0.5, lineHeight: 1,
+                      marginBottom: 12 }}>Board</div>
+        {SportSwitch}
+        <NflBoard />
+      </div>
+    )
+  }
+
   return (
     <div style={{ paddingBottom: 8 }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
@@ -90,6 +131,8 @@ export default function BoardTab({ boards, book, setBook, loading, error, onOpen
           Filter{activeCount ? ` · ${activeCount}` : ''}
         </button>
       </div>
+
+      {SportSwitch}
 
       <Segment options={BOOKS} value={book} onChange={setBook} style={{ marginBottom: 14 }} />
 
