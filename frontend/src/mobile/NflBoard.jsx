@@ -22,10 +22,10 @@ import { fetchNflBoard, fetchNflRecord } from '../utils/api'
 // publishes the whole board, and this reads it. Same content, pushed rather
 // than pulled.
 //
-// EVERY ROW SAYS WHAT THE MODEL KNEW. prior_season_only rides all the way from
-// the projection to the card: an early-season NFL number built on last season's
-// usage measured +25% error against the market, and a card that cannot say so
-// reads more confident than it is.
+// The prior-season caveat is stated ONCE in the footer rather than on every
+// card. It applies to nearly every row this early in the season, and a warning
+// that appears 171 times is wallpaper — it stops being read exactly when it
+// matters. The flag still rides on the row for anything that wants it.
 
 const PROP_LABEL = {
   pass_yards: 'Pass Yards',
@@ -84,11 +84,11 @@ function footNoteFor(p) {
   if (res === 'VOID') {
     return <span style={{ color: T.muted2, fontSize: 11 }}>VOID · did not play</span>
   }
-  if (p.prior_season_only) {
-    return <span style={{ color: '#D29922', fontSize: 11 }}>
-      {star}⚠️ prior-season usage
-    </span>
-  }
+  // The prior-season caveat was REMOVED from the card (user, 2026-09-13). It
+  // sat on almost every early-season row, which made it wallpaper rather than a
+  // warning, and it crowded a card built for a start time. The flag is still
+  // carried on the row and still stated in the footer note below, so the
+  // information survives without shouting from 171 cards at once.
   return star ? <span style={{ fontSize: 11 }}>{star}posted</span> : ''
 }
 
@@ -190,20 +190,27 @@ export default function NflBoard() {
         {prettyDate(active)} board
       </SectionLabel>
 
-      {rows.map((p, i) => {
-        const r = toRow(p)
-        return (
-          <PropRow key={r.key} r={r} index={i}
-                   saved={has(r.key)} onSave={() => toggle(r.key)}
-                   footNote={footNoteFor(p)} />
-        )
-      })}
+      {/* The SAME wrapper the tennis board uses — CSS multi-column, 2 up on a
+          wide screen and 3 on a very wide one, gated on the .baseline-wide
+          ancestor. Reusing the class rather than a new grid keeps the two
+          boards laying out identically at every breakpoint. */}
+      <div className="baseline-cols">
+        {rows.map((p, i) => {
+          const r = toRow(p)
+          return (
+            <PropRow key={r.key} r={r} index={i}
+                     saved={has(r.key)} onSave={() => toggle(r.key)}
+                     footNote={footNoteFor(p)} />
+          )
+        })}
+      </div>
 
       <div style={{ color: T.muted2, fontSize: 11.5, textAlign: 'center',
                     padding: '16px 12px 4px', lineHeight: 1.5 }}>
         Every PrizePicks NFL line the model can price, with Baseline's
         projection. Edge = projection − line. ⭐ marks a posted play.
-        Model projections, not betting advice.
+        Early-season numbers run on last season's usage until enough games are
+        played. Model projections, not betting advice.
       </div>
     </div>
   )
