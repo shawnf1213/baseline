@@ -84,6 +84,41 @@ try:
         resolved_at        = Column(DateTime(timezone=True), nullable=True)
         excluded_from_record = Column(Integer, default=0)
 
+    class NflBoardRow(Base):
+        """The CURRENT scanned NFL board — every priced line, not just the posted ones.
+
+        WHY THIS EXISTS SEPARATELY FROM nfl_picks. nfl_picks is the RECORD: the
+        handful of plays that were actually posted, kept forever, graded. This
+        is the BOARD: everything the scan priced, replaced wholesale each run,
+        and never graded. The website needs the second to show what the tennis
+        board shows — the full market with our number beside each line.
+
+        WHY THE BOT WRITES IT INSTEAD OF THE BACKEND COMPUTING IT. The NFL model
+        lives in nfl/, which deploys with the BOT. Running it here would mean
+        pyarrow plus a play-by-play parquet of a few hundred megabytes on the
+        service that has to cold-start fast for the app. The bot already does
+        this scan on a schedule and already has the data cached, so it posts the
+        result and this table is the handoff.
+        """
+        __tablename__     = "nfl_board"
+        id                = Column(Integer, primary_key=True, autoincrement=True)
+        book              = Column(String, default="prizepicks", index=True)
+        slate_date        = Column(String, nullable=False, index=True)
+        player            = Column(String, nullable=False)
+        team              = Column(String, default="")
+        opponent          = Column(String, default="")
+        matchup           = Column(String, default="")
+        kickoff           = Column(String, default="")
+        prop_type         = Column(String, nullable=False)
+        line              = Column(Float)
+        model_projection  = Column(Float)
+        lean              = Column(String)
+        confidence        = Column(Float)          # model prob on its own side
+        edge              = Column(Float)
+        usage_window      = Column(String, default="")
+        prior_season_only = Column(Integer, default=0)
+        scanned_at        = Column(DateTime(timezone=True), server_default=func.now())
+
     class Pick(Base):
         __tablename__ = "picks"
         id               = Column(Integer, primary_key=True, autoincrement=True)
@@ -1248,3 +1283,47 @@ def delete_account(discord_id: str = "", email: str = "") -> dict:
         logger.exception("delete_account failed: %s", exc)
         out["reason"] = str(exc)[:200]
         return out
+
+
+def nfl_board_replace(rows: list, book: str, slate_date: str) -> int:
+    """REPLACE the stored board for one (book, slate). Returns rows written.
+
+    Replace, not append: this table is a snapshot of the current market, and
+    appending would leave yesterday's lines sitting next to today's with no way
+    to tell them apart.
+    """
+    if not is_ready():
+        return 0
+    try:
+        with _session() as s:
+            s.query(NflBoardRow).filter(NflBoardRow.book == book,
+                                        NflBoardRow.slate_date == slate_date).delete()
+            cols = NflBoardRow.__table__.columns.keys()
+            n = 0
+            for rec in rows or []:
+                if not rec.get("player"):
+                    continue
+                s.add(NflBoardRow(**{k: v for k, v in rec.items() if k in cols}))
+                n += 1
+            s.commit()
+            return n
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("nfl_board_replace failed: %s", exc)
+        return 0
+
+
+def nfl_board(book: str = None, slate_date: str = None) -> list:
+    if not is_ready():
+        return []
+    try:
+        with _session() as s:
+            q = s.query(NflBoardRow)
+            if book:
+                q = q.filter(NflBoardRow.book == book)
+            if slate_date:
+                q = q.filter(NflBoardRow.slate_date == slate_date)
+            rows = q.order_by(NflBoardRow.slate_date, NflBoardRow.id).all()
+            return [_nfl_dict(r) for r in rows]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("nfl_board failed: %s", exc)
+        return []

@@ -43,6 +43,7 @@ sys.modules["streamlit.runtime"] = types.ModuleType("streamlit.runtime")
 # ---------------------------------------------------------------------------
 # Normal imports (after mock)
 # ---------------------------------------------------------------------------
+import hmac
 from fastapi import FastAPI, HTTPException, Request, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -254,6 +255,43 @@ async def nfl_results_log(payload: dict = Body(...)):
     rows = payload.get("picks") or []
     n = database.nfl_log_picks(rows)
     return {"ok": database.is_ready(), "written": n, "submitted": len(rows)}
+
+
+# ── NFL BOARD (the full scanned market, not the posted picks) ────────────────
+# WRITE IS TOKEN-GATED. Without it anyone could POST an arbitrary board and the
+# website would render invented projections under our name — the same class of
+# hole as an unauthenticated results endpoint, but public-facing. Unset token
+# disables writes entirely rather than defaulting to open.
+NFL_BOARD_TOKEN = os.getenv("NFL_BOARD_TOKEN", "")
+
+
+@app.post("/api/nfl/board")
+async def nfl_board_push(req: Request, payload: dict = Body(...)):
+    """Replace the stored board for one (book, slate). Bot only."""
+    from src import database
+    if not NFL_BOARD_TOKEN:
+        raise HTTPException(status_code=503,
+                            detail="NFL board ingest disabled (no token configured)")
+    # HEADER, never a query parameter: a token in a URL lands in access logs,
+    # browser history and referrer headers.
+    supplied = req.headers.get("x-nfl-board-token", "")
+    if not hmac.compare_digest(supplied, NFL_BOARD_TOKEN):
+        raise HTTPException(status_code=401, detail="bad token")
+    rows = payload.get("rows") or []
+    book = (payload.get("book") or "prizepicks").strip()
+    slate = (payload.get("slate_date") or "").strip()
+    if not slate:
+        raise HTTPException(status_code=400, detail="slate_date required")
+    n = database.nfl_board_replace(rows, book, slate)
+    return {"ok": database.is_ready(), "written": n, "submitted": len(rows)}
+
+
+@app.get("/api/nfl/board")
+async def nfl_board_get(book: str = None, slate_date: str = None):
+    """The current scanned NFL board. Public, read-only."""
+    from src import database
+    return {"rows": database.nfl_board(book=book, slate_date=slate_date),
+            "ready": database.is_ready()}
 
 
 @app.get("/api/nfl/results/pending")

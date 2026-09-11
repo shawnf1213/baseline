@@ -3773,6 +3773,45 @@ async def _before_nfl_mnf_board():
     await client.wait_until_ready()
 
 
+# ── WEBSITE BOARD REFRESH ────────────────────────────────────────────────────
+# The site shows the FULL scanned market, the way the tennis board does — not
+# the eight plays that went to Discord. The model cannot run in the web backend
+# (nfl/ ships with this bot, and pricing there would mean pyarrow plus a
+# few-hundred-megabyte parquet on the service that has to cold-start for the
+# app), so the bot scans and publishes, and the backend serves what it is given.
+#
+# Every NFL_BOARD_REFRESH_MINUTES, because lines move all day and a board that
+# only refreshed when Discord was posted would be stale between drops.
+NFL_BOARD_REFRESH_MINUTES = int(
+    os.getenv("NFL_BOARD_REFRESH_MINUTES", "45") or "45")
+
+
+@tasks.loop(minutes=NFL_BOARD_REFRESH_MINUTES)
+async def nfl_board_refresh():
+    """Scan and publish the full board for the site. Posts nothing to Discord."""
+    if not NFL_TASKS_ENABLED:
+        return
+    try:
+        npub = _nfl_import("nfl.publish")
+        nb = _nfl_import("nfl.board")
+        day = nb.slate_date()
+        for book in ("prizepicks", "underdog"):
+            try:
+                n = await asyncio.to_thread(npub.publish_scan, book, day)
+                if n:
+                    log.warning("NFL website board: %d row(s) published (%s %s)",
+                                n, book, day)
+            except Exception:  # noqa: BLE001 — one book must not stop the other
+                log.exception("NFL website board publish failed for %s", book)
+    except Exception:  # noqa: BLE001 — Rule 2
+        log.exception("NFL website board refresh failed (tennis unaffected)")
+
+
+@nfl_board_refresh.before_loop
+async def _before_nfl_board_refresh():
+    await client.wait_until_ready()
+
+
 @tasks.loop(minutes=NFL_LINE_CHECK_MINUTES)
 async def nfl_line_watch():
     """Re-check the books for movement on the plays we posted."""
@@ -6034,6 +6073,13 @@ async def on_ready():
                         NFL_MNF_BOARD_HOUR, NFL_MNF_BOARD_MINUTE, POD_TZINFO)
     except Exception:  # noqa: BLE001
         log.exception("failed to start NFL weekly boards (tennis unaffected)")
+    try:
+        if NFL_TASKS_ENABLED and not nfl_board_refresh.is_running():
+            nfl_board_refresh.start()
+            log.warning("NFL website board refresh every %dm",
+                        NFL_BOARD_REFRESH_MINUTES)
+    except Exception:  # noqa: BLE001
+        log.exception("failed to start NFL board refresh (tennis unaffected)")
     try:
         if NFL_TASKS_ENABLED and not nfl_line_watch.is_running():
             nfl_line_watch.start()

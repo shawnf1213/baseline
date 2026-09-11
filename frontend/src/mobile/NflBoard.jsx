@@ -3,7 +3,7 @@ import { T } from './theme'
 import { Chip, Spinner, Empty, SectionLabel } from './bits'
 import { PropRow } from './BoardTab'
 import { useBookmarks } from './useBookmarks'
-import { fetchNflRecord } from '../utils/api'
+import { fetchNflBoard, fetchNflRecord } from '../utils/api'
 
 // ── NFL BOARD ────────────────────────────────────────────────────────────────
 // Renders the SAME card as the tennis board — PropRow, imported, not
@@ -11,11 +11,16 @@ import { fetchNflRecord } from '../utils/api'
 // and the two boards are the same idea: a player, a prop, a line, our number,
 // and how confident we are.
 //
-// DELIBERATELY NOT A LIVE PROJECTION TOOL. Tennis prices the book's board
-// through /api/prop/calculate and will quote anything you ask. There is no NFL
-// equivalent, because the nfl/ package deploys with the BOT and the backend
-// cannot import it. What the backend has is the record — every play the bot
-// posted, with line, projection, lean and result — so that is what this shows.
+// THE FULL SCANNED MARKET, like tennis — every line the model could price, not
+// the eight that went to Discord. 171 props across 13 games on a Sunday.
+//
+// It gets there by a different route than tennis, and the difference is worth
+// knowing. Tennis prices each row in the browser via /api/prop/calculate. The
+// NFL model cannot run in the web backend — nfl/ deploys with the BOT, and
+// pricing there would mean pyarrow plus a few-hundred-megabyte parquet on the
+// service that has to cold-start for the app. So the bot scans on a schedule,
+// publishes the whole board, and this reads it. Same content, pushed rather
+// than pulled.
 //
 // EVERY ROW SAYS WHAT THE MODEL KNEW. prior_season_only rides all the way from
 // the projection to the card: an early-season NFL number built on last season's
@@ -66,11 +71,12 @@ function toRow(p) {
 // The bottom-left slot: a result once there is one, the caveat until then.
 function footNoteFor(p) {
   const res = p.result
+  const star = p.is_potd ? '⭐ ' : ''
   if (res === 'W' || res === 'L') {
     const tone = res === 'W' ? '#3FB950' : '#E5534B'
     return (
       <span style={{ color: tone, fontWeight: 800, fontSize: 11 }}>
-        {res === 'W' ? '✅' : '❌'} {res}
+        {star}{res === 'W' ? '✅' : '❌'} {res}
         {typeof p.result_value === 'number' ? ` · ${p.result_value}` : ''}
       </span>
     )
@@ -79,9 +85,11 @@ function footNoteFor(p) {
     return <span style={{ color: T.muted2, fontSize: 11 }}>VOID · did not play</span>
   }
   if (p.prior_season_only) {
-    return <span style={{ color: '#D29922', fontSize: 11 }}>⚠️ prior-season usage</span>
+    return <span style={{ color: '#D29922', fontSize: 11 }}>
+      {star}⚠️ prior-season usage
+    </span>
   }
-  return ''
+  return star ? <span style={{ fontSize: 11 }}>{star}posted</span> : ''
 }
 
 export default function NflBoard() {
@@ -90,11 +98,24 @@ export default function NflBoard() {
   const [slate, setSlate] = useState(null)
   const { has, toggle } = useBookmarks()
 
+  const [posted, setPosted] = useState([])
+
   useEffect(() => {
     let alive = true
-    fetchNflRecord()
-      .then(d => { if (alive) setPicks(d?.picks || []) })
-      .catch(e => { if (alive) setErr(e?.message || 'Could not load the NFL board') })
+    // TWO SOURCES, ON PURPOSE. The board is the whole scanned market; the
+    // record is the handful that were posted to Discord and graded. Showing
+    // only the record made this a copy of the Discord post rather than a board.
+    Promise.all([
+      fetchNflBoard().then(d => d?.rows || []).catch(() => []),
+      fetchNflRecord().then(d => d?.picks || []).catch(() => []),
+    ]).then(([rows, rec]) => {
+      if (!alive) return
+      setPicks(rows)
+      setPosted(rec)
+      if (!rows.length && !rec.length) setErr(null)
+    }).catch(e => {
+      if (alive) setErr(e?.message || 'Could not load the NFL board')
+    })
     return () => { alive = false }
   }, [])
 
@@ -107,12 +128,28 @@ export default function NflBoard() {
   // tonight.
   const active = slate || (slates.includes(etToday()) ? etToday() : slates[0])
 
+  // Merge the record INTO the board: a row that was posted to Discord carries
+  // its ⭐ and, once the game is played, its result. Keyed on player+prop+slate
+  // because that is what makes a play the same play across the two tables.
+  const byPosted = useMemo(() => {
+    const m = new Map()
+    for (const p of posted) {
+      m.set(`${p.slate_date}|${p.player}|${p.prop_type}`, p)
+    }
+    return m
+  }, [posted])
+
   const rows = useMemo(
     () => (picks || [])
       .filter(p => p.slate_date === active)
-      .sort((a, b) => (b.is_potd - a.is_potd)
+      .map(p => {
+        const hit = byPosted.get(`${p.slate_date}|${p.player}|${p.prop_type}`)
+        return hit ? { ...p, result: hit.result, result_value: hit.result_value,
+                       is_potd: hit.is_potd } : p
+      })
+      .sort((a, b) => ((b.is_potd || 0) - (a.is_potd || 0))
         || ((b.confidence || 0) - (a.confidence || 0))),
-    [picks, active])
+    [picks, active, byPosted])
 
   const tally = useMemo(() => {
     const w = rows.filter(p => p.result === 'W').length
@@ -128,8 +165,8 @@ export default function NflBoard() {
     </div>
   }
   if (!picks.length) {
-    return <Empty icon="🏈" title="No NFL plays yet"
-                  hint="Boards post Fridays for Sunday, and Sunday night for Monday." />
+    return <Empty icon="🏈" title="No NFL board right now"
+                  hint="The board refreshes through the day. Sunday slates load Friday." />
   }
 
   return (
@@ -147,8 +184,8 @@ export default function NflBoard() {
 
       <SectionLabel right={
         tally.w + tally.l > 0
-          ? `${tally.w}-${tally.l}${tally.live ? ` · ${tally.live} live` : ''}`
-          : `${tally.live} live`
+          ? `${tally.w}-${tally.l} · ${rows.length} props`
+          : `${rows.length} props`
       }>
         {prettyDate(active)} board
       </SectionLabel>
@@ -164,7 +201,8 @@ export default function NflBoard() {
 
       <div style={{ color: T.muted2, fontSize: 11.5, textAlign: 'center',
                     padding: '16px 12px 4px', lineHeight: 1.5 }}>
-        Plays the board posted, with results. Edge = projection − line.
+        Every PrizePicks NFL line the model can price, with Baseline's
+        projection. Edge = projection − line. ⭐ marks a posted play.
         Model projections, not betting advice.
       </div>
     </div>

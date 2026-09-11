@@ -61,6 +61,12 @@ export const fetchNextMatch = (player_id, tour, signal) =>
 // NFL equivalent of /api/prop/calculate: the nfl/ package ships with the BOT,
 // not the backend, so the backend can serve what was posted but cannot price
 // something new.
+// The FULL scanned NFL market — every line the model could price, with our
+// number beside it. This is the board; fetchNflRecord is the record of what was
+// posted. Different things, different tables.
+export const fetchNflBoard  = (slate_date, signal) =>
+  api.get('/api/nfl/board', { params: { slate_date }, signal }).then(r => r.data)
+
 export const fetchNflRecord = (signal) =>
   api.get('/api/nfl/results/record', { signal }).then(r => r.data)
 
