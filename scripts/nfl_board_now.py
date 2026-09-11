@@ -46,6 +46,12 @@ async def main() -> int:
                     help="suppress the @everyone on boards and the intro")
     ap.add_argument("--only-intro", action="store_true",
                     help="post ONLY the projections intro — no board scan")
+    ap.add_argument("--day", metavar="YYYY-MM-DD",
+                    help="ET slate to post (default: today). The scheduled "
+                         "Friday/Sunday boards take a target slate; this is "
+                         "the manual equivalent.")
+    ap.add_argument("--window", type=int, default=None,
+                    help="days after --day to include (default: env/1)")
     ap.add_argument("--repeat-ok", action="store_true",
                     help="allow plays already posted today (default: hide them)")
     a = ap.parse_args()
@@ -64,13 +70,17 @@ async def main() -> int:
     importlib.reload(_b)
     from nfl import post as _p, lines as _l
 
-    boards = {}
+    boards, slates = {}, {}
     # --only-intro skips the scan entirely rather than scanning and discarding.
     # A board scan is a live PrizePicks fetch, and that feed rate-limits.
     for book in (() if a.only_intro else ("prizepicks", "underdog")):
-        rows = _b.scan_board(book, exclude_posted=not a.repeat_ok)[:a.max]
+        day = (__import__("datetime").date.fromisoformat(a.day) if a.day
+               else _b.slate_date())
+        rows = _b.scan_board(book, exclude_posted=not a.repeat_ok,
+                             day=day, window_days=a.window)[:a.max]
         boards[book] = rows
-        print(f"{book}: {len(rows)} play(s)")
+        slates[book] = day
+        print(f"{book}: {len(rows)} play(s) for the {day} slate")
         for i, r in enumerate(rows, 1):
             print(f"   {i}. {r['player']:24s} {r['lean']:5s} {r['line']:6.1f} "
                   f"{r['prop']:16s} proj {r['projection']:6.1f}")
@@ -97,6 +107,7 @@ async def main() -> int:
                     else discord.AllowedMentions(everyone=True))
             ping_txt = None if a.no_ping else "@everyone"
             for book, rows in boards.items():
+                day = slates[book]
                 cid = _p.channel_for("board", book)
                 ch = client.get_channel(cid) if cid else None
                 if ch is None:
@@ -122,12 +133,12 @@ async def main() -> int:
                 await ch.send(content=ping_txt, embed=e, allowed_mentions=ping)
                 print(f"  posted {book} board -> {cid}"
                       f"{'' if a.no_ping else ' (@everyone)'}")
-                _b.record_posted(rows)
+                _b.record_posted(rows, str(day))
                 # Persist for the recap. Separate from record_posted, which is
                 # only a same-day repeat guard and dies with the container.
                 try:
                     from nfl import store as _st, recap as _rc
-                    _st.log_board(rows, book, _rc.et_today(),
+                    _st.log_board(rows, book, str(day),
                                   potd_player=(rows[0]["player"] if rows else None),
                                   shadow=True)
                 except Exception:  # noqa: BLE001 — a store failure must not cost the post
