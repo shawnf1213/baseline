@@ -171,7 +171,15 @@ export default function BoardTab({ boards, book, setBook, loading, error, onOpen
   )
 }
 
-function PropRow({ r, saved, onSave, onOpen, index = 0 }) {
+// EXPORTED so the NFL board renders this exact component. A second card that
+// merely looks similar drifts the moment either is touched; there is one board
+// card in this app and both sports use it.
+//
+// `footNote` overrides the bottom-left slot. Tennis puts a start time there;
+// NFL has no per-play clock but does have a RESULT once the game is played,
+// which is the same kind of information — the one thing about this play that
+// is neither the pick nor the projection.
+export function PropRow({ r, saved, onSave, onOpen, index = 0, footNote }) {
   const start = startTimeLabel(r.startTs)
   const hasProj = r._state === 'done'
   const { side, tone, rgb } = sideTone(hasProj ? r.edge : null)
@@ -231,7 +239,9 @@ function PropRow({ r, saved, onSave, onOpen, index = 0 }) {
 
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between',
                       marginTop: 10, gap: 8 }}>
-          <span style={{ color: T.muted2, fontSize: 11 }}>{start ? `⏱ ${start}` : ''}</span>
+          <span style={{ color: T.muted2, fontSize: 11 }}>
+            {footNote !== undefined ? footNote : (start ? `⏱ ${start}` : '')}
+          </span>
           <ConfBar conf={conf} tone={tone} />
         </div>
       </div>
