@@ -1804,7 +1804,10 @@ def _visitor_key(req: Request) -> str:
 
 
 # How long an anonymous visitor may browse before the paywall closes.
-PREVIEW_WINDOW_SECONDS = int(os.getenv("PREVIEW_WINDOW_SECONDS", "120") or "120")
+# 60s (was 120) — operator, 2026-09-13. Long enough to see that the board is
+# real and the numbers are specific, short enough that it is a look rather than
+# a session.
+PREVIEW_WINDOW_SECONDS = int(os.getenv("PREVIEW_WINDOW_SECONDS", "60") or "60")
 # 0 = the free look is once, ever. Any positive value reopens it that many hours
 # after it first started. Kept at 0 to match the brief, but it is the knob to
 # reach for if support starts hearing "I only looked for ten seconds".
