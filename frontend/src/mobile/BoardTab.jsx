@@ -1,6 +1,6 @@
 import { useMemo, useState, useEffect } from 'react'
 import { T } from './theme'
-import { Card, Heart, Spinner, Empty, Segment, tier, sideTone, SideRail, TierBadge, ConfBar, BigStat, tierCardStyle, Pager, usePaged } from './bits'
+import { Card, Heart, Spinner, Empty, Segment, tier, sideTone, SideRail, TierBadge, ConfBar, BigStat, tierCardStyle } from './bits'
 import FilterSheet from './FilterSheet'
 import { shortProp, startTimeLabel, fmt } from './data'
 import { projectRow, cachedProjection } from './project'
@@ -72,8 +72,6 @@ export default function BoardTab({ boards, book, setBook, loading, error, onOpen
     return merged
   }, [filtered, proj, filters.sort])
 
-  // Five to a page — see bits.usePaged.
-  const paged = usePaged(rows)
   const activeCount = ['prop', 'tour', 'surface'].filter(k => filters[k] !== 'All').length
   const projecting = filtered.slice(0, PROJECT_CAP).some(r => proj[r.key]?.loading)
 
@@ -152,18 +150,13 @@ export default function BoardTab({ boards, book, setBook, loading, error, onOpen
       )}
 
       <div className="baseline-cols">
-        {!loading && !error && paged.slice.map((r, i) => (
+        {!loading && !error && rows.map((r, i) => (
           <PropRow key={r.key} r={r} index={i}
             saved={has(propBookmarkId(r))}
             onSave={() => toggle({ id: propBookmarkId(r), kind: 'prop', ...r })}
             onOpen={() => onOpenPlayer({ name: r.player, tour: r.tour })} />
         ))}
       </div>
-
-      {!loading && !error && !!rows.length && (
-        <Pager page={paged.page} total={paged.total} next={paged.next}
-               prev={paged.prev} count={rows.length} />
-      )}
 
       {!loading && !error && !!rows.length && (
         <div style={{ color: T.muted2, fontSize: 11.5, textAlign: 'center', padding: '16px 12px 4px', lineHeight: 1.5 }}>

@@ -1,4 +1,3 @@
-import { useState, useEffect } from 'react'
 import { motion } from 'framer-motion'
 import { T } from './theme'
 import { fmtSigned } from './data'
@@ -324,52 +323,4 @@ export function tierCardStyle(conf, rgb) {
         ? `0 6px 24px rgba(${rgb},0.15), 0 8px 22px rgba(0,0,0,0.46)`
         : '0 8px 24px rgba(0,0,0,0.5)',
   }
-}
-
-// ── PAGER ────────────────────────────────────────────────────────────────────
-// Five props to a page (operator, 2026-09-13). A Sunday NFL board is 171 rows
-// and a tennis board runs to dozens; an endless column buries the best play
-// under the fiftieth, and on a phone it is a scroll with no end in sight.
-//
-// SHARED, so tennis and NFL page identically. Two pagers drift.
-export const PAGE_SIZE = 5
-
-export function usePaged(rows, size = PAGE_SIZE) {
-  const [page, setPage] = useState(0)
-  const total = Math.max(1, Math.ceil((rows?.length || 0) / size))
-  // Clamp rather than let a stale page survive a filter change — filtering from
-  // 40 rows to 3 while sitting on page 5 otherwise shows an empty board.
-  const safe = Math.min(page, total - 1)
-  useEffect(() => { if (page !== safe) setPage(safe) }, [page, safe])
-  return {
-    page: safe, total,
-    slice: (rows || []).slice(safe * size, safe * size + size),
-    setPage,
-    next: () => setPage(p => Math.min(p + 1, total - 1)),
-    prev: () => setPage(p => Math.max(p - 1, 0)),
-  }
-}
-
-export function Pager({ page, total, next, prev, count }) {
-  if (total <= 1) return null
-  const btn = (enabled) => ({
-    minHeight: 40, padding: '0 18px', borderRadius: 12,
-    background: enabled ? T.card : 'transparent',
-    color: enabled ? T.white : T.muted2,
-    border: `1px solid ${enabled ? T.border : 'transparent'}`,
-    fontFamily: T.cond, fontWeight: 700, fontSize: 14, letterSpacing: 0.8,
-    textTransform: 'uppercase', cursor: enabled ? 'pointer' : 'default',
-  })
-  return (
-    <div style={{ display: 'flex', alignItems: 'center',
-                  justifyContent: 'space-between', gap: 10,
-                  padding: '4px 0 8px' }}>
-      <button style={btn(page > 0)} onClick={prev} disabled={page === 0}>Prev</button>
-      <span style={{ color: T.muted, fontSize: 12.5 }}>
-        Page {page + 1} of {total}{typeof count === 'number' ? ` · ${count} props` : ''}
-      </span>
-      <button style={btn(page < total - 1)} onClick={next}
-              disabled={page >= total - 1}>Next</button>
-    </div>
-  )
 }

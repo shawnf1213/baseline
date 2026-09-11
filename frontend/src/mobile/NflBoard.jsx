@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { T } from './theme'
-import { Chip, Spinner, Empty, SectionLabel, Pager, usePaged } from './bits'
+import { Chip, Spinner, Empty, SectionLabel } from './bits'
 import { PropRow } from './BoardTab'
 import { useBookmarks } from './useBookmarks'
 import { fetchNflBoard, fetchNflRecord } from '../utils/api'
@@ -151,8 +151,6 @@ export default function NflBoard() {
         || ((b.confidence || 0) - (a.confidence || 0))),
     [picks, active, byPosted])
 
-  const paged = usePaged(rows)
-
   const tally = useMemo(() => {
     const w = rows.filter(p => p.result === 'W').length
     const l = rows.filter(p => p.result === 'L').length
@@ -197,7 +195,7 @@ export default function NflBoard() {
           ancestor. Reusing the class rather than a new grid keeps the two
           boards laying out identically at every breakpoint. */}
       <div className="baseline-cols">
-        {paged.slice.map((p, i) => {
+        {rows.map((p, i) => {
           const r = toRow(p)
           return (
             <PropRow key={r.key} r={r} index={i}
@@ -206,9 +204,6 @@ export default function NflBoard() {
           )
         })}
       </div>
-
-      <Pager page={paged.page} total={paged.total} next={paged.next}
-             prev={paged.prev} count={rows.length} />
 
       <div style={{ color: T.muted2, fontSize: 11.5, textAlign: 'center',
                     padding: '16px 12px 4px', lineHeight: 1.5 }}>
