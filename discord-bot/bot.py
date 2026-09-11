@@ -3596,18 +3596,27 @@ def _nfl_import(module_name: str):
     return importlib.import_module(module_name)
 
 
-async def _nfl_post_board(book: str) -> None:
-    """Scan one book and post its board to that book's channel. Never raises."""
+async def _nfl_post_board(book: str, day=None, window_days: int = None,
+                          label: str = "") -> None:
+    """Scan one book for a SLATE and post it. Never raises.
+
+    `day` is the ET game date this board is about, which is not the day it is
+    posted: the Friday board is about Sunday and the Sunday-night board is
+    about Monday. Passing it explicitly is what keeps those straight — and what
+    lets the repeat guard know a Sunday play was already shown on Friday.
+    """
     try:
         nb = _nfl_import("nfl.board")
         npost = _nfl_import("nfl.post")
         shadow = not getattr(_nfl_import("nfl"), "NFL_ENABLED", False)
-        rows = await asyncio.to_thread(nb.scan_board, book, None, True, True)
+        day = day or nb.slate_date()
+        rows = await asyncio.to_thread(nb.scan_board, book, None, True, True,
+                                       day, window_days)
         if not rows:
-            log.warning("NFL board (%s): nothing cleared the filters — not "
-                        "posting. Early in the season this is expected: every "
-                        "play is held back for having no current-season data.",
-                        book)
+            log.warning("NFL %sboard (%s): nothing cleared the filters for %s "
+                        "— not posting. Early in the season this is expected: "
+                        "every play is held back for having no current-season "
+                        "data.", label, book, day)
             return
         cid = npost.channel_for("board", book)
         if not cid:
@@ -3637,19 +3646,19 @@ async def _nfl_post_board(book: str) -> None:
         # server.
         await ch.send(content="@everyone", embed=embed,
                       allowed_mentions=discord.AllowedMentions(everyone=True))
-        log.warning("NFL board (%s) posted %d play(s) to %s (shadow=%s)",
-                    book, len(rows), cid, shadow)
+        log.warning("NFL %sboard (%s) posted %d play(s) for %s to %s "
+                    "(shadow=%s)", label, book, len(rows), day, cid, shadow)
         # Hand the posted rows to the line watch so alerts track what we showed,
         # and remember them so tomorrow's scan does not repeat the same cluster.
         _NFL_WATCH[book] = rows
-        await asyncio.to_thread(nb.record_posted, rows)
+        await asyncio.to_thread(nb.record_posted, rows, str(day))
         # Persist for the recap. NOT posted anywhere — the recap is built but
         # deliberately not wired to the track-record channel yet (user).
         try:
             nstore = _nfl_import("nfl.store")
             nrecap = _nfl_import("nfl.recap")
             await asyncio.to_thread(
-                nstore.log_board, rows, book, nrecap.et_today(),
+                nstore.log_board, rows, book, str(day),
                 rows[0]["player"] if rows else None, shadow)
         except Exception:  # noqa: BLE001 — never cost the post
             log.exception("NFL store logging failed (board already posted)")
@@ -3669,6 +3678,98 @@ async def nfl_daily_boards():
 
 @nfl_daily_boards.before_loop
 async def _before_nfl_boards():
+    await client.wait_until_ready()
+
+
+# ── THE NFL WEEK, NOT A DAILY BOARD ──────────────────────────────────────────
+# A daily board is the wrong shape for this sport. Football plays on three days
+# and nothing happens on the other four, so a board that fires every morning is
+# empty most of the week and — worse — hits Sunday morning, hours after the
+# lines people actually want have been up for two days.
+#
+# So the schedule follows the NFL week (operator, 2026-09-11):
+#
+#     Friday   NFL_WEEK_BOARD_HOUR ET   ->  the SUNDAY slate
+#     Sunday   21:00 ET                 ->  the MONDAY night slate
+#
+# Each names its target slate EXPLICITLY rather than taking "tomorrow", because
+# the gap differs — Friday is two days ahead of Sunday, Sunday night is one day
+# ahead of Monday — and a board that guessed would silently post the wrong
+# games the first time a Thursday fixture moved.
+#
+# The existing daily board still runs and still covers Thursday night. It cannot
+# double-post the Sunday slate, because the repeat guard is keyed on the SLATE:
+# once Friday has shown those players for Sunday, Sunday morning's run skips
+# them and shows what Friday could not fit.
+NFL_WEEK_BOARD_HOUR = int(os.getenv("NFL_WEEK_BOARD_HOUR", "11") or "11")
+NFL_WEEK_BOARD_MINUTE = int(os.getenv("NFL_WEEK_BOARD_MINUTE", "0") or "0")
+NFL_MNF_BOARD_HOUR = int(os.getenv("NFL_MNF_BOARD_HOUR", "21") or "21")
+NFL_MNF_BOARD_MINUTE = int(os.getenv("NFL_MNF_BOARD_MINUTE", "0") or "0")
+
+
+def _nfl_next_weekday(target: int, base=None):
+    """The next ET date falling on `target` (Mon=0 … Sun=6), today included."""
+    import datetime
+    nb = _nfl_import("nfl.board")
+    d = base or nb.slate_date()
+    return d + datetime.timedelta(days=(target - d.weekday()) % 7)
+
+
+@tasks.loop(time=[datetime.time(hour=NFL_WEEK_BOARD_HOUR,
+                                minute=NFL_WEEK_BOARD_MINUTE,
+                                tzinfo=POD_TZINFO)])
+async def nfl_sunday_board():
+    """FRIDAY: post the coming SUNDAY slate.
+
+    The loop fires daily — discord.py has no weekday filter — so the weekday
+    check is here. Guarded rather than assumed: a task that ran every day and
+    posted Sunday's games would flood the channel six times a week.
+    """
+    if not NFL_TASKS_ENABLED:
+        return
+    try:
+        nb = _nfl_import("nfl.board")
+        today = nb.slate_date()
+        if today.weekday() != 4:              # 4 = Friday
+            return
+        sunday = _nfl_next_weekday(6, today)  # 6 = Sunday
+        log.warning("NFL Friday board: targeting the %s slate", sunday)
+        for book in ("prizepicks", "underdog"):
+            await _nfl_post_board(book, day=sunday, window_days=0,
+                                  label="Sunday-slate ")
+    except Exception:  # noqa: BLE001 — Rule 2
+        log.exception("NFL Friday board failed (tennis unaffected)")
+
+
+@nfl_sunday_board.before_loop
+async def _before_nfl_sunday_board():
+    await client.wait_until_ready()
+
+
+@tasks.loop(time=[datetime.time(hour=NFL_MNF_BOARD_HOUR,
+                                minute=NFL_MNF_BOARD_MINUTE,
+                                tzinfo=POD_TZINFO)])
+async def nfl_mnf_board():
+    """SUNDAY 9PM ET: post the MONDAY night slate."""
+    if not NFL_TASKS_ENABLED:
+        return
+    try:
+        nb = _nfl_import("nfl.board")
+        today = nb.slate_date()
+        if today.weekday() != 6:              # 6 = Sunday
+            return
+        import datetime as _dt
+        monday = today + _dt.timedelta(days=1)
+        log.warning("NFL Sunday-night board: targeting the %s slate", monday)
+        for book in ("prizepicks", "underdog"):
+            await _nfl_post_board(book, day=monday, window_days=0,
+                                  label="MNF ")
+    except Exception:  # noqa: BLE001 — Rule 2
+        log.exception("NFL MNF board failed (tennis unaffected)")
+
+
+@nfl_mnf_board.before_loop
+async def _before_nfl_mnf_board():
     await client.wait_until_ready()
 
 
@@ -5922,6 +6023,17 @@ async def on_ready():
             log.warning("NFL tasks OFF (set NFL_TASKS_ENABLED=true)")
     except Exception:  # noqa: BLE001
         log.exception("failed to start NFL board loop (tennis unaffected)")
+    try:
+        if NFL_TASKS_ENABLED and not nfl_sunday_board.is_running():
+            nfl_sunday_board.start()
+            log.warning("NFL Sunday-slate board scheduled Fridays %02d:%02d %s",
+                        NFL_WEEK_BOARD_HOUR, NFL_WEEK_BOARD_MINUTE, POD_TZINFO)
+        if NFL_TASKS_ENABLED and not nfl_mnf_board.is_running():
+            nfl_mnf_board.start()
+            log.warning("NFL MNF board scheduled Sundays %02d:%02d %s",
+                        NFL_MNF_BOARD_HOUR, NFL_MNF_BOARD_MINUTE, POD_TZINFO)
+    except Exception:  # noqa: BLE001
+        log.exception("failed to start NFL weekly boards (tennis unaffected)")
     try:
         if NFL_TASKS_ENABLED and not nfl_line_watch.is_running():
             nfl_line_watch.start()

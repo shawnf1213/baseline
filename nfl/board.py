@@ -128,13 +128,13 @@ def _load_posted() -> dict:
 
 
 def posted_keys(day: str = None) -> set:
-    """(player, prop) already posted on this ET day."""
+    """(player, prop) already posted FOR THIS SLATE (an ET game date)."""
     d = _load_posted().get(day or _et_today()) or []
     return {(r[0], r[1]) for r in d if isinstance(r, (list, tuple)) and len(r) >= 2}
 
 
 def posted_players(day: str = None) -> set:
-    """Players already posted today, on ANY prop.
+    """Players already posted for this slate, on ANY prop.
 
     Excluding by PLAYER, not by (player, prop), for the reason the MLB board
     does the same: a receiver's yards and his receptions are the same targets,
@@ -144,8 +144,11 @@ def posted_players(day: str = None) -> set:
 
 
 def record_posted(rows: list, day: str = None) -> None:
-    """Remember what a board posted. Never raises — a log failure must not cost
-    the post that already succeeded."""
+    """Remember what a board posted, under the SLATE it was about.
+
+    `day` is the game date, not the posting date — see posted_players. Never
+    raises: a log failure must not cost the post that already succeeded.
+    """
     import json
     try:
         day = day or _et_today()
@@ -426,7 +429,11 @@ def scan_board(book: str = "prizepicks", season: int = None,
         # and the confidences are packed into a narrow band, so the same cluster
         # wins every time. See the POSTED_LOG note above.
         if exclude_posted:
-            already = posted_players()
+            # KEYED ON THE SLATE, not on today. A Sunday slate can be posted on
+            # Friday and again on Sunday morning; keying the repeat guard to the
+            # posting date would call those different boards and show the same
+            # eight players twice. What must not repeat is a play for a GAME.
+            already = posted_players(str(_day))
             if already:
                 before = len(keep)
                 keep = [r for r in keep if r.get("player") not in already]
