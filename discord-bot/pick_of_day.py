@@ -802,6 +802,70 @@ def _rel_edge(pk: dict) -> float:
     return edge / abs(line)
 
 
+
+# ── CONFIDENCE RECALIBRATION ─────────────────────────────────────────────────
+# The stated confidence was not a probability. Measured on 640 graded picks it
+# overstated its own hit rate at EVERY band, by 12 to 31 points, and it did not
+# even order outcomes — the 70-74 band (59.2%) beat the 80+ band (55.1%), and
+# 75-79 came in at 46.0%. An "82% confidence" play that hits 55% is a number
+# making a promise it cannot keep, and it is shown to subscribers.
+#
+# What DOES order outcomes is relative edge, which is now the ranking key. So
+# the displayed number is derived from the same quantity the board sorts on,
+# fitted to what actually happened. On the props we post (BP / FS / PTGW),
+# 324 graded picks, a logistic on a play's rel-edge PERCENTILE within its slate:
+#
+#     P(win) = 1 / (1 + exp(-(0.0425 + 0.6977 * pct)))
+#
+#     pct 0.00 -> 51.1%      observed bottom third   51.9%
+#     pct 0.50 -> 59.7%      observed middle third   61.1%
+#     pct 1.00 -> 67.7%      observed top third      65.7%
+#
+# Percentile rather than raw rel_edge on purpose: rel_edge is heavy-tailed, and
+# a logistic fitted on it directly spans only 57-61% — too flat to say anything.
+# The percentile version is monotone and tracks the observed thirds closely.
+#
+# THE RANGE IS NARROW BECAUSE THE TRUTH IS NARROW. 51-68% is the honest spread
+# of a board whose base rate is 59.6%; the old 65-95% display was inventing
+# precision the record does not support. A smaller number that is true is worth
+# more than a large one that is not, and it is the number a subscriber will
+# check against the track record.
+#
+# GATING IS UNAFFECTED. BOARD_MIN_CONF still reads the RAW confidence, so this
+# cannot quietly empty the board — a 51-68 scale against a 65 floor would reject
+# almost everything. Raw decides eligibility; calibrated is what gets shown.
+CALIB_B0 = 0.0425
+CALIB_B1 = 0.6977
+CALIB_MIN, CALIB_MAX = 50.0, 70.0
+
+
+def calibrated_confidence(pct: float) -> float:
+    """Honest hit-rate estimate for a play at rel-edge percentile `pct` (0-1)."""
+    import math
+    try:
+        q = min(1.0, max(0.0, float(pct)))
+        p = 1.0 / (1.0 + math.exp(-(CALIB_B0 + CALIB_B1 * q))) * 100.0
+        return round(min(CALIB_MAX, max(CALIB_MIN, p)), 1)
+    except Exception:  # noqa: BLE001
+        return 59.6      # the measured base rate — never a guess dressed as one
+
+
+def attach_calibrated_confidence(picks: list) -> None:
+    """Set `confidence_calibrated` on every pick, from its rel-edge percentile
+    WITHIN THIS POOL. Mutates in place; never raises."""
+    try:
+        rows = [p for p in (picks or []) if isinstance(p, dict)]
+        if not rows:
+            return
+        ranked = sorted(rows, key=_rel_edge)
+        n = len(ranked)
+        for i, p in enumerate(ranked):
+            p["confidence_calibrated"] = calibrated_confidence(
+                i / (n - 1) if n > 1 else 1.0)
+    except Exception:  # noqa: BLE001 — a display number must never cost the board
+        log.exception("calibrated confidence failed")
+
+
 def _rank_key(pk: dict) -> tuple:
     """Ranking key (sort DESCENDING). Three levels, strength-of-field first:
 
@@ -1184,6 +1248,8 @@ async def _rank_board(props: list = None):
                      _prop_tier(best.get("prop_type")), best.get("confidence") or 0, len(_plist))
         _selected.append(best)
     ordered = sorted(_selected, key=_rank_key, reverse=True)
+    # Honest hit-rate estimate for display — see attach_calibrated_confidence.
+    attach_calibrated_confidence(ordered)
 
     # ── Per-MATCH dedupe (2026-08-05, user) ──────────────────────────────────
     # The pass above is per-PLAYER, so it cannot see that two survivors are the
