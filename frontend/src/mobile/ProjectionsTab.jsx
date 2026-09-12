@@ -279,6 +279,34 @@ function PlayerSearchPanel({ label, tour, onPick, onCancel }) {
 // fontSize MUST stay >= 16px: below that, Safari zooms the whole page when the
 // control takes focus and the user is left pinched in on a form they were only
 // trying to tap.
+function NumField({ label, value, onChange, placeholder, signed, width = 108 }) {
+  const clean = (v) => v.replace(signed ? /[^\d.\-]/g : /[^\d.]/g, '')
+  return (
+    <div style={{
+      width, flexShrink: 0, position: 'relative', minHeight: 46,
+      borderRadius: T.r1, background: 'rgba(255,255,255,0.03)',
+      border: `1px solid ${value ? `${T.green}66` : T.glassLine}`,
+    }}>
+      <span style={{ position: 'absolute', left: 11, top: 6,
+                     fontFamily: T.cond, fontWeight: 700, fontSize: 8.5,
+                     letterSpacing: 1.2, color: T.muted2,
+                     pointerEvents: 'none', whiteSpace: 'nowrap' }}>{label}</span>
+      <input
+        value={value}
+        onChange={e => onChange(clean(e.target.value))}
+        inputMode="decimal"
+        placeholder={placeholder}
+        style={{
+          width: '100%', boxSizing: 'border-box', minHeight: 46,
+          padding: '13px 11px 0', background: 'transparent', border: 'none',
+          color: T.white, fontSize: 19, fontWeight: 800, outline: 'none',
+          fontVariantNumeric: 'tabular-nums',
+        }}
+      />
+    </div>
+  )
+}
+
 function FieldLabel({ children }) {
   return (
     <div style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 9.5,
@@ -445,6 +473,218 @@ function GameChart({ hist, line, lean }) {
 }
 
 
+// ── THE VERDICT SHELL ────────────────────────────────────────────────────────
+// One frame, three answers. Prop, spread and match all come off the SAME
+// scenario mixture in one response, so they must look like one family — a
+// separate card per mode is how three views of one calculation start reading as
+// three different products.
+function Verdict({ tone, rgb, children }) {
+  return (
+    <Reveal>
+      <div style={{
+        position: 'relative', overflow: 'hidden', marginBottom: T.s3,
+        borderRadius: T.r4, border: `1px solid rgba(${rgb},0.28)`,
+        background: T.glass,
+        boxShadow: `0 0 0 1px rgba(${rgb},0.08), 0 18px 46px rgba(0,0,0,0.5)`,
+      }}>
+        <div aria-hidden style={{
+          position: 'absolute', inset: 0, pointerEvents: 'none',
+          background: `radial-gradient(130% 95% at 8% 0%,`
+                    + ` rgba(${rgb},0.16), transparent 62%),`
+                    + ` radial-gradient(90% 70% at 100% 100%,`
+                    + ` rgba(255,255,255,0.035), transparent 60%)`,
+        }} />
+        <div style={{ position: 'relative', padding: '18px 18px 16px' }}>
+          {children}
+        </div>
+      </div>
+    </Reveal>
+  )
+}
+
+function VerdictHead({ player, opponent, surface, court }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 11 }}>
+      <PlayerPhoto id={player.id} name={player.name} size={44} />
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 19,
+                      color: T.white, lineHeight: 1.1, whiteSpace: 'nowrap',
+                      overflow: 'hidden', textOverflow: 'ellipsis' }}>
+          {player.name}
+        </div>
+        <div style={{ fontSize: 11.5, color: T.muted2, marginTop: 2,
+                      whiteSpace: 'nowrap', overflow: 'hidden',
+                      textOverflow: 'ellipsis' }}>
+          vs {opponent.name} · {surface}{court ? ` · ${court}` : ''}
+        </div>
+      </div>
+      <PlayerPhoto id={opponent.id} name={opponent.name} size={34} />
+    </div>
+  )
+}
+
+// A row of figures under a verdict, on the shell's own divider.
+function VerdictStats({ cells }) {
+  return (
+    <div style={{
+      display: 'grid', gap: T.s2, marginTop: T.s4, paddingTop: T.s3,
+      borderTop: `1px solid ${T.glassLine}`,
+      gridTemplateColumns: 'repeat(auto-fit, minmax(88px, 1fr))',
+    }}>
+      {cells.filter(Boolean).map(([k, v, tone, bar], i) => (
+        <div key={k}>
+          <div style={{ fontFamily: T.cond, fontWeight: 700, fontSize: 9.5,
+                        letterSpacing: 1.2, textTransform: 'uppercase',
+                        color: T.muted2 }}>{k}</div>
+          <div style={{ fontSize: 19, fontWeight: 800, color: tone || T.white,
+                        lineHeight: 1.2, marginTop: 1,
+                        fontVariantNumeric: 'tabular-nums' }}>{v}</div>
+          {typeof bar === 'number' ? (
+            <div style={{ marginTop: 5 }}>
+              <GrowBar pct={bar} tone={tone || T.white} height={3}
+                       delay={0.25 + i * 0.06} />
+            </div>
+          ) : null}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// ── SPREAD ───────────────────────────────────────────────────────────────────
+// The engine has answered this since it was written and nothing ever asked. The
+// headline is the probability of covering, because that is the decision; the
+// projected margin is the working behind it.
+function SpreadVerdict({ res, spread, player, opponent, surface, court }) {
+  const cover = typeof res.spread_p_cover === 'number'
+    ? res.spread_p_cover * 100 : null
+  const margin = res.spread_margin_proj
+  const covers = cover != null && cover >= 50
+  const tone = cover == null ? T.muted2 : covers ? T.green : T.red
+  const rgb = cover == null ? '107,107,107' : covers ? '0,230,118' : '255,68,68'
+  const sp = Number(spread)
+
+  return (
+    <Verdict tone={tone} rgb={rgb}>
+      <VerdictHead player={player} opponent={opponent} surface={surface}
+                   court={court} />
+      <div style={{ display: 'flex', alignItems: 'center', gap: T.s3,
+                    marginTop: T.s4 }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 11.5,
+                        letterSpacing: 1.6, textTransform: 'uppercase',
+                        color: T.muted2 }}>
+            Games spread {sp > 0 ? '+' : ''}{sp}
+          </div>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 10,
+                        marginTop: 2 }}>
+            <Num value={cover} decimals={0} suffix="%" style={{
+              fontSize: 'clamp(46px, 13vw, 62px)', fontWeight: 800,
+              color: T.white, lineHeight: 1, letterSpacing: -2.5,
+              fontVariantNumeric: 'tabular-nums' }} />
+            <span style={{
+              fontFamily: T.cond, fontWeight: 800, fontSize: 18,
+              letterSpacing: 1, color: tone, padding: '3px 10px',
+              borderRadius: 8, background: `rgba(${rgb},0.14)`,
+              border: `1px solid rgba(${rgb},0.34)`,
+            }}>{covers ? 'COVERS' : 'NO COVER'}</span>
+          </div>
+          <div style={{ fontSize: 12, color: T.muted, marginTop: 8 }}>
+            projected margin{' '}
+            <b style={{ color: T.white }}>
+              {typeof margin === 'number'
+                ? `${margin > 0 ? '+' : ''}${margin.toFixed(1)} games` : '—'}
+            </b>
+          </div>
+        </div>
+        {cover != null && (
+          <Ring pct={cover} size={92} stroke={8} tone={tone} delay={0.15}>
+            <Num value={cover} decimals={0} style={{ fontSize: 22,
+              fontWeight: 800, color: T.white, lineHeight: 1 }} />
+            <span style={{ fontFamily: T.cond, fontWeight: 700, fontSize: 9,
+                           letterSpacing: 1.2, color: T.muted2,
+                           marginTop: 2 }}>COVER</span>
+          </Ring>
+        )}
+      </div>
+      <VerdictStats cells={[
+        ['Win prob', res.p1_win_prob != null
+          ? `${Math.round(res.p1_win_prob)}%` : '—', T.white, res.p1_win_prob],
+        ['Exp. sets', res.expected_sets != null
+          ? res.expected_sets.toFixed(2) : '—', T.white, null],
+        ['Format', res.match_format_label || '—', T.muted, null],
+        ['Competitive', res.competitiveness != null
+          ? `${Math.round(res.competitiveness)}%` : '—', T.white,
+         res.competitiveness],
+      ]} />
+    </Verdict>
+  )
+}
+
+// ── MATCH ────────────────────────────────────────────────────────────────────
+// No line, no book — just what the model thinks happens. Every figure here was
+// already in every response; the tab only ever showed the one the prop needed.
+function MatchVerdict({ res, player, opponent, surface, court }) {
+  const wp = res.p1_win_prob
+  const favoured = wp != null && wp >= 50
+  const tone = wp == null ? T.muted2 : favoured ? T.green : T.red
+  const rgb = wp == null ? '107,107,107' : favoured ? '0,230,118' : '255,68,68'
+
+  return (
+    <Verdict tone={tone} rgb={rgb}>
+      <VerdictHead player={player} opponent={opponent} surface={surface}
+                   court={court} />
+      <div style={{ display: 'flex', alignItems: 'center', gap: T.s3,
+                    marginTop: T.s4 }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 11.5,
+                        letterSpacing: 1.6, textTransform: 'uppercase',
+                        color: T.muted2 }}>To win the match</div>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 10,
+                        marginTop: 2 }}>
+            <Num value={wp} decimals={0} suffix="%" style={{
+              fontSize: 'clamp(46px, 13vw, 62px)', fontWeight: 800,
+              color: T.white, lineHeight: 1, letterSpacing: -2.5,
+              fontVariantNumeric: 'tabular-nums' }} />
+            <span style={{
+              fontFamily: T.cond, fontWeight: 800, fontSize: 18,
+              letterSpacing: 1, color: tone, padding: '3px 10px',
+              borderRadius: 8, background: `rgba(${rgb},0.14)`,
+              border: `1px solid rgba(${rgb},0.34)`,
+            }}>{favoured ? 'FAVOURED' : 'UNDERDOG'}</span>
+          </div>
+          <div style={{ fontSize: 12, color: T.muted, marginTop: 8 }}>
+            {res.match_format_label || 'Best of 3'} ·{' '}
+            <b style={{ color: T.white }}>
+              {res.expected_sets != null
+                ? `${res.expected_sets.toFixed(2)} sets` : '—'}
+            </b> expected
+          </div>
+        </div>
+        {wp != null && (
+          <Ring pct={wp} size={92} stroke={8} tone={tone} delay={0.15}>
+            <Num value={wp} decimals={0} style={{ fontSize: 22,
+              fontWeight: 800, color: T.white, lineHeight: 1 }} />
+            <span style={{ fontFamily: T.cond, fontWeight: 700, fontSize: 9,
+                           letterSpacing: 1.2, color: T.muted2,
+                           marginTop: 2 }}>WIN</span>
+          </Ring>
+        )}
+      </div>
+      <VerdictStats cells={[
+        ['Total games', res.tg_model_proj != null
+          ? res.tg_model_proj.toFixed(1) : '—', T.white, null],
+        ['Competitive', res.competitiveness != null
+          ? `${Math.round(res.competitiveness)}%` : '—', T.white,
+         res.competitiveness],
+        ['Gap', res.win_prob_gap != null
+          ? `${Math.round(res.win_prob_gap)}%` : '—', T.muted, null],
+        ['Environment', res.environment_label || '—', T.muted, null],
+      ]} />
+    </Verdict>
+  )
+}
+
 export default function ProjectionsTab() {
   const [tour, setTour] = useState('ATP')
   const [player, setPlayer] = useState(null)
@@ -472,16 +712,27 @@ export default function ProjectionsTab() {
   const [line, setLine] = useState('')
   // Which tile the one shared search panel is filling.
   const [picking, setPicking] = useState(null)
+  const [mode, setMode] = useState('prop')   // prop | spread | match
+  const [spread, setSpread] = useState('')
   // Names the ONE thing still missing, in the order a reader fills them.
   const missingLabel = !player ? 'Add a player'
     : !opponent ? 'Add an opponent'
-    : !line ? 'Enter the book line' : 'Run projection'
+    : mode === 'prop' && !line ? 'Enter the book line'
+    : mode === 'spread' && !spread ? 'Enter the game spread'
+    : 'Run projection'
   const [busy, setBusy] = useState(false)
   const [res, setRes] = useState(null)
   const [hist, setHist] = useState(null)
   const [err, setErr] = useState(null)
 
-  const ready = player && opponent && prop && line !== '' && !isNaN(Number(line))
+  // Readiness follows the MODE. A match question needs no line at all, and
+  // gating that screen on a number it never uses would be asking for input to
+  // throw away.
+  const num = (v) => v !== '' && !isNaN(Number(v))
+  const ready = !!player && !!opponent && (
+    mode === 'prop' ? (!!prop && num(line))
+    : mode === 'spread' ? num(spread)
+    : true)
 
   const run = async () => {
     if (!ready || busy) return
@@ -492,13 +743,18 @@ export default function ProjectionsTab() {
         player_id: String(player.id), opponent_id: String(opponent.id),
         player_name: player.name, opponent_name: opponent.name,
         tour: player.tour || tour, surface, court,
-        prop_type: prop, prop_line: ln,
+        // Total Games is the family the match and spread answers settle on, so
+        // those modes ask for it and read the match-level fields off the same
+        // response rather than inventing a second call.
+        prop_type: mode === 'prop' ? prop : 'Total Games',
+        prop_line: mode === 'prop' ? ln : 0,
+        ...(mode === 'spread' ? { spread: Number(spread) } : {}),
       })
       setRes(data)
       // The game log is what turns a number into something you can argue with,
       // so it is fetched alongside rather than behind another tap.
       // Only some props have an over/under log — PROP_TYPES.history says which.
-      if (PROP_TYPES.find(p => p.key === prop)?.history) {
+      if (mode === 'prop' && PROP_TYPES.find(p => p.key === prop)?.history) {
         fetchHistory(String(player.id), player.tour || tour, prop, surface, ln)
           .then(h => setHist({
             ...hitStrip(h, ln),
@@ -538,6 +794,11 @@ export default function ProjectionsTab() {
   return (
     <div style={{ padding: '0 0 90px' }}>
       <PageTitle>Price any matchup</PageTitle>
+
+      <GlassTabs value={mode} onChange={setMode} style={{ marginBottom: T.s3 }}
+                 options={[{ key: 'prop', label: 'Prop' },
+                           { key: 'spread', label: 'Spread' },
+                           { key: 'match', label: 'Match' }]} />
 
       {/* ── THE MATCHUP BUILDER ──────────────────────────────────────────
           This was eight controls stacked down the page — tour, player,
@@ -588,38 +849,37 @@ export default function ProjectionsTab() {
 
         <div style={{ height: 1, background: T.glassLine, margin: `${T.s3}px 0` }} />
 
-        {/* ── WHAT WE ARE PRICING ────────────────────────────────────────────
-            The prop and the line are ONE statement — "aces, over 4.5" — and
-            they were two separate labelled fields in a grid. Side by side, with
-            the line given the size of the number it is. */}
-        <div style={{ display: 'flex', gap: T.s2, alignItems: 'stretch' }}>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <Select value={prop} onChange={setProp} inline bare
-                    options={PROP_TYPES.map(p => ({ value: p.key, label: p.short }))} />
+        {/* ── WHAT WE ARE PRICING ────────────────────────────────────────
+            One statement, not two labelled fields — and it CHANGES WITH THE
+            MODE. A spread mode showing a prop dropdown, or a match mode asking
+            for a line the answer never uses, is asking for input to throw
+            away. */}
+        {mode === 'prop' ? (
+          <div style={{ display: 'flex', gap: T.s2, alignItems: 'stretch' }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <Select value={prop} onChange={setProp} inline bare
+                      options={PROP_TYPES.map(p => ({ value: p.key, label: p.short }))} />
+            </div>
+            <NumField label="LINE" value={line} onChange={setLine}
+                      placeholder="4.5" />
           </div>
-          <div style={{
-            width: 108, flexShrink: 0, position: 'relative', minHeight: 46,
-            borderRadius: T.r1, background: 'rgba(255,255,255,0.03)',
-            border: `1px solid ${line ? `${T.green}66` : T.glassLine}`,
-          }}>
-            <span style={{ position: 'absolute', left: 11, top: 6,
-                           fontFamily: T.cond, fontWeight: 700, fontSize: 8.5,
-                           letterSpacing: 1.2, color: T.muted2,
-                           pointerEvents: 'none' }}>LINE</span>
-            <input
-              value={line}
-              onChange={e => setLine(e.target.value.replace(/[^\d.]/g, ''))}
-              inputMode="decimal"
-              placeholder="4.5"
-              style={{
-                width: '100%', boxSizing: 'border-box', minHeight: 46,
-                padding: '12px 11px 0', background: 'transparent',
-                border: 'none', color: T.white, fontSize: 19, fontWeight: 800,
-                outline: 'none', fontVariantNumeric: 'tabular-nums',
-              }}
-            />
+        ) : mode === 'spread' ? (
+          <div style={{ display: 'flex', gap: T.s3, alignItems: 'center' }}>
+            <NumField label="GAMES SPREAD" value={spread} onChange={setSpread}
+                      placeholder="-4.5" signed width={132} />
+            <span style={{ color: T.muted2, fontSize: 11.5, lineHeight: 1.45,
+                           flex: 1, minWidth: 0 }}>
+              Negative lays games, positive receives — from{' '}
+              {player ? player.name.split(' ').slice(-1)[0] : 'the player'}'s
+              side.
+            </span>
           </div>
-        </div>
+        ) : (
+          <div style={{ color: T.muted2, fontSize: 12, lineHeight: 1.5 }}>
+            No line needed. This prices the match itself — who wins, how long it
+            runs, and how close it should be.
+          </div>
+        )}
 
         <div style={{ marginTop: T.s3 }}>
           <div style={{ display: 'flex', gap: 6, marginBottom: T.s2,
@@ -663,7 +923,15 @@ export default function ProjectionsTab() {
 
       {res && !busy && (
         <>
-          {/* ── THE VERDICT ──────────────────────────────────────────────────
+          {mode === 'spread' ? (
+            <SpreadVerdict res={res} spread={spread} player={player}
+                           opponent={opponent} surface={surface} court={court} />
+          ) : mode === 'match' ? (
+            <MatchVerdict res={res} player={player} opponent={opponent}
+                          surface={surface} court={court} />
+          ) : (
+          <>
+          {/* ── THE PROP VERDICT ────────────────────────────────────────────
               This was the number at 40px in the corner of a grey rectangle,
               with a gauge bolted on beside it and a four-cell strip underneath
               in a second identical rectangle. Everything the screen had to say
@@ -793,15 +1061,21 @@ export default function ProjectionsTab() {
               </div>
             </div>
           </Reveal>
+          </>
+          )}
 
-          {/* The evidence behind the number — the same rows Discord shows. */}
-          <StatBlock prop={prop} res={res} surface={surface}
-                     playerName={player?.name || 'Player'}
-                     opponentName={opponent?.name || 'Opponent'} />
-
-          {/* Hit rate across windows, then every game with the line through it. */}
-          <HitWindows hist={hist} lean={lean} line={ln} />
-          <GameChart hist={hist} line={ln} lean={lean} />
+          {/* The evidence behind the number — the same rows Discord shows.
+              PROP ONLY: a serve/return table under a match verdict is evidence
+              for a question that verdict did not answer. */}
+          {mode === 'prop' && (
+            <>
+              <StatBlock prop={prop} res={res} surface={surface}
+                         playerName={player?.name || 'Player'}
+                         opponentName={opponent?.name || 'Opponent'} />
+              <HitWindows hist={hist} lean={lean} line={ln} />
+              <GameChart hist={hist} line={ln} lean={lean} />
+            </>
+          )}
 
           {res.explanation && (
             <Card style={{ padding: 14 }}>

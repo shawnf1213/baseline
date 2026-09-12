@@ -59,15 +59,17 @@ export function Chip({ active, onClick, children, style }) {
       whileTap={REDUCED ? undefined : { scale: 0.93 }}
       transition={{ type: 'spring', stiffness: 520, damping: 30 }}
       style={{
-        minHeight: 40, padding: '8px 14px', borderRadius: 999,
-        fontFamily: T.cond, fontWeight: 700, fontSize: 13, letterSpacing: 0.6,
+        minHeight: 42, padding: '8px 18px', borderRadius: 999,
+        fontFamily: T.cond, fontWeight: 800, fontSize: 13.5, letterSpacing: 1,
         textTransform: 'uppercase', whiteSpace: 'nowrap', cursor: 'pointer',
-        border: `1px solid ${active ? T.green : T.border}`,
-        background: active ? 'rgba(0,230,118,0.14)' : 'transparent',
+        border: `1px solid ${active ? `${T.green}88` : T.glassLine}`,
+        // AN UNSELECTED CHIP HAD NO FILL, so it read as a text label with a
+        // hairline round it rather than as a button you can press.
+        background: active
+          ? `linear-gradient(160deg, ${T.green}2E, ${T.green}12)`
+          : 'rgba(255,255,255,0.035)',
         color: active ? T.green : T.muted,
-        // A selected chip glows rather than merely changing colour, so the
-        // active filter is findable at a glance in a long scrolling row.
-        boxShadow: active ? '0 0 0 1px rgba(0,230,118,0.25), 0 0 14px rgba(0,230,118,0.18)' : 'none',
+        boxShadow: active ? `0 4px 16px ${T.green}22` : 'none',
         transition: 'background 140ms ease, color 140ms ease, box-shadow 180ms ease',
         ...style,
       }}>{children}</motion.button>
@@ -225,20 +227,23 @@ export function Pill({ children, tone = T.green, live, style }) {
 // each drifted to different heights and radii.
 export function GlassTabs({ options, value, onChange, style }) {
   return (
-    <div style={{ display: 'flex', gap: 4, padding: 4, borderRadius: T.r3,
+    <div style={{ display: 'flex', gap: 6, padding: 5, borderRadius: T.r3,
                   background: 'rgba(255,255,255,0.025)',
                   border: `1px solid ${T.glassLine}`, ...style }}>
       {options.map(o => {
         const on = o.key === value
         return (
           <button key={o.key} onClick={() => onChange(o.key)} style={{
-            flex: 1, minHeight: 40, borderRadius: T.r1, cursor: 'pointer',
-            border: on ? `1px solid ${T.green}55` : '1px solid transparent',
+            flex: 1, minHeight: 42, borderRadius: T.r2, cursor: 'pointer',
+            border: on ? `1px solid ${T.green}66` : '1px solid transparent',
             background: on
-              ? `linear-gradient(160deg, ${T.green}24, ${T.green}0D)` : 'transparent',
-            color: on ? T.green : T.muted,
-            fontFamily: T.cond, fontWeight: 800, fontSize: 14,
-            letterSpacing: 1, textTransform: 'uppercase',
+              ? `linear-gradient(160deg, ${T.green}2E, ${T.green}12)`
+              : 'rgba(255,255,255,0.02)',
+            color: on ? T.green : T.muted2,
+            fontFamily: T.cond, fontWeight: 800, fontSize: 14.5,
+            letterSpacing: 1.2, textTransform: 'uppercase',
+            boxShadow: on ? `0 4px 14px ${T.green}1F` : 'none',
+            transition: 'background 180ms ease, color 180ms ease',
             WebkitTapHighlightColor: 'transparent',
           }}>{o.label}</button>
         )
