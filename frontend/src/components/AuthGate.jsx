@@ -63,8 +63,17 @@ async function gateOrPreview(fallbackPhase, me) {
     const p = (await api.get('/api/preview/status')).data || {}
     if (p.allowed && (p.remaining_seconds || 0) > 0) {
       return { phase: 'preview', me, left: p.remaining_seconds,
+               // The window length, so the countdown bar can be drawn against
+               // the real one. It was divided by a hardcoded 120 while the
+               // server had moved to 60, so the bar opened half-empty and never
+               // reached full.
+               window: p.window_seconds || 60,
                next: fallbackPhase }
     }
+    // USED UP. Flagged rather than swallowed: the landing page has a button
+    // that asks for this, and silently re-rendering the same page is what a
+    // broken button looks like from the outside.
+    return { phase: fallbackPhase, me, previewSpent: true }
   } catch { /* fall through to the gate */ }
   return { phase: fallbackPhase, me }
 }
@@ -295,7 +304,10 @@ export default function AuthGate({ children }) {
     const left = Math.max(0, state.left || 0)
     const mm = String(Math.floor(left / 60)).padStart(1, '0')
     const ss = String(left % 60).padStart(2, '0')
-    const pct = Math.max(0, Math.min(100, (left / 120) * 100))
+    // Against the window the SERVER reports. Hardcoding 120 here meant that
+    // once the window moved to 60 the bar opened half-empty and drained to the
+    // middle — reading as "already half gone" the moment the preview started.
+    const pct = Math.max(0, Math.min(100, (left / (state.window || 60)) * 100))
     return (
       <div style={{ minHeight: '100vh' }}>
         <div style={{
@@ -404,7 +416,8 @@ export default function AuthGate({ children }) {
   if (state.phase === 'landing') {
     return (
       <Landing onConnectDiscord={connectDiscord} onSubscribe={subscribe}
-               onPreview={startPreview} busy={busy} invite={invite} />
+               onPreview={startPreview} previewSpent={state.previewSpent}
+               busy={busy} invite={invite} />
     )
   }
 

@@ -94,7 +94,7 @@ function CTA({ onClick, children, primary, disabled, wide }) {
 }
 
 export default function Landing({ onConnectDiscord, onSubscribe, onPreview,
-                                  busy, invite }) {
+                                  previewSpent, busy, invite }) {
   const [rec, setRec] = useState(null)
   const [loaded, setLoaded] = useState(false)
 
@@ -135,11 +135,10 @@ export default function Landing({ onConnectDiscord, onSubscribe, onPreview,
 
         <div style={{ position: 'relative', maxWidth: 1080,
                       margin: '0 auto', padding: '26px 22px 0' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <img src="/baseline-logo.png" alt="" style={{ height: 30 }} />
-            <span style={{ fontFamily: COND, fontWeight: 800, fontSize: 21,
-                           letterSpacing: 1.6 }}>BASELINE</span>
-          </div>
+          {/* THE LOGO IS ALREADY A WORDMARK — it reads BASELINE OPTIMIZER.
+              Setting the word beside it printed the name twice. */}
+          <img src="/baseline-logo.png" alt="Baseline"
+               style={{ height: 38, display: 'block' }} />
         </div>
 
         <div style={{ position: 'relative', maxWidth: 1080, margin: '0 auto',
@@ -183,11 +182,24 @@ export default function Landing({ onConnectDiscord, onSubscribe, onPreview,
                  disabled={busy}>Start free trial</CTA>
             {/* The free look, ON REQUEST. Its clock is server-side and starts
                 the moment this is pressed, so it is a button rather than
-                something that happens to a visitor while they read. */}
+                something that happens to a visitor while they read.
+                DISABLED ONCE SPENT rather than left live: the server answers
+                "no" for a visitor who has used the window, and a button that
+                re-renders the same page is indistinguishable from a broken one. */}
             {onPreview ? (
-              <CTA onClick={onPreview} disabled={busy}>See today's board</CTA>
+              <CTA onClick={previewSpent ? undefined : onPreview}
+                   disabled={busy || previewSpent}>
+                {previewSpent ? 'Free look used' : "See today's board"}
+              </CTA>
             ) : null}
           </div>
+          {previewSpent ? (
+            <p style={{ color: '#FFB300', fontSize: 12.5, marginTop: 14,
+                        maxWidth: 470, lineHeight: 1.55 }}>
+              You've used the free look on this connection. The trial below
+              opens the whole board — every line, not a timed window.
+            </p>
+          ) : null}
           <p style={{ color: '#616161', fontSize: 12.5, marginTop: 14 }}>
             Already premium in the Baseline Discord?{' '}
             <button onClick={onConnectDiscord} disabled={busy} style={{
@@ -383,11 +395,8 @@ export default function Landing({ onConnectDiscord, onSubscribe, onPreview,
       <footer style={{ borderTop: '1px solid rgba(255,255,255,0.07)',
                        padding: '34px 22px 46px' }}>
         <div style={{ maxWidth: 1080, margin: '0 auto' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
-            <img src="/baseline-logo.png" alt="" style={{ height: 22 }} />
-            <span style={{ fontFamily: COND, fontWeight: 800, fontSize: 16,
-                           letterSpacing: 1.4, color: '#b4b4b4' }}>BASELINE</span>
-          </div>
+          <img src="/baseline-logo.png" alt="Baseline"
+               style={{ height: 26, display: 'block', opacity: 0.72 }} />
           {/* THE DISCLAIMER IS NOT DECORATION. These are model projections on a
               market with a real house edge, and a page that implies otherwise
               is the one thing here that could actually cost someone money. */}
