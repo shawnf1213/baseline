@@ -54,6 +54,8 @@ function toRow(p) {
     player: p.player,
     opponent: p.opponent || '—',
     surface: '',
+    // Carried through so a card can draw the club crest.
+    team: p.team,
     tour: 'NFL',
     propType: PROP_LABEL[p.prop_type] || p.prop_type,
     line: p.line,

@@ -8,7 +8,9 @@ import { shortProp, startTimeLabel, fmt, calibratedConfidence } from './data'
 import { projectRow, cachedProjection } from './project'
 import { useBookmarks, propBookmarkId } from './useBookmarks'
 import NflBoard from './NflBoard'
-import { Num } from './motion'
+import { Num, Reveal, Tap, EdgeScale } from './motion'
+import PlayerPhoto from './PlayerPhoto'
+import { TeamMark } from './nflviz'
 
 const DEFAULT_FILTERS = { prop: 'All', tour: 'All', surface: 'All', sort: 'start' }
 const PROJECT_CAP = 120  // auto-project the whole current view (throttled in project.js)
@@ -291,11 +293,14 @@ export function BoardSummary({ rows, projecting }) {
   )
 }
 
-// ── THE TOP OF THE BOARD, PULLED OUT ─────────────────────────────────────────
-// A flat grid says every play on it is worth the same look, which is the one
-// thing the model exists to deny. These are the three the model is most sure
-// of, rendered at a size that says so — wide, ranked, and above the grid rather
-// than hidden somewhere inside it.
+// ── THE TOP OF THE BOARD ─────────────────────────────────────────────────────
+// This is the FIRST SCREEN a trial gets, and it had two minutes to make its
+// case with type alone — no faces, no crests, and the edge expressed as
+// "31.3 | −19.2", two numbers a reader has to hold and subtract.
+//
+// So: the people are on it, and the edge is drawn as what it actually is — the
+// distance between the book's number and ours, with the gap between them lit.
+// That gap IS the product, and it is now the largest thing on the card.
 //
 // Ranked by CONVICTION TIER FIRST and edge only within a tier. Sorting by raw
 // edge would put a wild number on a thin projection at the top of the page,
@@ -311,66 +316,105 @@ export function TopPlays({ rows, onOpen, saved, onSave }) {
   return (
     <>
       <SectionLabel>Top plays</SectionLabel>
-      <div style={{ display: 'grid', gap: T.s2, marginBottom: T.s4 }}>
+      <div style={{ display: 'grid', gap: T.s2, marginBottom: T.s5 }}>
         {top.map((r, i) => {
           const { side, tone, rgb } = sideTone(r.edge)
           const w = tier(r.confidence).weight
+          const isNfl = r.tour === 'NFL'
+          const hero = i === 0
           return (
-            <Card key={r.key} index={i} onClick={() => onOpen(r)} style={{
-              padding: 0, overflow: 'hidden', position: 'relative',
-              ...tierCardStyle(r.confidence, rgb),
-            }}>
-              <SideRail rgb={rgb} weight={w} />
-              <div aria-hidden style={{
-                position: 'absolute', inset: 0, pointerEvents: 'none',
-                background: `radial-gradient(130% 100% at 0% 0%, rgba(${rgb},`
-                          + `${0.03 + w * 0.022}), transparent 66%)`,
-              }} />
-              <div style={{ position: 'relative', display: 'flex',
-                            alignItems: 'center', gap: T.s3, flexWrap: 'wrap',
-                            padding: '15px 16px 15px 20px' }}>
-                {/* The rank, as a numeral. A reader should be able to tell the
-                    first card from the third without comparing two bars. */}
-                <span style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 34,
-                               lineHeight: 1, color: `rgba(${rgb},0.55)`,
-                               minWidth: 26 }}>{i + 1}</span>
+            <Reveal key={r.key} i={i}>
+              <Tap onClick={() => onOpen(r)} style={{
+                position: 'relative', overflow: 'hidden', borderRadius: T.r3,
+                background: T.glass,
+                border: `1px solid ${w >= 3 ? `rgba(${rgb},0.42)`
+                                   : `rgba(${rgb},0.20)`}`,
+                boxShadow: w >= 3
+                  ? `0 0 0 1px rgba(${rgb},0.16), 0 14px 34px rgba(0,0,0,0.5)`
+                  : '0 10px 28px rgba(0,0,0,0.45)',
+              }}>
+                <SideRail rgb={rgb} weight={w} />
+                <div aria-hidden style={{
+                  position: 'absolute', inset: 0, pointerEvents: 'none',
+                  background: `radial-gradient(120% 90% at 0% 0%, rgba(${rgb},`
+                            + `${hero ? 0.10 : 0.05}), transparent 62%)`,
+                }} />
 
-                <div style={{ minWidth: 132, flex: 1 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 7,
-                                flexWrap: 'wrap' }}>
-                    <span style={{ fontFamily: T.cond, fontWeight: 800,
-                                   fontSize: 22, color: T.white,
-                                   letterSpacing: 0.3 }}>{r.player}</span>
-                    <TierBadge conf={r.confidence} tone={tone} rgb={rgb} />
+                {/* The rank, set large and low-contrast BEHIND the content —
+                    legible as order, never competing with the numbers. */}
+                <span aria-hidden style={{
+                  position: 'absolute', right: 12, bottom: -14,
+                  fontFamily: T.cond, fontWeight: 800,
+                  fontSize: hero ? 108 : 84, lineHeight: 1,
+                  color: `rgba(${rgb},0.07)`, pointerEvents: 'none',
+                }}>{i + 1}</span>
+
+                <div style={{ position: 'relative',
+                              padding: hero ? '16px 16px 14px 20px'
+                                            : '13px 14px 12px 18px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center',
+                                gap: T.s2 }}>
+                    {/* THE FACE. The board carried no imagery at all, which is
+                        most of why it read as a spreadsheet of a market rather
+                        than a card about a person. */}
+                    {isNfl
+                      ? <TeamMark abbr={r._pick?.team} size={hero ? 46 : 38} />
+                      : <PlayerPhoto name={r.player} size={hero ? 46 : 38} />}
+
+                    <div style={{ minWidth: 0, flex: 1 }}>
+                      <div style={{ display: 'flex', alignItems: 'center',
+                                    gap: 7, flexWrap: 'wrap' }}>
+                        <span style={{ fontFamily: T.cond, fontWeight: 800,
+                                       fontSize: hero ? 23 : 20, color: T.white,
+                                       letterSpacing: 0.3,
+                                       lineHeight: 1.05 }}>{r.player}</span>
+                        <TierBadge conf={r.confidence} tone={tone} rgb={rgb} />
+                      </div>
+                      <div style={{ color: T.muted, fontSize: 12, marginTop: 2 }}>
+                        {shortProp(r.propType)} · vs {r.opponent}
+                      </div>
+                    </div>
+
+                    <Heart active={saved(r)} onClick={(e) => onSave(r, e)} />
                   </div>
-                  <div style={{ color: T.muted, fontSize: 12, marginTop: 2 }}>
-                    {shortProp(r.propType)} · vs {r.opponent}
-                    {r.surface ? ` · ${r.surface}` : ''}
+
+                  {/* THE CALL, then the distance behind it. */}
+                  <div style={{ display: 'flex', alignItems: 'center',
+                                gap: T.s3, marginTop: hero ? 12 : 10 }}>
+                    <div style={{ flexShrink: 0 }}>
+                      <div style={{ fontFamily: T.cond, fontWeight: 800,
+                                    fontSize: hero ? 30 : 25, color: tone,
+                                    letterSpacing: 0.5, lineHeight: 1 }}>
+                        {side}
+                      </div>
+                      <div style={{ fontSize: hero ? 26 : 22, fontWeight: 800,
+                                    color: T.white, letterSpacing: -0.8,
+                                    lineHeight: 1.1,
+                                    fontVariantNumeric: 'tabular-nums' }}>
+                        {fmt(r.line, Number.isInteger(r.line) ? 0 : 1)}
+                      </div>
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <EdgeScale line={r.line} proj={r.projection}
+                                 tone={tone} rgb={rgb} />
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10,
+                                marginTop: 10, paddingTop: 9,
+                                borderTop: `1px solid ${T.glassLine}` }}>
+                    <span style={{ fontFamily: T.cond, fontWeight: 700,
+                                   fontSize: 9.5, letterSpacing: 1.2,
+                                   color: T.muted2 }}>EDGE</span>
+                    <Num value={Math.abs(r.edge)} decimals={1} style={{
+                      fontSize: 15, fontWeight: 800, color: tone,
+                      fontVariantNumeric: 'tabular-nums' }} />
+                    <div style={{ flex: 1 }} />
+                    <ConfBar conf={r.confidence} tone={tone} max={118} />
                   </div>
                 </div>
-
-                <div style={{ display: 'flex', alignItems: 'baseline', gap: 7 }}>
-                  <span style={{ fontFamily: T.cond, fontWeight: 800,
-                                 fontSize: 26, color: tone,
-                                 letterSpacing: 0.5 }}>{side}</span>
-                  <span style={{ fontSize: 23, fontWeight: 800, color: T.white,
-                                 letterSpacing: -0.5,
-                                 fontVariantNumeric: 'tabular-nums' }}>
-                    {fmt(r.line, Number.isInteger(r.line) ? 0 : 1)}
-                  </span>
-                </div>
-
-                <BigStat tone={tone} rgb={rgb} proj={fmt(r.projection)}
-                         value={`${r.edge > 0 ? '+' : ''}${fmt(r.edge)}`}
-                         label="EDGE" />
-
-                <div style={{ display: 'flex', alignItems: 'center', gap: 9,
-                              minWidth: 132 }}>
-                  <ConfBar conf={r.confidence} tone={tone} max={104} />
-                  <Heart active={saved(r)} onClick={(e) => onSave(r, e)} />
-                </div>
-              </div>
-            </Card>
+              </Tap>
+            </Reveal>
           )
         })}
       </div>

@@ -108,3 +108,67 @@ export function Tap({ children, onClick, style, ...rest }) {
       {...rest}>{children}</motion.div>
   )
 }
+
+// ── THE EDGE, AS A DISTANCE ──────────────────────────────────────────────────
+// "31.3 | −19.2" in a box is two numbers you have to hold in your head and
+// subtract. The edge IS a gap between two points, so this draws it as one: the
+// book's line and our projection on a shared track with the space between them
+// filled. A reader sees how far apart they are before reading either figure,
+// which is the whole claim the product makes.
+//
+// The scale pads 35% beyond the pair so neither marker ever sits on an end —
+// a dot pinned to the edge of a track reads as clipped rather than extreme.
+export function EdgeScale({ line, proj, tone, rgb }) {
+  if (typeof line !== 'number' || typeof proj !== 'number') return null
+  const lo = Math.min(line, proj), hi = Math.max(line, proj)
+  const pad = Math.max((hi - lo) * 0.35, Math.abs(hi) * 0.06, 0.5)
+  const a = lo - pad, b = hi + pad
+  const at = (v) => ((v - a) / (b - a || 1)) * 100
+  const lPct = at(line), pPct = at(proj)
+  const from = Math.min(lPct, pPct), width = Math.abs(pPct - lPct)
+
+  const Marker = ({ pct, label, value, colour, strong }) => (
+    <div style={{ position: 'absolute', left: `${pct}%`, top: 0,
+                  transform: 'translateX(-50%)', textAlign: 'center' }}>
+      <div style={{ fontFamily: T.cond, fontWeight: 700, fontSize: 8.5,
+                    letterSpacing: 1, textTransform: 'uppercase',
+                    color: T.muted2, whiteSpace: 'nowrap' }}>{label}</div>
+      <div style={{ fontSize: strong ? 17 : 14, fontWeight: 800, color: colour,
+                    lineHeight: 1.15, whiteSpace: 'nowrap',
+                    fontVariantNumeric: 'tabular-nums' }}>{value}</div>
+    </div>
+  )
+
+  return (
+    <div style={{ position: 'relative', height: 56, marginTop: 4 }}>
+      <Marker pct={Math.min(88, Math.max(12, lPct))} label="Book line"
+              value={line} colour={T.muted} />
+      <Marker pct={Math.min(88, Math.max(12, pPct))} label="Baseline"
+              value={proj} colour={colourOf(tone)} strong />
+
+      <div style={{ position: 'absolute', left: 0, right: 0, bottom: 6,
+                    height: 4, borderRadius: 3,
+                    background: 'rgba(255,255,255,0.07)' }} />
+      {/* The gap itself. This is the product. */}
+      <motion.div
+        initial={REDUCED ? false : { width: 0 }}
+        animate={{ width: `${width}%` }}
+        transition={{ duration: 0.75, ease: EASE, delay: 0.1 }}
+        style={{ position: 'absolute', left: `${from}%`, bottom: 6, height: 4,
+                 borderRadius: 3,
+                 background: `linear-gradient(90deg, rgba(${rgb},0.35),`
+                           + ` rgba(${rgb},0.95))` }} />
+      {[[lPct, T.muted2, 7], [pPct, colourOf(tone), 10]].map(([p, c, d], i) => (
+        <motion.div key={i}
+          initial={REDUCED ? false : { scale: 0, opacity: 0 }}
+          animate={{ scale: 1, opacity: 1 }}
+          transition={{ duration: 0.35, ease: EASE, delay: 0.35 + i * 0.12 }}
+          style={{ position: 'absolute', left: `${p}%`, bottom: 8 - d / 2 + 2,
+                   width: d, height: d, marginLeft: -d / 2, borderRadius: d,
+                   background: c, border: `2px solid ${T.ground}` }} />
+      ))}
+    </div>
+  )
+}
+
+const colourOf = (t) => t || T.white
