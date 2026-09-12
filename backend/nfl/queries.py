@@ -612,10 +612,27 @@ def _search_index(season: int = None):
     match. Someone typing "jackson" almost always wants the quarterback, not the
     fourth-string safety, and alphabetical order would bury him.
     """
-    df, yr = _weekly(season)
-    key = yr
+    # ── BOTH SEASONS, ALWAYS ─────────────────────────────────────────────────
+    # _weekly() falls back to the prior season only when the current frame is
+    # ENTIRELY empty, which is the wrong test once a season starts. In week 1 of
+    # 2026 that frame existed and held two clubs, so this indexed 134 players
+    # and the rest of the league did not exist — Discord autocomplete and the
+    # website's NFL search both returned nothing for most names. Exactly the bug
+    # already fixed in _player_rows, in the one place it had not been.
+    #
+    # Concatenating is safe because the index is keyed on display name: a player
+    # in both seasons groups into one entry, and his volume is summed, which is
+    # the right ranking signal anyway.
+    from . import client as _c
+    import pandas as _pd
+    cur = season or _c.current_season()
+    key = cur
     if key in _search_cache:
         return _search_cache[key]
+    frames = [f for f in (_c.load("stats_player_week", cur),
+                          _c.load("stats_player_week", cur - 1))
+              if f is not None and len(f)]
+    df = _pd.concat(frames, ignore_index=True) if frames else _pd.DataFrame()
     out = []
     try:
         if len(df):

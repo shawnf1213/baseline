@@ -57,10 +57,6 @@ export const fetchNextMatch = (player_id, tour, signal) =>
   api.get('/api/player/next-match', { params: { player_id, tour }, signal }).then(r => r.data)
 // The full public pick log — the mobile Board re-frames today's rows from this
 // as neutral research data (the full PrizePicks market is not persisted server-side).
-// The NFL record — every play the bot posted, with its result. There is no
-// NFL equivalent of /api/prop/calculate: the nfl/ package ships with the BOT,
-// not the backend, so the backend can serve what was posted but cannot price
-// something new.
 // The FULL scanned NFL market — every line the model could price, with our
 // number beside it. This is the board; fetchNflRecord is the record of what was
 // posted. Different things, different tables.
@@ -68,10 +64,27 @@ export const fetchNflBoard  = (slate_date, signal) =>
   api.get('/api/nfl/board', { params: { slate_date }, signal }).then(r => r.data)
 
 // Published player profiles — role, usage, matchup splits and recent form.
-// Computed by the BOT (nfl/queries.py) and published to nfl_players, because
-// the backend cannot import the model. See nfl/publish.py::publish_players.
+// Still PUBLISHED by the bot rather than computed on request: a profile reads
+// several parquet datasets and the board needs 117 of them, which is a batch
+// job, not a page load. The backend can now compute them (backend/nfl), so this
+// is a caching decision rather than a limitation.
 export const fetchNflPlayer = (player, signal) =>
   api.get('/api/nfl/players', { params: { player }, signal }).then(r => r.data)
+
+// ── NFL PRICING ──────────────────────────────────────────────────────────────
+// The NFL answer to calcProp. These exist because the model moved into the
+// backend (backend/nfl) — before that the website could only show what the bot
+// had already scanned, never price something new.
+export const searchNflPlayers = (query, signal) =>
+  api.get('/api/nfl/search', { params: { query }, signal }).then(r => r.data)
+
+export const fetchNflPropTypes = (signal) =>
+  api.get('/api/nfl/props', { signal }).then(r => r.data)
+
+// Same generous timeout as calcProp: a player the container has not touched
+// today pulls several nflverse parquet datasets before it can answer.
+export const projectNfl = (body) =>
+  api.post('/api/nfl/project', body, { timeout: 300000 }).then(r => r.data)
 
 export const fetchNflRecord = (signal) =>
   api.get('/api/nfl/results/record', { signal }).then(r => r.data)

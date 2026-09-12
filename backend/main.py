@@ -366,6 +366,20 @@ async def nfl_prop_types():
             "props": [{"key": k, "label": labels.get(k, k)} for k in SUPPORTED]}
 
 
+@app.get("/api/nfl/search")
+async def nfl_search(query: str = "", limit: int = 15):
+    """NFL player search — the same index the bot's slash-command autocomplete
+    uses, so a name that works in Discord works on the website."""
+    if _nfl_mod() is None:
+        return {"players": []}
+    try:
+        from nfl import queries as _q
+        return {"players": (_q.search_players(query, limit=limit) or [])}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("nfl_search failed: %s", exc)
+        return {"players": []}
+
+
 @app.post("/api/nfl/project")
 async def nfl_project(payload: dict = Body(...)):
     """Price ONE NFL prop for a named player — the NFL answer to
@@ -430,8 +444,14 @@ async def nfl_project(payload: dict = Body(...)):
             return {"ok": False,
                     "reason": "Not enough usage to price this player — the "
                               "model refuses below board-realistic volume."}
+        wp = _board._win_prob(res)
         return {"ok": True, "player": player, "prop": prop, "line": line,
-                "game": game, **res}
+                "game": game,
+                # Board-identical: publish.py sends win_prob as `confidence`,
+                # so the same play priced here and scanned there cannot show
+                # two different numbers.
+                "confidence": round(wp * 100, 1) if isinstance(wp, float) else None,
+                **res}
     except HTTPException:
         raise
     except Exception as exc:  # noqa: BLE001

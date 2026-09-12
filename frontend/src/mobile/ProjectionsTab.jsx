@@ -1,12 +1,14 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect } from 'react'
 import { T } from './theme'
 import { Card, Chip, Spinner, Empty, SectionLabel, PageTitle,
          GlassTabs } from './bits'
 import PlayerPhoto from './PlayerPhoto'
-import { Reveal, Num, GrowBar, Ring } from './motion'
+import { Reveal, Num, GrowBar, Ring, EdgeScale } from './motion'
+import { TeamMark } from './nflviz'
 import { usePlayerSearch } from '../hooks/usePlayerSearch'
 import { PROP_TYPES, SURFACES, shortProp, hitStrip, fmt } from './data'
-import { calcProp, fetchHistory } from '../utils/api'
+import { calcProp, fetchHistory, searchNflPlayers,
+         fetchNflPropTypes, projectNfl } from '../utils/api'
 import { TOURNAMENT_CONFIG } from '../utils/constants'
 
 
@@ -478,7 +480,7 @@ function GameChart({ hist, line, lean }) {
 // scenario mixture in one response, so they must look like one family — a
 // separate card per mode is how three views of one calculation start reading as
 // three different products.
-function Verdict({ tone, rgb, children }) {
+function Verdict({ rgb, children }) {
   return (
     <Reveal>
       <div style={{
@@ -565,7 +567,7 @@ function SpreadVerdict({ res, spread, player, opponent, surface, court }) {
   const sp = Number(spread)
 
   return (
-    <Verdict tone={tone} rgb={rgb}>
+    <Verdict rgb={rgb}>
       <VerdictHead player={player} opponent={opponent} surface={surface}
                    court={court} />
       <div style={{ display: 'flex', alignItems: 'center', gap: T.s3,
@@ -631,7 +633,7 @@ function MatchVerdict({ res, player, opponent, surface, court }) {
   const rgb = wp == null ? '107,107,107' : favoured ? '0,230,118' : '255,68,68'
 
   return (
-    <Verdict tone={tone} rgb={rgb}>
+    <Verdict rgb={rgb}>
       <VerdictHead player={player} opponent={opponent} surface={surface}
                    court={court} />
       <div style={{ display: 'flex', alignItems: 'center', gap: T.s3,
@@ -685,6 +687,382 @@ function MatchVerdict({ res, player, opponent, surface, court }) {
   )
 }
 
+// ── NFL PROJECTIONS ──────────────────────────────────────────────────────────
+// The same builder and the same verdict as tennis, because it is the same
+// question asked of a different sport — a second layout here would say the two
+// are different products when they are one engine each.
+//
+// It exists at all because backend/nfl now sits beside the API. Before that the
+// model ran only where the bot ran, so the site could show what had already
+// been scanned and nothing else.
+//
+// ONE PLAYER, NOT TWO. A football prop is priced against the defence the
+// schedule says he faces, so the opponent is looked up rather than chosen —
+// picking one would let a reader ask for a game that is not being played.
+function NflProjections() {
+  const [avail, setAvail] = useState(null)      // null = still asking
+  const [props, setProps] = useState([])
+  const [prop, setProp] = useState('rush_yards')
+  const [player, setPlayer] = useState(null)
+  const [picking, setPicking] = useState(false)
+  const [line, setLine] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [res, setRes] = useState(null)
+  const [err, setErr] = useState(null)
+
+  useEffect(() => {
+    let alive = true
+    fetchNflPropTypes()
+      .then(d => { if (!alive) return
+        setAvail(!!d?.ready); setProps(d?.props || []) })
+      .catch(() => { if (alive) setAvail(false) })
+    return () => { alive = false }
+  }, [])
+
+  const ready = !!player && !!prop && line !== '' && !isNaN(Number(line))
+  const missing = !player ? 'Add a player'
+    : !line ? 'Enter the book line' : 'Run projection'
+
+  const run = async () => {
+    if (!ready) return
+    setBusy(true); setErr(null); setRes(null)
+    try {
+      const d = await projectNfl({ player: player.name, prop,
+                                   line: Number(line), team: player.team })
+      if (d?.ok === false) setErr(d.reason || 'Could not price this player.')
+      else setRes(d)
+    } catch (e) {
+      setErr(e?.response?.data?.detail || e?.message || 'Projection failed')
+    } finally { setBusy(false) }
+  }
+
+  // A deploy without the package says so, rather than showing a form whose
+  // button can only ever fail.
+  if (avail === false) {
+    return <Empty icon="🏈" title="NFL pricing unavailable"
+                  hint="This deploy does not carry the NFL model. The board and
+                        player pages still work." />
+  }
+
+  const proj = typeof res?.projection === 'number' ? res.projection : null
+  const ln = Number(line)
+  const edge = proj != null && !isNaN(ln)
+    ? Math.round((proj - ln) * 10) / 10 : null
+  const lean = res?.lean || (edge == null ? null
+    : edge > 0 ? 'OVER' : edge < 0 ? 'UNDER' : null)
+  const tone = lean === 'OVER' ? T.green : lean === 'UNDER' ? T.red : T.muted2
+  const rgb = lean === 'OVER' ? '0,230,118'
+            : lean === 'UNDER' ? '255,68,68' : '107,107,107'
+  const g = res?.game || {}
+
+  return (
+    <>
+      <Card style={{ padding: 16, marginBottom: T.s3 }}>
+        <div style={{ display: 'flex', alignItems: 'stretch', gap: T.s2 }}>
+          {player ? (
+            <div style={{
+              flex: 1, minWidth: 0, padding: '14px 10px', borderRadius: T.r2,
+              background: 'rgba(255,255,255,0.035)',
+              border: `1px solid ${T.glassLine}`, textAlign: 'center',
+              position: 'relative',
+            }}>
+              <button onClick={() => setPlayer(null)} style={{
+                position: 'absolute', top: 4, right: 6, background: 'transparent',
+                border: 'none', color: T.muted2, fontSize: 19, cursor: 'pointer',
+                lineHeight: 1, padding: 4,
+              }}>×</button>
+              <div style={{ display: 'flex', justifyContent: 'center' }}>
+                <TeamMark abbr={player.team} size={52} />
+              </div>
+              <div style={{ fontSize: 14, fontWeight: 700, color: T.white,
+                            marginTop: 8, lineHeight: 1.25 }}>{player.name}</div>
+              <div style={{ fontSize: 10.5, color: T.muted2, marginTop: 2 }}>
+                {[player.position, player.team].filter(Boolean).join(' · ')}
+              </div>
+            </div>
+          ) : (
+            <button onClick={() => setPicking(true)} style={{
+              flex: 1, padding: '14px 10px', borderRadius: T.r2,
+              background: picking ? `${T.green}0F` : 'transparent',
+              border: `1.5px dashed ${picking ? `${T.green}77` : T.glassLine}`,
+              cursor: 'pointer', textAlign: 'center', fontFamily: T.font,
+            }}>
+              <div style={{
+                width: 52, height: 52, borderRadius: 26, margin: '0 auto',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                border: `1.5px dashed ${picking ? `${T.green}77` : T.glassLine}`,
+                color: picking ? T.green : T.muted2, fontSize: 24,
+              }}>+</div>
+              <div style={{ fontSize: 13, fontWeight: 700, marginTop: 8,
+                            color: picking ? T.green : T.muted }}>Player</div>
+              <div style={{ fontSize: 10.5, color: T.muted2, marginTop: 2 }}>
+                {picking ? 'search below' : 'tap to add'}
+              </div>
+            </button>
+          )}
+
+          {/* THE OPPONENT IS A FACT, NOT A CHOICE — it comes from the schedule
+              once a player is picked. Offering it as a second tile would let a
+              reader build a matchup that is not on the calendar. */}
+          <div style={{
+            flex: 1, minWidth: 0, padding: '14px 10px', borderRadius: T.r2,
+            background: 'rgba(255,255,255,0.02)',
+            border: `1px dashed ${T.glassLine}`, textAlign: 'center',
+            display: 'flex', flexDirection: 'column', alignItems: 'center',
+            justifyContent: 'center',
+          }}>
+            {g.opponent_team ? (
+              <>
+                <TeamMark abbr={g.opponent_team} size={52} />
+                <div style={{ fontSize: 14, fontWeight: 700, color: T.white,
+                              marginTop: 8 }}>{g.opponent_team}</div>
+                <div style={{ fontSize: 10.5, color: T.muted2, marginTop: 2 }}>
+                  {g.matchup || 'opponent'}
+                </div>
+              </>
+            ) : (
+              <>
+                <div style={{ fontSize: 22, color: T.muted2 }}>🏈</div>
+                <div style={{ fontSize: 12.5, color: T.muted2, marginTop: 8,
+                              lineHeight: 1.4 }}>
+                  Opponent comes<br />from the schedule
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+
+        {picking && (
+          <NflSearchPanel onCancel={() => setPicking(false)}
+                          onPick={p => { setPlayer(p); setPicking(false) }} />
+        )}
+
+        <div style={{ height: 1, background: T.glassLine,
+                      margin: `${T.s3}px 0` }} />
+
+        <div style={{ display: 'flex', gap: T.s2, alignItems: 'stretch' }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <Select value={prop} onChange={setProp} inline bare
+                    options={props.map(p => ({ value: p.key, label: p.label }))} />
+          </div>
+          <NumField label="LINE" value={line} onChange={setLine}
+                    placeholder="50.5" />
+        </div>
+
+        <button onClick={run} disabled={!ready || busy} style={{
+          width: '100%', minHeight: 54, borderRadius: T.r2,
+          border: ready && !busy ? 'none' : `1px dashed ${T.glassLine}`,
+          background: ready && !busy
+            ? `linear-gradient(135deg, ${T.green}, #00B85C)` : 'transparent',
+          color: ready && !busy ? '#04240f' : T.muted2,
+          fontFamily: T.cond, fontWeight: 800, fontSize: 17, letterSpacing: 1.2,
+          textTransform: 'uppercase',
+          cursor: ready && !busy ? 'pointer' : 'default', marginTop: T.s4,
+          boxShadow: ready && !busy ? `0 10px 30px ${T.green}3D` : 'none',
+        }}>{busy ? 'Projecting…' : ready ? 'Run projection' : missing}</button>
+      </Card>
+
+      {busy && (
+        <Card style={{ padding: 24, textAlign: 'center' }}>
+          <Spinner />
+          <div style={{ color: T.muted2, fontSize: 12, marginTop: 10 }}>
+            First run of the day pulls the nflverse datasets — give it a moment.
+          </div>
+        </Card>
+      )}
+
+      {err && !busy && <Empty title="Could not project" hint={String(err)} />}
+
+      {res && !busy && (
+        <>
+          <Verdict rgb={rgb}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 11 }}>
+              <TeamMark abbr={player.team} size={44} />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 19,
+                              color: T.white, lineHeight: 1.1 }}>
+                  {player.name}
+                </div>
+                <div style={{ fontSize: 11.5, color: T.muted2, marginTop: 2 }}>
+                  {res.position || player.position}
+                  {g.matchup ? ` · ${g.matchup}` : ''}
+                  {g.kickoff ? ` · ${String(g.kickoff).slice(5, 10)}` : ''}
+                </div>
+              </div>
+              {g.opponent_team ? <TeamMark abbr={g.opponent_team} size={34} /> : null}
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: T.s3,
+                          marginTop: T.s4 }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 11.5,
+                              letterSpacing: 1.6, textTransform: 'uppercase',
+                              color: T.muted2 }}>
+                  {(props.find(p => p.key === prop) || {}).label || prop}
+                </div>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: 10,
+                              marginTop: 2 }}>
+                  <Num value={proj} decimals={1} style={{
+                    fontSize: 'clamp(46px, 13vw, 62px)', fontWeight: 800,
+                    color: T.white, lineHeight: 1, letterSpacing: -2.5,
+                    fontVariantNumeric: 'tabular-nums' }} />
+                  <span style={{
+                    fontFamily: T.cond, fontWeight: 800, fontSize: 20,
+                    letterSpacing: 1, color: tone, padding: '3px 10px',
+                    borderRadius: 8, background: `rgba(${rgb},0.14)`,
+                    border: `1px solid rgba(${rgb},0.34)`,
+                  }}>{lean || '—'}</span>
+                </div>
+                <div style={{ fontSize: 12, color: T.muted, marginTop: 8 }}>
+                  book line <b style={{ color: T.white }}>{fmt(ln)}</b>
+                  {edge != null ? (
+                    <> · edge <b style={{ color: tone }}>
+                      {edge > 0 ? '+' : ''}{fmt(edge)}</b></>
+                  ) : null}
+                </div>
+              </div>
+              {res.confidence != null && (
+                <Ring pct={res.confidence} size={92} stroke={8} tone={tone}
+                      delay={0.15}>
+                  <Num value={res.confidence} decimals={0} style={{
+                    fontSize: 24, fontWeight: 800, color: T.white,
+                    lineHeight: 1 }} />
+                  <span style={{ fontFamily: T.cond, fontWeight: 700,
+                                 fontSize: 9, letterSpacing: 1.2,
+                                 color: T.muted2, marginTop: 2 }}>CONF</span>
+                </Ring>
+              )}
+            </div>
+
+            <div style={{ marginTop: T.s3 }}>
+              <EdgeScale line={ln} proj={proj} tone={tone} rgb={rgb} />
+            </div>
+
+            <VerdictStats cells={[
+              ['P(over)', res.p_over != null
+                ? `${Math.round(res.p_over * 100)}%` : '—', T.white,
+               res.p_over != null ? res.p_over * 100 : null],
+              ['Spread', g.player_spread != null
+                ? `${g.player_spread > 0 ? '+' : ''}${g.player_spread}` : '—',
+               T.white, null],
+              ['Total', g.total != null ? String(g.total) : '—', T.white, null],
+              ['Games', res.games_in_window != null
+                ? String(res.games_in_window) : '—', T.muted, null],
+            ]} />
+          </Verdict>
+
+          <NflDrivers res={res} />
+        </>
+      )}
+    </>
+  )
+}
+
+// The inputs behind the number. A football projection is volume × rate with an
+// opponent applied to the rate, and every one of those terms is in the
+// response — showing the answer without them is asking for faith.
+function NflDrivers({ res }) {
+  const d = res.drivers || {}
+  const v = res.volume || {}
+  const rows = Object.entries(d).filter(([, x]) => typeof x === 'number')
+  if (!rows.length) return null
+  const label = (k) => k.replace(/_/g, ' ')
+  return (
+    <Reveal i={1}>
+      <Card style={{ padding: 14, marginBottom: T.s2 }}>
+        <div style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 11,
+                      letterSpacing: 1.6, textTransform: 'uppercase',
+                      color: T.muted2, marginBottom: 10 }}>
+          What the number is built from
+        </div>
+        <div style={{ display: 'grid', gap: T.s2,
+                      gridTemplateColumns: 'repeat(auto-fit, minmax(104px, 1fr))' }}>
+          {rows.map(([k, x]) => (
+            <div key={k}>
+              <div style={{ fontFamily: T.cond, fontWeight: 700, fontSize: 9.5,
+                            letterSpacing: 1, textTransform: 'uppercase',
+                            color: T.muted2 }}>{label(k)}</div>
+              <div style={{ fontSize: 17, fontWeight: 800, color: T.white,
+                            fontVariantNumeric: 'tabular-nums' }}>
+                {x < 1 && x > 0 ? `${Math.round(x * 100)}%` : x.toFixed(2)}
+              </div>
+            </div>
+          ))}
+        </div>
+        <div style={{ color: T.muted2, fontSize: 11, marginTop: 11, paddingTop: 9,
+                      borderTop: `1px solid ${T.glassLine}`, lineHeight: 1.5 }}>
+          {res.opponent
+            ? <>Opponent <b style={{ color: T.white }}>{res.opponent}</b> applied
+                to the RATE at ×{res.opponent_factor} — never to volume, which
+                the spread already reflects.</>
+            : res.opponent_basis}
+          {res.window ? <> · usage window: {res.window}.</> : null}
+          {v.market_known === false
+            ? ' No market for this game yet, so the script mixture is unweighted.'
+            : ''}
+        </div>
+      </Card>
+    </Reveal>
+  )
+}
+
+function NflSearchPanel({ onPick, onCancel }) {
+  const [q, setQ] = useState('')
+  const [rows, setRows] = useState([])
+  const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    if (q.trim().length < 2) { setRows([]); return }
+    let alive = true
+    setLoading(true)
+    const t = setTimeout(() => {
+      searchNflPlayers(q.trim())
+        .then(d => { if (alive) setRows(d?.players || []) })
+        .catch(() => { if (alive) setRows([]) })
+        .finally(() => { if (alive) setLoading(false) })
+    }, 220)
+    return () => { alive = false; clearTimeout(t) }
+  }, [q])
+
+  return (
+    <div style={{ marginTop: T.s2 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8,
+                    marginBottom: 6 }}>
+        <span style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 9.5,
+                       letterSpacing: 1.2, textTransform: 'uppercase',
+                       color: T.green, flex: 1 }}>Choose player</span>
+        <button onClick={onCancel} style={{ background: 'transparent',
+          border: 'none', color: T.muted2, fontSize: 11.5, cursor: 'pointer',
+          fontFamily: T.font }}>Cancel</button>
+      </div>
+      <input autoFocus value={q} onChange={e => setQ(e.target.value)}
+        placeholder="Search any NFL player…"
+        style={{
+          width: '100%', boxSizing: 'border-box', minHeight: 46,
+          padding: '0 14px', background: 'rgba(255,255,255,0.04)',
+          border: `1px solid ${T.green}55`, borderRadius: T.r1,
+          color: T.white, fontSize: 16, outline: 'none',
+        }} />
+      {loading && <div style={{ padding: 10 }}><Spinner size={16} /></div>}
+      {rows.slice(0, 6).map(p => (
+        <button key={`${p.name}-${p.team}`} onClick={() => onPick(p)} style={{
+          display: 'flex', alignItems: 'center', gap: 10, width: '100%',
+          padding: 9, marginTop: 6, borderRadius: T.r1, cursor: 'pointer',
+          background: 'rgba(255,255,255,0.03)',
+          border: `1px solid ${T.glassLine}`, fontFamily: T.font,
+          textAlign: 'left',
+        }}>
+          <TeamMark abbr={p.team} size={32} />
+          <span style={{ flex: 1, fontSize: 14, color: T.white }}>{p.name}</span>
+          <span style={{ fontSize: 11, color: T.muted2 }}>
+            {[p.position, p.team].filter(Boolean).join(' · ')}
+          </span>
+        </button>
+      ))}
+    </div>
+  )
+}
+
 export default function ProjectionsTab() {
   const [tour, setTour] = useState('ATP')
   const [player, setPlayer] = useState(null)
@@ -712,6 +1090,7 @@ export default function ProjectionsTab() {
   const [line, setLine] = useState('')
   // Which tile the one shared search panel is filling.
   const [picking, setPicking] = useState(null)
+  const [sport, setSport] = useState('tennis')
   const [mode, setMode] = useState('prop')   // prop | spread | match
   const [spread, setSpread] = useState('')
   // Names the ONE thing still missing, in the order a reader fills them.
@@ -795,6 +1174,12 @@ export default function ProjectionsTab() {
     <div style={{ padding: '0 0 90px' }}>
       <PageTitle>Price any matchup</PageTitle>
 
+      <GlassTabs value={sport} onChange={setSport} style={{ marginBottom: T.s2 }}
+                 options={[{ key: 'tennis', label: '🎾 Tennis' },
+                           { key: 'nfl', label: '🏈 NFL' }]} />
+
+      {sport === 'nfl' ? <NflProjections /> : (
+      <>
       <GlassTabs value={mode} onChange={setMode} style={{ marginBottom: T.s3 }}
                  options={[{ key: 'prop', label: 'Prop' },
                            { key: 'spread', label: 'Spread' },
@@ -1092,7 +1477,10 @@ export default function ProjectionsTab() {
       )}
 
       {!res && !busy && !err && (
-        <Empty title="Pick a matchup" hint="Choose both players, a prop and the book line." />
+        <Empty title="Pick a matchup"
+               hint="Choose both players, a prop and the book line." />
+      )}
+      </>
       )}
     </div>
   )
