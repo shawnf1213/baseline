@@ -82,9 +82,8 @@ export default function MobileShell() {
         position: 'sticky', top: 0, zIndex: 50,
         // Translucent rather than solid so the page glow reads through it, with
         // a brand hairline instead of another grey rule.
-        background: 'rgba(8,8,8,0.82)',
-        borderBottom: '1px solid rgba(0,230,118,0.16)',
-        boxShadow: '0 1px 22px rgba(0,230,118,0.05)',
+        background: 'rgba(7,7,7,0.78)',
+        borderBottom: `1px solid ${T.glassLine}`,
         paddingTop: SAFE_TOP,
         // Start where the content starts so the fixed rail never paints over
         // the header's own contents.
@@ -94,16 +93,17 @@ export default function MobileShell() {
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px' }}>
           {/* On desktop the rail shows the wordmark, so repeating it here
               would be the same brand twice on one line. */}
-          <div style={{ fontFamily: T.cond, fontWeight: 900, fontSize: 22,
-                        letterSpacing: 3, textTransform: 'uppercase',
-                        visibility: wide ? 'hidden' : 'visible' }}>
-            BASE<span style={{ color: T.green }}>LINE</span>
-          </div>
+          {/* THE REAL WORDMARK, not BASE|LINE set in type. The landing page
+              uses the logo file; spelling it out here meant two versions of the
+              same brand that drift on weight and letter-spacing. */}
+          <img src="/baseline-logo.png" alt="Baseline"
+               style={{ height: 26, display: 'block',
+                        visibility: wide ? 'hidden' : 'visible' }} />
           <span style={{
             fontFamily: T.cond, fontWeight: 700, fontSize: 10, letterSpacing: 2.5,
             color: T.green, textTransform: 'uppercase',
-            border: '1px solid rgba(0,230,118,0.28)', borderRadius: 999,
-            padding: '4px 10px', background: 'rgba(0,230,118,0.07)',
+            border: `1px solid ${T.green}44`, borderRadius: 999,
+            padding: '5px 11px', background: `${T.green}12`,
           }}>Research</span>
         </div>
       </header>
@@ -119,7 +119,7 @@ export default function MobileShell() {
       <main
         className={wide ? 'baseline-wide' : undefined}
         style={{
-          padding: wide ? '22px 30px 40px' : `16px 14px calc(84px + ${SAFE_BOTTOM})`,
+          padding: wide ? '30px 38px 52px' : `22px 16px calc(92px + ${SAFE_BOTTOM})`,
           maxWidth: wide ? 1560 : 640,
           margin: wide ? '0 0 0 210px' : '0 auto',
         }}>

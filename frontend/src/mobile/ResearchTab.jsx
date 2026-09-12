@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { T } from './theme'
-import { Card, Heart, Delta, Spinner, Empty, SectionLabel } from './bits'
+import { Card, Heart, Delta, Spinner, Empty, SectionLabel, PageTitle } from './bits'
 import PlayerPhoto from './PlayerPhoto'
 import { shortProp, fmt } from './data'
 import { projectRow, cachedProjection } from './project'
@@ -90,7 +90,11 @@ export default function ResearchTab({ onOpenPlayer }) {
 }
 
 function Header() {
-  return <div style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 26, color: T.white, letterSpacing: 0.5, marginBottom: 14 }}>My Research</div>
+  return (
+    <PageTitle sub="Props and players you saved, kept on this device.">
+      My Research
+    </PageTitle>
+  )
 }
 function Mini({ label, value, accent }) {
   return (

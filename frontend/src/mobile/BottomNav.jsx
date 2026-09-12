@@ -36,9 +36,8 @@ export default function BottomNav({ active, onChange }) {
     return (
       <nav style={{
         position: 'fixed', left: 0, top: 0, bottom: 0, width: 210, zIndex: 1000,
-        background: 'rgba(8,8,8,0.72)',
-        borderRight: '1px solid rgba(0,230,118,0.14)',
-        boxShadow: '1px 0 30px rgba(0,230,118,0.04)',
+        background: 'rgba(7,7,7,0.70)',
+        borderRight: `1px solid ${T.glassLine}`,
         backdropFilter: 'blur(8px)', WebkitBackdropFilter: 'blur(8px)',
         display: 'flex', flexDirection: 'column', gap: 4, padding: '18px 12px 20px',
       }}>
@@ -48,11 +47,9 @@ export default function BottomNav({ active, onChange }) {
             BASELINE should be. In a sidebar layout the mark belongs at the top
             of the rail anyway, and the header now starts where the content
             does. */}
-        <div style={{
-          fontFamily: T.cond, fontWeight: 900, fontSize: 21, letterSpacing: 3,
-          textTransform: 'uppercase', color: T.white, padding: '4px 14px 20px',
-        }}>
-          BASE<span style={{ color: T.green }}>LINE</span>
+        <div style={{ padding: '4px 14px 22px' }}>
+          <img src="/baseline-logo.png" alt="Baseline"
+               style={{ height: 24, display: 'block' }} />
         </div>
         {TABS.map(t => {
           const on = active === t.key
@@ -61,7 +58,9 @@ export default function BottomNav({ active, onChange }) {
               display: 'flex', alignItems: 'center', gap: 12, width: '100%',
               minHeight: 46, padding: '0 14px', borderRadius: 11, border: 'none',
               cursor: 'pointer', textAlign: 'left',
-              background: on ? 'rgba(0,230,118,0.10)' : 'transparent',
+              background: on
+                ? `linear-gradient(100deg, ${T.green}1F, ${T.green}08)`
+                : 'transparent',
               boxShadow: on ? `inset 3px 0 0 ${T.green}` : 'none',
               transition: 'background 140ms ease',
             }}>
@@ -83,7 +82,7 @@ export default function BottomNav({ active, onChange }) {
       // the content, not one stretched edge to edge across the screen.
       position: 'fixed', left: '50%', transform: 'translateX(-50%)',
       bottom: 0, zIndex: 1000, width: '100%', maxWidth: 640,
-      background: 'rgba(10,10,10,0.96)', borderTop: `1px solid ${T.border}`,
+      background: 'rgba(7,7,7,0.94)', borderTop: `1px solid ${T.glassLine}`,
       paddingBottom: SAFE_BOTTOM,
       display: 'grid', gridTemplateColumns: `repeat(${TABS.length}, 1fr)`,
       backdropFilter: 'blur(8px)', WebkitBackdropFilter: 'blur(8px)',

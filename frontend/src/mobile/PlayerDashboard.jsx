@@ -120,10 +120,17 @@ export default function PlayerDashboard({ player, boards, onClose, onOpenPlayer 
   const handLabel = hand === 'R' ? 'Right-handed' : hand === 'L' ? 'Left-handed' : null
 
   return (
-    <div style={{ position: 'fixed', inset: 0, zIndex: 1500, background: T.bg, overflowY: 'auto', overflowX: 'hidden', animation: 'fade-in 160ms ease' }} className="no-scrollbar">
+    <div className="no-scrollbar" style={{
+      position: 'fixed', inset: 0, zIndex: 1500, overflowY: 'auto',
+      overflowX: 'hidden', animation: 'fade-in 160ms ease',
+      background: T.ground,
+      backgroundImage:
+        `radial-gradient(900px 480px at 12% -6%, ${T.green}14, transparent 62%),`
+        + `radial-gradient(760px 440px at 96% 6%, ${T.blue}0F, transparent 66%)`,
+    }}>
       {/* Top bar */}
       <div style={{
-        position: 'sticky', top: 0, zIndex: 5, background: 'rgba(10,10,10,0.96)',
+        position: 'sticky', top: 0, zIndex: 5, background: 'rgba(7,7,7,0.92)',
         borderBottom: `1px solid ${T.border}`, paddingTop: SAFE_TOP,
         display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: `calc(6px + ${SAFE_TOP}) 8px 6px`,
       }}>

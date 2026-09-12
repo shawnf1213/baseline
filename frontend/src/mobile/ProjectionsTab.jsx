@@ -1,6 +1,6 @@
 import { useState, useMemo } from 'react'
 import { T } from './theme'
-import { Card, Chip, Spinner, Empty, SectionLabel } from './bits'
+import { Card, Chip, Spinner, Empty, SectionLabel, PageTitle } from './bits'
 import PlayerPhoto from './PlayerPhoto'
 import ConfidenceGauge from '../components/ConfidenceGauge'
 import { usePlayerSearch } from '../hooks/usePlayerSearch'
@@ -467,11 +467,9 @@ export default function ProjectionsTab() {
 
   return (
     <div style={{ padding: '0 0 90px' }}>
-      <div style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 26, color: T.white,
-                    letterSpacing: 0.5, marginBottom: 4 }}>Projections</div>
-      <div style={{ fontSize: 12, color: T.muted2, marginBottom: 14 }}>
-        The same engine the bot's /prop command runs.
-      </div>
+      <PageTitle sub="The same engine the bot's /prop command runs.">
+        Projections
+      </PageTitle>
 
       <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
         {['ATP', 'WTA'].map(t => (

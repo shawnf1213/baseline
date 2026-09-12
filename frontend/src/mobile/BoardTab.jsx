@@ -1,6 +1,7 @@
 import { useMemo, useState, useEffect } from 'react'
 import { T } from './theme'
-import { Card, Heart, Spinner, Empty, Segment, tier, sideTone, SideRail, TierBadge, ConfBar, BigStat, tierCardStyle } from './bits'
+import { Card, Heart, Spinner, Empty, tier, sideTone, SideRail, TierBadge,
+         ConfBar, BigStat, tierCardStyle, PageTitle, Pill, GlassTabs } from './bits'
 import FilterSheet from './FilterSheet'
 import { shortProp, startTimeLabel, fmt, calibratedConfidence } from './data'
 import { projectRow, cachedProjection } from './project'
@@ -79,21 +80,9 @@ export default function BoardTab({ boards, book, setBook, loading, error, onOpen
   const projecting = filtered.slice(0, PROJECT_CAP).some(r => proj[r.key]?.loading)
 
   const SportSwitch = (
-    <div style={{ display: 'flex', gap: 6, marginBottom: 14 }}>
-      {[['tennis', '🎾 Tennis'], ['nfl', '🏈 NFL']].map(([k, label]) => {
-        const on = sport === k
-        return (
-          <button key={k} onClick={() => setSport(k)} style={{
-            flex: 1, minHeight: 40, borderRadius: 12, cursor: 'pointer',
-            background: on ? 'rgba(0,230,118,0.12)' : T.card,
-            color: on ? T.green : T.muted,
-            border: `1px solid ${on ? T.green : T.border}`,
-            fontFamily: T.cond, fontWeight: 800, fontSize: 14,
-            letterSpacing: 0.8, textTransform: 'uppercase',
-          }}>{label}</button>
-        )
-      })}
-    </div>
+    <GlassTabs value={sport} onChange={setSport} style={{ marginBottom: T.s2 }}
+               options={[{ key: 'tennis', label: '🎾 Tennis' },
+                         { key: 'nfl', label: '🏈 NFL' }]} />
   )
 
   // The NFL board is a DIFFERENT KIND OF VIEW, not the tennis board with other
@@ -104,9 +93,7 @@ export default function BoardTab({ boards, book, setBook, loading, error, onOpen
   if (sport === 'nfl') {
     return (
       <div style={{ paddingBottom: 8 }}>
-        <div style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 26,
-                      color: T.white, letterSpacing: 0.5, lineHeight: 1,
-                      marginBottom: 12 }}>Board</div>
+        <PageTitle sub={<Pill live>Live PrizePicks</Pill>}>Board</PageTitle>
         {SportSwitch}
         <NflBoard />
       </div>
@@ -115,29 +102,42 @@ export default function BoardTab({ boards, book, setBook, loading, error, onOpen
 
   return (
     <div style={{ paddingBottom: 8 }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-        <div>
-          <div style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 26, color: T.white, letterSpacing: 0.5, lineHeight: 1 }}>Board</div>
-          <div style={{ color: T.muted, fontSize: 12.5, marginTop: 4, display: 'flex', alignItems: 'center', gap: 6 }}>
-            <span className="live-dot" style={{ width: 6, height: 6 }} />
-            Live {book === 'underdog' ? 'Underdog' : 'PrizePicks'}
-            {rows.length ? ` · ${rows.length}` : ''}{projecting ? ' · projecting…' : ''}
-          </div>
-        </div>
-        <button onClick={() => setSheet(true)} style={{
-          display: 'inline-flex', alignItems: 'center', gap: 8, minHeight: 44, padding: '0 16px',
-          background: activeCount ? 'rgba(0,230,118,0.12)' : T.card, color: activeCount ? T.green : T.white,
-          border: `1px solid ${activeCount ? T.green : T.border}`, borderRadius: 12,
-          fontFamily: T.cond, fontWeight: 700, fontSize: 14, letterSpacing: 0.8, textTransform: 'uppercase', cursor: 'pointer',
-        }}>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M3 5h18M6 12h12M10 19h4" /></svg>
-          Filter{activeCount ? ` · ${activeCount}` : ''}
-        </button>
-      </div>
+      <PageTitle
+        sub={<>
+          <Pill live>Live {book === 'underdog' ? 'Underdog' : 'PrizePicks'}</Pill>
+          {rows.length ? (
+            <span style={{ color: T.muted2 }}>{rows.length} priced</span>
+          ) : null}
+          {projecting ? (
+            <span style={{ color: T.muted2 }}>projecting…</span>
+          ) : null}
+        </>}
+        right={
+          <button onClick={() => setSheet(true)} style={{
+            display: 'inline-flex', alignItems: 'center', gap: 8, minHeight: 44,
+            padding: '0 16px', borderRadius: T.r2, cursor: 'pointer',
+            background: activeCount
+              ? `linear-gradient(160deg, ${T.green}24, ${T.green}0D)` : T.glass,
+            color: activeCount ? T.green : T.white,
+            border: `1px solid ${activeCount ? `${T.green}55` : T.glassLine}`,
+            fontFamily: T.cond, fontWeight: 700, fontSize: 14,
+            letterSpacing: 0.8, textTransform: 'uppercase',
+          }}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+                 stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+              <path d="M3 5h18M6 12h12M10 19h4" />
+            </svg>
+            Filter{activeCount ? ` · ${activeCount}` : ''}
+          </button>
+        }>
+        Board
+      </PageTitle>
 
       {SportSwitch}
 
-      <Segment options={BOOKS} value={book} onChange={setBook} style={{ marginBottom: 14 }} />
+      <GlassTabs value={book} onChange={setBook}
+                 options={BOOKS.map(b => ({ key: b.key, label: b.label }))}
+                 style={{ marginBottom: T.s4 }} />
 
       {loading && <div style={{ display: 'flex', justifyContent: 'center', padding: 48 }}><Spinner size={28} /></div>}
 
@@ -188,40 +188,66 @@ export function PropRow({ r, saved, onSave, onOpen, index = 0, footNote }) {
   const hasProj = r._state === 'done'
   const { side, tone, rgb } = sideTone(hasProj ? r.edge : null)
   const conf = hasProj ? r.confidence : null
+  const w = tier(conf).weight
 
   return (
     <Card onClick={onOpen} index={index} style={{
-      padding: 0, marginBottom: 10, overflow: 'hidden', position: 'relative',
+      padding: 0, marginBottom: T.s2, overflow: 'hidden', position: 'relative',
       ...tierCardStyle(conf, rgb),
     }}>
-      <SideRail rgb={side ? rgb : null} weight={tier(conf).weight} />
+      <SideRail rgb={side ? rgb : null} weight={w} />
 
-      <div style={{ padding: '12px 12px 12px 16px' }}>
+      {/* A WASH IN THE CARD'S OWN DIRECTION. The side rail says which way this
+          play leans in four pixels at the edge; this carries that colour across
+          the top of the card so the lean is legible from the whole surface
+          rather than from a strip the eye has to find. Scaled by conviction —
+          an ELITE card is visibly warmer than a thin one, which is what gives
+          a scrolling board a top end instead of one flat texture. */}
+      {side ? (
+        <div aria-hidden style={{
+          position: 'absolute', inset: 0, pointerEvents: 'none',
+          background: `radial-gradient(120% 90% at 0% 0%, rgba(${rgb},`
+                    + `${0.05 + w * 0.035}), transparent 58%)`,
+        }} />
+      ) : null}
+
+      <div style={{ padding: '13px 13px 12px 18px', position: 'relative' }}>
         <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
           <div style={{ minWidth: 0, flex: 1 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 7, flexWrap: 'wrap' }}>
-              <span style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 19,
+            <div style={{ display: 'flex', alignItems: 'center', gap: 7,
+                          flexWrap: 'wrap' }}>
+              <span style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 20,
                              color: T.white, letterSpacing: 0.3 }}>{r.player}</span>
               <TierBadge conf={conf} tone={tone} rgb={rgb} />
             </div>
-            <div style={{ color: T.muted, fontSize: 12.5, marginTop: 2 }}>
-              vs {r.opponent}{r.surface ? ` · ${r.surface}` : ''}{r.tour ? ` · ${r.tour}` : ''}
+            <div style={{ color: T.muted, fontSize: 12.5, marginTop: 3 }}>
+              vs {r.opponent}{r.surface ? ` · ${r.surface}` : ''}
+              {r.tour ? ` · ${r.tour}` : ''}
             </div>
           </div>
           <Heart active={saved} onClick={onSave} />
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 11 }}>
+        {/* THE PROP, ON ITS OWN SHELF. It used to sit flush against the player
+            name with nothing separating the identity of the play from the call
+            being made on it, so a card read as one undifferentiated block. */}
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 10, marginTop: 12,
+          padding: '10px 11px', borderRadius: T.r2,
+          background: 'rgba(255,255,255,0.03)',
+          border: `1px solid ${T.glassLine}`,
+        }}>
           <div style={{ minWidth: 0, flex: 1 }}>
-            <div style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 13,
-                          letterSpacing: 0.8, textTransform: 'uppercase',
-                          color: T.muted, marginBottom: 3 }}>
+            <div style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 11.5,
+                          letterSpacing: 1.2, textTransform: 'uppercase',
+                          color: T.muted2, marginBottom: 4 }}>
               {shortProp(r.propType)}
             </div>
-            <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
-              <span style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 20,
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 7 }}>
+              <span style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 22,
                              color: tone, letterSpacing: 0.5 }}>{side || '—'}</span>
-              <span style={{ fontSize: 17, fontWeight: 800, color: T.white,
+              <span style={{ fontSize: 19, fontWeight: 800, color: T.white,
+                             letterSpacing: -0.3,
                              fontVariantNumeric: 'tabular-nums' }}>
                 {fmt(r.line, Number.isInteger(r.line) ? 0 : 1)}
               </span>
@@ -241,8 +267,8 @@ export function PropRow({ r, saved, onSave, onOpen, index = 0, footNote }) {
           )}
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                      marginTop: 10, gap: 8 }}>
+        <div style={{ display: 'flex', alignItems: 'center',
+                      justifyContent: 'space-between', marginTop: 11, gap: 8 }}>
           <span style={{ color: T.muted2, fontSize: 11 }}>
             {footNote !== undefined ? footNote : (start ? `⏱ ${start}` : '')}
           </span>

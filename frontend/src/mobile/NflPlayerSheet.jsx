@@ -683,14 +683,19 @@ export default function NflPlayerSheet({ player, rows, posted, onClose }) {
 
   return (
     <div style={{
-      position: 'fixed', inset: 0, zIndex: 100, background: T.bg,
+      position: 'fixed', inset: 0, zIndex: 100,
+      background: T.ground,
+      backgroundImage:
+        `radial-gradient(900px 480px at 12% -6%, ${T.green}14, transparent 62%),`
+        + `radial-gradient(760px 440px at 96% 6%, ${T.blue}0F, transparent 66%)`,
       overflowY: 'auto', WebkitOverflowScrolling: 'touch',
       paddingTop: SAFE_TOP, paddingBottom: 40,
     }}>
       <div style={{ maxWidth: 760, margin: '0 auto', padding: '12px 14px' }}>
         <button onClick={onClose} style={{
           minHeight: 44, padding: '0 16px', marginBottom: 14,
-          background: T.card, color: T.white, border: `1px solid ${T.border}`,
+          background: T.glass, color: T.white,
+          border: `1px solid ${T.glassLine}`,
           borderRadius: 12, fontFamily: T.cond, fontWeight: 700, fontSize: 14,
           letterSpacing: 0.8, textTransform: 'uppercase', cursor: 'pointer',
         }}>← Back</button>

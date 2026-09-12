@@ -1,5 +1,5 @@
 import { motion } from 'framer-motion'
-import { T } from './theme'
+import { T, HEADLINE_FILL } from './theme'
 import { fmtSigned } from './data'
 
 // ── SHARED SURFACES ──────────────────────────────────────────────────────────
@@ -37,9 +37,13 @@ export function Card({ children, style, onClick, index = 0, ...rest }) {
       }}
       whileTap={onClick && !REDUCED ? { scale: 0.985 } : undefined}
       style={{
-        background: `linear-gradient(158deg, #1a1a1a 0%, ${T.card} 58%)`,
-        border: `1px solid ${T.border}`, borderRadius: 14,
-        boxShadow: '0 1px 0 rgba(255,255,255,0.05) inset, 0 8px 24px rgba(0,0,0,0.5)',
+        // GLASS, matching the landing page's cards. Translucent rather than a
+        // solid dark fill, so the mesh ground shows through and the app reads
+        // as the same surface as its own front door. No backdrop-filter — see
+        // theme.js; blurring every card is what tanked scrolling before.
+        background: T.glass,
+        border: `1px solid ${T.glassLine}`, borderRadius: T.r3,
+        boxShadow: '0 1px 0 rgba(255,255,255,0.06) inset, 0 10px 30px rgba(0,0,0,0.45)',
         ...(onClick ? { cursor: 'pointer', WebkitTapHighlightColor: 'transparent' } : null),
         ...style,
       }} {...rest}>{children}</motion.div>
@@ -156,11 +160,88 @@ export function Empty({ title, hint, icon }) {
   )
 }
 
+// The hero's eyebrow, reused. A hairline runs from the label to the right-hand
+// slot so a section reads as a band across the page rather than a loose caption
+// floating above a list.
 export function SectionLabel({ children, right }) {
   return (
-    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', margin: '2px 2px 10px' }}>
-      <span style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 12, letterSpacing: 2, textTransform: 'uppercase', color: T.green }}>{children}</span>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 12,
+                  margin: `${T.s4}px 2px ${T.s2}px` }}>
+      <span style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 12,
+                     letterSpacing: 2.2, textTransform: 'uppercase',
+                     color: T.green, whiteSpace: 'nowrap' }}>{children}</span>
+      <span style={{ flex: 1, height: 1, background:
+        `linear-gradient(90deg, ${T.glassLineHi}, rgba(255,255,255,0.02))` }} />
       {right}
+    </div>
+  )
+}
+
+// ── PAGE FURNITURE FROM THE LANDING PAGE ────────────────────────────────────
+// Every tab had built its own 26px condensed heading inline. These are the
+// hero's, so a screen title inside the app is the same object as the one on the
+// marketing page rather than a near-miss of it.
+
+export function PageTitle({ children, sub, right }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12,
+                  marginBottom: T.s3 }}>
+      <div style={{ minWidth: 0, flex: 1 }}>
+        <h1 style={{
+          fontFamily: T.cond, fontWeight: 800, margin: 0,
+          fontSize: 'clamp(30px, 5.4vw, 40px)', lineHeight: 1, letterSpacing: 0.2,
+          ...HEADLINE_FILL,
+        }}>{children}</h1>
+        {sub ? (
+          <div style={{ color: T.muted, fontSize: 12.5, marginTop: 7,
+                        display: 'flex', alignItems: 'center', gap: 7,
+                        flexWrap: 'wrap' }}>{sub}</div>
+        ) : null}
+      </div>
+      {right}
+    </div>
+  )
+}
+
+// The hero's status pill. `live` adds the pulsing dot.
+export function Pill({ children, tone = T.green, live, style }) {
+  return (
+    <span style={{
+      display: 'inline-flex', alignItems: 'center', gap: 7,
+      padding: '5px 11px', borderRadius: 999,
+      background: `${tone}14`, border: `1px solid ${tone}3D`,
+      color: tone, fontSize: 11.5, fontWeight: 700, ...style,
+    }}>
+      {live ? <span className="live-dot" style={{ width: 6, height: 6,
+                                                  background: tone }} /> : null}
+      {children}
+    </span>
+  )
+}
+
+// A row of glass tabs — the sport switch, the book switch, anything that picks
+// one of two or three. Replaces three separately-styled button rows that had
+// each drifted to different heights and radii.
+export function GlassTabs({ options, value, onChange, style }) {
+  return (
+    <div style={{ display: 'flex', gap: 4, padding: 4, borderRadius: T.r3,
+                  background: 'rgba(255,255,255,0.025)',
+                  border: `1px solid ${T.glassLine}`, ...style }}>
+      {options.map(o => {
+        const on = o.key === value
+        return (
+          <button key={o.key} onClick={() => onChange(o.key)} style={{
+            flex: 1, minHeight: 40, borderRadius: T.r1, cursor: 'pointer',
+            border: on ? `1px solid ${T.green}55` : '1px solid transparent',
+            background: on
+              ? `linear-gradient(160deg, ${T.green}24, ${T.green}0D)` : 'transparent',
+            color: on ? T.green : T.muted,
+            fontFamily: T.cond, fontWeight: 800, fontSize: 14,
+            letterSpacing: 1, textTransform: 'uppercase',
+            WebkitTapHighlightColor: 'transparent',
+          }}>{o.label}</button>
+        )
+      })}
     </div>
   )
 }

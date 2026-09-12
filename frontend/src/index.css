@@ -264,12 +264,17 @@ body::before {
   z-index: -1;
   pointer-events: none;
   background-color: #070707;
+  /* THE SAME GROUND AS THE LANDING PAGE. It was two green pools; the hero pairs
+     a green field with a blue one, which is what stops a dark page reading as
+     flat. Same colours, same direction, so crossing the paywall no longer looks
+     like crossing into a different product. */
   background-image:
-    radial-gradient(1100px 560px at 10% -8%, rgba(0, 230, 118, 0.085), transparent 62%),
-    radial-gradient(900px 520px at 102% 104%, rgba(0, 230, 118, 0.06), transparent 60%),
-    linear-gradient(rgba(255, 255, 255, 0.016) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.016) 1px, transparent 1px);
-  background-size: auto, auto, 46px 46px, 46px 46px;
+    radial-gradient(1100px 560px at 12% -10%, rgba(0, 230, 118, 0.10), transparent 64%),
+    radial-gradient(900px 540px at 96% 8%, rgba(66, 165, 245, 0.07), transparent 66%),
+    radial-gradient(900px 520px at 102% 104%, rgba(0, 230, 118, 0.055), transparent 60%),
+    linear-gradient(rgba(255, 255, 255, 0.018) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.018) 1px, transparent 1px);
+  background-size: auto, auto, auto, 56px 56px, 56px 56px;
 }
 
 /* Three tracks once there is genuinely room for them. At 1560px two columns

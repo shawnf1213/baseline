@@ -17,6 +17,37 @@ export const T = {
   muted2:   '#6b6b6b',
   font:     '"Barlow", -apple-system, BlinkMacSystemFont, sans-serif',
   cond:     '"Barlow Condensed", sans-serif',
+
+  // ── THE LANDING PAGE'S LANGUAGE, BROUGHT INSIDE ────────────────────────────
+  // The app and its own front door looked like two products. These are the
+  // pieces that make them one: the same near-black ground, the same translucent
+  // surfaces, the same accents. Landing.jsx still carries its own copies
+  // because it must render before any of this loads.
+  ground:   '#070707',
+  blue:     '#42A5F5',
+
+  // GLASS WITHOUT backdrop-filter. index.css records why: blurring every card
+  // forced a full-screen composite per card per frame and tanked scrolling. A
+  // translucent gradient over the mesh ground gives the same read for free —
+  // the background shows through because the fill is semi-transparent, not
+  // because the GPU resampled it.
+  glass:     'linear-gradient(160deg, rgba(255,255,255,0.052), rgba(255,255,255,0.014))',
+  glassHi:   'linear-gradient(160deg, rgba(255,255,255,0.085), rgba(255,255,255,0.028))',
+  glassLine: 'rgba(255,255,255,0.09)',
+  glassLineHi: 'rgba(255,255,255,0.16)',
+
+  // Spacing scale. The app grew on ad-hoc 8/10/11/12/14px values, which is why
+  // nothing lined up between screens.
+  s1: 6, s2: 10, s3: 14, s4: 20, s5: 28, s6: 40,
+  r1: 10, r2: 14, r3: 18, r4: 24,
+}
+
+// The gradient the landing page uses on its headline. Applied as text fill, so
+// a page title on the board reads as the same product as the one on the hero.
+export const HEADLINE_FILL = {
+  background: 'linear-gradient(100deg, #FFFFFF 12%, #C9F5DC 58%, #7BE3A8)',
+  WebkitBackgroundClip: 'text', backgroundClip: 'text',
+  WebkitTextFillColor: 'transparent',
 }
 
 // Surface accent colors (shared with desktop constants).

@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 import { T } from './theme'
-import { Card, Spinner, Empty, SectionLabel , SideRail } from './bits'
+import { Card, Spinner, Empty, SectionLabel, SideRail, PageTitle } from './bits'
 import PlayerPhoto from './PlayerPhoto'
 import { boardPlayers, mergedBoardRows } from './data'
 import { useRecentPlayers } from './useRecent'
@@ -14,7 +14,9 @@ export default function PlayersTab({ boards, loading, onOpenPlayer }) {
 
   return (
     <div>
-      <div style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 26, color: T.white, letterSpacing: 0.5, marginBottom: 14 }}>Players</div>
+      <PageTitle sub="Everyone on today's board, and whoever you looked at last.">
+        Players
+      </PageTitle>
 
       {recent.length > 0 && (
         <>

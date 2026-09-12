@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { T } from './theme'
-import { Card, Chip, Spinner, Empty, SectionLabel } from './bits'
+import { Card, Chip, Spinner, Empty, SectionLabel, PageTitle } from './bits'
 import PlayerPhoto from './PlayerPhoto'
 import { usePlayerSearch } from '../hooks/usePlayerSearch'
 import { useRecentPlayers } from './useRecent'
@@ -18,7 +18,9 @@ export default function SearchTab({ onOpenPlayer }) {
 
   return (
     <div>
-      <div style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 26, color: T.white, letterSpacing: 0.5, marginBottom: 14 }}>Search</div>
+      <PageTitle sub="Any player on tour \u2014 not just the ones priced today.">
+        Search
+      </PageTitle>
 
       <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
         {['ATP', 'WTA'].map(t => <Chip key={t} active={tour === t} onClick={() => setTour(t)}>{t}</Chip>)}

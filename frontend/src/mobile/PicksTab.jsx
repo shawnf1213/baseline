@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { T } from './theme'
-import { Card, Spinner, Empty, Segment, ResultBadge, SectionLabel , sideTone, SideRail, TierBadge, ConfBar, tierCardStyle } from './bits'
+import { Card, Spinner, Empty, ResultBadge, SectionLabel, sideTone, SideRail,
+         TierBadge, ConfBar, tierCardStyle, PageTitle, GlassTabs } from './bits'
 import { shortProp, fmt, prettyDate, etToday, derivePicks, monthRecord, etMonthLabel, resultMeta } from './data'
 
 const BOOKS = [
@@ -43,16 +44,12 @@ export default function PicksTab({ record, slate, loading, error, onOpenPlayer }
 
   return (
     <div style={{ paddingBottom: 8 }}>
-      <div style={{ marginBottom: 12 }}>
-        <div style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 26, color: T.white, letterSpacing: 0.5, lineHeight: 1 }}>
-          Baseline Picks
-        </div>
-        <div style={{ color: T.muted, fontSize: 12.5, marginTop: 4 }}>
-          The board Baseline actually released, with how each play landed.
-        </div>
-      </div>
+      <PageTitle sub="The board Baseline actually released, with how each play landed.">
+        Baseline Picks
+      </PageTitle>
 
-      <Segment options={BOOKS} value={book} onChange={setBook} style={{ marginBottom: 14 }} />
+      <GlassTabs value={book} onChange={setBook} style={{ marginBottom: T.s4 }}
+                 options={BOOKS.map(b => ({ key: b.key, label: b.label }))} />
 
       {loading && <div style={{ display: 'flex', justifyContent: 'center', padding: 48 }}><Spinner size={28} /></div>}
 
