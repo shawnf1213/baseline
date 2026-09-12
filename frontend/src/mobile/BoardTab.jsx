@@ -8,7 +8,7 @@ import { shortProp, startTimeLabel, fmt, calibratedConfidence } from './data'
 import { projectRow, cachedProjection } from './project'
 import { useBookmarks, propBookmarkId } from './useBookmarks'
 import NflBoard from './NflBoard'
-import { Reveal, Num, GrowBar } from './motion'
+import { Num } from './motion'
 
 const DEFAULT_FILTERS = { prop: 'All', tour: 'All', surface: 'All', sort: 'start' }
 const PROJECT_CAP = 120  // auto-project the whole current view (throttled in project.js)
@@ -85,7 +85,7 @@ export default function BoardTab({ boards, book, setBook, loading, error, onOpen
   const projecting = filtered.slice(0, PROJECT_CAP).some(r => proj[r.key]?.loading)
 
   const SportSwitch = (
-    <GlassTabs value={sport} onChange={setSport} style={{ marginBottom: 6 }}
+    <GlassTabs value={sport} onChange={setSport} style={{ marginBottom: 0 }}
                options={[{ key: 'tennis', label: '🎾 Tennis' },
                          { key: 'nfl', label: '🏈 NFL' }]} />
   )
@@ -99,7 +99,7 @@ export default function BoardTab({ boards, book, setBook, loading, error, onOpen
     return (
       <div style={{ paddingBottom: 8 }}>
         <PageTitle sub={<>
-          <Pill live>Live PrizePicks</Pill>
+          <Pill live>Live</Pill>
           {nflMeta.count ? (
             <span style={{ color: T.muted2 }}>{nflMeta.count} priced</span>
           ) : null}
@@ -117,11 +117,12 @@ export default function BoardTab({ boards, book, setBook, loading, error, onOpen
     <div style={{ paddingBottom: 8 }}>
       <PageTitle
         sub={<>
-          <Pill live>Live {book === 'underdog' ? 'Underdog' : 'PrizePicks'}</Pill>
+          <Pill live>Live</Pill>
           {rows.length ? (
-            <span style={{ color: T.muted2 }}>{rows.length} priced</span>
-          ) : null}
-          {projecting ? (
+            <span style={{ color: T.muted2 }}>
+              {rows.length} priced{projecting ? ' · projecting…' : ''}
+            </span>
+          ) : projecting ? (
             <span style={{ color: T.muted2 }}>projecting…</span>
           ) : null}
         </>}
@@ -148,9 +149,32 @@ export default function BoardTab({ boards, book, setBook, loading, error, onOpen
 
       {SportSwitch}
 
-      <GlassTabs value={book} onChange={setBook}
-                 options={BOOKS.map(b => ({ key: b.key, label: b.label }))}
-                 style={{ marginBottom: T.s5 }} />
+      {/* The book, as a quiet secondary choice rather than a second slab. */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8,
+                    marginTop: T.s2, marginBottom: T.s5 }}>
+        <span style={{ fontFamily: T.cond, fontWeight: 700, fontSize: 9.5,
+                       letterSpacing: 1.2, textTransform: 'uppercase',
+                       color: T.muted2 }}>Book</span>
+        <div style={{ display: 'flex', gap: 4, padding: 3, borderRadius: 999,
+                      background: 'rgba(255,255,255,0.025)',
+                      border: `1px solid ${T.glassLine}` }}>
+          {BOOKS.map(b => {
+            const on = b.key === book
+            return (
+              <button key={b.key} onClick={() => setBook(b.key)} style={{
+                minHeight: 30, padding: '0 13px', borderRadius: 999,
+                cursor: 'pointer',
+                border: on ? `1px solid ${T.green}55` : '1px solid transparent',
+                background: on ? `${T.green}1C` : 'transparent',
+                color: on ? T.green : T.muted2,
+                fontFamily: T.cond, fontWeight: 800, fontSize: 12,
+                letterSpacing: 1, textTransform: 'uppercase',
+                WebkitTapHighlightColor: 'transparent',
+              }}>{b.label}</button>
+            )
+          })}
+        </div>
+      </div>
 
       {loading && <div style={{ display: 'flex', justifyContent: 'center', padding: 48 }}><Spinner size={28} /></div>}
 
@@ -220,40 +244,45 @@ export function BoardSummary({ rows, projecting }) {
     { k: 'Priced', v: projecting && !done.length ? '…' : String(done.length),
       n: projecting && !done.length ? null : done.length,
       s: matches ? `${matches} match${matches === 1 ? '' : 'es'}` : '' },
-    { k: 'Elite', v: String(elite), n: elite, s: '80+ confidence',
+    { k: 'Elite', v: String(elite), n: elite, s: '80+ conf',
       tone: elite ? T.green : T.muted2 },
     { k: 'Strong', v: String(strong), n: strong, s: '72–79',
       tone: strong ? T.green : T.muted2 },
-    { k: 'Best edge',
-      v: best ? `${best.edge > 0 ? '+' : ''}${fmt(best.edge)}` : '—',
-      n: best ? best.edge : null, dp: 1, pre: best && best.edge > 0 ? '+' : '',
-      s: best ? best.player : '',
+    { k: 'Biggest edge',
+      v: best ? fmt(Math.abs(best.edge)) : '—',
+      n: best ? Math.abs(best.edge) : null, dp: 1,
+      s: best ? `${sideTone(best.edge).side} · ${best.player}` : '',
       tone: best ? sideTone(best.edge).tone : T.muted2 },
   ]
 
   return (
-    <Card style={{ padding: '14px 16px', marginBottom: T.s3 }}>
-      <div style={{ display: 'grid', gap: T.s3,
-                    gridTemplateColumns: 'repeat(auto-fit, minmax(132px, 1fr))' }}>
-        {cells.map(c => (
-          <div key={c.k} style={{ minWidth: 0 }}>
-            <div style={{ fontFamily: T.cond, fontWeight: 700, fontSize: 10,
-                          letterSpacing: 1.3, textTransform: 'uppercase',
-                          color: T.muted2 }}>{c.k}</div>
+    <Card style={{ padding: '13px 14px', marginBottom: T.s4 }}>
+      <div style={{ display: 'grid',
+                    gridTemplateColumns: 'repeat(4, minmax(0, 1fr))' }}>
+        {cells.map((c, ci) => (
+          <div key={c.k} style={{
+            minWidth: 0, paddingLeft: ci ? 10 : 0, paddingRight: 6,
+            borderLeft: ci ? `1px solid ${T.glassLine}` : 'none',
+          }}>
+            <div style={{ fontFamily: T.cond, fontWeight: 700, fontSize: 9.5,
+                          letterSpacing: 1, textTransform: 'uppercase',
+                          color: T.muted2, whiteSpace: 'nowrap',
+                          overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.k}</div>
             {typeof c.n === 'number' ? (
               <Num value={c.n} decimals={c.dp ?? 0} prefix={c.pre || ''}
-                   style={{ fontSize: 25, fontWeight: 800, lineHeight: 1.15,
-                            letterSpacing: -0.6, color: c.tone || T.white,
+                   style={{ fontSize: 22, fontWeight: 800, lineHeight: 1.2,
+                            letterSpacing: -0.8, color: c.tone || T.white,
                             display: 'block',
                             fontVariantNumeric: 'tabular-nums' }} />
             ) : (
-              <div style={{ fontSize: 25, fontWeight: 800, lineHeight: 1.15,
-                            letterSpacing: -0.6, color: c.tone || T.white,
+              <div style={{ fontSize: 22, fontWeight: 800, lineHeight: 1.2,
+                            letterSpacing: -0.8, color: c.tone || T.white,
                             fontVariantNumeric: 'tabular-nums' }}>{c.v}</div>
             )}
             {c.s ? (
-              <div style={{ color: T.muted2, fontSize: 10.5, whiteSpace: 'nowrap',
-                            overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.s}</div>
+              <div style={{ color: T.muted2, fontSize: 9.5, marginTop: 1,
+                            whiteSpace: 'nowrap', overflow: 'hidden',
+                            textOverflow: 'ellipsis' }}>{c.s}</div>
             ) : null}
           </div>
         ))}
