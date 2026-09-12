@@ -241,7 +241,7 @@ function Select({ label, value, onChange, options }) {
         >
           {options.map(o => (
             <option key={o.value} value={o.value}
-                    style={{ background: T.card, color: T.text }}>{o.label}</option>
+                    style={{ background: '#111', color: '#fff' }}>{o.label}</option>
           ))}
         </select>
         <span style={{ position: 'absolute', right: 15, top: '50%',

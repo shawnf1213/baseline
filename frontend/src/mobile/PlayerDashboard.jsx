@@ -444,7 +444,7 @@ function SurfaceSplits({ stats }) {
               <div style={{ position: 'relative' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <span style={{ width: 9, height: 9, borderRadius: 5,
-                                 background: c }} />
+                                 background: c, boxShadow: `0 0 10px ${c}` }} />
                   <span style={{ fontFamily: T.cond, fontWeight: 800,
                                  fontSize: 17, letterSpacing: 0.6,
                                  color: T.white, flex: 1 }}>{s}</span>
@@ -483,7 +483,7 @@ function SurfaceSplits({ stats }) {
                           </b>
                         </div>
                         <div style={{ height: 5, borderRadius: 3,
-                                      background: T.bg, overflow: 'hidden' }}>
+                                      background: '#151515', overflow: 'hidden' }}>
                           <div style={{
                             width: `${Math.min(100, ((v || 0) / peak[k]) * 100)}%`,
                             height: '100%', borderRadius: 3, background: c,

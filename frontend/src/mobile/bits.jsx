@@ -37,9 +37,9 @@ export function Card({ children, style, onClick, index = 0, ...rest }) {
       }}
       whileTap={onClick && !REDUCED ? { scale: 0.985 } : undefined}
       style={{
-        background: T.card,
+        background: `linear-gradient(158deg, #1a1a1a 0%, ${T.card} 58%)`,
         border: `1px solid ${T.border}`, borderRadius: 14,
-        boxShadow: T.shadow,
+        boxShadow: '0 1px 0 rgba(255,255,255,0.05) inset, 0 8px 24px rgba(0,0,0,0.5)',
         ...(onClick ? { cursor: 'pointer', WebkitTapHighlightColor: 'transparent' } : null),
         ...style,
       }} {...rest}>{children}</motion.div>
@@ -62,7 +62,7 @@ export function Chip({ active, onClick, children, style }) {
         color: active ? T.green : T.muted,
         // A selected chip glows rather than merely changing colour, so the
         // active filter is findable at a glance in a long scrolling row.
-        boxShadow: active ? `0 0 0 2px ${T.green}22` : 'none',
+        boxShadow: active ? '0 0 0 1px rgba(0,230,118,0.25), 0 0 14px rgba(0,230,118,0.18)' : 'none',
         transition: 'background 140ms ease, color 140ms ease, box-shadow 180ms ease',
         ...style,
       }}>{children}</motion.button>
@@ -124,7 +124,7 @@ export function ResultBadge({ tone, label, value }) {
   const c = tone === 'win' ? T.green : tone === 'loss' ? T.red : tone === 'void' ? T.muted2 : T.amber
   const bg = tone === 'win' ? 'rgba(0,230,118,0.12)'
            : tone === 'loss' ? 'rgba(255,82,82,0.12)'
-           : tone === 'void' ? 'rgba(16,24,40,0.05)' : 'rgba(255,193,7,0.14)'
+           : tone === 'void' ? 'rgba(255,255,255,0.05)' : 'rgba(255,193,7,0.10)'
   return (
     <span style={{
       display: 'inline-flex', alignItems: 'center', gap: 5, padding: '3px 9px', borderRadius: 7,
@@ -248,7 +248,7 @@ export function TierBadge({ conf, tone, rgb }) {
       fontFamily: T.cond, fontWeight: 800, fontSize: 9.5, letterSpacing: 1.2,
       color: tone, padding: '2.5px 7px', borderRadius: 6,
       background: `rgba(${rgb},0.18)`, border: `1px solid rgba(${rgb},0.55)`,
-      boxShadow: tr.weight >= 3 ? `0 0 0 3px rgba(${rgb},0.13)` : 'none',
+      boxShadow: tr.weight >= 3 ? `0 0 16px rgba(${rgb},0.55)` : `0 0 8px rgba(${rgb},0.18)`,
     }}>{tr.label}</span>
   )
 }
@@ -258,10 +258,10 @@ export function ConfBar({ conf, tone, max = 132 }) {
   if (conf == null) return null
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 7, flex: 1, maxWidth: max }}>
-      <div style={{ flex: 1, height: 6, borderRadius: 4, background: T.bg,
-                    border: `1px solid ${T.border}`, overflow: 'hidden' }}>
+      <div style={{ flex: 1, height: 6, borderRadius: 4, background: '#191919', overflow: 'hidden' }}>
         <div style={{ width: `${Math.min(100, conf)}%`, height: '100%',
-                      background: tone, borderRadius: 4 }} />
+                      background: tone, borderRadius: 4,
+                      boxShadow: `0 0 10px ${tone}` }} />
       </div>
       <span style={{ fontSize: 11.5, fontWeight: 800, color: tone,
                      fontVariantNumeric: 'tabular-nums' }}>{Math.round(conf)}</span>
@@ -318,8 +318,9 @@ export function tierCardStyle(conf, rgb) {
   return {
     border: `1px solid ${w >= 2 ? `rgba(${rgb},0.55)` : T.border}`,
     boxShadow: w >= 3
-      ? `0 0 0 3px rgba(${rgb},0.16), ${T.shadowLg}`
-      : w === 2 ? `0 0 0 2px rgba(${rgb},0.11), ${T.shadowMd}`
-      : T.shadow,
+      ? `0 0 0 1px rgba(${rgb},0.30), 0 8px 34px rgba(${rgb},0.26), 0 8px 22px rgba(0,0,0,0.5)`
+      : w === 2
+        ? `0 6px 24px rgba(${rgb},0.15), 0 8px 22px rgba(0,0,0,0.46)`
+        : '0 8px 24px rgba(0,0,0,0.5)',
   }
 }

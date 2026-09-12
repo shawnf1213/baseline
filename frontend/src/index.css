@@ -150,10 +150,8 @@ input, select, button { font-family: inherit; }
   transform: translateY(-2px);
 }
 
-/* A WHITE shimmer is invisible on a white surface — the skeletons simply
-   stopped animating when the app went light. Darkened to the same effect. */
 .skel {
-  background: linear-gradient(90deg, rgba(18,21,26,0.045) 25%, rgba(18,21,26,0.09) 50%, rgba(18,21,26,0.045) 75%);
+  background: linear-gradient(90deg, rgba(255,255,255,0.03) 25%, rgba(255,255,255,0.08) 50%, rgba(255,255,255,0.03) 75%);
   background-size: 600px 100%;
   animation: skeleton-shimmer 1.4s linear infinite;
   border-radius: 8px;
@@ -256,8 +254,7 @@ input, select, button { font-family: inherit; }
    A fixed pseudo-element gets its own compositor layer that simply stays put
    while content scrolls over it. Identical result, painted once. */
 body {
-  background-color: #F4F6F8;
-  color: #12151A;
+  background-color: #070707;
 }
 
 body::before {
@@ -266,12 +263,12 @@ body::before {
   inset: 0;
   z-index: -1;
   pointer-events: none;
-  background-color: #F4F6F8;
+  background-color: #070707;
   background-image:
-    radial-gradient(1100px 560px at 10% -8%, rgba(3, 152, 90, 0.055), transparent 62%),
-    radial-gradient(900px 520px at 102% 104%, rgba(3, 152, 90, 0.040), transparent 60%),
-    linear-gradient(rgba(18, 21, 26, 0.022) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(18, 21, 26, 0.022) 1px, transparent 1px);
+    radial-gradient(1100px 560px at 10% -8%, rgba(0, 230, 118, 0.085), transparent 62%),
+    radial-gradient(900px 520px at 102% 104%, rgba(0, 230, 118, 0.06), transparent 60%),
+    linear-gradient(rgba(255, 255, 255, 0.016) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.016) 1px, transparent 1px);
   background-size: auto, auto, 46px 46px, 46px 46px;
 }
 

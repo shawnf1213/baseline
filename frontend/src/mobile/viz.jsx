@@ -50,13 +50,13 @@ export function GameLogChart({ games, line, over, accent = T.green, height = 116
             position: 'absolute', left: 0, right: 0, height: 0,
             bottom: `${Math.min(100, (line / top) * 100)}%`,
             borderTop: `1.5px dashed ${accent}`, opacity: 0.9,
-            pointerEvents: 'none', zIndex: 2,
+            boxShadow: `0 0 12px ${accent}55`, pointerEvents: 'none', zIndex: 2,
           }} />
         )}
 
         {pts.map((p, i) => {
           const c = cashed(p.v)
-          const tone = c == null ? T.amberGlow : c ? T.greenGlow : T.redGlow
+          const tone = c == null ? T.amber : c ? T.green : T.red
           return (
             <div key={i} title={`${p.opp || ''} ${p.v}`} style={{
               flex: 1, minWidth: 0, height: '100%', display: 'flex',
@@ -73,7 +73,7 @@ export function GameLogChart({ games, line, over, accent = T.green, height = 116
                 borderRadius: '4px 4px 2px 2px',
                 background: `linear-gradient(180deg, ${tone}F2, ${tone}3D)`,
                 border: `1px solid ${tone}8C`, borderBottom: 'none',
-                boxShadow: 'none',
+                boxShadow: c ? `0 0 10px ${tone}44` : 'none',
               }} />
             </div>
           )
@@ -104,18 +104,19 @@ export function HitRing({ hits, n, size = 74, label = 'HIT RATE' }) {
   // Banded against the break-even a prop actually has to clear, not against
   // 50%: a 52% hit rate is not a green light, and colouring it like one is how
   // an interface flatters a model.
-  const tone = pct >= 70 ? T.greenGlow : pct >= 58 ? '#7CB342'
-             : pct >= 50 ? T.amberGlow : T.redGlow
+  const tone = pct >= 70 ? T.green : pct >= 58 ? '#9ACD32'
+             : pct >= 50 ? T.amber : T.red
   return (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center',
                   gap: 4 }}>
       <div style={{ position: 'relative', width: size, height: size }}>
         <svg width={size} height={size} style={{ transform: 'rotate(-90deg)' }}>
           <circle cx={size / 2} cy={size / 2} r={r} fill="none"
-                  stroke={T.border} strokeWidth="6.5" />
+                  stroke="#1c1c1c" strokeWidth="6.5" />
           <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={tone}
                   strokeWidth="6.5" strokeLinecap="round"
-                  strokeDasharray={`${(c * pct) / 100} ${c}`} />
+                  strokeDasharray={`${(c * pct) / 100} ${c}`}
+                  style={{ filter: `drop-shadow(0 0 6px ${tone}88)` }} />
         </svg>
         <div style={{ position: 'absolute', inset: 0, display: 'flex',
                       flexDirection: 'column', alignItems: 'center',
@@ -144,13 +145,12 @@ export function FormStrip({ games, line, over, max = 8 }) {
     <div style={{ display: 'flex', gap: 3.5 }}>
       {pts.map((p, i) => {
         const c = p.v === line ? null : over ? p.v > line : p.v < line
-        const tone = c == null ? T.amberGlow : c ? T.greenGlow : T.redGlow
+        const tone = c == null ? T.amber : c ? T.green : T.red
         return (
           <div key={i} title={`${p.opp || ''} ${p.v}`} style={{
             width: 15, height: 19, borderRadius: 4,
-            background: `${tone}26`, border: `1px solid ${tone}`,
-            color: c == null ? T.amber : c ? T.green : T.red,
-            fontSize: 8.5, fontWeight: 800,
+            background: `${tone}26`, border: `1px solid ${tone}99`,
+            color: tone, fontSize: 8.5, fontWeight: 800,
             display: 'flex', alignItems: 'center', justifyContent: 'center',
           }}>{c == null ? 'P' : c ? 'W' : 'L'}</div>
         )
@@ -173,8 +173,9 @@ export function StatPill({ label, value, pct, of, accent = T.green, sub }) {
   return (
     <div style={{
       padding: '10px 12px 11px', borderRadius: 12, minWidth: 0,
-      background: T.cardHi,
+      background: 'linear-gradient(158deg, #181818 0%, #121212 70%)',
       border: `1px solid ${T.border}`,
+      boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.035)',
     }}>
       <div style={{ fontFamily: T.cond, fontWeight: 700, fontSize: 9.5,
                     letterSpacing: 1, color: T.muted2, textTransform: 'uppercase',
@@ -185,10 +186,11 @@ export function StatPill({ label, value, pct, of, accent = T.green, sub }) {
                     fontVariantNumeric: 'tabular-nums' }}>{value}</div>
       {hasBar ? (
         <>
-          <div style={{ height: 4, borderRadius: 3, background: T.border,
+          <div style={{ height: 4, borderRadius: 3, background: '#000',
                         overflow: 'hidden', marginTop: 6 }}>
             <div style={{ width: `${Math.min(100, pct * 100)}%`, height: '100%',
-                          borderRadius: 3, background: accent }} />
+                          borderRadius: 3, background: accent,
+                          boxShadow: `0 0 8px ${accent}99` }} />
           </div>
           {of ? (
             <div style={{ color: T.muted2, fontSize: 9.5, marginTop: 3 }}>{of}</div>
@@ -223,12 +225,13 @@ export function ShareBars({ rows, accent = T.green }) {
               {Math.round((r.share || 0) * 100)}%
             </b>
           </div>
-          <div style={{ height: 6, borderRadius: 4, background: T.bg,
+          <div style={{ height: 6, borderRadius: 4, background: '#191919',
                         overflow: 'hidden' }}>
             <div style={{
               width: `${((r.share || 0) / top) * 100}%`, height: '100%',
               borderRadius: 4,
-              background: r.me ? accent : T.muted2,
+              background: r.me ? accent : '#2f2f2f',
+              boxShadow: r.me ? `0 0 10px ${accent}66` : 'none',
             }} />
           </div>
         </div>

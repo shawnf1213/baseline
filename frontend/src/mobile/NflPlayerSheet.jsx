@@ -106,7 +106,7 @@ function MatchupBlock({ m, prop, over, opponent }) {
                     marginTop: 6, flexWrap: 'wrap' }}>
         <span style={{ color: tone, fontSize: 26, fontWeight: 800,
                        lineHeight: 1, letterSpacing: -0.5,
-                       }}>
+                       textShadow: `0 0 18px ${tone}55` }}>
           {ordinal(rank)}
         </span>
         <span style={{ color: T.muted2, fontSize: 12, fontWeight: 700 }}>
@@ -200,7 +200,7 @@ function PropDetail({ r, posted, form, matchups, index = 0 }) {
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 7 }}>
           <span style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 25,
                          letterSpacing: 0.5, color: tone,
-                         }}>{lean || '—'}</span>
+                         textShadow: `0 0 20px rgba(${rgb},0.4)` }}>{lean || '—'}</span>
           <span style={{ fontSize: 25, fontWeight: 800, color: T.white,
                          fontVariantNumeric: 'tabular-nums',
                          letterSpacing: -0.5 }}>{fmt(r.line)}</span>
@@ -557,7 +557,7 @@ function ProfileBlock({ prof, props, teamAbbr }) {
                   padding: '7px 13px',
                   // Zebra striping rather than 17 identical lines — the eye
                   // needs somewhere to rest when scanning a long log.
-                  background: i % 2 ? T.cardHi : 'transparent',
+                  background: i % 2 ? 'rgba(255,255,255,0.018)' : 'transparent',
                 }}>
                   <span style={{ color: T.muted2, fontSize: 10.5, minWidth: 24,
                                  fontFamily: T.cond, fontWeight: 700 }}>
@@ -713,7 +713,7 @@ export default function NflPlayerSheet({ player, rows, posted, onClose }) {
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 31,
                             color: T.white, letterSpacing: 0.3, lineHeight: 1.02,
-                            }}>
+                            textShadow: `0 2px 18px ${myTeam.c1}44` }}>
                 {player.player}
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 7,
@@ -804,7 +804,7 @@ export default function NflPlayerSheet({ player, rows, posted, onClose }) {
                   <div key={p.id} style={{
                     display: 'flex', alignItems: 'center', gap: 9,
                     padding: '8px 13px',
-                    background: i % 2 ? T.cardHi : 'transparent',
+                    background: i % 2 ? 'rgba(255,255,255,0.018)' : 'transparent',
                   }}>
                     <span style={{
                       width: 20, height: 20, borderRadius: 5, flexShrink: 0,

@@ -74,7 +74,7 @@ function footNoteFor(p) {
   const res = p.result
   const star = p.is_potd ? '⭐ ' : ''
   if (res === 'W' || res === 'L') {
-    const tone = res === 'W' ? T.green : T.red
+    const tone = res === 'W' ? '#3FB950' : '#E5534B'
     return (
       <span style={{ color: tone, fontWeight: 800, fontSize: 11 }}>
         {star}{res === 'W' ? '✅' : '❌'} {res}

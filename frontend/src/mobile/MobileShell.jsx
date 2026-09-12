@@ -82,9 +82,9 @@ export default function MobileShell() {
         position: 'sticky', top: 0, zIndex: 50,
         // Translucent rather than solid so the page glow reads through it, with
         // a brand hairline instead of another grey rule.
-        background: 'rgba(255,255,255,0.86)',
-        borderBottom: `1px solid ${T.border}`,
-        boxShadow: '0 1px 2px rgba(16,24,40,0.04)',
+        background: 'rgba(8,8,8,0.82)',
+        borderBottom: '1px solid rgba(0,230,118,0.16)',
+        boxShadow: '0 1px 22px rgba(0,230,118,0.05)',
         paddingTop: SAFE_TOP,
         // Start where the content starts so the fixed rail never paints over
         // the header's own contents.
@@ -102,8 +102,8 @@ export default function MobileShell() {
           <span style={{
             fontFamily: T.cond, fontWeight: 700, fontSize: 10, letterSpacing: 2.5,
             color: T.green, textTransform: 'uppercase',
-            border: `1px solid ${T.green}44`, borderRadius: 999,
-            padding: '4px 10px', background: `${T.green}12`,
+            border: '1px solid rgba(0,230,118,0.28)', borderRadius: 999,
+            padding: '4px 10px', background: 'rgba(0,230,118,0.07)',
           }}>Research</span>
         </div>
       </header>
