@@ -224,6 +224,27 @@ POSITION_PRIOR = {
 _DEPTH_CACHE = {}
 
 
+# gsis_id -> ESPN id, filled as a side effect of building the depth-chart cache.
+# Module level, so it survives across players the way _DEPTH_CACHE does.
+_ESPN_ID = {}
+
+
+def espn_id(player: str, season: int = None) -> str:
+    """ESPN's id for a player, or "". The only key that reaches a headshot.
+
+    Depends on depth_rank having populated the cache, so it calls it first —
+    cheap after the first player, since the chart is cached per season.
+    """
+    try:
+        from . import client
+        season = season or client.current_season()
+        depth_rank(player, season=season)
+        gid = _name_to_gsis(season).get(_norm_player(player))
+        return _ESPN_ID.get(gid, "") if gid else ""
+    except Exception:  # noqa: BLE001 — a missing photo must not cost a profile
+        return ""
+
+
 def _season_span(hist) -> str:
     """"2025", or "2025-26" when the sample straddles two seasons. "" if unknown.
 
@@ -335,6 +356,15 @@ def depth_rank(player: str, season: int = None, before_week: int = None):
                         except (TypeError, ValueError):
                             continue
                         tbl[gid] = (r.get(pos_col), rk)
+                        # The ESPN id travels on the same row, and it is the
+                        # only identifier that reaches a headshot. Harvested
+                        # here rather than in a second pass over 500k rows.
+                        eid = r.get("espn_id")
+                        if eid is not None and str(eid) not in ("", "nan"):
+                            try:
+                                _ESPN_ID[gid] = str(int(float(eid)))
+                            except (TypeError, ValueError):
+                                pass
                     _DEPTH_CACHE[key] = tbl
         except Exception:  # noqa: BLE001
             log.exception("nfl depth_rank failed")

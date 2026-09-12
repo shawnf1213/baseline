@@ -1,9 +1,9 @@
 import { useState, useEffect, useMemo } from 'react'
-import { T, SAFE_TOP } from './theme'
+import { T, SAFE_TOP, SURFACE_TINT } from './theme'
 import { Card, Heart, Spinner, Empty, SectionLabel, tier, sideTone, SideRail,
          TierBadge, ConfBar, BigStat, tierCardStyle } from './bits'
 import PlayerPhoto from './PlayerPhoto'
-import Last5Bars from '../components/Last5Bars'
+import { GameLogChart, HitRing, FormStrip } from './viz'
 import { fetchForm, fetchStats, fetchNextMatch, fetchHistory } from '../utils/api'
 import { normName, hitStrip, shortProp, fmt, prettyDate, startTimeLabel, PROP_TYPES, mergedBoardRows } from './data'
 import { projectRow, cachedProjection, resolvePlayer } from './project'
@@ -48,6 +48,20 @@ export default function PlayerDashboard({ player, boards, onClose, onOpenPlayer 
     for (const r of boardRows) if (r.line != null) m[r.propType] = r.line
     return m
   }, [boardRows])
+  // WHICH SIDE WE ARE ON, per prop — so a hit strip reads as "our side landed"
+  // instead of a bare over-count the reader has to invert on an UNDER. Comes
+  // from the projection, which arrives after the board row, so a prop with no
+  // projection yet simply has no side and the strip says "over rate".
+  const leanByProp = useMemo(() => {
+    const m = {}
+    for (const r of boardRows) {
+      const e = propProj[r.key]?.edge
+      if (typeof e === 'number' && e !== 0) {
+        m[r.propType] = e > 0 ? 'OVER' : 'UNDER'
+      }
+    }
+    return m
+  }, [boardRows, propProj])
 
   // Resolve id + CORRECT tour, then load core data. From search/bookmarks we
   // already have an id (its tour is gender-derived, reliable); from a board tap
@@ -262,7 +276,9 @@ export default function PlayerDashboard({ player, boards, onClose, onOpenPlayer 
             <section style={{ marginBottom: 22 }}>
               <SectionLabel right={<span style={{ color: T.muted2, fontSize: 11 }}>{primarySurface} · L10</span>}>Prop Hit Rates</SectionLabel>
               {HISTORY_PROPS.map(p => (
-                <HitStrip key={p.key} prop={p} state={histories[p.key]} refLine={lineByProp[p.key]} playerName={player.name} />
+                <HitStrip key={p.key} prop={p} state={histories[p.key]}
+                          refLine={lineByProp[p.key]}
+                          lean={leanByProp[p.key]} surface={primarySurface} />
               ))}
             </section>
 
@@ -275,10 +291,22 @@ export default function PlayerDashboard({ player, boards, onClose, onOpenPlayer 
   )
 }
 
-function HitStrip({ prop, state, refLine, playerName }) {
+// ── ONE PROP'S HISTORY, IN DETAIL ────────────────────────────────────────────
+// The same treatment the NFL card got, from the same components in viz.jsx —
+// not a tennis lookalike. This was a pair of "3O 2U" counts and a five-bar
+// sparkline, which is a table cell with a picture next to it.
+//
+// WHAT CHANGED BEYOND THE LOOK: the counts were always over/under, so on a prop
+// we lean UNDER the reader had to invert them in their head. Everything here is
+// stated as OUR SIDE — hit rate, form strip, bar colours — once a line and a
+// side are known. With no board line there is no side, so it falls back to the
+// player's average and says so.
+function HitStrip({ prop, state, refLine, lean, surface }) {
   if (!state || state.loading) return (
-    <Card style={{ padding: 14, marginBottom: 10, display: 'flex', alignItems: 'center', gap: 10 }}>
-      <Spinner size={16} /><span style={{ color: T.muted, fontSize: 13 }}>{prop.short}…</span>
+    <Card style={{ padding: 14, marginBottom: 10, display: 'flex',
+                   alignItems: 'center', gap: 10 }}>
+      <Spinner size={16} />
+      <span style={{ color: T.muted, fontSize: 13 }}>{prop.short}…</span>
     </Card>
   )
   if (state.err || !state.data) return null
@@ -286,96 +314,195 @@ function HitStrip({ prop, state, refLine, playerName }) {
   if (!s.l10.n) return (
     <Card style={{ padding: '12px 14px', marginBottom: 10 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-        <span style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 15, color: T.white }}>{prop.short}</span>
+        <span style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 15,
+                       color: T.white }}>{prop.short}</span>
         <span style={{ color: T.muted2, fontSize: 12 }}>no log on surface</span>
       </div>
     </Card>
   )
-  // Newest-first values → oldest→newest for the bar chart; last 5.
-  const barData = [...(s.values || [])].slice(0, 5).reverse().map(v => ({ label: '', val: v, isNA: v == null }))
+
   const ref = s.ref
+  const dp = Number.isInteger(ref) ? 0 : 1
+  // values arrive NEWEST-FIRST from the API; every chart here reads
+  // oldest→newest, which is the direction a reader expects time to run.
+  const games = [...(s.values || [])].reverse()
+    .map((v, i) => ({ v, wk: i + 1 }))
+    .filter(g => typeof g.v === 'number')
+
+  // No lean means no side, and a hit rate needs one. OVER is the honest default
+  // only when we are actually on a prop; against a bare average it would be an
+  // invented position, so that case shows the over-rate and labels it that way.
+  const side = (lean || '').toUpperCase()
+  const haveSide = side === 'OVER' || side === 'UNDER'
+  const over = side !== 'UNDER'
+  const hits10 = over ? s.l10.o : s.l10.u
+  const tone = haveSide ? (over ? T.green : T.red) : T.amber
+
   return (
-    <Card style={{ padding: '12px 14px 6px', marginBottom: 10 }}>
-      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between' }}>
-        <span style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 16, color: T.white, letterSpacing: 0.3 }}>{prop.short}</span>
+    <Card style={{ padding: '13px 14px 14px', marginBottom: 10 }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+        <span style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 16,
+                       color: T.white, letterSpacing: 0.3, flex: 1 }}>
+          {prop.short}
+        </span>
+        {haveSide ? (
+          <span style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 12,
+                         letterSpacing: 1, color: tone, padding: '2px 8px',
+                         borderRadius: 6, background: `${tone}1C`,
+                         border: `1px solid ${tone}55` }}>{side}</span>
+        ) : null}
         <span style={{ color: T.muted, fontSize: 11.5 }}>
-          {refLine != null ? `vs line ${fmt(ref, Number.isInteger(ref) ? 0 : 1)}` : `vs avg ${fmt(ref)}`}
+          {refLine != null ? `line ${fmt(ref, dp)}` : `avg ${fmt(ref)}`}
         </span>
       </div>
-      <div style={{ display: 'flex', gap: 16, marginTop: 8 }}>
-        <Split label="Last 5" o={s.l5.o} u={s.l5.u} pu={s.l5.pu} />
-        <Split label="Last 10" o={s.l10.o} u={s.l10.u} pu={s.l10.pu} />
-        <div style={{ marginLeft: 'auto', color: T.muted2, fontSize: 10.5, alignSelf: 'center' }}>{s.sample} on {'surface'}</div>
+
+      {ref != null && games.length ? (
+        <div style={{ marginTop: 11 }}>
+          <GameLogChart games={games} line={ref} over={over}
+                        accent={haveSide ? tone : T.amber} height={96} />
+        </div>
+      ) : null}
+
+      <div style={{ display: 'flex', alignItems: 'center', gap: 14,
+                    marginTop: 10 }}>
+        <HitRing hits={hits10} n={s.l10.n}
+                 label={haveSide ? 'HIT RATE' : 'OVER RATE'} />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontFamily: T.cond, fontWeight: 700, fontSize: 9.5,
+                        letterSpacing: 1.1, color: T.muted2, marginBottom: 5 }}>
+            LAST {Math.min(8, games.length)}
+          </div>
+          <FormStrip games={games} line={ref} over={over} />
+          <div style={{ marginTop: 9, fontSize: 12, color: T.muted }}>
+            {s.l5.n ? (
+              <>Last 5 <b style={{ color: T.white }}>
+                {over ? s.l5.o : s.l5.u}/{s.l5.n}</b> · </>
+            ) : null}
+            {typeof s.average === 'number' ? (
+              <>averages <b style={{ color: T.white, fontSize: 13.5 }}>
+                {fmt(s.average)}</b></>
+            ) : null}
+          </div>
+        </div>
       </div>
-      {ref != null && <Last5Bars data={barData} propLine={ref} playerName={playerName} maxBarHeight={70} />}
+
+      <div style={{ color: T.muted2, fontSize: 10.5, marginTop: 10,
+                    paddingTop: 8, borderTop: `1px solid ${T.border}` }}>
+        {s.sample} match{s.sample === 1 ? '' : 'es'} on {surface}
+      </div>
     </Card>
   )
 }
 
-function Split({ label, o, u, pu }) {
-  return (
-    <div>
-      <div style={{ fontFamily: T.cond, fontWeight: 700, fontSize: 9.5, letterSpacing: 1, textTransform: 'uppercase', color: T.muted2, marginBottom: 3 }}>{label}</div>
-      <div style={{ display: 'flex', gap: 6, fontFamily: T.cond, fontWeight: 800, fontSize: 14 }}>
-        <span style={{ color: T.green }}>{o}<span style={{ fontSize: 10, color: T.muted2 }}>O</span></span>
-        <span style={{ color: T.red }}>{u}<span style={{ fontSize: 10, color: T.muted2 }}>U</span></span>
-        {pu > 0 && <span style={{ color: T.amber }}>{pu}<span style={{ fontSize: 10, color: T.muted2 }}>P</span></span>}
-      </div>
-    </div>
-  )
-}
 
-const SURF_ROWS = [
-  ['matches_played', 'Matches', 0],
-  ['win_rate', 'Win %', 0, '%'],
-  ['aces', 'Aces/M', 1],
-  ['double_faults', 'DF/M', 1],
-  ['bp_generated_per_match', 'BP/M', 1],
+// ── SURFACE SPLITS ───────────────────────────────────────────────────────────
+// This was an actual <table> — the single most spreadsheet-like thing in the
+// app, and the one place a reader had to cross-reference a row against a column
+// header to learn anything.
+//
+// A card per surface instead, in the surface's own colour. The three numbers a
+// tennis prop actually turns on — aces, double faults, break points — sit
+// beside each other WITH A BAR SCALED ACROSS THE SURFACES, so "12.4 aces on
+// grass" is visibly bigger than "6.1 on clay" before either is read. Scaling
+// each row against its own maximum is what makes the comparison work; scaling
+// everything against one global maximum would flatten the small numbers to
+// nothing.
+const SURF_STATS = [
+  ['aces', 'Aces / match', 1],
+  ['double_faults', 'DF / match', 1],
+  ['bp_generated_per_match', 'BP won / match', 1],
 ]
+
 function SurfaceSplits({ stats }) {
   if (!stats) return null
-  const surfaces = ['Hard', 'Clay', 'Grass'].filter(s => (stats[s]?.matches_played || 0) > 0)
+  const surfaces = ['Hard', 'Clay', 'Grass']
+    .filter(s => (stats[s]?.matches_played || 0) > 0)
   if (!surfaces.length) return null
+  // Per-stat maximum ACROSS surfaces, so each bar is read against its peers.
+  const peak = {}
+  for (const [k] of SURF_STATS) {
+    peak[k] = Math.max(...surfaces.map(s => stats[s]?.[k] || 0), 0.0001)
+  }
   return (
     <section style={{ marginBottom: 8 }}>
-      <SectionLabel>Surface Splits</SectionLabel>
-      <Card style={{ padding: 4, overflowX: 'auto' }} className="no-scrollbar">
-        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-          <thead>
-            <tr>
-              <th style={thStyle}></th>
-              {surfaces.map(s => <th key={s} style={{ ...thStyle, textAlign: 'right', color: T.green }}>{s}</th>)}
-            </tr>
-          </thead>
-          <tbody>
-            {SURF_ROWS.map(([key, label, dp, suf]) => (
-              <tr key={key}>
-                <td style={{ ...tdStyle, color: T.muted }}>{label}</td>
-                {surfaces.map(s => (
-                  <td key={s} style={{ ...tdStyle, textAlign: 'right', color: T.white, fontFamily: T.cond, fontWeight: 700 }}>
-                    {stats[s]?.[key] != null ? `${fmt(stats[s][key], dp)}${suf || ''}` : '—'}
-                  </td>
-                ))}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </Card>
+      <SectionLabel>Surface splits</SectionLabel>
+      <div style={{ display: 'grid', gap: 9,
+                    gridTemplateColumns: 'repeat(auto-fit, minmax(232px, 1fr))' }}>
+        {surfaces.map((s, i) => {
+          const d = stats[s] || {}
+          const c = SURFACE_TINT[s] || T.green
+          const wr = typeof d.win_rate === 'number' ? d.win_rate : null
+          return (
+            <Card key={s} index={i} style={{
+              padding: '13px 14px', position: 'relative', overflow: 'hidden',
+              border: `1px solid ${c}3D`,
+            }}>
+              <div style={{
+                position: 'absolute', inset: 0, pointerEvents: 'none',
+                background: `radial-gradient(120% 80% at 0% 0%, ${c}1A, transparent 62%)`,
+              }} />
+              <div style={{ position: 'relative' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ width: 9, height: 9, borderRadius: 5,
+                                 background: c, boxShadow: `0 0 10px ${c}` }} />
+                  <span style={{ fontFamily: T.cond, fontWeight: 800,
+                                 fontSize: 17, letterSpacing: 0.6,
+                                 color: T.white, flex: 1 }}>{s}</span>
+                  <span style={{ color: T.muted2, fontSize: 11 }}>
+                    {d.matches_played} match{d.matches_played === 1 ? '' : 'es'}
+                  </span>
+                </div>
+
+                {wr != null ? (
+                  <div style={{ display: 'flex', alignItems: 'baseline', gap: 7,
+                                marginTop: 9 }}>
+                    <span style={{ fontSize: 27, fontWeight: 800, lineHeight: 1,
+                                   letterSpacing: -0.6,
+                                   color: wr >= 50 ? T.green : T.red,
+                                   fontVariantNumeric: 'tabular-nums' }}>
+                      {fmt(wr, 0)}%
+                    </span>
+                    <span style={{ fontFamily: T.cond, fontWeight: 700,
+                                   fontSize: 10, letterSpacing: 1.1,
+                                   color: T.muted2 }}>WIN RATE</span>
+                  </div>
+                ) : null}
+
+                <div style={{ marginTop: 11 }}>
+                  {SURF_STATS.map(([k, label, dp]) => {
+                    const v = d[k]
+                    return (
+                      <div key={k} style={{ marginTop: 8 }}>
+                        <div style={{ display: 'flex', alignItems: 'baseline',
+                                      gap: 8, marginBottom: 3 }}>
+                          <span style={{ color: T.muted, fontSize: 11.5,
+                                         flex: 1 }}>{label}</span>
+                          <b style={{ color: T.white, fontSize: 13.5,
+                                      fontVariantNumeric: 'tabular-nums' }}>
+                            {v != null ? fmt(v, dp) : '—'}
+                          </b>
+                        </div>
+                        <div style={{ height: 5, borderRadius: 3,
+                                      background: '#151515', overflow: 'hidden' }}>
+                          <div style={{
+                            width: `${Math.min(100, ((v || 0) / peak[k]) * 100)}%`,
+                            height: '100%', borderRadius: 3, background: c,
+                            opacity: 0.85,
+                          }} />
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            </Card>
+          )
+        })}
+      </div>
     </section>
   )
 }
 
-const thStyle = { fontFamily: T.cond, fontWeight: 800, fontSize: 11, letterSpacing: 1, textTransform: 'uppercase', color: T.muted, padding: '8px 12px', textAlign: 'left' }
-const tdStyle = { fontSize: 13.5, padding: '9px 12px', borderTop: `1px solid ${T.border}` }
-
 function Badge({ children }) {
   return <span style={{ fontFamily: T.cond, fontWeight: 700, fontSize: 12, letterSpacing: 0.8, textTransform: 'uppercase', color: T.muted, background: T.card, border: `1px solid ${T.border}`, borderRadius: 7, padding: '3px 9px' }}>{children}</span>
-}
-function Mini({ label, value, accent }) {
-  return (
-    <div style={{ textAlign: 'center' }}>
-      <div style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 16, color: accent ? T.green : T.white }}>{value}</div>
-      <div style={{ fontFamily: T.cond, fontWeight: 700, fontSize: 9.5, letterSpacing: 1, textTransform: 'uppercase', color: T.muted2 }}>{label}</div>
-    </div>
-  )
 }

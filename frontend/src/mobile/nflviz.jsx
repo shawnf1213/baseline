@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { T } from './theme'
 
 // ── NFL VISUAL LANGUAGE ──────────────────────────────────────────────────────
@@ -61,169 +62,88 @@ export function team(abbr) {
   return TEAM[ALIAS[k] || k] || { n: k || '', c1: T.muted2, c2: '#1e1e1e' }
 }
 
-// A club monogram. No crest images: 32 logos are licensed marks, they would
-// have to be bundled or hot-linked, and a wrong or missing one looks far worse
-// than two letters in the right colours.
-export function TeamMark({ abbr, size = 42 }) {
+// The club crest, from ESPN's CDN — the same source nflverse publishes in its
+// own teams table. Served through ESPN's resizer (`h`/`w`), which returns a 3KB
+// PNG instead of the 36KB 500px original: thirty of these on a board is the
+// difference between 90KB and 1MB.
+//
+// THE MONOGRAM IS STILL HERE, as the fallback. A hot-linked image can 404 on a
+// club we mapped wrong, be blocked, or simply be unavailable with the app
+// offline — and an empty box where a crest should be is worse than two letters
+// in the right colours. `onError` swaps to it silently.
+const logoUrl = (abbr, px) =>
+  'https://a.espncdn.com/combiner/i?img=/i/teamlogos/nfl/500/'
+  + `${String(abbr || '').toLowerCase()}.png&h=${px}&w=${px}`
+
+export function TeamMark({ abbr, size = 42, plain = false }) {
   const t = team(abbr)
+  const [failed, setFailed] = useState(false)
   const label = String(abbr || '').toUpperCase().slice(0, 3)
+  // Ask for 2x so the crest stays sharp on a phone's retina screen.
+  const px = Math.round(size * 2)
+
+  const box = {
+    width: size, height: size, borderRadius: size / 2, flexShrink: 0,
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    overflow: 'hidden',
+    background: plain ? 'transparent'
+      : `linear-gradient(145deg, ${t.c1}2E, ${t.c2}22)`,
+    border: plain ? 'none' : `1.5px solid ${t.c1}88`,
+    boxShadow: plain ? 'none'
+      : `0 0 18px ${t.c1}33, inset 0 1px 0 ${t.c1}22`,
+  }
+
+  if (abbr && !failed) {
+    return (
+      <div style={box}>
+        <img src={logoUrl(abbr, px)} alt={label} loading="lazy"
+             onError={() => setFailed(true)}
+             style={{ width: '76%', height: '76%', objectFit: 'contain',
+                      filter: `drop-shadow(0 1px 4px ${t.c1}55)` }} />
+      </div>
+    )
+  }
+  return (
+    <div style={{ ...box, fontFamily: T.cond, fontWeight: 800, color: t.c1,
+                  fontSize: size * 0.34, letterSpacing: 0.5 }}>{label}</div>
+  )
+}
+
+// The player's face, from ESPN by the id nflverse carries on the depth chart
+// (nfl/queries.py publishes it as `espn_id`). Same resizer as the crest — the
+// full headshot is ~250KB and this needs 120.
+//
+// Falls back to the club crest, never to a generic silhouette: a stand-in face
+// is a claim about who someone is, and the crest at least says something true.
+export function PlayerHead({ espnId, abbr, size = 62 }) {
+  const [failed, setFailed] = useState(false)
+  const t = team(abbr)
+  const px = Math.round(size * 2)
+  const src = espnId
+    ? 'https://a.espncdn.com/combiner/i?img=/i/headshots/nfl/players/full/'
+      + `${espnId}.png&h=${px}&w=${px}&scale=crop`
+    : null
+
   return (
     <div style={{
       width: size, height: size, borderRadius: size / 2, flexShrink: 0,
-      display: 'flex', alignItems: 'center', justifyContent: 'center',
-      background: `linear-gradient(145deg, ${t.c1}2E, ${t.c2}22)`,
-      border: `1.5px solid ${t.c1}88`,
-      boxShadow: `0 0 18px ${t.c1}33, inset 0 1px 0 ${t.c1}22`,
-      fontFamily: T.cond, fontWeight: 800, color: t.c1,
-      fontSize: size * 0.34, letterSpacing: 0.5,
-    }}>{label}</div>
-  )
-}
-
-// ── THE GAME LOG ─────────────────────────────────────────────────────────────
-// The centrepiece, and the thing a 7px grey bar strip could never be. Every
-// game against the line, with the bar coloured by WHETHER OUR SIDE WOULD HAVE
-// CASHED that week — not by whether he went over. On an UNDER those are
-// opposites, and colouring by "over" would show a wall of red for a play we
-// like, which is the single most misleading thing this chart could do.
-// HTML AND CSS, NOT SVG. An SVG sized `width:100%` with a fixed viewBox either
-// letterboxes or, with preserveAspectRatio="none", scales x and y by different
-// factors — which stretches every label. This card runs from a 360px phone to a
-// 760px column, so the text would have been visibly squashed on one and smeared
-// on the other. Divs scale without distorting their type.
-export function GameLogChart({ games, line, over, accent = T.green, height = 116 }) {
-  const pts = (games || []).filter(g => typeof g.v === 'number')
-  if (!pts.length) return null
-
-  const hi = Math.max(...pts.map(p => p.v), line ?? 0)
-  const top = hi * 1.16 || 1
-  const h = (v) => `${(Math.max(0, v) / top) * 100}%`
-  // Values crowd badly past a dozen bars on a phone, so a long log keeps the
-  // opponent and drops the number. The bars still carry the shape, and the
-  // exact figures are in the game log below.
-  const showVals = pts.length <= 12
-  const cashed = (v) => (line == null || v === line ? null
-    : over ? v > line : v < line)
-
-  return (
-    <div style={{ width: '100%' }}>
-      <div style={{ position: 'relative', height, display: 'flex',
-                    alignItems: 'flex-end', gap: 3 }}>
-        {/* The line, drawn THROUGH the bars rather than beside them — the whole
-            question is which bars finish above it. */}
-        {line != null && (
-          <div style={{
-            position: 'absolute', left: 0, right: 0, height: 0,
-            bottom: `${Math.min(100, (line / top) * 100)}%`,
-            borderTop: `1.5px dashed ${accent}`, opacity: 0.9,
-            boxShadow: `0 0 12px ${accent}55`, pointerEvents: 'none', zIndex: 2,
-          }} />
-        )}
-
-        {pts.map((p, i) => {
-          const c = cashed(p.v)
-          const tone = c == null ? T.amber : c ? T.green : T.red
-          return (
-            <div key={i} title={`${p.opp || ''} ${p.v}`} style={{
-              flex: 1, minWidth: 0, height: '100%', display: 'flex',
-              flexDirection: 'column', justifyContent: 'flex-end',
-              alignItems: 'center',
-            }}>
-              {showVals && (
-                <div style={{ fontSize: 9.5, fontWeight: 700, color: T.muted,
-                              marginBottom: 2, lineHeight: 1,
-                              fontVariantNumeric: 'tabular-nums' }}>{p.v}</div>
-              )}
-              <div style={{
-                width: '100%', maxWidth: 26, height: h(p.v), minHeight: 2,
-                borderRadius: '4px 4px 2px 2px',
-                background: `linear-gradient(180deg, ${tone}F2, ${tone}3D)`,
-                border: `1px solid ${tone}8C`, borderBottom: 'none',
-                boxShadow: c ? `0 0 10px ${tone}44` : 'none',
-              }} />
-            </div>
-          )
-        })}
-      </div>
-
-      <div style={{ display: 'flex', gap: 3, marginTop: 4 }}>
-        {pts.map((p, i) => (
-          <div key={i} style={{
-            flex: 1, minWidth: 0, textAlign: 'center', fontSize: 8.5,
-            color: T.muted2, whiteSpace: 'nowrap', overflow: 'hidden',
-          }}>{p.opp || (p.wk != null ? `w${p.wk}` : '')}</div>
-        ))}
-      </div>
+      overflow: 'hidden', display: 'flex', alignItems: 'center',
+      justifyContent: 'center', position: 'relative',
+      background: `linear-gradient(160deg, ${t.c1}30, ${t.c2}18)`,
+      border: `2px solid ${t.c1}77`,
+      boxShadow: `0 0 22px ${t.c1}2E, inset 0 1px 0 ${t.c1}22`,
+    }}>
+      {src && !failed ? (
+        <img src={src} alt="" loading="lazy" onError={() => setFailed(true)}
+             style={{ width: '112%', height: '112%', objectFit: 'cover',
+                      objectPosition: 'top center' }} />
+      ) : (
+        <TeamMark abbr={abbr} size={size * 0.62} plain />
+      )}
     </div>
   )
 }
 
-// ── HIT RATE, AS A SHAPE ─────────────────────────────────────────────────────
-// "13/16 · 81%" is a cell in a table. This is the same fact you can read at a
-// glance from across the room, which is the whole difference between a tool and
-// a spreadsheet.
-export function HitRing({ hits, n, size = 74, label = 'HIT RATE' }) {
-  if (!n) return null
-  const pct = Math.round((hits / n) * 100)
-  const r = (size - 9) / 2
-  const c = 2 * Math.PI * r
-  // Banded against the break-even a prop actually has to clear, not against
-  // 50%: a 52% hit rate is not a green light, and colouring it like one is how
-  // an interface flatters a model.
-  const tone = pct >= 70 ? T.green : pct >= 58 ? '#9ACD32'
-             : pct >= 50 ? T.amber : T.red
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center',
-                  gap: 4 }}>
-      <div style={{ position: 'relative', width: size, height: size }}>
-        <svg width={size} height={size} style={{ transform: 'rotate(-90deg)' }}>
-          <circle cx={size / 2} cy={size / 2} r={r} fill="none"
-                  stroke="#1c1c1c" strokeWidth="6.5" />
-          <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={tone}
-                  strokeWidth="6.5" strokeLinecap="round"
-                  strokeDasharray={`${(c * pct) / 100} ${c}`}
-                  style={{ filter: `drop-shadow(0 0 6px ${tone}88)` }} />
-        </svg>
-        <div style={{ position: 'absolute', inset: 0, display: 'flex',
-                      flexDirection: 'column', alignItems: 'center',
-                      justifyContent: 'center', gap: 0 }}>
-          <span style={{ fontSize: size * 0.30, fontWeight: 800, color: tone,
-                         lineHeight: 1, fontVariantNumeric: 'tabular-nums' }}>
-            {pct}
-          </span>
-          <span style={{ fontSize: 9, color: T.muted2, fontWeight: 700 }}>
-            {hits}/{n}
-          </span>
-        </div>
-      </div>
-      <span style={{ fontFamily: T.cond, fontWeight: 700, fontSize: 9.5,
-                     letterSpacing: 1.1, color: T.muted2 }}>{label}</span>
-    </div>
-  )
-}
-
-// The last n games as a form strip — the read every football table uses,
-// because a run of five reds says something an average never will.
-export function FormStrip({ games, line, over, max = 8 }) {
-  const pts = (games || []).filter(g => typeof g.v === 'number').slice(-max)
-  if (!pts.length || line == null) return null
-  return (
-    <div style={{ display: 'flex', gap: 3.5 }}>
-      {pts.map((p, i) => {
-        const c = p.v === line ? null : over ? p.v > line : p.v < line
-        const tone = c == null ? T.amber : c ? T.green : T.red
-        return (
-          <div key={i} title={`${p.opp || ''} ${p.v}`} style={{
-            width: 15, height: 19, borderRadius: 4,
-            background: `${tone}26`, border: `1px solid ${tone}99`,
-            color: tone, fontSize: 8.5, fontWeight: 800,
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-          }}>{c == null ? 'P' : c ? 'W' : 'L'}</div>
-        )
-      })}
-    </div>
-  )
-}
 
 // ── THE DEFENCE, ON A SCALE ──────────────────────────────────────────────────
 // 32 ticks, one per club, with this one lit. A rank only means something
@@ -257,24 +177,4 @@ export function DefenseMeter({ rank, of = 32, tone, abbr }) {
   )
 }
 
-// A stat, as something with weight. The 2×2 label/value grid was the most
-// spreadsheet-like thing on the page; this gives each number a tinted well and
-// a size worth reading.
-export function StatPill({ label, value, tone = T.white, sub }) {
-  return (
-    <div style={{
-      padding: '9px 11px', borderRadius: 11, background: '#141414',
-      border: `1px solid ${T.border}`, minWidth: 0,
-    }}>
-      <div style={{ fontFamily: T.cond, fontWeight: 700, fontSize: 9.5,
-                    letterSpacing: 1, color: T.muted2, textTransform: 'uppercase',
-                    whiteSpace: 'nowrap', overflow: 'hidden',
-                    textOverflow: 'ellipsis' }}>{label}</div>
-      <div style={{ color: tone, fontSize: 19, fontWeight: 800, lineHeight: 1.15,
-                    fontVariantNumeric: 'tabular-nums' }}>{value}</div>
-      {sub ? (
-        <div style={{ color: T.muted2, fontSize: 10 }}>{sub}</div>
-      ) : null}
-    </div>
-  )
-}
+

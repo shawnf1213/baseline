@@ -203,6 +203,9 @@ def player_profile(name: str, season: int = None) -> dict:
         return {
             "player": u["player"], "position": u.get("position"),
             "depth_pos": pos, "depth_rank": rank,
+            # ESPN's id, the only key that reaches a headshot. Published so the
+            # website can show a face rather than a monogram.
+            "espn_id": _usage.espn_id(u["player"], season=season),
             "games": u.get("games"), "window": u.get("window"),
             "seasons": u.get("seasons"),
             "target_share": u.get("target_share"),

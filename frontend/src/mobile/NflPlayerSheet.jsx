@@ -2,8 +2,8 @@ import { useEffect, useMemo, useState } from 'react'
 import { T, SAFE_TOP } from './theme'
 import { Card, SectionLabel, Empty, Spinner, sideTone, tier, TierBadge,
          SideRail, ConfBar, BigStat, tierCardStyle } from './bits'
-import { team, TeamMark, GameLogChart, HitRing, FormStrip, DefenseMeter,
-         StatPill } from './nflviz'
+import { team, TeamMark, PlayerHead, DefenseMeter } from './nflviz'
+import { GameLogChart, HitRing, FormStrip, StatPill, ShareBars } from './viz'
 import { fetchNflPlayer } from '../utils/api'
 
 // ── NFL PLAYER SHEET ─────────────────────────────────────────────────────────
@@ -303,11 +303,14 @@ const pct1 = (v) => (typeof v === 'number' ? `${(v * 100).toFixed(1)}%` : '—')
 // Stats as tinted wells rather than a 2×2 of label-over-value, which was the
 // most spreadsheet-like thing on the page. Auto-fit so four stats sit 2-up on a
 // phone and 4-up on a desktop without a breakpoint.
-function StatGrid({ rows }) {
+function StatGrid({ rows, accent }) {
   return (
     <div style={{ display: 'grid', gap: 7, marginBottom: 9,
-                  gridTemplateColumns: 'repeat(auto-fit, minmax(128px, 1fr))' }}>
-      {rows.map(([k, v]) => <StatPill key={k} label={k} value={v} />)}
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(138px, 1fr))' }}>
+      {rows.map(s => (
+        <StatPill key={s.label} label={s.label} value={s.value} pct={s.pct}
+                  of={s.of} accent={accent} />
+      ))}
     </div>
   )
 }
@@ -330,24 +333,31 @@ function Block({ label, children }) {
 // back's target share is a real stat and a useless one beside an UNDER on his
 // rushing yards: it is not an input to that number and cannot move it. Position
 // is only the fallback for a player with nothing priced.
+// `pct` fills the pill's bar and `of` says what it is a share OF — the part a
+// bare percentage always leaves out. Counts and rates get no bar, because there
+// is no maximum to measure 4.02 yards a carry against.
 const RUSH_STATS = (p) => [
-  ['Carries/game', fmt(p.carries_per_game)],
-  ['Yards/carry', fmt(p.yards_per_carry, 2)],
+  { label: 'Carries/game', value: fmt(p.carries_per_game) },
+  { label: 'Yards/carry', value: fmt(p.yards_per_carry, 2) },
   ...(typeof p.snap_season === 'number'
-    ? [['Snap share', pct1(p.snap_season)]] : []),
-  ['Games', String(p.games ?? '—')],
+    ? [{ label: 'Snap share', value: pct1(p.snap_season),
+         pct: p.snap_season, of: "of the offence's snaps" }] : []),
+  { label: 'Games', value: String(p.games ?? '—') },
 ]
 const REC_STATS = (p) => [
-  ['Targets/game', fmt(p.targets_per_game)],
-  ['Target share', pct1(p.target_share)],
-  ['Catch rate', pct1(p.catch_rate)],
-  ['Yards/target', fmt(p.yards_per_target, 2)],
+  { label: 'Targets/game', value: fmt(p.targets_per_game) },
+  { label: 'Target share', value: pct1(p.target_share),
+    pct: p.target_share, of: "of the team's targets" },
+  { label: 'Catch rate', value: pct1(p.catch_rate),
+    pct: p.catch_rate, of: 'of targets caught' },
+  { label: 'Yards/target', value: fmt(p.yards_per_target, 2) },
 ]
 const PASS_STATS = (p) => [
-  ['Pass att/game', fmt(p.pass_att_per_game)],
-  ['Yards/attempt', fmt(p.yards_per_attempt, 2)],
-  ['Completion %', pct1(p.completion_pct)],
-  ['Games', String(p.games ?? '—')],
+  { label: 'Pass att/game', value: fmt(p.pass_att_per_game) },
+  { label: 'Yards/attempt', value: fmt(p.yards_per_attempt, 2) },
+  { label: 'Completion %', value: pct1(p.completion_pct),
+    pct: p.completion_pct, of: 'of passes completed' },
+  { label: 'Games', value: String(p.games ?? '—') },
 ]
 
 function statsFor(p, props) {
@@ -360,11 +370,42 @@ function statsFor(p, props) {
     // An RB with both a rushing and a receiving prop gets both sets, so drop
     // the labels the two share rather than printing Games twice.
     const seen = new Set()
-    return out.filter(([k]) => !seen.has(k) && seen.add(k))
+    return out.filter(s => !seen.has(s.label) && seen.add(s.label))
   }
   const pos = String(p.position || '').toUpperCase()
   return pos === 'QB' ? PASS_STATS(p)
        : (pos === 'RB' || pos === 'FB') ? RUSH_STATS(p) : REC_STATS(p)
+}
+
+// The role in a sentence, assembled only from figures that are actually there.
+// Every clause is dropped when its number is missing rather than filled with a
+// hedge, so this never asserts something the profile does not know.
+function roleSentence(p) {
+  const bits = []
+  const snap = p.snap_season
+  if (typeof snap === 'number') {
+    bits.push(snap >= 0.7 ? 'A full-time role'
+            : snap >= 0.45 ? 'A rotational role'
+            : 'A committee role')
+    bits.push(`${Math.round(snap * 100)}% of snaps`)
+  }
+  if (typeof p.target_share === 'number' && p.target_share > 0.02) {
+    bits.push(`${Math.round(p.target_share * 100)}% of targets`)
+  }
+  if (typeof p.carries_per_game === 'number' && p.carries_per_game >= 1) {
+    bits.push(`${p.carries_per_game.toFixed(1)} carries a game`)
+  }
+  if (typeof p.pass_att_per_game === 'number' && p.pass_att_per_game >= 1) {
+    bits.push(`${p.pass_att_per_game.toFixed(1)} attempts a game`)
+  }
+  // role_change is the demotion flag from nfl/usage.py — worth saying out loud,
+  // because it is the one thing here that changes what the model does.
+  const rc = p.role_change || {}
+  if (rc.factor && rc.factor < 0.97) {
+    bits.push(`usage scaled down ${Math.round((1 - rc.factor) * 100)}% on a`
+              + ' depth-chart demotion')
+  }
+  return bits.length ? bits.join(' · ') : ''
 }
 
 function ProfileBlock({ prof, props, teamAbbr }) {
@@ -395,17 +436,16 @@ function ProfileBlock({ prof, props, teamAbbr }) {
   // verdict — the section heading already says which end is which, and tinting
   // these green and red would double up on that while fighting the crest.
   const splitChips = (xs) => (
-    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 5 }}>
+    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 6 }}>
       {(xs || []).map(x => {
         const tc = team(x.opp)
         return (
           <span key={x.opp} style={{
-            display: 'inline-flex', alignItems: 'baseline', gap: 5,
-            padding: '4px 9px', borderRadius: 9,
+            display: 'inline-flex', alignItems: 'center', gap: 6,
+            padding: '4px 10px 4px 5px', borderRadius: 20,
             background: `${tc.c1}16`, border: `1px solid ${tc.c1}55`,
           }}>
-            <b style={{ fontFamily: T.cond, fontSize: 12, letterSpacing: 0.5,
-                        color: tc.c1 }}>{x.opp}</b>
+            <TeamMark abbr={x.opp} size={20} plain />
             <b style={{ color: T.white, fontSize: 13.5,
                         fontVariantNumeric: 'tabular-nums' }}>{x.mean}</b>
             {x.n > 1 ? (
@@ -430,20 +470,33 @@ function ProfileBlock({ prof, props, teamAbbr }) {
       {/* THE SEASON, not "prior season only". The window phrase is the model's
           own vocabulary and means nothing a reader can check — and what it
           refers to silently changes every September. */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 9,
-                    margin: '4px 0 9px' }}>
-        <span style={{
-          fontFamily: T.cond, fontWeight: 800, fontSize: 13, letterSpacing: 1.2,
-          color: acc, padding: '3px 10px', borderRadius: 7,
-          background: `${acc}18`, border: `1px solid ${acc}66`,
-        }}>{role}</span>
-        <span style={{ height: 1, flex: 1, background: T.border }} />
-        <span style={{ fontFamily: T.cond, fontWeight: 700, fontSize: 11,
-                       letterSpacing: 1, color: T.muted2 }}>
-          {p.seasons || p.window || ''}
-        </span>
-      </div>
-      <StatGrid rows={stats} />
+      <Card style={{ padding: '13px 14px', marginBottom: 9,
+                     display: 'flex', alignItems: 'center', gap: 13 }}>
+        <PlayerHead espnId={p.espn_id} abbr={teamAbbr} size={58} />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 7,
+                        flexWrap: 'wrap' }}>
+            <span style={{
+              fontFamily: T.cond, fontWeight: 800, fontSize: 14,
+              letterSpacing: 1.2, color: acc, padding: '2.5px 10px',
+              borderRadius: 7, background: `${acc}18`,
+              border: `1px solid ${acc}66`,
+            }}>{role}</span>
+            <span style={{ color: T.muted2, fontSize: 11.5 }}>
+              {p.games ? `${p.games} games` : ''}
+              {p.seasons ? ` · ${p.seasons}` : ''}
+            </span>
+          </div>
+          {/* WHAT THE ROLE IS DOING, in a sentence. The badge says RB1 and the
+              pills say 7.7 and 45.8%, but nothing said what that adds up to —
+              and a reader who has to assemble it themselves reads a table. */}
+          <div style={{ color: T.muted, fontSize: 12, marginTop: 6,
+                        lineHeight: 1.4 }}>
+            {roleSentence(p)}
+          </div>
+        </div>
+      </Card>
+      <StatGrid rows={stats} accent={acc} />
 
       {sp.worst && sp.worst.length ? (
         <Card style={{ padding: 13, marginBottom: 9 }}>
@@ -545,43 +598,6 @@ function ProfileBlock({ prof, props, teamAbbr }) {
         </>
       ) : null}
     </>
-  )
-}
-
-// A share, as a bar. "McMillan 25% Legette 14% Coker 10%" is four facts in a
-// sentence; this is four facts you can compare without reading any of them.
-function ShareBars({ rows, accent = T.green }) {
-  const top = Math.max(...rows.map(r => r.share || 0), 0.0001)
-  return (
-    <div style={{ marginTop: 5 }}>
-      {rows.map((r, i) => (
-        <div key={r.key || i} style={{ marginTop: i ? 8 : 2 }}>
-          <div style={{ display: 'flex', alignItems: 'baseline', gap: 8,
-                        fontSize: 12.5, marginBottom: 3 }}>
-            <span style={{ color: r.me ? T.white : T.muted,
-                           fontWeight: r.me ? 800 : 500, flex: 1,
-                           whiteSpace: 'nowrap', overflow: 'hidden',
-                           textOverflow: 'ellipsis' }}>{r.label}</span>
-            {r.right ? (
-              <span style={{ color: T.muted2, fontSize: 11 }}>{r.right}</span>
-            ) : null}
-            <b style={{ color: r.me ? accent : T.white, fontSize: 13,
-                        fontVariantNumeric: 'tabular-nums' }}>
-              {Math.round((r.share || 0) * 100)}%
-            </b>
-          </div>
-          <div style={{ height: 6, borderRadius: 4, background: '#191919',
-                        overflow: 'hidden' }}>
-            <div style={{
-              width: `${((r.share || 0) / top) * 100}%`, height: '100%',
-              borderRadius: 4,
-              background: r.me ? accent : '#2f2f2f',
-              boxShadow: r.me ? `0 0 10px ${accent}66` : 'none',
-            }} />
-          </div>
-        </div>
-      ))}
-    </div>
   )
 }
 
@@ -692,7 +708,8 @@ export default function NflPlayerSheet({ player, rows, posted, onClose }) {
           border: `1px solid ${myTeam.c1}44`,
         }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 13 }}>
-            <TeamMark abbr={head.team || player.team} size={50} />
+            <PlayerHead espnId={prof && prof.profile && prof.profile.espn_id}
+                        abbr={head.team || player.team} size={54} />
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 31,
                             color: T.white, letterSpacing: 0.3, lineHeight: 1.02,
