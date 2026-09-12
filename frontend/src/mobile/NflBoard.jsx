@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { T } from './theme'
 import { Spinner, Empty, SectionLabel } from './bits'
-import { PropRow } from './BoardTab'
+import { PropRow, BoardSummary, TopPlays } from './BoardTab'
 import { useBookmarks } from './useBookmarks'
 import { fetchNflBoard, fetchNflRecord } from '../utils/api'
 import NflPlayerSheet from './NflPlayerSheet'
@@ -93,7 +93,7 @@ function footNoteFor(p) {
   return star ? <span style={{ fontSize: 11 }}>{star}posted</span> : ''
 }
 
-export default function NflBoard() {
+export default function NflBoard({ onMeta }) {
   const [picks, setPicks] = useState(null)
   const [err, setErr] = useState(null)
   const { has, toggle } = useBookmarks()
@@ -161,12 +161,23 @@ export default function NflBoard() {
         || ((b.confidence || 0) - (a.confidence || 0))),
     [picks, active, byPosted])
 
+  // The SAME row shape the tennis board uses, built once. The summary, the top
+  // plays and the grid all read it, so none of them can describe a different
+  // board than the others.
+  const viewRows = useMemo(() => rows.map(toRow), [rows])
+
   const tally = useMemo(() => {
     const w = rows.filter(p => p.result === 'W').length
     const l = rows.filter(p => p.result === 'L').length
     const live = rows.filter(p => !p.result || p.result === 'PENDING').length
     return { w, l, live }
   }, [rows])
+
+  useEffect(() => {
+    if (!onMeta) return
+    onMeta({ count: viewRows.length,
+             label: active ? `${prettyDate(active)} slate` : '' })
+  }, [onMeta, viewRows.length, active])
 
   if (err) return <Empty icon="⚠️" title="NFL board unavailable" hint={err} />
   if (!picks) {
@@ -181,28 +192,30 @@ export default function NflBoard() {
 
   return (
     <div>
+      <BoardSummary rows={viewRows} />
+
+      <TopPlays rows={viewRows}
+                onOpen={r => setOpen(r._pick)}
+                saved={r => has(r.key)}
+                onSave={(r, e) => { e.stopPropagation(); toggle(r.key) }} />
+
       <SectionLabel right={
         tally.w + tally.l > 0
           ? `${tally.w}-${tally.l} · ${rows.length} props`
-          : `${rows.length} props`
-      }>
-        {prettyDate(active)} board
-      </SectionLabel>
+          : `${rows.length} lines`
+      }>Full board</SectionLabel>
 
       {/* The SAME wrapper the tennis board uses — CSS multi-column, 2 up on a
           wide screen and 3 on a very wide one, gated on the .baseline-wide
           ancestor. Reusing the class rather than a new grid keeps the two
           boards laying out identically at every breakpoint. */}
       <div className="baseline-cols">
-        {rows.map((p, i) => {
-          const r = toRow(p)
-          return (
-            <PropRow key={r.key} r={r} index={i}
-                     saved={has(r.key)} onSave={() => toggle(r.key)}
-                     onOpen={() => setOpen(p)}
-                     footNote={footNoteFor(p)} />
-          )
-        })}
+        {viewRows.map((r, i) => (
+          <PropRow key={r.key} r={r} index={i}
+                   saved={has(r.key)} onSave={() => toggle(r.key)}
+                   onOpen={() => setOpen(r._pick)}
+                   footNote={footNoteFor(r._pick)} />
+        ))}
       </div>
 
       {open && (

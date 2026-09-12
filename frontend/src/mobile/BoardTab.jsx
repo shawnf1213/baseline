@@ -44,6 +44,9 @@ export default function BoardTab({ boards, book, setBook, loading, error, onOpen
   const [sport, setSport] = useState('tennis')
   const [filters, setFilters] = useState(DEFAULT_FILTERS)
   const [sheet, setSheet] = useState(false)
+  // Counts for the NFL header, reported up by NflBoard so the two sports
+  // present the same title block rather than one being bare.
+  const [nflMeta, setNflMeta] = useState({})
   const { has, toggle } = useBookmarks()
   const board = boards?.[book]
 
@@ -81,7 +84,7 @@ export default function BoardTab({ boards, book, setBook, loading, error, onOpen
   const projecting = filtered.slice(0, PROJECT_CAP).some(r => proj[r.key]?.loading)
 
   const SportSwitch = (
-    <GlassTabs value={sport} onChange={setSport} style={{ marginBottom: T.s2 }}
+    <GlassTabs value={sport} onChange={setSport} style={{ marginBottom: 6 }}
                options={[{ key: 'tennis', label: '🎾 Tennis' },
                          { key: 'nfl', label: '🏈 NFL' }]} />
   )
@@ -94,9 +97,17 @@ export default function BoardTab({ boards, book, setBook, loading, error, onOpen
   if (sport === 'nfl') {
     return (
       <div style={{ paddingBottom: 8 }}>
-        <PageTitle sub={<Pill live>Live PrizePicks</Pill>}>Board</PageTitle>
-        {SportSwitch}
-        <NflBoard />
+        <PageTitle sub={<>
+          <Pill live>Live PrizePicks</Pill>
+          {nflMeta.count ? (
+            <span style={{ color: T.muted2 }}>{nflMeta.count} priced</span>
+          ) : null}
+          {nflMeta.label ? (
+            <span style={{ color: T.muted2 }}>{nflMeta.label}</span>
+          ) : null}
+        </>}>Board</PageTitle>
+        <div style={{ marginBottom: T.s5 }}>{SportSwitch}</div>
+        <NflBoard onMeta={setNflMeta} />
       </div>
     )
   }
@@ -138,7 +149,7 @@ export default function BoardTab({ boards, book, setBook, loading, error, onOpen
 
       <GlassTabs value={book} onChange={setBook}
                  options={BOOKS.map(b => ({ key: b.key, label: b.label }))}
-                 style={{ marginBottom: T.s4 }} />
+                 style={{ marginBottom: T.s5 }} />
 
       {loading && <div style={{ display: 'flex', justifyContent: 'center', padding: 48 }}><Spinner size={28} /></div>}
 
@@ -194,7 +205,7 @@ export default function BoardTab({ boards, book, setBook, loading, error, onOpen
 // reader how big today is, whether there is anything worth their time in it, or
 // where the good end of it is — they had to scroll the whole thing and work it
 // out. This is that answer, before the list.
-function BoardSummary({ rows, projecting }) {
+export function BoardSummary({ rows, projecting }) {
   const done = rows.filter(r => r._state === 'done')
   const conf = (r) => r.confidence || 0
   const elite = done.filter(r => conf(r) >= 80).length
@@ -219,7 +230,7 @@ function BoardSummary({ rows, projecting }) {
   return (
     <Card style={{ padding: '14px 16px', marginBottom: T.s3 }}>
       <div style={{ display: 'grid', gap: T.s3,
-                    gridTemplateColumns: 'repeat(auto-fit, minmax(96px, 1fr))' }}>
+                    gridTemplateColumns: 'repeat(auto-fit, minmax(132px, 1fr))' }}>
         {cells.map(c => (
           <div key={c.k} style={{ minWidth: 0 }}>
             <div style={{ fontFamily: T.cond, fontWeight: 700, fontSize: 10,
@@ -248,7 +259,7 @@ function BoardSummary({ rows, projecting }) {
 // Ranked by CONVICTION TIER FIRST and edge only within a tier. Sorting by raw
 // edge would put a wild number on a thin projection at the top of the page,
 // which is exactly the play a reader should be least led towards.
-function TopPlays({ rows, onOpen, saved, onSave }) {
+export function TopPlays({ rows, onOpen, saved, onSave }) {
   const top = rows
     .filter(r => r._state === 'done' && r.edge != null)
     .sort((a, b) => (tier(b.confidence).weight - tier(a.confidence).weight)
@@ -258,9 +269,7 @@ function TopPlays({ rows, onOpen, saved, onSave }) {
 
   return (
     <>
-      <SectionLabel right={<span style={{ color: T.muted2, fontSize: 11 }}>
-        by conviction
-      </span>}>Top plays</SectionLabel>
+      <SectionLabel>Top plays</SectionLabel>
       <div style={{ display: 'grid', gap: T.s2, marginBottom: T.s4 }}>
         {top.map((r, i) => {
           const { side, tone, rgb } = sideTone(r.edge)
@@ -274,7 +283,7 @@ function TopPlays({ rows, onOpen, saved, onSave }) {
               <div aria-hidden style={{
                 position: 'absolute', inset: 0, pointerEvents: 'none',
                 background: `radial-gradient(130% 100% at 0% 0%, rgba(${rgb},`
-                          + `${0.07 + w * 0.035}), transparent 62%)`,
+                          + `${0.03 + w * 0.022}), transparent 66%)`,
               }} />
               <div style={{ position: 'relative', display: 'flex',
                             alignItems: 'center', gap: T.s3, flexWrap: 'wrap',
@@ -360,7 +369,7 @@ export function PropRow({ r, saved, onSave, onOpen, index = 0, footNote }) {
         <div aria-hidden style={{
           position: 'absolute', inset: 0, pointerEvents: 'none',
           background: `radial-gradient(120% 90% at 0% 0%, rgba(${rgb},`
-                    + `${0.05 + w * 0.035}), transparent 58%)`,
+                    + `${0.02 + w * 0.018}), transparent 62%)`,
         }} />
       ) : null}
 

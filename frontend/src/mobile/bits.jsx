@@ -328,8 +328,8 @@ export function TierBadge({ conf, tone, rgb }) {
     <span style={{
       fontFamily: T.cond, fontWeight: 800, fontSize: 9.5, letterSpacing: 1.2,
       color: tone, padding: '2.5px 7px', borderRadius: 6,
-      background: `rgba(${rgb},0.18)`, border: `1px solid rgba(${rgb},0.55)`,
-      boxShadow: tr.weight >= 3 ? `0 0 16px rgba(${rgb},0.55)` : `0 0 8px rgba(${rgb},0.18)`,
+      background: `rgba(${rgb},0.13)`, border: `1px solid rgba(${rgb},0.34)`,
+      boxShadow: 'none',
     }}>{tr.label}</span>
   )
 }
@@ -341,8 +341,7 @@ export function ConfBar({ conf, tone, max = 132 }) {
     <div style={{ display: 'flex', alignItems: 'center', gap: 7, flex: 1, maxWidth: max }}>
       <div style={{ flex: 1, height: 6, borderRadius: 4, background: '#191919', overflow: 'hidden' }}>
         <div style={{ width: `${Math.min(100, conf)}%`, height: '100%',
-                      background: tone, borderRadius: 4,
-                      boxShadow: `0 0 10px ${tone}` }} />
+                      background: tone, borderRadius: 4 }} />
       </div>
       <span style={{ fontSize: 11.5, fontWeight: 800, color: tone,
                      fontVariantNumeric: 'tabular-nums' }}>{Math.round(conf)}</span>
@@ -383,7 +382,6 @@ export function BigStat({ value, label, proj, tone, rgb, muted }) {
       <div style={{ textAlign: 'center' }}>
         <div style={{ fontSize: showProj ? 22 : 28, fontWeight: 800,
                       color: muted ? T.muted2 : tone,
-                      textShadow: muted ? 'none' : `0 0 18px rgba(${rgb},0.45)`,
                       lineHeight: 1.05, fontVariantNumeric: 'tabular-nums' }}>{value}</div>
         <div style={{ fontFamily: T.cond, fontWeight: 700, fontSize: 9,
                       letterSpacing: 1.2, color: T.muted2 }}>{label}</div>
@@ -397,11 +395,11 @@ export function BigStat({ value, label, proj, tone, rgb, muted }) {
 export function tierCardStyle(conf, rgb) {
   const w = tier(conf).weight
   return {
-    border: `1px solid ${w >= 2 ? `rgba(${rgb},0.55)` : T.border}`,
+    border: `1px solid ${w >= 3 ? `rgba(${rgb},0.42)`
+                       : w === 2 ? `rgba(${rgb},0.22)` : T.glassLine}`,
     boxShadow: w >= 3
-      ? `0 0 0 1px rgba(${rgb},0.30), 0 8px 34px rgba(${rgb},0.26), 0 8px 22px rgba(0,0,0,0.5)`
-      : w === 2
-        ? `0 6px 24px rgba(${rgb},0.15), 0 8px 22px rgba(0,0,0,0.46)`
-        : '0 8px 24px rgba(0,0,0,0.5)',
+      ? `0 0 0 1px rgba(${rgb},0.22), 0 10px 30px rgba(${rgb},0.10),`
+        + ' 0 10px 28px rgba(0,0,0,0.5)'
+      : '0 10px 28px rgba(0,0,0,0.45)',
   }
 }

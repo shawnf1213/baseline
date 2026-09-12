@@ -159,57 +159,112 @@ function StatBlock({ prop, res, surface, playerName, opponentName }) {
 // button press and nothing derived feeds an effect, which makes that class of
 // loop unreachable rather than merely absent.
 
-function PlayerSlot({ label, value, onPick, tour, onClear }) {
-  const [open, setOpen] = useState(false)
-  const { query, setQuery, results, loading } = usePlayerSearch(tour)
-
-  if (value && !open) {
+// ── A PLAYER, AS A TILE ──────────────────────────────────────────────────────
+// This was a text input with a caption over it, twice, with the word VS wedged
+// between them — which is a form pretending to be a matchup. A matchup has two
+// faces in it. Empty, the tile is a dashed target that says what to do; filled,
+// it is the player, and the search panel opens BELOW the pair rather than
+// pushing the second tile down the page, so the block never changes height
+// while you are picking.
+function PlayerTile({ label, value, onClear, active, onActivate }) {
+  if (value) {
     return (
-      <Card onClick={() => { setOpen(true); setQuery('') }}
-            style={{ display: 'flex', alignItems: 'center', gap: 10, padding: 10 }}>
-        <PlayerPhoto id={value.id} name={value.name} size={38} />
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: 9.5, fontFamily: T.cond, fontWeight: 800, letterSpacing: 1,
-                        textTransform: 'uppercase', color: T.muted2 }}>{label}</div>
-          <div style={{ fontSize: 15, fontWeight: 700, color: T.white, whiteSpace: 'nowrap',
-                        overflow: 'hidden', textOverflow: 'ellipsis' }}>{value.name}</div>
+      <div style={{
+        flex: 1, minWidth: 0, padding: '14px 10px', borderRadius: T.r2,
+        background: 'rgba(255,255,255,0.035)',
+        border: `1px solid ${T.glassLine}`, textAlign: 'center',
+        position: 'relative',
+      }}>
+        <button onClick={onClear} aria-label={`Clear ${label}`} style={{
+          position: 'absolute', top: 4, right: 6, background: 'transparent',
+          border: 'none', color: T.muted2, fontSize: 19, cursor: 'pointer',
+          lineHeight: 1, padding: 4,
+        }}>×</button>
+        <div style={{ display: 'flex', justifyContent: 'center' }}>
+          <PlayerPhoto id={value.id} name={value.name} size={52} />
         </div>
-        <button onClick={(e) => { e.stopPropagation(); onClear() }}
-                style={{ background: 'transparent', border: 'none', color: T.muted2,
-                         fontSize: 20, cursor: 'pointer', padding: '0 6px' }}>×</button>
-      </Card>
+        <div style={{ fontSize: 14, fontWeight: 700, color: T.white, marginTop: 8,
+                      lineHeight: 1.25, wordBreak: 'break-word' }}>
+          {value.name}
+        </div>
+        <div style={{ fontSize: 10.5, color: T.muted2, marginTop: 2 }}>
+          {value.currentRank ? `#${value.currentRank}` : label}
+        </div>
+      </div>
     )
   }
 
   return (
-    <div style={{ marginBottom: 8 }}>
-      <div style={{ fontSize: 9.5, fontFamily: T.cond, fontWeight: 800, letterSpacing: 1,
-                    textTransform: 'uppercase', color: T.muted2, marginBottom: 5 }}>{label}</div>
+    <button onClick={onActivate} style={{
+      flex: 1, minWidth: 0, padding: '14px 10px', borderRadius: T.r2,
+      background: active ? `${T.green}0F` : 'transparent',
+      border: `1.5px dashed ${active ? `${T.green}77` : T.glassLine}`,
+      cursor: 'pointer', textAlign: 'center', fontFamily: T.font,
+      WebkitTapHighlightColor: 'transparent',
+    }}>
+      <div style={{
+        width: 52, height: 52, borderRadius: 26, margin: '0 auto',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        border: `1.5px dashed ${active ? `${T.green}77` : T.glassLine}`,
+        color: active ? T.green : T.muted2, fontSize: 24, lineHeight: 1,
+      }}>+</div>
+      <div style={{ fontSize: 13, fontWeight: 700, marginTop: 8,
+                    color: active ? T.green : T.muted }}>{label}</div>
+      <div style={{ fontSize: 10.5, color: T.muted2, marginTop: 2 }}>
+        {active ? 'search below' : 'tap to add'}
+      </div>
+    </button>
+  )
+}
+
+// The search panel for whichever tile is active. One input for both tiles —
+// two always-visible search boxes was the thing that made this read as a form.
+function PlayerSearchPanel({ label, tour, onPick, onCancel }) {
+  const { query, setQuery, results, loading } = usePlayerSearch(tour)
+  return (
+    <div style={{ marginTop: T.s2 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8,
+                    marginBottom: 6 }}>
+        <span style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 9.5,
+                       letterSpacing: 1.2, textTransform: 'uppercase',
+                       color: T.green, flex: 1 }}>Choose {label}</span>
+        <button onClick={onCancel} style={{
+          background: 'transparent', border: 'none', color: T.muted2,
+          fontSize: 11.5, cursor: 'pointer', fontFamily: T.font,
+        }}>Cancel</button>
+      </div>
       <input
-        autoFocus={open}
+        autoFocus
         value={query}
         onChange={e => setQuery(e.target.value)}
         placeholder={`Search ${label.toLowerCase()}…`}
         style={{
           width: '100%', boxSizing: 'border-box', minHeight: 46, padding: '0 14px',
-          background: T.card, border: `1px solid ${T.border}`, borderRadius: 12,
+          background: 'rgba(255,255,255,0.04)',
+          border: `1px solid ${T.green}55`, borderRadius: T.r1,
           // 16px MINIMUM. Below it, iOS Safari zooms the page on focus and does
-          // not zoom back out, so tapping the search box left the whole app
-          // magnified until you pinched out by hand.
+          // not zoom back out, so tapping the box left the whole app magnified.
           color: T.white, fontSize: 16, outline: 'none',
         }}
       />
       {loading && <div style={{ padding: 10 }}><Spinner size={16} /></div>}
       {results?.slice(0, 6).map(p => (
-        <Card key={p.id} onClick={() => {
+        <button key={p.id} onClick={() => {
           const t = p.gender === 'F' ? 'WTA' : p.gender === 'M' ? 'ATP' : tour
           onPick({ id: p.id, name: p.name, tour: t, currentRank: p.currentRank })
-          setOpen(false); setQuery('')
-        }} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: 9, marginTop: 6 }}>
+        }} style={{
+          display: 'flex', alignItems: 'center', gap: 10, width: '100%',
+          padding: 9, marginTop: 6, borderRadius: T.r1, cursor: 'pointer',
+          background: 'rgba(255,255,255,0.03)',
+          border: `1px solid ${T.glassLine}`, fontFamily: T.font,
+          textAlign: 'left', WebkitTapHighlightColor: 'transparent',
+        }}>
           <PlayerPhoto id={p.id} name={p.name} size={32} />
           <span style={{ flex: 1, fontSize: 14, color: T.white }}>{p.name}</span>
-          {p.currentRank && <span style={{ fontSize: 11, color: T.muted2 }}>#{p.currentRank}</span>}
-        </Card>
+          {p.currentRank ? (
+            <span style={{ fontSize: 11, color: T.muted2 }}>#{p.currentRank}</span>
+          ) : null}
+        </button>
       ))}
     </div>
   )
@@ -232,10 +287,16 @@ function FieldLabel({ children }) {
   )
 }
 
-function Select({ label, value, onChange, options, inline }) {
+function Select({ label, value, onChange, options, inline, bare }) {
+  // A FRAGMENT HERE IS A LAYOUT BUG. Grid and flex parents lay out a fragment's
+  // CHILDREN, not the fragment, so the label and the control became two
+  // separate cells — the label stranded in one column with its dropdown in the
+  // next. Wrapped, they move as one.
   return (
-    <>
-      {inline ? <FieldLabel>{label}</FieldLabel> : <SectionLabel>{label}</SectionLabel>}
+    <div style={{ minWidth: 0 }}>
+      {bare ? null
+        : inline ? <FieldLabel>{label}</FieldLabel>
+        : <SectionLabel>{label}</SectionLabel>}
       <div style={{ position: 'relative', marginBottom: inline ? 0 : 12 }}>
         <select
           value={value}
@@ -247,6 +308,7 @@ function Select({ label, value, onChange, options, inline }) {
             border: `1px solid ${T.glassLine}`, borderRadius: T.r1,
             color: T.white, fontSize: 16, fontWeight: 600, fontFamily: T.font,
             outline: 'none', appearance: 'none', WebkitAppearance: 'none',
+            textOverflow: 'ellipsis',
           }}
         >
           {options.map(o => (
@@ -262,7 +324,7 @@ function Select({ label, value, onChange, options, inline }) {
           </svg>
         </span>
       </div>
-    </>
+    </div>
   )
 }
 
@@ -418,6 +480,8 @@ export default function ProjectionsTab() {
       .concat(list.map(c => ({ value: c.name, label: c.name })))
   }, [tour, surface])
   const [line, setLine] = useState('')
+  // Which tile the one shared search panel is filling.
+  const [picking, setPicking] = useState(null)
   const [busy, setBusy] = useState(false)
   const [res, setRes] = useState(null)
   const [hist, setHist] = useState(null)
@@ -500,57 +564,79 @@ export default function ProjectionsTab() {
                                { key: 'WTA', label: 'WTA' }]} />
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: T.s2 }}>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <PlayerSlot label="Player" value={player} tour={tour}
-                        onPick={p => {
-                          setPlayer(p)
-                          if (p.tour && p.tour !== tour) { setTour(p.tour); setCourt('') }
-                        }}
-                        onClear={() => setPlayer(null)} />
-          </div>
-          <span style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 13,
-                         letterSpacing: 1, color: T.muted2, flexShrink: 0,
-                         alignSelf: 'center' }}>VS</span>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <PlayerSlot label="Opponent" value={opponent} tour={tour}
-                        onPick={setOpponent} onClear={() => setOpponent(null)} />
-          </div>
+        <div style={{ display: 'flex', alignItems: 'stretch', gap: T.s2 }}>
+          <PlayerTile label="Player" value={player}
+                      active={picking === 'player'}
+                      onActivate={() => setPicking('player')}
+                      onClear={() => setPlayer(null)} />
+          {/* The VS medallion. Two inputs with a word between them is a form;
+              this is the thing a matchup actually looks like. */}
+          <div style={{
+            alignSelf: 'center', flexShrink: 0, width: 34, height: 34,
+            borderRadius: 17, display: 'flex', alignItems: 'center',
+            justifyContent: 'center', background: 'rgba(255,255,255,0.05)',
+            border: `1px solid ${T.glassLine}`, fontFamily: T.cond,
+            fontWeight: 800, fontSize: 12, letterSpacing: 0.6, color: T.muted,
+          }}>VS</div>
+          <PlayerTile label="Opponent" value={opponent}
+                      active={picking === 'opponent'}
+                      onActivate={() => setPicking('opponent')}
+                      onClear={() => setOpponent(null)} />
         </div>
+
+        {picking ? (
+          <PlayerSearchPanel
+            label={picking === 'player' ? 'Player' : 'Opponent'}
+            tour={tour}
+            onCancel={() => setPicking(null)}
+            onPick={p => {
+              if (picking === 'player') {
+                setPlayer(p)
+                if (p.tour && p.tour !== tour) { setTour(p.tour); setCourt('') }
+              } else setOpponent(p)
+              setPicking(null)
+            }} />
+        ) : null}
 
         <div style={{ height: 1, background: T.glassLine, margin: `${T.s3}px 0` }} />
 
-        <div style={{ display: 'grid', gap: T.s2,
-                      gridTemplateColumns: 'repeat(auto-fit, minmax(148px, 1fr))' }}>
-          <Select label="Prop" value={prop} onChange={setProp} inline
-                  options={PROP_TYPES.map(p => ({ value: p.key, label: p.short }))} />
-          <Select label="Tournament court" value={court} onChange={setCourt} inline
-                  options={courtOptions} />
-          <div>
-            <FieldLabel>Book line</FieldLabel>
-            <input
-              value={line}
-              onChange={e => setLine(e.target.value.replace(/[^\d.]/g, ''))}
-              inputMode="decimal"
-              placeholder="e.g. 4.5"
-              style={{
-                width: '100%', boxSizing: 'border-box', minHeight: 46,
-                padding: '0 14px', background: 'rgba(255,255,255,0.03)',
-                border: `1px solid ${T.glassLine}`, borderRadius: T.r1,
-                color: T.white, fontSize: 17, fontWeight: 700, outline: 'none',
-              }}
-            />
+        {/* ── WHAT WE ARE PRICING ────────────────────────────────────────────
+            The prop and the line are ONE statement — "aces, over 4.5" — and
+            they were two separate labelled fields in a grid. Side by side, with
+            the line given the size of the number it is. */}
+        <FieldLabel>The prop</FieldLabel>
+        <div style={{ display: 'flex', gap: T.s2, alignItems: 'stretch' }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <Select value={prop} onChange={setProp} inline bare
+                    options={PROP_TYPES.map(p => ({ value: p.key, label: p.short }))} />
           </div>
+          <input
+            value={line}
+            onChange={e => setLine(e.target.value.replace(/[^\d.]/g, ''))}
+            inputMode="decimal"
+            placeholder="line"
+            style={{
+              width: 96, flexShrink: 0, boxSizing: 'border-box', minHeight: 46,
+              padding: '0 12px', textAlign: 'center',
+              background: 'rgba(255,255,255,0.03)',
+              border: `1px solid ${line ? `${T.green}55` : T.glassLine}`,
+              borderRadius: T.r1, color: T.white, fontSize: 19, fontWeight: 800,
+              outline: 'none', fontVariantNumeric: 'tabular-nums',
+            }}
+          />
         </div>
 
         <div style={{ marginTop: T.s3 }}>
-          <FieldLabel>Surface</FieldLabel>
-          <div style={{ display: 'flex', gap: 6 }}>
+          <FieldLabel>Conditions</FieldLabel>
+          <div style={{ display: 'flex', gap: 6, marginBottom: T.s2,
+                        flexWrap: 'wrap' }}>
             {SURFACES.map(sf => (
               <Chip key={sf} active={surface === sf}
                     onClick={() => { setSurface(sf); setCourt('') }}>{sf}</Chip>
             ))}
           </div>
+          <Select value={court} onChange={setCourt} inline bare
+                  options={courtOptions} />
         </div>
 
         <button onClick={run} disabled={!ready || busy} style={{
