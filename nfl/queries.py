@@ -204,6 +204,7 @@ def player_profile(name: str, season: int = None) -> dict:
             "player": u["player"], "position": u.get("position"),
             "depth_pos": pos, "depth_rank": rank,
             "games": u.get("games"), "window": u.get("window"),
+            "seasons": u.get("seasons"),
             "target_share": u.get("target_share"),
             "targets_per_game": u.get("targets_per_game"),
             "carries_per_game": u.get("carries_per_game"),
@@ -214,6 +215,10 @@ def player_profile(name: str, season: int = None) -> dict:
             "yards_per_attempt": u.get("yards_per_attempt"),
             "completion_pct": u.get("completion_pct"),
             "snap_ratio": u.get("snap_ratio"),
+            # His actual season snap share. snap_ratio is a TREND against his
+            # own baseline, so it cannot be printed as a share — a rotational
+            # back steady at 45% reads 1.00 there, which is not "100% of snaps".
+            "snap_season": u.get("snap_season"),
             "role": u.get("role") or {},
             "role_change": rc or None,
             # The depth a reader actually asks for — who he struggles against,

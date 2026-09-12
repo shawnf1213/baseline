@@ -234,9 +234,6 @@ function PropDetail({ r, posted, form, matchups }) {
             </div>
           </div>
 
-          <MatchupBlock m={matchup} prop={r.prop_type} over={over}
-                        opponent={r.opponent} />
-
           {vsOpp.length ? (
             <div style={{ marginTop: 9 }}>
               <div style={{ color: T.muted2, fontSize: 10, letterSpacing: 0.6,
@@ -257,6 +254,12 @@ function PropDetail({ r, posted, form, matchups }) {
           No game log published for this player yet.
         </div>
       )}
+
+      {/* OUTSIDE the game-log branch on purpose. What the defence allows does
+          not depend on us having his log — a rookie with no published games is
+          exactly the card where the matchup is the only evidence there is. */}
+      <MatchupBlock m={matchup} prop={r.prop_type} over={over}
+                    opponent={r.opponent} />
     </Card>
   )
 }
@@ -294,25 +297,56 @@ function Block({ label, children }) {
 // by the BOT (nfl/queries.py) and served from nfl_players, because the backend
 // cannot import the model.
 //
-// POSITION DECIDES WHICH STATS APPEAR. Showing a quarterback's target share, or
-// a receiver's completion percentage, is how a stat block stops being read.
-function ProfileBlock({ prof }) {
+// THE PROPS ON THE CARD DECIDE WHICH STATS APPEAR — not the position. A running
+// back's target share is a real stat and a useless one beside an UNDER on his
+// rushing yards: it is not an input to that number and cannot move it. Position
+// is only the fallback for a player with nothing priced.
+const RUSH_STATS = (p) => [
+  ['Carries/game', fmt(p.carries_per_game)],
+  ['Yards/carry', fmt(p.yards_per_carry, 2)],
+  ...(typeof p.snap_season === 'number'
+    ? [['Snap share', pct1(p.snap_season)]] : []),
+  ['Games', String(p.games ?? '—')],
+]
+const REC_STATS = (p) => [
+  ['Targets/game', fmt(p.targets_per_game)],
+  ['Target share', pct1(p.target_share)],
+  ['Catch rate', pct1(p.catch_rate)],
+  ['Yards/target', fmt(p.yards_per_target, 2)],
+]
+const PASS_STATS = (p) => [
+  ['Pass att/game', fmt(p.pass_att_per_game)],
+  ['Yards/attempt', fmt(p.yards_per_attempt, 2)],
+  ['Completion %', pct1(p.completion_pct)],
+  ['Games', String(p.games ?? '—')],
+]
+
+function statsFor(p, props) {
+  const has = (...xs) => xs.some(x => props.has(x))
+  const out = []
+  if (has('pass_yards')) out.push(...PASS_STATS(p))
+  if (has('rush_yards')) out.push(...RUSH_STATS(p))
+  if (has('receiving_yards', 'receptions')) out.push(...REC_STATS(p))
+  if (out.length) {
+    // An RB with both a rushing and a receiving prop gets both sets, so drop
+    // the labels the two share rather than printing Games twice.
+    const seen = new Set()
+    return out.filter(([k]) => !seen.has(k) && seen.add(k))
+  }
+  const pos = String(p.position || '').toUpperCase()
+  return pos === 'QB' ? PASS_STATS(p)
+       : (pos === 'RB' || pos === 'FB') ? RUSH_STATS(p) : REC_STATS(p)
+}
+
+function ProfileBlock({ prof, props }) {
   const p = prof.profile || {}
   const pos = String(p.position || '').toUpperCase()
-  const stats = pos === 'QB'
-    ? [['Pass att/game', fmt(p.pass_att_per_game)],
-       ['Yards/attempt', fmt(p.yards_per_attempt, 2)],
-       ['Completion %', pct1(p.completion_pct)],
-       ['Games', String(p.games ?? '—')]]
-    : pos === 'RB' || pos === 'FB'
-      ? [['Carries/game', fmt(p.carries_per_game)],
-         ['Yards/carry', fmt(p.yards_per_carry, 2)],
-         ['Targets/game', fmt(p.targets_per_game)],
-         ['Target share', pct1(p.target_share)]]
-      : [['Targets/game', fmt(p.targets_per_game)],
-         ['Target share', pct1(p.target_share)],
-         ['Catch rate', pct1(p.catch_rate)],
-         ['Yards/target', fmt(p.yards_per_target, 2)]]
+  const priced = props || new Set()
+  const stats = statsFor(p, priced)
+  // Who he shares TARGETS with answers a receiving question. Beside a rushing
+  // prop it is the same irrelevance as target share, so it goes with it.
+  const showReceiving = !priced.size
+    || priced.has('receiving_yards') || priced.has('receptions')
 
   const sp = p.splits || {}
   const comp = p.competition || {}
@@ -324,11 +358,20 @@ function ProfileBlock({ prof }) {
   const splitLine = (xs) => (xs || [])
     .map(x => `${x.opp} ${x.mean}${x.n > 1 ? ` (${x.n}g)` : ''}`).join('  ·  ')
 
-  const role = p.depth_pos ? `${p.depth_pos}${p.depth_rank ?? ''}` : (pos || 'Role')
+  // Special-teams slots are never the role. nfl/usage.py::depth_rank now prefers
+  // the offensive row, but a profile published before that fix would still say
+  // "KR3" for a starting back, so the badge refuses one here too.
+  const ST = ['KR', 'PR', 'LS', 'H', 'PK', 'P']
+  const dp = String(p.depth_pos || '').toUpperCase()
+  const role = (dp && !ST.includes(dp))
+    ? `${dp}${p.depth_rank ?? ''}` : (pos || 'Role')
 
   return (
     <>
-      <SectionLabel right={p.window || ''}>{role}</SectionLabel>
+      {/* THE SEASON, not "prior season only". The window phrase is the model's
+          own vocabulary and means nothing a reader can check — and what it
+          refers to silently changes every September. */}
+      <SectionLabel right={p.seasons || p.window || ''}>{role}</SectionLabel>
       <StatGrid rows={stats} />
 
       {sp.worst && sp.worst.length ? (
@@ -351,7 +394,7 @@ function ProfileBlock({ prof }) {
         </Block>
       ) : null}
 
-      {tg.targets && tg.targets.length ? (
+      {showReceiving && tg.targets && tg.targets.length ? (
         <Block label="Throws to">
           {tg.targets.map(t => (
             <div key={t.player} style={{ display: 'flex',
@@ -366,7 +409,7 @@ function ProfileBlock({ prof }) {
         </Block>
       ) : null}
 
-      {comp.targets && comp.targets.length && comp.rank ? (
+      {showReceiving && comp.targets && comp.targets.length && comp.rank ? (
         <Block label={`Target share on ${comp.team} — #${comp.rank} of ${comp.of}`}>
           <div style={{ color: T.white, fontSize: 12.5 }}>
             {comp.targets.map(t => {
@@ -446,6 +489,12 @@ export default function NflPlayerSheet({ player, rows, posted, onClose }) {
       .sort((a, b) => (b.confidence || 0) - (a.confidence || 0)),
     [rows, player])
 
+  // Which prop families are actually priced on this card. The stat block keys
+  // off this rather than off the position, so a back with only a rushing prop
+  // is not handed his target share.
+  const pricedProps = useMemo(
+    () => new Set(mine.map(r => r.prop_type).filter(Boolean)), [mine])
+
   const postedFor = useMemo(() => {
     const m = new Map()
     for (const p of (posted || [])) {
@@ -508,7 +557,9 @@ export default function NflPlayerSheet({ player, rows, posted, onClose }) {
           </div>
         )}
 
-        {!loadingProf && prof && prof.profile && <ProfileBlock prof={prof} />}
+        {!loadingProf && prof && prof.profile && (
+          <ProfileBlock prof={prof} props={pricedProps} />
+        )}
 
         <SectionLabel right={`${mine.length} priced`}>Props on this game</SectionLabel>
         {mine.length

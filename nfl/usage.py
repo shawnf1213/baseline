@@ -224,6 +224,23 @@ POSITION_PRIOR = {
 _DEPTH_CACHE = {}
 
 
+def _season_span(hist) -> str:
+    """"2025", or "2025-26" when the sample straddles two seasons. "" if unknown.
+
+    Never raises — a missing season column must cost a label, not a profile.
+    """
+    try:
+        if "season" not in getattr(hist, "columns", []):
+            return ""
+        ys = sorted({int(y) for y in hist["season"].dropna().unique()})
+        if not ys:
+            return ""
+        return (str(ys[0]) if len(ys) == 1
+                else f"{ys[0]}-{str(ys[-1])[-2:]}")
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def depth_rank(player: str, season: int = None, before_week: int = None):
     """(position abbreviation, depth rank) from the depth chart, or (None, None).
 
@@ -256,7 +273,32 @@ def depth_rank(player: str, season: int = None, before_week: int = None):
                     if before_week:
                         cut = pd.Timestamp(client._week_start(season, before_week), tz="UTC")
                         d = d[d["dt"] <= cut]
-                    d = d.sort_values("dt").groupby("gsis_id").tail(1)
+                    # ONE PLAYER, SEVERAL POSITIONS, ONE TIMESTAMP. The chart
+                    # lists a starting back at RB1 and AGAIN at KR3 and PR3,
+                    # every row stamped with the same dt — so sorting by dt
+                    # alone left the winner to file order, and 183 players took
+                    # a special-teams slot as their role. Chuba Hubbard, RB1,
+                    # came back "KR3".
+                    #
+                    # That is not merely a wrong badge. depth_rank keys the role
+                    # priors in player_usage, so an RB1 was being priced with
+                    # whatever prior a kick returner has — i.e. none.
+                    #
+                    # Keep the latest snapshot per player, then prefer offence
+                    # or defence over special teams, and the best rank within
+                    # that. A genuine kicker, punter or long snapper has nothing
+                    # but special-teams rows and keeps his.
+                    d = d[d["dt"] == d.groupby("gsis_id")["dt"].transform("max")]
+                    if "pos_grp" in d.columns:
+                        d = d.assign(
+                            _st=(d["pos_grp"].astype(str)
+                                 == "Special Teams").astype(int),
+                            _rk=pd.to_numeric(d["pos_rank"], errors="coerce")
+                                  .fillna(99))
+                        d = (d.sort_values(["_st", "_rk"])
+                              .groupby("gsis_id").head(1))
+                    else:
+                        d = d.groupby("gsis_id").tail(1)
                     rank_col, pos_col = "pos_rank", "pos_abb"
                 else:
                     # <=2024 SCHEMA: NOT USABLE AS A ROLE RANK, and returning it
@@ -498,6 +540,12 @@ def player_usage(player: str, season: int = None, position: str = None,
                        else "current + prior season"
                        if (hist["_src"] == "current").any()
                        else "prior season only"),
+            # The YEARS the sample actually came from. "prior season only" is
+            # the right label for the model — it gates the evidence check below
+            # — but it tells a reader nothing they can check. The website shows
+            # this instead: a season, which is a fact, not a relative phrase
+            # whose meaning moves every September.
+            "seasons": _season_span(hist),
             "effective_n": round(wn, 1),
             # Raw, before shrinkage — shown so the shrink is visible.
             "raw": {
@@ -515,12 +563,17 @@ def player_usage(player: str, season: int = None, position: str = None,
         }
         # ── snap-share role adjustment ──────────────────────────────────
         snap = _snap_ratio(player, season, before_week)
-        if snap.get("ratio") and ts:
-            ts = ts * (1.0 + SNAP_DAMP * (snap["ratio"] - 1.0))
+        if snap.get("ratio"):
+            # REPORTING the snap numbers was gated on target share, so an
+            # early-down back who is never thrown to had no snap share at all —
+            # and snaps have nothing to do with targets. The ADJUSTMENT still
+            # is: it damps a target share, so it needs one to damp.
             out["snap_ratio"] = round(snap["ratio"], 3)
             out["snap_recent"] = round(snap["recent"], 3)
             out["snap_season"] = round(snap["season"], 3)
-            out["raw"]["target_share_pre_snap"] = out["raw"].get("target_share")
+            if ts:
+                ts = ts * (1.0 + SNAP_DAMP * (snap["ratio"] - 1.0))
+                out["raw"]["target_share_pre_snap"] = out["raw"].get("target_share")
 
         # Shrunk rates — these are what the projection uses.
         # n here is REAL GAMES, not the recency-weight sum. The weights decide
