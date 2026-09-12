@@ -15,7 +15,7 @@ export default function FilterSheet({ open, onClose, filters, setFilters }) {
 
   return (
     <div style={{ position: 'fixed', inset: 0, zIndex: 1400, display: 'flex', alignItems: 'flex-end' }}>
-      <div onClick={onClose} style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.6)', animation: 'fade-in 160ms ease' }} />
+      <div onClick={onClose} style={{ position: 'absolute', inset: 0, background: 'rgba(16,24,40,0.38)', animation: 'fade-in 160ms ease' }} />
       <div style={{
         position: 'relative', width: '100%', maxHeight: '82vh', overflowY: 'auto',
         background: T.card, borderTop: `1px solid ${T.border}`,
@@ -48,7 +48,7 @@ export default function FilterSheet({ open, onClose, filters, setFilters }) {
         </Group>
 
         <button onClick={onClose} style={{
-          marginTop: 22, width: '100%', minHeight: 52, background: T.green, color: '#000',
+          marginTop: 22, width: '100%', minHeight: 52, background: T.green, color: '#fff',
           border: 'none', borderRadius: 13, fontFamily: T.cond, fontWeight: 800, fontSize: 16,
           letterSpacing: 1, textTransform: 'uppercase', cursor: 'pointer',
         }}>Show Results</button>

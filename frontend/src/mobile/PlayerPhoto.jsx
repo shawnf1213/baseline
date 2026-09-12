@@ -49,11 +49,11 @@ export default function PlayerPhoto({ name, size = 64, ring = true }) {
       ...box,
       background: `linear-gradient(145deg, ${c1}22, ${c2}10)`,
       border: `2px solid ${c1}55`,
-      boxShadow: `inset 0 0 18px ${c1}18`,
+      boxShadow: 'none',
     }}>
       <span style={{ fontFamily: T.cond, fontWeight: 800, fontSize: size * 0.4,
                      color: c1, letterSpacing: 0.5,
-                     textShadow: `0 0 14px ${c1}55` }}>
+                     }}>
         {initials(name)}
       </span>
     </div>

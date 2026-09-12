@@ -87,10 +87,9 @@ export function TeamMark({ abbr, size = 42, plain = false }) {
     display: 'flex', alignItems: 'center', justifyContent: 'center',
     overflow: 'hidden',
     background: plain ? 'transparent'
-      : `linear-gradient(145deg, ${t.c1}2E, ${t.c2}22)`,
-    border: plain ? 'none' : `1.5px solid ${t.c1}88`,
-    boxShadow: plain ? 'none'
-      : `0 0 18px ${t.c1}33, inset 0 1px 0 ${t.c1}22`,
+      : `linear-gradient(145deg, ${t.c1}1A, ${t.c2}0D)`,
+    border: plain ? 'none' : `1.5px solid ${t.c1}59`,
+    boxShadow: plain ? 'none' : T.shadow,
   }
 
   if (abbr && !failed) {
@@ -129,9 +128,9 @@ export function PlayerHead({ espnId, abbr, size = 62 }) {
       width: size, height: size, borderRadius: size / 2, flexShrink: 0,
       overflow: 'hidden', display: 'flex', alignItems: 'center',
       justifyContent: 'center', position: 'relative',
-      background: `linear-gradient(160deg, ${t.c1}30, ${t.c2}18)`,
-      border: `2px solid ${t.c1}77`,
-      boxShadow: `0 0 22px ${t.c1}2E, inset 0 1px 0 ${t.c1}22`,
+      background: `linear-gradient(160deg, ${t.c1}1F, ${t.c2}0F)`,
+      border: `2px solid ${t.c1}66`,
+      boxShadow: T.shadow,
     }}>
       {src && !failed ? (
         <img src={src} alt="" loading="lazy" onError={() => setFailed(true)}
@@ -161,8 +160,8 @@ export function DefenseMeter({ rank, of = 32, tone, abbr }) {
             <div key={i} style={{
               flex: 1, borderRadius: 1.5,
               height: here ? 22 : 8 + (i / of) * 5,
-              background: here ? tone : '#232323',
-              boxShadow: here ? `0 0 12px ${tone}` : 'none',
+              background: here ? tone : T.border,
+              boxShadow: 'none',
             }} />
           )
         })}

@@ -1,20 +1,56 @@
 import { useState, useEffect } from 'react'
-// Mobile design tokens — the exact Baseline system the app surface uses.
-// (Matches the PasswordGate + PWA theme color; greens/reds/amber are shared
-// with the desktop CSS variables.)
+// ── APP SURFACE TOKENS ───────────────────────────────────────────────────────
+// The app behind the paywall is LIGHT; the landing page is dark. That split is
+// deliberate: a marketing page wants drama, and a tool somebody reads for
+// twenty minutes at a time wants contrast and calm. Landing.jsx carries its own
+// palette and does not import this, so the two never fight.
+//
+// WHY THE KEYS DID NOT CHANGE. Four hundred call sites read T.white, T.card and
+// T.bg. Renaming them to suit a light theme would have meant touching every
+// screen in the app to achieve nothing a reader can see, so the keys keep their
+// meaning — `white` is THE PRIMARY TEXT COLOUR, `card` is the raised surface —
+// and only the values moved. `text` and `surface` are the honest names and are
+// aliases; new code should prefer them.
+//
+// GREEN AND RED ARE DARKER THAN THE DARK THEME'S. #00E676 on white is a neon
+// smear that fails contrast badly; these are the same hues taken down to where
+// they read as text. The bright originals survive as `greenGlow` / `redGlow`
+// for fills and bars, where saturation is an asset rather than a legibility
+// problem.
+const SURFACE = '#FFFFFF'
+const INK = '#12151A'
+
 export const T = {
-  bg:       '#0a0a0a',
-  bgElev:   '#0d0d0d',
-  card:     '#111111',
-  cardHi:   '#161616',
-  border:   '#1e1e1e',
-  green:    '#00E676',
-  greenDim: '#00A854',
-  red:      '#FF4444',
-  amber:    '#FFB300',
-  white:    '#FFFFFF',
-  muted:    '#AAAAAA',
-  muted2:   '#6b6b6b',
+  bg:       '#F4F6F8',   // page — off-white, so a white card still reads raised
+  bgElev:   '#FFFFFF',
+  card:     SURFACE,
+  cardHi:   '#F9FAFB',
+  border:   '#E3E7EC',
+  green:    '#03985A',   // text/accent green — passes on white
+  greenDim: '#0BAF69',
+  red:      '#D92D20',
+  amber:    '#B25E09',
+  white:    INK,         // PRIMARY TEXT. See the note above.
+  muted:    '#5B6472',
+  muted2:   '#8B94A3',
+
+  // Semantic aliases — the names this palette would have had from the start.
+  text:     INK,
+  surface:  SURFACE,
+
+  // Saturated versions, for FILLS ONLY: bars, chart columns, dots, rings. Never
+  // for text on a light background.
+  greenGlow: '#00C853',
+  redGlow:   '#FF4444',
+  amberGlow: '#FFB300',
+
+  // Elevation. A light theme separates surfaces with shadow where a dark one
+  // used a lighter fill, so this is not decoration — without it every card
+  // dissolves into the page.
+  shadow:   '0 1px 2px rgba(16,24,40,0.05), 0 1px 3px rgba(16,24,40,0.07)',
+  shadowMd: '0 4px 10px rgba(16,24,40,0.06), 0 2px 4px rgba(16,24,40,0.05)',
+  shadowLg: '0 12px 28px rgba(16,24,40,0.10), 0 4px 10px rgba(16,24,40,0.06)',
+
   font:     '"Barlow", -apple-system, BlinkMacSystemFont, sans-serif',
   cond:     '"Barlow Condensed", sans-serif',
 }
