@@ -67,6 +67,12 @@ export const fetchNextMatch = (player_id, tour, signal) =>
 export const fetchNflBoard  = (slate_date, signal) =>
   api.get('/api/nfl/board', { params: { slate_date }, signal }).then(r => r.data)
 
+// Published player profiles — role, usage, matchup splits and recent form.
+// Computed by the BOT (nfl/queries.py) and published to nfl_players, because
+// the backend cannot import the model. See nfl/publish.py::publish_players.
+export const fetchNflPlayer = (player, signal) =>
+  api.get('/api/nfl/players', { params: { player }, signal }).then(r => r.data)
+
 export const fetchNflRecord = (signal) =>
   api.get('/api/nfl/results/record', { signal }).then(r => r.data)
 

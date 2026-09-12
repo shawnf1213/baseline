@@ -119,6 +119,30 @@ try:
         prior_season_only = Column(Integer, default=0)
         scanned_at        = Column(DateTime(timezone=True), server_default=func.now())
 
+    class NflPlayer(Base):
+        """Published player profiles — stats and recent form for the NFL sheet.
+
+        SAME HANDOFF AS nfl_board, for the same reason: the model lives in nfl/,
+        which deploys with the BOT. The backend cannot compute a target share or
+        a depth-chart rank, so the bot computes them on its scan and posts them
+        here. This table is a cache of the bot's answer, not a source of truth —
+        it is REPLACED per slate, never merged.
+
+        `profile` and `form` are JSON blobs rather than columns on purpose. The
+        shape is nfl/queries.py's output and it will change as that module
+        grows; freezing it into thirty columns would mean a migration every time
+        a stat is added, and the website only ever reads it whole.
+        """
+        __tablename__ = "nfl_players"
+        id          = Column(Integer, primary_key=True, autoincrement=True)
+        slate_date  = Column(String, nullable=False, index=True)
+        player      = Column(String, nullable=False, index=True)
+        team        = Column(String, default="")
+        position    = Column(String, default="")
+        profile     = Column(String)       # JSON: role, usage, efficiency, splits
+        form        = Column(String)       # JSON: recent game log
+        updated_at  = Column(DateTime(timezone=True), server_default=func.now())
+
     class Pick(Base):
         __tablename__ = "picks"
         id               = Column(Integer, primary_key=True, autoincrement=True)
@@ -1326,4 +1350,56 @@ def nfl_board(book: str = None, slate_date: str = None) -> list:
             return [_nfl_dict(r) for r in rows]
     except Exception as exc:  # noqa: BLE001
         logger.warning("nfl_board failed: %s", exc)
+        return []
+
+
+def nfl_players_replace(rows: list, slate_date: str) -> int:
+    """REPLACE the published profiles for one slate. Returns rows written."""
+    if not is_ready():
+        return 0
+    try:
+        import json as _json
+        with _session() as s:
+            s.query(NflPlayer).filter(NflPlayer.slate_date == slate_date).delete()
+            n = 0
+            for rec in rows or []:
+                if not rec.get("player"):
+                    continue
+                s.add(NflPlayer(
+                    slate_date=slate_date, player=rec.get("player"),
+                    team=rec.get("team") or "", position=rec.get("position") or "",
+                    profile=_json.dumps(rec.get("profile") or {}),
+                    form=_json.dumps(rec.get("form") or {})))
+                n += 1
+            s.commit()
+            return n
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("nfl_players_replace failed: %s", exc)
+        return 0
+
+
+def nfl_players(slate_date: str = None, player: str = None) -> list:
+    if not is_ready():
+        return []
+    try:
+        import json as _json
+        with _session() as s:
+            q = s.query(NflPlayer)
+            if slate_date:
+                q = q.filter(NflPlayer.slate_date == slate_date)
+            if player:
+                q = q.filter(NflPlayer.player == player)
+            out = []
+            for r in q.order_by(NflPlayer.player).all():
+                d = {"slate_date": r.slate_date, "player": r.player,
+                     "team": r.team, "position": r.position}
+                for k, raw in (("profile", r.profile), ("form", r.form)):
+                    try:
+                        d[k] = _json.loads(raw) if raw else {}
+                    except Exception:  # noqa: BLE001
+                        d[k] = {}
+                out.append(d)
+            return out
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("nfl_players failed: %s", exc)
         return []

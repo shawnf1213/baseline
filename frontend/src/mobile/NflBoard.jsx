@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { T } from './theme'
-import { Chip, Spinner, Empty, SectionLabel } from './bits'
+import { Spinner, Empty, SectionLabel } from './bits'
 import { PropRow } from './BoardTab'
 import { useBookmarks } from './useBookmarks'
 import { fetchNflBoard, fetchNflRecord } from '../utils/api'
@@ -96,7 +96,6 @@ function footNoteFor(p) {
 export default function NflBoard() {
   const [picks, setPicks] = useState(null)
   const [err, setErr] = useState(null)
-  const [slate, setSlate] = useState(null)
   const { has, toggle } = useBookmarks()
 
   const [posted, setPosted] = useState([])
@@ -127,10 +126,17 @@ export default function NflBoard() {
     () => [...new Set((picks || []).map(p => p.slate_date).filter(Boolean))]
       .sort().reverse(), [picks])
 
-  // Default to TODAY's slate when there is one. Landing on whichever slate
-  // sorts first is how a board shows last week's games to someone checking
-  // tonight.
-  const active = slate || (slates.includes(etToday()) ? etToday() : slates[0])
+  // THE LIVE SLATE, chosen for the reader rather than offered as tabs. Tennis
+  // has no date picker — it shows the board that is live now — and a football
+  // board with two date chips on it was asking a question the reader does not
+  // have. Today if there is a slate today, otherwise the NEXT one; only fall
+  // back to the most recent when nothing upcoming is published.
+  const active = useMemo(() => {
+    const today = etToday()
+    if (slates.includes(today)) return today
+    const upcoming = slates.filter(s => s > today).sort()
+    return upcoming[0] || slates[0]
+  }, [slates])
 
   // Merge the record INTO the board: a row that was posted to Discord carries
   // its ⭐ and, once the game is played, its result. Keyed on player+prop+slate
@@ -175,17 +181,6 @@ export default function NflBoard() {
 
   return (
     <div>
-      {slates.length > 1 && (
-        <div style={{ display: 'flex', gap: 6, overflowX: 'auto',
-                      paddingBottom: 10, marginBottom: 2 }}>
-          {slates.map(s => (
-            <Chip key={s} active={s === active} onClick={() => setSlate(s)}>
-              {prettyDate(s)}
-            </Chip>
-          ))}
-        </div>
-      )}
-
       <SectionLabel right={
         tally.w + tally.l > 0
           ? `${tally.w}-${tally.l} · ${rows.length} props`

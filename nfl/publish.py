@@ -94,7 +94,73 @@ def publish_scan(book: str = "prizepicks", day=None, window_days: int = None,
         day = day or _b.slate_date()
         rows = _b.scan_board(book, one_per_player=False, day=day,
                              window_days=window_days)
-        return publish(rows[:max_rows], book, str(day))
+        n = publish(rows[:max_rows], book, str(day))
+        # Profiles come from the same scan, so the sheet can never show stats
+        # for a player the board does not have.
+        publish_players(rows[:max_rows], str(day))
+        return n
     except Exception as exc:  # noqa: BLE001 — Rule 2
         log.exception("nfl publish_scan failed: %s", exc)
+        return 0
+
+# ── PLAYER PROFILES ──────────────────────────────────────────────────────────
+# The website's NFL card opened a sheet with no stats and no history, because
+# the backend has no way to compute them — nfl/queries.py ships with the bot.
+# Same handoff as the board: the bot computes, the backend serves.
+#
+# PROFILES ARE EXPENSIVE, so this is capped and deduped. player_profile() reads
+# the weekly frame, the depth chart and the snap counts, and builds opponent
+# splits on top; running it for 171 board rows would mean running it repeatedly
+# for the same player. Unique players only, and a hard ceiling.
+MAX_PLAYERS = 120
+
+
+def publish_players(rows: list, slate_date: str, limit: int = MAX_PLAYERS) -> int:
+    """Publish profile + recent form for the players on a board.
+
+    Never raises. A profile that fails is SKIPPED rather than published empty:
+    a card showing blank stats is worse than a card that says it has none.
+    """
+    if not TOKEN or not rows:
+        return 0
+    try:
+        import requests
+        from . import queries as _q
+        seen, payload = set(), []
+        for r in rows:
+            name = r.get("player")
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            if len(payload) >= limit:
+                break
+            try:
+                prof = _q.player_profile(name) or {}
+                if not prof:
+                    continue
+                form = _q.recent_form(name, 6) or {}
+                payload.append({
+                    "player": prof.get("player") or name,
+                    "team": r.get("team") or "",
+                    "position": prof.get("position") or "",
+                    "profile": prof,
+                    "form": form if not form.get("ambiguous") else {},
+                })
+            except Exception:  # noqa: BLE001 — one player must not stop the rest
+                log.warning("nfl publish: profile failed for %s", name)
+        if not payload:
+            return 0
+        resp = requests.post(f"{API_BASE}/api/nfl/players",
+                             json={"slate_date": str(slate_date),
+                                   "players": payload},
+                             headers={"X-NFL-Board-Token": TOKEN},
+                             timeout=120)
+        resp.raise_for_status()
+        n = int((resp.json() or {}).get("written") or 0)
+        log.warning("nfl publish: %d player profile(s) -> website (%s)",
+                    n, slate_date)
+        return n
+    except Exception as exc:  # noqa: BLE001 — Rule 2
+        log.warning("nfl publish_players failed (%s): %s", slate_date,
+                    str(exc)[:160])
         return 0

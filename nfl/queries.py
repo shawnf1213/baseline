@@ -133,28 +133,56 @@ def _weekly(season: int = None):
     return df, (cur - 1 if len(df) else cur)
 
 
-def _player_rows(name: str, season: int = None):
-    df, yr = _weekly(season)
-    if not len(df):
-        return None, yr
-    col = "player_display_name" if "player_display_name" in df.columns else "player_name"
+def _rows_from(df, name: str):
+    """This player's rows in one frame. None if absent, {"ambiguous": [...]} if
+    the name matches several people."""
+    if df is None or not len(df):
+        return None
+    col = ("player_display_name" if "player_display_name" in df.columns
+           else "player_name")
     key = _norm_name(name)
     m = df[df[col].astype(str).map(_norm_name) == key]
     if not len(m):
-        # forgiving surname match, so "Jefferson" finds Justin Jefferson when
-        # only one player matches — but never when several do.
+        # Forgiving surname match, so "Jefferson" finds Justin Jefferson when
+        # exactly one player matches — but never when several do.
         cand = df[df[col].astype(str).map(
-            lambda s: key in _norm_name(s) or _norm_name(s).endswith(" " + key))]
+            lambda x: key in _norm_name(x) or _norm_name(x).endswith(" " + key))]
         names = sorted(set(cand[col].astype(str)))
         if len(names) == 1:
             m = cand
         elif len(names) > 1:
-            return {"ambiguous": names[:8]}, yr
+            return {"ambiguous": names[:8]}
     if not len(m):
-        return None, yr
-    if "week" in m.columns:
-        m = m.sort_values("week")
-    return m, yr
+        return None
+    return m.sort_values("week") if "week" in m.columns else m
+
+
+def _player_rows(name: str, season: int = None):
+    """This player's weekly rows, falling back PER PLAYER to the prior season.
+
+    _weekly() falls back only when the current-season frame is ENTIRELY empty,
+    which is the wrong test once a season starts. In week 1 of 2026 that frame
+    existed but held two teams — so every player outside NE and SEA had a
+    populated frame with no rows of their own, and this returned nothing:
+    /nflform and /nflhistory went blank for most of the league, and published
+    profiles carried no splits and no game log.
+
+    The frame being populated says nothing about whether THIS player is in it.
+    """
+    from . import client as _c
+    cur = season or _c.current_season()
+    got = _rows_from(_c.load("stats_player_week", cur), name)
+    if isinstance(got, dict):            # ambiguous — do not guess
+        return got, cur
+    if got is not None and len(got):
+        return got, cur
+    prev = cur - 1
+    got = _rows_from(_c.load("stats_player_week", prev), name)
+    if isinstance(got, dict):
+        return got, prev
+    if got is not None and len(got):
+        return got, prev
+    return None, cur
 
 
 # ── /nflplayer ───────────────────────────────────────────────────────────────
@@ -458,7 +486,12 @@ def favourite_targets(name: str, season: int = None, limit: int = 4):
             return {}
         team = str(rows["team"].dropna().iloc[-1])
         weeks = set(int(w) for w in rows["week"].dropna().tolist())
-        df, _ = _weekly(season)
+        # THE SEASON THE PLAYER'S OWN ROWS CAME FROM, not whatever _weekly
+        # prefers. Chase's rows resolve to 2025 while _weekly returns the
+        # two-team 2026 frame, so asking that frame for his team-mates found
+        # nobody and the pecking order came back empty.
+        from . import client as _c
+        df = _c.load("stats_player_week", yr)
         col = ("player_display_name" if "player_display_name" in df.columns
                else "player_name")
         mates = df[(df["team"] == team) & (df["week"].isin(weeks))
@@ -501,7 +534,8 @@ def target_competition(name: str, season: int = None, limit: int = 4):
             return {}
         team = str(rows["team"].dropna().iloc[-1])
         weeks = set(int(w) for w in rows["week"].dropna().tolist())
-        df, _ = _weekly(season)
+        from . import client as _c
+        df = _c.load("stats_player_week", yr)
         col = ("player_display_name" if "player_display_name" in df.columns
                else "player_name")
         mates = df[(df["team"] == team) & (df["week"].isin(weeks))

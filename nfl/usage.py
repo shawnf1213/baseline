@@ -316,9 +316,16 @@ def _name_to_gsis(season: int) -> dict:
     from . import client
     out = {}
     try:
-        wk = client.load("stats_player_week", season)
-        if not len(wk):
-            wk = client.load("stats_player_week", season - 1)
+        # BOTH SEASONS, current winning on a clash. Loading only the current
+        # frame and falling back when it is ENTIRELY empty is the wrong test
+        # once a season starts: in week 1 of 2026 it held two teams, so every
+        # player outside NE and SEA was missing from this map and depth_rank
+        # returned (None, None) for almost the league.
+        import pandas as _pd
+        cur = client.load("stats_player_week", season)
+        prev = client.load("stats_player_week", season - 1)
+        frames = [f for f in (prev, cur) if len(f)]   # cur last => cur wins
+        wk = _pd.concat(frames, ignore_index=True) if frames else cur
         if len(wk):
             # Keyed on the NORMALISED name so depth_rank resolves whatever the
             # caller typed — the same folding player_usage does.

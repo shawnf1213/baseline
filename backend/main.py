@@ -286,6 +286,31 @@ async def nfl_board_push(req: Request, payload: dict = Body(...)):
     return {"ok": database.is_ready(), "written": n, "submitted": len(rows)}
 
 
+@app.post("/api/nfl/players")
+async def nfl_players_push(req: Request, payload: dict = Body(...)):
+    """Replace published player profiles for one slate. Bot only, token-gated."""
+    from src import database
+    if not NFL_BOARD_TOKEN:
+        raise HTTPException(status_code=503, detail="NFL ingest disabled")
+    if not hmac.compare_digest(req.headers.get("x-nfl-board-token", ""),
+                               NFL_BOARD_TOKEN):
+        raise HTTPException(status_code=401, detail="bad token")
+    slate = (payload.get("slate_date") or "").strip()
+    if not slate:
+        raise HTTPException(status_code=400, detail="slate_date required")
+    rows = payload.get("players") or []
+    n = database.nfl_players_replace(rows, slate)
+    return {"ok": database.is_ready(), "written": n, "submitted": len(rows)}
+
+
+@app.get("/api/nfl/players")
+async def nfl_players_get(slate_date: str = None, player: str = None):
+    """Published NFL player profiles. Public, read-only."""
+    from src import database
+    return {"players": database.nfl_players(slate_date=slate_date, player=player),
+            "ready": database.is_ready()}
+
+
 @app.get("/api/nfl/board")
 async def nfl_board_get(book: str = None, slate_date: str = None):
     """The current scanned NFL board. Public, read-only."""
