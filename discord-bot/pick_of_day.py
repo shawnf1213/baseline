@@ -786,27 +786,73 @@ def _ptgw_qualify(pk: dict, thin: bool = False):
     return conf >= base, base, "standard-80"
 
 
+def _rel_edge(pk: dict) -> float:
+    """|projection - line| / line — edge as a FRACTION of the number bet on.
+
+    Raw edge is not comparable across props. A 2.0 edge on a 4.5 break-points
+    line is enormous; the same 2.0 on a 24.5 fantasy line is noise. Ranking on
+    raw edge therefore sorts by prop SCALE, not by value: measured on the graded
+    record it pushed Fantasy Score to 101 of 237 board slots and cut Break
+    Points from 91 to 80.
+    """
+    line = pk.get("line")
+    edge = pk.get("edge_mag") or abs(pk.get("edge") or 0)
+    if not isinstance(line, (int, float)) or not line:
+        return 0.0
+    return edge / abs(line)
+
+
 def _rank_key(pk: dict) -> tuple:
-    """Ranking key (sort DESCENDING). Three explicit levels, strength-of-field first:
+    """Ranking key (sort DESCENDING). Three levels, strength-of-field first:
 
-      0. tour_level  — tour matches (1) ALWAYS rank above challenger-vs-challenger
-                       matchups (0). Deprioritize-only: challenger plays stay
-                       eligible, they just never sit above a tour-level play.
-      1. confidence  — the primary term within a strength-of-field group
-      2. edge_mag    — tiebreaker ONLY, among plays of equal confidence
+      0. tour_level  — tour matches (1) ALWAYS rank above challenger-vs-
+                       challenger matchups (0). Deprioritize-only.
+      1. rel_edge    — |projection - line| / line, the PRIMARY term
+      2. confidence  — tiebreaker among plays of equal relative edge
 
-    A play with genuinely higher confidence therefore ALWAYS outranks a lower-
-    confidence one no matter how large the latter's projected edge. This replaces
-    the old additive ``conf + abs(edge)`` score, under which a ceiling-pinned
-    80-conf play with a 6.0 edge (86) jumped ahead of an 81-conf play with a 4.4
-    edge (85.4) — inverting the rule that confidence outweighs edge. Props with a
-    hard confidence ceiling (Player Total Games Won caps at 80) all tie at the
-    ceiling and now order by edge among THEMSELVES, at the bottom of their band,
-    instead of leapfrogging higher-confidence plays.
+    CONFIDENCE GATES; EDGE ORDERS. It used to be the other way round, and the
+    old docstring said so explicitly: "a play with genuinely higher confidence
+    ALWAYS outranks a lower-confidence one no matter how large the latter's
+    projected edge." That is wrong, and measurably so.
+
+    Measured on 640 graded picks, confidence does not order outcomes — it is
+    NON-MONOTONIC:
+
+        conf 65-69   86-72   54.4%      conf 75-79   63-74   46.0%
+        conf 70-74   87-60   59.2%      conf 80+    109-89   55.1%
+
+    The 70-74 band beats the 80+ band. Every band also overstates its own hit
+    rate by 12-31 points, so the number was never a probability. Meanwhile
+    relative edge DOES order them, and the difference compounds through a
+    board that only has eight slots: on the props we post (BP / FS / PTGW),
+    37 slates, 269 picks —
+
+        rank by confidence   top3 57.7%   top5 59.2%   top8 59.1%
+        rank by rel_edge     top3 64.0%   top5 64.2%   top8 61.2%
+        POTD (#1 only)       62.2%  ->  73.0%
+
+    RELATIVE rather than raw, deliberately. Raw edge scores better on the single
+    POTD (83.8%) but gets there by picking Fantasy Score 25 times in 37 — the
+    prop with the biggest line values. That is scale, not skill, and it is
+    fragile. Relative edge surfaces the MOST Break Points (93 vs 91) and lifts
+    their hit rate from 53% to 57%, which is the value that was being cut by a
+    confidence sort in the first place.
+
+    Confidence has not been discarded: BOARD_MIN_CONF still decides what is
+    ELIGIBLE. It answers "is this trustworthy enough to post"; relative edge
+    answers "how good is it". Those are different questions and were being
+    answered by the same number.
+
+    CAVEAT, stated because it should shape expectations: the comparison above is
+    in-sample — the rule was chosen by testing on the same picks it is scored
+    on. The direction holds at every board size and on two different prop
+    subsets, and it matches an independent finding (confidence bands are
+    non-monotonic, edge quartiles are not), but the live number should be
+    expected to land below the backtest.
     """
     return (0 if pk.get("both_challenger_level") else 1,
-            pk.get("confidence") or 0,
-            pk.get("edge_mag") or abs(pk.get("edge") or 0))
+            _rel_edge(pk),
+            pk.get("confidence") or 0)
 
 
 # ── Prop-reliability tiers for the per-player dedupe (7/23 audit, Fix C1) ─────
