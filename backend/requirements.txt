@@ -9,3 +9,8 @@ requests==2.32.3
 SQLAlchemy==2.0.36
 psycopg2-binary==2.9.10
 stripe==12.5.1
+# Parquet engine for the nflverse datasets nfl/ reads. pandas names
+# pyarrow or fastparquet and ships neither; without it every dataset
+# load fails and the NFL endpoints return 'no data' rather than an
+# import error, which is the hardest version of this bug to find.
+pyarrow>=15.0.0

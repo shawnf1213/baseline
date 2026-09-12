@@ -2962,9 +2962,15 @@ def _mlb_import(module_name: str):
     import importlib
     here = os.path.dirname(os.path.abspath(__file__))
     candidates = [
+        # backend/ FIRST — the sport packages live there now, so both the bot
+        # and the API import one copy instead of the backend being unable to
+        # reach them at all.
+        os.path.join(os.path.dirname(here), "backend"),
         os.path.dirname(here),          # /app  when bot.py is /app/discord-bot/bot.py
         here,                           # /app  when bot.py is /app/bot.py
+        os.path.join(os.getcwd(), "backend"),
         os.getcwd(),
+        "/app/backend",
         "/app",
     ]
     seen, found = [], None
@@ -3602,15 +3608,18 @@ def _nfl_import(module_name: str):
     import sys
     import importlib
     here = os.path.dirname(os.path.abspath(__file__))
-    for root in (os.path.dirname(here), here, os.getcwd(), "/app"):
+    _repo = os.path.dirname(here)
+    for root in (os.path.join(_repo, "backend"), _repo, here,
+                 os.path.join(os.getcwd(), "backend"), os.getcwd(),
+                 "/app/backend", "/app"):
         if root and os.path.isdir(os.path.join(root, "nfl")):
             if root not in sys.path:
                 sys.path.insert(0, root)
             break
     else:
-        log.error("NFL package NOT FOUND on disk (searched %s, %s, %s, /app) — "
-                  "NFL tasks will report this rather than failing silently",
-                  os.path.dirname(here), here, os.getcwd())
+        log.error("NFL package NOT FOUND on disk (searched backend/, %s, %s, "
+                  "%s, /app) — NFL tasks will report this rather than failing "
+                  "silently", _repo, here, os.getcwd())
     return importlib.import_module(module_name)
 
 

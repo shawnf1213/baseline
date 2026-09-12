@@ -319,6 +319,126 @@ async def nfl_board_get(book: str = None, slate_date: str = None):
             "ready": database.is_ready()}
 
 
+# ── NFL PRICING, IN THE BACKEND ──────────────────────────────────────────────
+# The website could show what the bot had already scanned and nothing else,
+# because the model lived only where the bot ran. That was never a structural
+# decision — `nfl/` is a sibling of `backend/` and `discord-bot/` and imports
+# neither; it is a shared library that only ever had one consumer.
+#
+# What kept it out was the DEPLOY. The backend is its own Railway project,
+# uploaded from `backend/`, so a package sitting at the repo root was simply not
+# in its build context — the bot could import it and the API could not.
+#
+# So the packages moved INTO backend/ (nfl/, mlb/, core/), each its own
+# subsection, and the bot — which deploys the whole repo — now resolves them
+# from there. One copy, two consumers, no duplication and nothing to drift.
+# This still degrades to a clear 503 rather than a 500 if the import fails.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+
+
+def _nfl_mod():
+    """The nfl package, or None when this deploy does not carry it."""
+    try:
+        import nfl.props as _p          # noqa: F401
+        return __import__("nfl", fromlist=["props", "client", "board", "queries"])
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("nfl package unavailable to the backend: %s", exc)
+        return None
+
+
+@app.get("/api/nfl/props")
+async def nfl_prop_types():
+    """Which NFL props can be priced, and whether pricing is available at all.
+
+    The frontend asks this before offering the mode, so an NFL projections tab
+    can say "unavailable on this deploy" instead of presenting a form whose
+    submit button always fails.
+    """
+    _nfl = _nfl_mod()
+    if _nfl is None:
+        return {"ready": False, "props": []}
+    from nfl.props import SUPPORTED
+    labels = {"receptions": "Receptions", "receiving_yards": "Receiving Yards",
+              "rush_yards": "Rush Yards", "pass_yards": "Pass Yards"}
+    return {"ready": True,
+            "props": [{"key": k, "label": labels.get(k, k)} for k in SUPPORTED]}
+
+
+@app.post("/api/nfl/project")
+async def nfl_project(payload: dict = Body(...)):
+    """Price ONE NFL prop for a named player — the NFL answer to
+    /api/prop/calculate.
+
+    The game context (spread, total, which side the player is on) is resolved
+    from the schedule the same way nfl/board.py does it, via the same helper —
+    a second implementation of that lookup would be free to get the spread sign
+    backwards, which inverts every game script it touches.
+
+    Never raises past the error envelope: a projection that cannot be built
+    returns a stated reason, because a silent empty result on this endpoint is
+    indistinguishable from a bug.
+    """
+    _nfl = _nfl_mod()
+    if _nfl is None:
+        raise HTTPException(status_code=503,
+                            detail="NFL pricing is not available on this deploy")
+    player = (payload.get("player") or "").strip()
+    prop = (payload.get("prop") or "").strip()
+    line = payload.get("line")
+    if not player or not prop:
+        raise HTTPException(status_code=400, detail="player and prop required")
+    try:
+        from nfl import props as _props, board as _board, client as _client
+        from nfl.props import SUPPORTED
+        if prop not in SUPPORTED:
+            raise HTTPException(status_code=400,
+                                detail=f"prop must be one of {list(SUPPORTED)}")
+
+        # Resolve the player's game from the upcoming schedule, through the
+        # SAME helpers the board uses. _game_for states the spread from the
+        # player's own side, and a second implementation of that would be free
+        # to get the sign backwards — which inverts every game script it
+        # touches, pricing favourites as underdogs.
+        #
+        # The team can be named by the caller; when it is not, the depth chart
+        # knows it. Without a game the projection still runs on league-neutral
+        # volume and says so, rather than silently dropping the market term.
+        game = {}
+        team = (payload.get("team") or "").strip()
+        try:
+            if not team:
+                from nfl import queries as _q
+                team = (_q.player_team(player) or "").strip()
+            if team:
+                # upcoming_week(), NOT get_schedule(). ESPN answers 403 to a
+                # datacenter IP through every proxy port, and the nflverse
+                # games.csv fallback lives in upcoming_week — calling the raw
+                # fetcher gave an empty schedule in production while working on
+                # a laptop, which is precisely the bug that fallback exists for.
+                # The board calls upcoming_week too; this is now the same path.
+                games = _client.upcoming_week() or []
+                game = _board._game_for(team, _board._team_index(games)) or {}
+        except Exception as exc:  # noqa: BLE001
+            logger.info("nfl_project: no schedule context for %s (%s)", player, exc)
+
+        res = _props.project(player, prop,
+                             line=float(line) if line is not None else None,
+                             game=game or None) or {}
+        if not res:
+            return {"ok": False,
+                    "reason": "Not enough usage to price this player — the "
+                              "model refuses below board-realistic volume."}
+        return {"ok": True, "player": player, "prop": prop, "line": line,
+                "game": game, **res}
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("nfl_project failed")
+        raise HTTPException(status_code=500, detail=str(exc)[:200])
+
+
 @app.get("/api/nfl/results/pending")
 async def nfl_results_pending():
     from src import database

@@ -186,6 +186,28 @@ def _player_rows(name: str, season: int = None):
 
 
 # ── /nflplayer ───────────────────────────────────────────────────────────────
+def player_team(name: str, season: int = None) -> str:
+    """The club this player last appeared for, or "".
+
+    Needed because a projection without a game row loses the spread and total
+    that weight the script mixture — it still runs, but league-neutral. The
+    weekly frame carries `team` on every row, so the last one he played is the
+    answer; the depth chart would also do it but is keyed on gsis_id and is a
+    heavier read for one string.
+    """
+    try:
+        got = _player_rows(name, season)
+        rows = got[0] if isinstance(got, tuple) else got
+        if rows is None or isinstance(rows, dict) or not len(rows):
+            return ""
+        if "team" not in getattr(rows, "columns", []):
+            return ""
+        vals = rows["team"].dropna()
+        return str(vals.iloc[-1]) if len(vals) else ""
+    except Exception:  # noqa: BLE001 — a missing club costs context, not the call
+        return ""
+
+
 def player_profile(name: str, season: int = None) -> dict:
     """Role, usage and efficiency — the NFL answer to tennis's /player.
 

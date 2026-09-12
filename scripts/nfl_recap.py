@@ -20,6 +20,11 @@ have not started.
 import argparse
 import os
 import sys
+import os as _os
+# The sport packages live under backend/ now.
+sys.path.insert(0, _os.path.join(
+    _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))),
+    'backend'))
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
