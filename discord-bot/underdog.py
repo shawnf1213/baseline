@@ -63,7 +63,11 @@ PROP_MAP = {
 # Double Faults is OUT (2026-09-03, user) pending a fix: highest-variance prop
 # we carry, and its projections have not been re-validated since the
 # serve/return tour averages were found to be on the wrong scale.
-EXCLUDE_PROPS = {"Double Faults"}
+# Mirrors pick_of_day._POD_EXCLUDE_PROPS — see the measurement there. Kept as a
+# separate constant because this is a separate parser, but the two must not
+# drift: a prop pulled from one board and left on the other is the same losing
+# prop still reaching subscribers.
+EXCLUDE_PROPS = {"Double Faults", "Aces", "Total Games"}
 
 # Markets we deliberately do NOT carry: 1st Set Games Won/Played, Tiebreakers
 # Played, and the serve-point splits (First Serve Points Won, First Serves In,

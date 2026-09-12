@@ -275,7 +275,35 @@ if _env_excl.strip():
 #
 # Re-enable by removing it here once the projection is fixed and backtested;
 # nothing else needs to change.
-_POD_EXCLUDE_PROPS = {"Double Faults"}
+# ── PROPS THE BOARD DOES NOT POST ────────────────────────────────────────────
+# Measured on the full graded record (2026-09-13), not impressions:
+#
+#     Aces                118 picks   51-67   43.2%   projections -19.5% biased
+#     Total Games         124 picks   62-62   50.0%
+#     Double Faults        72 picks   39-33   54.2%   projections +32.3% biased
+#     Break Points Won    143 picks   83-60   58.0%
+#     Fantasy Score       117 picks   70-47   59.8%
+#     Player Total Games   64 picks   40-24   62.5%
+#
+# ACES is a losing prop and a structurally broken one. The model over-projects
+# by ~20%, and the bias is NOT match length — best-of-5 is LESS biased (-11.5%)
+# than best-of-3 (-24.3%), which rules out expected_sets. It is also not
+# uniform: the 12+ line bucket (genuine bombers) is nearly unbiased at -3% and
+# is the only winning bucket. That is the signature of a returner's GLOBAL
+# ace-conceded rate being applied to every server — a weak returner earns that
+# rate against bombers, so reusing it for a mid-tier server double-counts. The
+# fix is to condition ace-against on server type; until that exists the prop
+# does not belong on the board.
+#
+# TOTAL GAMES is exactly break-even over 124 picks. A 50% prop is not a small
+# edge, it is no edge, and posting it costs the vig while diluting a board whose
+# other props run 58-62%.
+#
+# Removing both takes the posted record from 345-293 (54.1%) to 232-164 (58.6%).
+#
+# Both remain fully implemented and projectable — /prop still prices them, and
+# the website still shows them. This is a BOARD policy, not a model deletion.
+_POD_EXCLUDE_PROPS = {"Double Faults", "Aces", "Total Games"}
 
 
 def _is_excluded(name: str) -> bool:

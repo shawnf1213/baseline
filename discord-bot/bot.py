@@ -4851,15 +4851,23 @@ def daily_recap_embed(rec: dict, target_date: str = None,
 
     # ROLLING 30 DAYS instead of all-time (2026-08-03, user). The lifetime total
     # spans a stretch where earlier plays were still being corrected — regraded,
-    # voided, superseded — so it isn't a number to publish. A 30-day window covers
-    # only settled recent history and moves with current form.
+    # voided, superseded — so it isn't a number to publish. A month-to-date
+    # window covers only settled recent history and resets cleanly.
     # Counted on SLATE date, like the pick list, so a play belongs to the day it
     # was played. Window is inclusive of the recap's own day.
+    # CALENDAR MONTH TO DATE, not a rolling 29 days (user, 2026-09-13). On the
+    # 13th of September a rolling window is mostly August, so a post headed
+    # "September" was reporting a month the reader was not looking at — and a
+    # good month could be dragged down by a bad one that had already ended.
+    # A month is also the unit people actually compare: "how did we do in
+    # September" has an answer, "how did we do in the last 29 days" does not.
     try:
-        _win_start = (datetime.datetime.strptime(target_date, "%Y-%m-%d")
-                      - datetime.timedelta(days=29)).strftime("%Y-%m-%d")
+        _target_dt = datetime.datetime.strptime(target_date, "%Y-%m-%d")
+        _win_start = _target_dt.replace(day=1).strftime("%Y-%m-%d")
+        _win_label = _target_dt.strftime("%B")
     except Exception:  # noqa: BLE001
         _win_start = None
+        _win_label = "This month"
     m_w = m_l = m_p = 0
     if _win_start:
         for p in picks:
@@ -4924,7 +4932,7 @@ def daily_recap_embed(rec: dict, target_date: str = None,
         today_line += f"  ·  incl. {t_p} push{'es' if t_p != 1 else ''}"
     record_val = today_line
     if m_total:
-        record_val += f"\n**Last 30 days:** {m_cash}/{m_total} cashed ({m_rate}%)"
+        record_val += f"\n**{_win_label}:** {m_cash}/{m_total} cashed ({m_rate}%)"
     # Rough-day note — included ONLY when the day's cashed rate is under 60% and at
     # least one play actually resolved. Deliberately conditional so it never reads
     # as canned: good days (>=60%) and empty days show nothing extra.
