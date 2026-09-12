@@ -1,6 +1,7 @@
 import { useState, useMemo } from 'react'
 import { T } from './theme'
-import { Card, Chip, Spinner, Empty, SectionLabel, PageTitle } from './bits'
+import { Card, Chip, Spinner, Empty, SectionLabel, PageTitle,
+         GlassTabs } from './bits'
 import PlayerPhoto from './PlayerPhoto'
 import ConfidenceGauge from '../components/ConfidenceGauge'
 import { usePlayerSearch } from '../hooks/usePlayerSearch'
@@ -223,18 +224,27 @@ function PlayerSlot({ label, value, onPick, tour, onClear }) {
 // fontSize MUST stay >= 16px: below that, Safari zooms the whole page when the
 // control takes focus and the user is left pinched in on a form they were only
 // trying to tap.
-function Select({ label, value, onChange, options }) {
+function FieldLabel({ children }) {
+  return (
+    <div style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 9.5,
+                  letterSpacing: 1.2, textTransform: 'uppercase',
+                  color: T.muted2, marginBottom: 5 }}>{children}</div>
+  )
+}
+
+function Select({ label, value, onChange, options, inline }) {
   return (
     <>
-      <SectionLabel>{label}</SectionLabel>
-      <div style={{ position: 'relative', marginBottom: 12 }}>
+      {inline ? <FieldLabel>{label}</FieldLabel> : <SectionLabel>{label}</SectionLabel>}
+      <div style={{ position: 'relative', marginBottom: inline ? 0 : 12 }}>
         <select
           value={value}
           onChange={e => onChange(e.target.value)}
           style={{
-            width: '100%', boxSizing: 'border-box', minHeight: 50,
+            width: '100%', boxSizing: 'border-box', minHeight: 46,
             padding: '0 40px 0 14px',
-            background: T.card, border: `1px solid ${T.border}`, borderRadius: 12,
+            background: 'rgba(255,255,255,0.03)',
+            border: `1px solid ${T.glassLine}`, borderRadius: T.r1,
             color: T.white, fontSize: 16, fontWeight: 600, fontFamily: T.font,
             outline: 'none', appearance: 'none', WebkitAppearance: 'none',
           }}
@@ -471,59 +481,91 @@ export default function ProjectionsTab() {
         Projections
       </PageTitle>
 
-      <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
-        {['ATP', 'WTA'].map(t => (
-          <Chip key={t} active={tour === t}
-                onClick={() => { setTour(t); setCourt('') }}>{t}</Chip>
-        ))}
-      </div>
+      {/* ── THE MATCHUP BUILDER ──────────────────────────────────────────
+          This was eight controls stacked down the page — tour, player,
+          opponent, prop, surface, court, line, button — each full width, each
+          with its own section label, so setting up one projection meant
+          scrolling a form. It is ONE question ("price this matchup"), so it is
+          now one card: the two players side by side across a VS, and the
+          settings on a single row beneath them. */}
+      <Card style={{ padding: 16, marginBottom: T.s3 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8,
+                      marginBottom: T.s3 }}>
+          <span style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 11,
+                         letterSpacing: 1.6, textTransform: 'uppercase',
+                         color: T.muted2, flex: 1 }}>The matchup</span>
+          <GlassTabs value={tour} style={{ padding: 3 }}
+                     onChange={t => { setTour(t); setCourt('') }}
+                     options={[{ key: 'ATP', label: 'ATP' },
+                               { key: 'WTA', label: 'WTA' }]} />
+        </div>
 
-      <PlayerSlot label="Player" value={player} tour={tour}
-                  onPick={p => {
-                    setPlayer(p)
-                    if (p.tour && p.tour !== tour) { setTour(p.tour); setCourt('') }
-                  }}
-                  onClear={() => setPlayer(null)} />
-      <PlayerSlot label="Opponent" value={opponent} tour={tour}
-                  onPick={setOpponent} onClear={() => setOpponent(null)} />
+        <div style={{ display: 'flex', alignItems: 'center', gap: T.s2 }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <PlayerSlot label="Player" value={player} tour={tour}
+                        onPick={p => {
+                          setPlayer(p)
+                          if (p.tour && p.tour !== tour) { setTour(p.tour); setCourt('') }
+                        }}
+                        onClear={() => setPlayer(null)} />
+          </div>
+          <span style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 13,
+                         letterSpacing: 1, color: T.muted2, flexShrink: 0,
+                         alignSelf: 'center' }}>VS</span>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <PlayerSlot label="Opponent" value={opponent} tour={tour}
+                        onPick={setOpponent} onClear={() => setOpponent(null)} />
+          </div>
+        </div>
 
-      <Select label="Prop" value={prop} onChange={setProp}
-              options={PROP_TYPES.map(p => ({ value: p.key, label: p.short }))} />
+        <div style={{ height: 1, background: T.glassLine, margin: `${T.s3}px 0` }} />
 
-      <SectionLabel>Surface</SectionLabel>
-      <div style={{ display: 'flex', gap: 6, paddingBottom: 10 }}>
-        {SURFACES.map(s => (
-          <Chip key={s} active={surface === s}
-                onClick={() => { setSurface(s); setCourt('') }}>{s}</Chip>
-        ))}
-      </div>
+        <div style={{ display: 'grid', gap: T.s2,
+                      gridTemplateColumns: 'repeat(auto-fit, minmax(148px, 1fr))' }}>
+          <Select label="Prop" value={prop} onChange={setProp} inline
+                  options={PROP_TYPES.map(p => ({ value: p.key, label: p.short }))} />
+          <Select label="Tournament court" value={court} onChange={setCourt} inline
+                  options={courtOptions} />
+          <div>
+            <FieldLabel>Book line</FieldLabel>
+            <input
+              value={line}
+              onChange={e => setLine(e.target.value.replace(/[^\d.]/g, ''))}
+              inputMode="decimal"
+              placeholder="e.g. 4.5"
+              style={{
+                width: '100%', boxSizing: 'border-box', minHeight: 46,
+                padding: '0 14px', background: 'rgba(255,255,255,0.03)',
+                border: `1px solid ${T.glassLine}`, borderRadius: T.r1,
+                color: T.white, fontSize: 17, fontWeight: 700, outline: 'none',
+              }}
+            />
+          </div>
+        </div>
 
-      <Select label="Tournament court" value={court} onChange={setCourt}
-              options={courtOptions} />
+        <div style={{ marginTop: T.s3 }}>
+          <FieldLabel>Surface</FieldLabel>
+          <div style={{ display: 'flex', gap: 6 }}>
+            {SURFACES.map(sf => (
+              <Chip key={sf} active={surface === sf}
+                    onClick={() => { setSurface(sf); setCourt('') }}>{sf}</Chip>
+            ))}
+          </div>
+        </div>
 
-      <SectionLabel>Book line</SectionLabel>
-      <input
-        value={line}
-        onChange={e => setLine(e.target.value.replace(/[^\d.]/g, ''))}
-        inputMode="decimal"
-        placeholder="e.g. 4.5"
-        style={{
-          width: '100%', boxSizing: 'border-box', minHeight: 48, padding: '0 14px',
-          background: T.card, border: `1px solid ${T.border}`, borderRadius: 12,
-          color: T.white, fontSize: 17, fontWeight: 700, outline: 'none', marginBottom: 12,
-        }}
-      />
-
-      <button onClick={run} disabled={!ready || busy} style={{
-        width: '100%', minHeight: 50, borderRadius: 13, border: 'none',
-        background: ready && !busy ? T.green : T.card,
-        color: ready && !busy ? '#062' : T.muted2,
-        fontFamily: T.cond, fontWeight: 800, fontSize: 16, letterSpacing: 1,
-        textTransform: 'uppercase', cursor: ready && !busy ? 'pointer' : 'default',
-        marginBottom: 16,
-      }}>
-        {busy ? 'Projecting…' : 'Run projection'}
-      </button>
+        <button onClick={run} disabled={!ready || busy} style={{
+          width: '100%', minHeight: 50, borderRadius: T.r2, border: 'none',
+          background: ready && !busy
+            ? `linear-gradient(135deg, ${T.green}, #00B85C)` : 'rgba(255,255,255,0.04)',
+          color: ready && !busy ? '#04240f' : T.muted2,
+          fontFamily: T.cond, fontWeight: 800, fontSize: 16, letterSpacing: 1.1,
+          textTransform: 'uppercase', cursor: ready && !busy ? 'pointer' : 'default',
+          marginTop: T.s4,
+          boxShadow: ready && !busy ? `0 8px 26px ${T.green}33` : 'none',
+        }}>
+          {busy ? 'Projecting…' : 'Run projection'}
+        </button>
+      </Card>
 
       {busy && (
         <Card style={{ padding: 24, textAlign: 'center' }}>

@@ -1,7 +1,8 @@
 import { useMemo, useState, useEffect } from 'react'
 import { T } from './theme'
 import { Card, Heart, Spinner, Empty, tier, sideTone, SideRail, TierBadge,
-         ConfBar, BigStat, tierCardStyle, PageTitle, Pill, GlassTabs } from './bits'
+         ConfBar, BigStat, tierCardStyle, PageTitle, Pill, GlassTabs,
+         SectionLabel } from './bits'
 import FilterSheet from './FilterSheet'
 import { shortProp, startTimeLabel, fmt, calibratedConfidence } from './data'
 import { projectRow, cachedProjection } from './project'
@@ -145,6 +146,19 @@ export default function BoardTab({ boards, book, setBook, loading, error, onOpen
         <Empty icon="⚠️" title="Couldn't load the board" hint="The live market didn't load. Pull to retry." />
       )}
 
+      {!loading && !error && !!rows.length && (
+        <>
+          <BoardSummary rows={rows} projecting={projecting} />
+          <TopPlays rows={rows} onOpen={r => onOpenPlayer({ name: r.player, tour: r.tour })}
+                    saved={r => has(propBookmarkId(r))}
+                    onSave={(r, e) => { e.stopPropagation()
+                      toggle({ id: propBookmarkId(r), kind: 'prop', ...r }) }} />
+          <SectionLabel right={<span style={{ color: T.muted2, fontSize: 11 }}>
+            {rows.length} lines
+          </span>}>Full board</SectionLabel>
+        </>
+      )}
+
       {!loading && !error && !rows.length && (
         <Empty icon="🎾"
           title={board?.rows?.length ? 'No props match these filters' : 'No tennis props on the board'}
@@ -172,6 +186,145 @@ export default function BoardTab({ boards, book, setBook, loading, error, onOpen
 
       <FilterSheet open={sheet} onClose={() => setSheet(false)} filters={filters} setFilters={setFilters} />
     </div>
+  )
+}
+
+// ── WHAT THE BOARD ADDS UP TO ────────────────────────────────────────────────
+// The board opened straight into thirty-six identical cards. Nothing told a
+// reader how big today is, whether there is anything worth their time in it, or
+// where the good end of it is — they had to scroll the whole thing and work it
+// out. This is that answer, before the list.
+function BoardSummary({ rows, projecting }) {
+  const done = rows.filter(r => r._state === 'done')
+  const conf = (r) => r.confidence || 0
+  const elite = done.filter(r => conf(r) >= 80).length
+  const strong = done.filter(r => conf(r) >= 72 && conf(r) < 80).length
+  const best = done.reduce(
+    (m, r) => (Math.abs(r.edge || 0) > Math.abs(m?.edge ?? -1) ? r : m), null)
+  const matches = new Set(
+    done.map(r => [r.player, r.opponent].sort().join('|'))).size
+
+  const cells = [
+    { k: 'Priced', v: projecting && !done.length ? '…' : String(done.length),
+      s: matches ? `${matches} match${matches === 1 ? '' : 'es'}` : '' },
+    { k: 'Elite', v: String(elite), s: '80+ confidence',
+      tone: elite ? T.green : T.muted2 },
+    { k: 'Strong', v: String(strong), s: '72–79', tone: strong ? T.green : T.muted2 },
+    { k: 'Best edge',
+      v: best ? `${best.edge > 0 ? '+' : ''}${fmt(best.edge)}` : '—',
+      s: best ? best.player : '',
+      tone: best ? sideTone(best.edge).tone : T.muted2 },
+  ]
+
+  return (
+    <Card style={{ padding: '14px 16px', marginBottom: T.s3 }}>
+      <div style={{ display: 'grid', gap: T.s3,
+                    gridTemplateColumns: 'repeat(auto-fit, minmax(96px, 1fr))' }}>
+        {cells.map(c => (
+          <div key={c.k} style={{ minWidth: 0 }}>
+            <div style={{ fontFamily: T.cond, fontWeight: 700, fontSize: 10,
+                          letterSpacing: 1.3, textTransform: 'uppercase',
+                          color: T.muted2 }}>{c.k}</div>
+            <div style={{ fontSize: 25, fontWeight: 800, lineHeight: 1.15,
+                          letterSpacing: -0.6, color: c.tone || T.white,
+                          fontVariantNumeric: 'tabular-nums' }}>{c.v}</div>
+            {c.s ? (
+              <div style={{ color: T.muted2, fontSize: 10.5, whiteSpace: 'nowrap',
+                            overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.s}</div>
+            ) : null}
+          </div>
+        ))}
+      </div>
+    </Card>
+  )
+}
+
+// ── THE TOP OF THE BOARD, PULLED OUT ─────────────────────────────────────────
+// A flat grid says every play on it is worth the same look, which is the one
+// thing the model exists to deny. These are the three the model is most sure
+// of, rendered at a size that says so — wide, ranked, and above the grid rather
+// than hidden somewhere inside it.
+//
+// Ranked by CONVICTION TIER FIRST and edge only within a tier. Sorting by raw
+// edge would put a wild number on a thin projection at the top of the page,
+// which is exactly the play a reader should be least led towards.
+function TopPlays({ rows, onOpen, saved, onSave }) {
+  const top = rows
+    .filter(r => r._state === 'done' && r.edge != null)
+    .sort((a, b) => (tier(b.confidence).weight - tier(a.confidence).weight)
+                 || (Math.abs(b.edge) - Math.abs(a.edge)))
+    .slice(0, 3)
+  if (top.length < 2 || !tier(top[0].confidence).weight) return null
+
+  return (
+    <>
+      <SectionLabel right={<span style={{ color: T.muted2, fontSize: 11 }}>
+        by conviction
+      </span>}>Top plays</SectionLabel>
+      <div style={{ display: 'grid', gap: T.s2, marginBottom: T.s4 }}>
+        {top.map((r, i) => {
+          const { side, tone, rgb } = sideTone(r.edge)
+          const w = tier(r.confidence).weight
+          return (
+            <Card key={r.key} index={i} onClick={() => onOpen(r)} style={{
+              padding: 0, overflow: 'hidden', position: 'relative',
+              ...tierCardStyle(r.confidence, rgb),
+            }}>
+              <SideRail rgb={rgb} weight={w} />
+              <div aria-hidden style={{
+                position: 'absolute', inset: 0, pointerEvents: 'none',
+                background: `radial-gradient(130% 100% at 0% 0%, rgba(${rgb},`
+                          + `${0.07 + w * 0.035}), transparent 62%)`,
+              }} />
+              <div style={{ position: 'relative', display: 'flex',
+                            alignItems: 'center', gap: T.s3, flexWrap: 'wrap',
+                            padding: '15px 16px 15px 20px' }}>
+                {/* The rank, as a numeral. A reader should be able to tell the
+                    first card from the third without comparing two bars. */}
+                <span style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 34,
+                               lineHeight: 1, color: `rgba(${rgb},0.55)`,
+                               minWidth: 26 }}>{i + 1}</span>
+
+                <div style={{ minWidth: 132, flex: 1 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 7,
+                                flexWrap: 'wrap' }}>
+                    <span style={{ fontFamily: T.cond, fontWeight: 800,
+                                   fontSize: 22, color: T.white,
+                                   letterSpacing: 0.3 }}>{r.player}</span>
+                    <TierBadge conf={r.confidence} tone={tone} rgb={rgb} />
+                  </div>
+                  <div style={{ color: T.muted, fontSize: 12, marginTop: 2 }}>
+                    {shortProp(r.propType)} · vs {r.opponent}
+                    {r.surface ? ` · ${r.surface}` : ''}
+                  </div>
+                </div>
+
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: 7 }}>
+                  <span style={{ fontFamily: T.cond, fontWeight: 800,
+                                 fontSize: 26, color: tone,
+                                 letterSpacing: 0.5 }}>{side}</span>
+                  <span style={{ fontSize: 23, fontWeight: 800, color: T.white,
+                                 letterSpacing: -0.5,
+                                 fontVariantNumeric: 'tabular-nums' }}>
+                    {fmt(r.line, Number.isInteger(r.line) ? 0 : 1)}
+                  </span>
+                </div>
+
+                <BigStat tone={tone} rgb={rgb} proj={fmt(r.projection)}
+                         value={`${r.edge > 0 ? '+' : ''}${fmt(r.edge)}`}
+                         label="EDGE" />
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: 9,
+                              minWidth: 132 }}>
+                  <ConfBar conf={r.confidence} tone={tone} max={104} />
+                  <Heart active={saved(r)} onClick={(e) => onSave(r, e)} />
+                </div>
+              </div>
+            </Card>
+          )
+        })}
+      </div>
+    </>
   )
 }
 
