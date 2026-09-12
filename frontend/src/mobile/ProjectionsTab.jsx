@@ -472,6 +472,10 @@ export default function ProjectionsTab() {
   const [line, setLine] = useState('')
   // Which tile the one shared search panel is filling.
   const [picking, setPicking] = useState(null)
+  // Names the ONE thing still missing, in the order a reader fills them.
+  const missingLabel = !player ? 'Add a player'
+    : !opponent ? 'Add an opponent'
+    : !line ? 'Enter the book line' : 'Run projection'
   const [busy, setBusy] = useState(false)
   const [res, setRes] = useState(null)
   const [hist, setHist] = useState(null)
@@ -533,9 +537,7 @@ export default function ProjectionsTab() {
 
   return (
     <div style={{ padding: '0 0 90px' }}>
-      <PageTitle sub="The same engine the bot's /prop command runs.">
-        Projections
-      </PageTitle>
+      <PageTitle>Price any matchup</PageTitle>
 
       {/* ── THE MATCHUP BUILDER ──────────────────────────────────────────
           This was eight controls stacked down the page — tour, player,
@@ -545,16 +547,10 @@ export default function ProjectionsTab() {
           now one card: the two players side by side across a VS, and the
           settings on a single row beneath them. */}
       <Card style={{ padding: 16, marginBottom: T.s3 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8,
-                      marginBottom: T.s3 }}>
-          <span style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 11,
-                         letterSpacing: 1.6, textTransform: 'uppercase',
-                         color: T.muted2, flex: 1 }}>The matchup</span>
-          <GlassTabs value={tour} style={{ padding: 3 }}
-                     onChange={t => { setTour(t); setCourt('') }}
-                     options={[{ key: 'ATP', label: 'ATP' },
-                               { key: 'WTA', label: 'WTA' }]} />
-        </div>
+        <GlassTabs value={tour} style={{ marginBottom: T.s3 }}
+                   onChange={t => { setTour(t); setCourt('') }}
+                   options={[{ key: 'ATP', label: 'ATP' },
+                             { key: 'WTA', label: 'WTA' }]} />
 
         <div style={{ display: 'flex', alignItems: 'stretch', gap: T.s2 }}>
           <PlayerTile label="Player" value={player}
@@ -596,30 +592,36 @@ export default function ProjectionsTab() {
             The prop and the line are ONE statement — "aces, over 4.5" — and
             they were two separate labelled fields in a grid. Side by side, with
             the line given the size of the number it is. */}
-        <FieldLabel>The prop</FieldLabel>
         <div style={{ display: 'flex', gap: T.s2, alignItems: 'stretch' }}>
           <div style={{ flex: 1, minWidth: 0 }}>
             <Select value={prop} onChange={setProp} inline bare
                     options={PROP_TYPES.map(p => ({ value: p.key, label: p.short }))} />
           </div>
-          <input
-            value={line}
-            onChange={e => setLine(e.target.value.replace(/[^\d.]/g, ''))}
-            inputMode="decimal"
-            placeholder="line"
-            style={{
-              width: 96, flexShrink: 0, boxSizing: 'border-box', minHeight: 46,
-              padding: '0 12px', textAlign: 'center',
-              background: 'rgba(255,255,255,0.03)',
-              border: `1px solid ${line ? `${T.green}55` : T.glassLine}`,
-              borderRadius: T.r1, color: T.white, fontSize: 19, fontWeight: 800,
-              outline: 'none', fontVariantNumeric: 'tabular-nums',
-            }}
-          />
+          <div style={{
+            width: 108, flexShrink: 0, position: 'relative', minHeight: 46,
+            borderRadius: T.r1, background: 'rgba(255,255,255,0.03)',
+            border: `1px solid ${line ? `${T.green}66` : T.glassLine}`,
+          }}>
+            <span style={{ position: 'absolute', left: 11, top: 6,
+                           fontFamily: T.cond, fontWeight: 700, fontSize: 8.5,
+                           letterSpacing: 1.2, color: T.muted2,
+                           pointerEvents: 'none' }}>LINE</span>
+            <input
+              value={line}
+              onChange={e => setLine(e.target.value.replace(/[^\d.]/g, ''))}
+              inputMode="decimal"
+              placeholder="4.5"
+              style={{
+                width: '100%', boxSizing: 'border-box', minHeight: 46,
+                padding: '12px 11px 0', background: 'transparent',
+                border: 'none', color: T.white, fontSize: 19, fontWeight: 800,
+                outline: 'none', fontVariantNumeric: 'tabular-nums',
+              }}
+            />
+          </div>
         </div>
 
         <div style={{ marginTop: T.s3 }}>
-          <FieldLabel>Conditions</FieldLabel>
           <div style={{ display: 'flex', gap: 6, marginBottom: T.s2,
                         flexWrap: 'wrap' }}>
             {SURFACES.map(sf => (
@@ -632,16 +634,19 @@ export default function ProjectionsTab() {
         </div>
 
         <button onClick={run} disabled={!ready || busy} style={{
-          width: '100%', minHeight: 50, borderRadius: T.r2, border: 'none',
+          width: '100%', minHeight: 54, borderRadius: T.r2,
+          border: ready && !busy ? 'none' : `1px dashed ${T.glassLine}`,
           background: ready && !busy
-            ? `linear-gradient(135deg, ${T.green}, #00B85C)` : 'rgba(255,255,255,0.04)',
+            ? `linear-gradient(135deg, ${T.green}, #00B85C)` : 'transparent',
           color: ready && !busy ? '#04240f' : T.muted2,
-          fontFamily: T.cond, fontWeight: 800, fontSize: 16, letterSpacing: 1.1,
-          textTransform: 'uppercase', cursor: ready && !busy ? 'pointer' : 'default',
+          fontFamily: T.cond, fontWeight: 800, fontSize: 17, letterSpacing: 1.2,
+          textTransform: 'uppercase',
+          cursor: ready && !busy ? 'pointer' : 'default',
           marginTop: T.s4,
-          boxShadow: ready && !busy ? `0 8px 26px ${T.green}33` : 'none',
+          boxShadow: ready && !busy ? `0 10px 30px ${T.green}3D` : 'none',
+          transition: 'background 200ms ease, box-shadow 200ms ease',
         }}>
-          {busy ? 'Projecting…' : 'Run projection'}
+          {busy ? 'Projecting…' : ready ? 'Run projection' : missingLabel}
         </button>
       </Card>
 

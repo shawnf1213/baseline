@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { T } from './theme'
-import { Card, Chip, Spinner, Empty, SectionLabel, PageTitle } from './bits'
+import { Spinner, Empty, SectionLabel, PageTitle, PersonRow,
+         GlassTabs } from './bits'
 import PlayerPhoto from './PlayerPhoto'
 import { usePlayerSearch } from '../hooks/usePlayerSearch'
 import { useRecentPlayers } from './useRecent'
@@ -22,9 +23,9 @@ export default function SearchTab({ onOpenPlayer }) {
         Search
       </PageTitle>
 
-      <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
-        {['ATP', 'WTA'].map(t => <Chip key={t} active={tour === t} onClick={() => setTour(t)}>{t}</Chip>)}
-      </div>
+      <GlassTabs value={tour} onChange={setTour} style={{ marginBottom: T.s3 }}
+                 options={[{ key: 'ATP', label: 'ATP' },
+                           { key: 'WTA', label: 'WTA' }]} />
 
       <div style={{ position: 'relative', marginBottom: 18 }}>
         <span style={{ position: 'absolute', left: 14, top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none' }}>
@@ -37,11 +38,12 @@ export default function SearchTab({ onOpenPlayer }) {
           placeholder="Search any player…"
           style={{
             width: '100%', minHeight: 50, padding: '0 16px 0 42px',
-            background: T.card, border: `1px solid ${T.border}`, borderRadius: 13,
+            background: 'rgba(255,255,255,0.04)',
+            border: `1px solid ${T.glassLine}`, borderRadius: T.r2,
             color: T.white, fontSize: 16, outline: 'none', boxSizing: 'border-box',
           }}
           onFocus={e => e.target.style.border = `1px solid ${T.green}`}
-          onBlur={e => e.target.style.border = `1px solid ${T.border}`}
+          onBlur={e => e.target.style.border = `1px solid ${T.glassLine}`}
         />
       </div>
 
@@ -52,8 +54,8 @@ export default function SearchTab({ onOpenPlayer }) {
         <Empty icon="🔍" title="No players found" hint="Try a different spelling or the other tour." />
       )}
 
-      {!!results.length && results.map(p => (
-        <PlayerRow key={p.id} p={p} onClick={() => open(p)} />
+      {!!results.length && results.map((p, i) => (
+        <PlayerRow key={p.id} p={p} index={i} onClick={() => open(p)} />
       ))}
 
       {query.length < 3 && (
@@ -61,8 +63,8 @@ export default function SearchTab({ onOpenPlayer }) {
           {recent.length > 0 ? (
             <>
               <SectionLabel right={<button onClick={clear} style={{ background: 'transparent', border: 'none', color: T.muted, fontFamily: T.cond, fontWeight: 700, fontSize: 11, letterSpacing: 1, textTransform: 'uppercase', cursor: 'pointer' }}>Clear</button>}>Recent</SectionLabel>
-              {recent.map(p => (
-                <PlayerRow key={p.id || p.name} p={p} onClick={() => { push(p); onOpenPlayer({ name: p.name, id: p.id, tour: p.tour, currentRank: p.currentRank }) }} />
+              {recent.map((p, i) => (
+                <PlayerRow key={p.id || p.name} p={p} index={i} onClick={() => { push(p); onOpenPlayer({ name: p.name, id: p.id, tour: p.tour, currentRank: p.currentRank }) }} />
               ))}
             </>
           ) : (
@@ -74,17 +76,11 @@ export default function SearchTab({ onOpenPlayer }) {
   )
 }
 
-function PlayerRow({ p, onClick }) {
+function PlayerRow({ p, onClick, index = 0 }) {
   return (
-    <Card onClick={onClick} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: 10, marginBottom: 8 }}>
-      <PlayerPhoto id={p.id} name={p.name} size={44} />
-      <div style={{ minWidth: 0, flex: 1 }}>
-        <div style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 17, color: T.white, letterSpacing: 0.3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{p.name}</div>
-        <div style={{ color: T.muted, fontSize: 12.5, marginTop: 1 }}>
-          {p.currentRank ? `Rank #${p.currentRank}` : (p.tour || '')}{p.countryAcr ? ` · ${p.countryAcr}` : ''}
-        </div>
-      </div>
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={T.muted2} strokeWidth="2" strokeLinecap="round"><path d="M9 6l6 6-6 6" /></svg>
-    </Card>
+    <PersonRow index={index} onClick={onClick} name={p.name}
+      photo={<PlayerPhoto id={p.id} name={p.name} size={44} />}
+      meta={[p.currentRank ? `Rank #${p.currentRank}` : (p.tour || ''),
+             p.countryAcr].filter(Boolean).join(' · ')} />
   )
 }

@@ -1,6 +1,6 @@
 import { motion } from 'framer-motion'
 import { T, HEADLINE_FILL } from './theme'
-import { GrowBar } from './motion'
+import { GrowBar, Reveal, Tap } from './motion'
 import { fmtSigned } from './data'
 
 // ── SHARED SURFACES ──────────────────────────────────────────────────────────
@@ -244,6 +244,43 @@ export function GlassTabs({ options, value, onChange, style }) {
         )
       })}
     </div>
+  )
+}
+
+// ── ONE PERSON, ONE ROW ──────────────────────────────────────────────────────
+// Players, Search and the saved-players list each drew this themselves, three
+// times, with three different paddings, avatar sizes and chevrons — the same
+// object rendered three ways in one app. `right` takes whatever that screen
+// knows that the others do not: a prop count, a rank, an unsave heart.
+export function PersonRow({ name, photo, meta, right, onClick, index = 0 }) {
+  return (
+    <Reveal i={index}>
+      <Tap onClick={onClick} style={{
+        display: 'flex', alignItems: 'center', gap: 12,
+        padding: '10px 12px 10px 14px', marginBottom: 8, borderRadius: T.r3,
+        background: T.glass, border: `1px solid ${T.glassLine}`,
+        boxShadow: '0 6px 18px rgba(0,0,0,0.35)',
+      }}>
+        {photo}
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <div style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 17,
+                        color: T.white, letterSpacing: 0.3, lineHeight: 1.15,
+                        whiteSpace: 'nowrap', overflow: 'hidden',
+                        textOverflow: 'ellipsis' }}>{name}</div>
+          {meta ? (
+            <div style={{ color: T.muted, fontSize: 12.5, marginTop: 1,
+                          whiteSpace: 'nowrap', overflow: 'hidden',
+                          textOverflow: 'ellipsis' }}>{meta}</div>
+          ) : null}
+        </div>
+        {right}
+        {onClick ? (
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none"
+               stroke={T.muted2} strokeWidth="2" strokeLinecap="round"
+               style={{ flexShrink: 0 }}><path d="M9 6l6 6-6 6" /></svg>
+        ) : null}
+      </Tap>
+    </Reveal>
   )
 }
 

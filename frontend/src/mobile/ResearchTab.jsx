@@ -1,8 +1,10 @@
 import { useState, useEffect } from 'react'
 import { T } from './theme'
-import { Card, Heart, Delta, Spinner, Empty, SectionLabel, PageTitle } from './bits'
+import { Card, Heart, Empty, SectionLabel, PageTitle, PersonRow,
+         SideRail, sideTone, tier, tierCardStyle } from './bits'
+import { Reveal, EdgeScale } from './motion'
 import PlayerPhoto from './PlayerPhoto'
-import { shortProp, fmt } from './data'
+import { shortProp } from './data'
 import { projectRow, cachedProjection } from './project'
 import { useBookmarks } from './useBookmarks'
 
@@ -40,50 +42,62 @@ export default function ResearchTab({ onOpenPlayer }) {
       <Header />
 
       {props.length > 0 && <SectionLabel>Saved Props · {props.length}</SectionLabel>}
-      {props.map(b => {
+      {props.map((b, i) => {
         const p = proj[b.id] || proj[b.key] || {}
         const done = !p.loading && !p.failed && p.projection != null
-        const line = b.line
+        const { side, tone, rgb } = sideTone(done ? p.edge : null)
         return (
-          <Card key={b.id} onClick={() => onOpenPlayer({ name: b.player, tour: b.tour })}
-            style={{ padding: '12px 8px 12px 14px', marginBottom: 10 }}>
-            <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 }}>
-              <div style={{ minWidth: 0, flex: 1 }}>
-                <div style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 17, color: T.white, letterSpacing: 0.3 }}>{b.player}</div>
-                <div style={{ color: T.muted, fontSize: 12.5, marginTop: 2 }}>
-                  {b.opponent ? `vs ${b.opponent} · ` : ''}{b.tour}
+          <Reveal key={b.id} i={i}>
+            <Card onClick={() => onOpenPlayer({ name: b.player, tour: b.tour })}
+                  style={{ padding: '12px 12px 13px 17px', marginBottom: T.s2,
+                           position: 'relative', overflow: 'hidden',
+                           ...tierCardStyle(p.confidence, rgb) }}>
+              <SideRail rgb={rgb} weight={tier(p.confidence).weight || 1} />
+              <div style={{ display: 'flex', alignItems: 'center', gap: 11 }}>
+                <PlayerPhoto name={b.player} size={38} ring={false} />
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <div style={{ fontFamily: T.cond, fontWeight: 800,
+                                fontSize: 18, color: T.white,
+                                letterSpacing: 0.3, lineHeight: 1.1 }}>
+                    {b.player}
+                  </div>
+                  <div style={{ color: T.muted2, fontSize: 11.5, marginTop: 1 }}>
+                    {shortProp(b.propType)}
+                    {b.opponent ? ` · vs ${b.opponent}` : ''}
+                  </div>
                 </div>
+                <span style={{ fontFamily: T.cond, fontWeight: 800,
+                               fontSize: 16, color: tone, letterSpacing: 0.4 }}>
+                  {side || ''}
+                </span>
+                <Heart active onClick={(e) => { e.stopPropagation(); toggle(b) }} />
               </div>
-              <div style={{ display: 'flex', alignItems: 'center' }}>
-                <div style={{ textAlign: 'right', minWidth: 40 }}>
-                  {done ? <Delta value={p.edge} /> : p.loading ? <Spinner size={14} /> : <span style={{ color: T.muted2, fontSize: 12 }}>—</span>}
-                  <div style={{ color: T.muted2, fontSize: 10, letterSpacing: 1, textTransform: 'uppercase', fontFamily: T.cond, fontWeight: 700 }}>vs line</div>
+
+              {/* The SAME scale the board draws, so a pinned play is
+                  recognisably the object that was pinned. */}
+              {done ? (
+                <EdgeScale line={b.line} proj={p.projection}
+                           tone={tone} rgb={rgb} />
+              ) : (
+                <div style={{ color: T.muted2, fontSize: 12, marginTop: 10 }}>
+                  {p.loading ? 'Re-projecting…' : 'No current projection.'}
                 </div>
-                <Heart active onClick={() => toggle(b)} />
-              </div>
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 10 }}>
-              <span style={{ fontFamily: T.cond, fontWeight: 700, fontSize: 12.5, letterSpacing: 0.6, textTransform: 'uppercase', color: T.green, background: 'rgba(0,230,118,0.08)', border: `1px solid ${T.border}`, padding: '4px 10px', borderRadius: 8 }}>{shortProp(b.propType)}</span>
-              <div style={{ display: 'flex', gap: 14 }}>
-                <Mini label="Line" value={fmt(line, line != null && Number.isInteger(line) ? 0 : 1)} />
-                <Mini label="Proj" value={done ? fmt(p.projection) : '—'} accent={done} />
-              </div>
-            </div>
-          </Card>
+              )}
+            </Card>
+          </Reveal>
         )
       })}
 
       {players.length > 0 && <div style={{ marginTop: 22 }}><SectionLabel>Saved Players · {players.length}</SectionLabel></div>}
-      {players.map(b => (
-        <Card key={b.id} onClick={() => onOpenPlayer({ name: b.player, id: b.playerId, tour: b.tour, currentRank: b.currentRank })}
-          style={{ display: 'flex', alignItems: 'center', gap: 12, padding: 10, marginBottom: 8 }}>
-          <PlayerPhoto id={b.playerId} name={b.player} size={44} />
-          <div style={{ minWidth: 0, flex: 1 }}>
-            <div style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 17, color: T.white, letterSpacing: 0.3 }}>{b.player}</div>
-            <div style={{ color: T.muted, fontSize: 12.5 }}>{b.currentRank ? `Rank #${b.currentRank} · ` : ''}{b.tour}</div>
-          </div>
-          <Heart active onClick={() => toggle(b)} />
-        </Card>
+      {players.map((b, i) => (
+        <PersonRow key={b.id} index={i} name={b.player}
+          photo={<PlayerPhoto id={b.playerId} name={b.player} size={44} />}
+          meta={[b.currentRank ? `Rank #${b.currentRank}` : '', b.tour]
+            .filter(Boolean).join(' · ')}
+          right={<Heart active onClick={(e) => { e.stopPropagation(); toggle(b) }} />}
+          onClick={() => onOpenPlayer({ name: b.player, id: b.playerId,
+                                        tour: b.tour,
+                                        currentRank: b.currentRank })} />
       ))}
     </div>
   )
@@ -94,13 +108,5 @@ function Header() {
     <PageTitle sub="Props and players you saved, kept on this device.">
       My Research
     </PageTitle>
-  )
-}
-function Mini({ label, value, accent }) {
-  return (
-    <div style={{ textAlign: 'center' }}>
-      <div style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 16, color: accent ? T.green : T.white }}>{value}</div>
-      <div style={{ fontFamily: T.cond, fontWeight: 700, fontSize: 9.5, letterSpacing: 1, textTransform: 'uppercase', color: T.muted2 }}>{label}</div>
-    </div>
   )
 }
