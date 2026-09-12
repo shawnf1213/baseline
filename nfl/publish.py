@@ -115,6 +115,24 @@ def publish_scan(book: str = "prizepicks", day=None, window_days: int = None,
 MAX_PLAYERS = 120
 
 
+def _matchup(opponent: str, tables: dict, normalize_team) -> dict:
+    """{opponent, by_prop: {prop: {rank, of, factor, raw, raw_label}}}.
+
+    Returns {} for an unknown opponent rather than a table of average ranks: a
+    card that says "16th of 32" about a team we could not identify is worse than
+    a card that says nothing.
+    """
+    if not opponent:
+        return {}
+    try:
+        team = normalize_team(opponent)
+        by = {p: tbl[team] for p, tbl in (tables or {}).items()
+              if tbl and team in tbl}
+        return {"opponent": team, "by_prop": by} if by else {}
+    except Exception:  # noqa: BLE001 — Rule 2, one player must not stop the rest
+        return {}
+
+
 def publish_players(rows: list, slate_date: str, limit: int = MAX_PLAYERS) -> int:
     """Publish profile + recent form for the players on a board.
 
@@ -126,6 +144,18 @@ def publish_players(rows: list, slate_date: str, limit: int = MAX_PLAYERS) -> in
     try:
         import requests
         from . import queries as _q
+        from . import ratings as _r
+        from .client import normalize_team
+
+        # THE DEFENCE THIS PLAYER FACES, computed once for the whole board.
+        # The website could only ever ask "how has he done against this team
+        # before", and 71% of board rows had no such game — most opponents are
+        # faced once a season or not at all. What the defence allows EVERYONE is
+        # the question with a real sample behind it, and it is the same rating
+        # the projection already applied, so the card shows a model input rather
+        # than a decorative stat. One table per prop family; 32 lookups each.
+        tables = {p: _r.defense_table(p) for p in _r.PROP_METRIC}
+
         seen, payload = set(), []
         for r in rows:
             name = r.get("player")
@@ -138,7 +168,18 @@ def publish_players(rows: list, slate_date: str, limit: int = MAX_PLAYERS) -> in
                 prof = _q.player_profile(name) or {}
                 if not prof:
                     continue
-                form = _q.recent_form(name, 6) or {}
+                # A FULL SEASON, not six games. The website draws a game-log
+                # bar chart with the prop line through it and counts how often
+                # he cleared it; six bars cannot support a hit rate, and the
+                # payload is a few hundred bytes per player.
+                form = _q.recent_form(name, 17) or {}
+                # Rides INSIDE the profile blob on purpose. nfl_players_replace
+                # persists `profile` verbatim but copies only named top-level
+                # keys, so a sibling key would be silently dropped — and this
+                # needs no column, because the opponent is fixed per player per
+                # slate.
+                prof["matchup"] = _matchup(r.get("opponent"), tables,
+                                           normalize_team)
                 payload.append({
                     "player": prof.get("player") or name,
                     "team": r.get("team") or "",

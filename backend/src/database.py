@@ -1390,7 +1390,12 @@ def nfl_players(slate_date: str = None, player: str = None) -> list:
             if player:
                 q = q.filter(NflPlayer.player == player)
             out = []
-            for r in q.order_by(NflPlayer.player).all():
+            # Newest slate first. Profiles are snapshots and every slate keeps
+            # its own row, so a name query with no slate must answer with the
+            # most recent publish rather than whichever row the table hands
+            # back first.
+            for r in q.order_by(NflPlayer.slate_date.desc(),
+                                NflPlayer.player).all():
                 d = {"slate_date": r.slate_date, "player": r.player,
                      "team": r.team, "position": r.position}
                 for k, raw in (("profile", r.profile), ("form", r.form)):

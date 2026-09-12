@@ -227,6 +227,18 @@ def team_ratings_blended(season: int = None, through_week: int = None) -> dict:
                 cv = cvals.get(k)
                 if isinstance(pv, (int, float)) and isinstance(cv, (int, float)) and k != "plays":
                     merged[k] = round((1.0 - w) * pv + w * cv, 4)
+            # `raw` is a nested dict, so the scalar loop above skips it and the
+            # blend would keep LAST season's raw numbers beside this season's
+            # blended ratings. Nothing multiplies by raw, but the website prints
+            # it — a card reading "allows 7.1 yds/att" next to a rank computed
+            # from different weeks is two numbers claiming to be one.
+            praw, craw = pvals.get("raw"), cvals.get("raw")
+            if isinstance(praw, dict) and isinstance(craw, dict):
+                merged["raw"] = {
+                    k: (round((1.0 - w) * pv + w * craw[k], 4)
+                        if isinstance(pv, (int, float))
+                        and isinstance(craw.get(k), (int, float)) else pv)
+                    for k, pv in praw.items()}
             merged["plays"] = int(pvals.get("plays") or 0) + int(n)
             merged["blend_weight_current"] = round(w, 4)
             rec[side] = merged
@@ -274,6 +286,62 @@ def opponent_factor(defense_team: str, prop: str, seasons: list = None) -> dict:
         return {"factor": 1.0, "basis": "unmapped prop"}
     return {"factor": float(d[field]), "basis": f"def {field}",
             "raw": d.get("raw", {})}
+
+
+# Which defensive rating governs each prop family. Kept beside opponent_factor's
+# own map deliberately — if the two ever disagree, the website would be showing
+# a matchup the projection never used.
+PROP_METRIC = {
+    "receiving_yards": "pass_yds_per_att",
+    "receptions": "completion_pct",
+    "rush_yards": "rush_yds_per_att",
+    "pass_yards": "pass_yds_per_att",
+}
+
+# Human labels for the raw figure that sits under each rating.
+_RAW_FOR = {"pass_yds_per_att": ("ypa", "yds/att allowed"),
+            "rush_yds_per_att": ("ypc", "yds/carry allowed"),
+            "completion_pct": ("comp_pct", "completion % allowed")}
+
+
+def defense_table(prop: str, season: int = None, through_week: int = None) -> dict:
+    """{team: {rank, of, factor, raw, raw_label}} for one prop family.
+
+    RANK 1 IS THE TOUGHEST DEFENCE — the one that allows least. Ratings are the
+    same BLENDED ones opponent_factor applies, so the rank a card shows and the
+    adjustment the projection made are the same number seen two ways; building
+    this off unblended ratings would let the two drift apart mid-season.
+
+    Never raises; {} when ratings are unavailable or the prop is unmapped.
+    """
+    try:
+        from .client import current_season, current_week
+        metric = PROP_METRIC.get(prop)
+        if not metric:
+            return {}
+        season = season or current_season()
+        if through_week is None:
+            through_week = max(0, current_week() - 1)
+        r = team_ratings_blended(season=season, through_week=through_week)
+        rows = [(t, v["defense"][metric], (v["defense"].get("raw") or {}))
+                for t, v in (r or {}).items()
+                if v.get("defense") and metric in v["defense"]]
+        if not rows:
+            return {}
+        rows.sort(key=lambda x: x[1])          # least allowed first
+        raw_key, raw_label = _RAW_FOR.get(metric, (None, ""))
+        of = len(rows)
+        out = {}
+        for i, (team, rating, raw) in enumerate(rows):
+            val = raw.get(raw_key) if raw_key else None
+            if raw_key == "comp_pct" and isinstance(val, (int, float)):
+                val = round(val * 100, 1)
+            out[team] = {"rank": i + 1, "of": of, "factor": round(rating, 4),
+                         "raw": val, "raw_label": raw_label}
+        return out
+    except Exception as exc:  # noqa: BLE001 — Rule 2
+        log.warning("nfl defense_table(%s) failed: %s", prop, exc)
+        return {}
 
 
 def rankings(metric: str = "pass_yds_per_att", side: str = "defense",
