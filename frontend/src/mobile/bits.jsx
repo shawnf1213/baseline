@@ -1,5 +1,6 @@
 import { motion } from 'framer-motion'
 import { T, HEADLINE_FILL } from './theme'
+import { GrowBar } from './motion'
 import { fmtSigned } from './data'
 
 // ── SHARED SURFACES ──────────────────────────────────────────────────────────
@@ -339,9 +340,8 @@ export function ConfBar({ conf, tone, max = 132 }) {
   if (conf == null) return null
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 7, flex: 1, maxWidth: max }}>
-      <div style={{ flex: 1, height: 6, borderRadius: 4, background: '#191919', overflow: 'hidden' }}>
-        <div style={{ width: `${Math.min(100, conf)}%`, height: '100%',
-                      background: tone, borderRadius: 4 }} />
+      <div style={{ flex: 1 }}>
+        <GrowBar pct={conf} tone={tone} height={6} track="#191919" />
       </div>
       <span style={{ fontSize: 11.5, fontWeight: 800, color: tone,
                      fontVariantNumeric: 'tabular-nums' }}>{Math.round(conf)}</span>

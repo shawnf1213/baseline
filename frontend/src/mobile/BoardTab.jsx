@@ -8,6 +8,7 @@ import { shortProp, startTimeLabel, fmt, calibratedConfidence } from './data'
 import { projectRow, cachedProjection } from './project'
 import { useBookmarks, propBookmarkId } from './useBookmarks'
 import NflBoard from './NflBoard'
+import { Reveal, Num, GrowBar } from './motion'
 
 const DEFAULT_FILTERS = { prop: 'All', tour: 'All', surface: 'All', sort: 'start' }
 const PROJECT_CAP = 120  // auto-project the whole current view (throttled in project.js)
@@ -217,12 +218,15 @@ export function BoardSummary({ rows, projecting }) {
 
   const cells = [
     { k: 'Priced', v: projecting && !done.length ? '…' : String(done.length),
+      n: projecting && !done.length ? null : done.length,
       s: matches ? `${matches} match${matches === 1 ? '' : 'es'}` : '' },
-    { k: 'Elite', v: String(elite), s: '80+ confidence',
+    { k: 'Elite', v: String(elite), n: elite, s: '80+ confidence',
       tone: elite ? T.green : T.muted2 },
-    { k: 'Strong', v: String(strong), s: '72–79', tone: strong ? T.green : T.muted2 },
+    { k: 'Strong', v: String(strong), n: strong, s: '72–79',
+      tone: strong ? T.green : T.muted2 },
     { k: 'Best edge',
       v: best ? `${best.edge > 0 ? '+' : ''}${fmt(best.edge)}` : '—',
+      n: best ? best.edge : null, dp: 1, pre: best && best.edge > 0 ? '+' : '',
       s: best ? best.player : '',
       tone: best ? sideTone(best.edge).tone : T.muted2 },
   ]
@@ -236,9 +240,17 @@ export function BoardSummary({ rows, projecting }) {
             <div style={{ fontFamily: T.cond, fontWeight: 700, fontSize: 10,
                           letterSpacing: 1.3, textTransform: 'uppercase',
                           color: T.muted2 }}>{c.k}</div>
-            <div style={{ fontSize: 25, fontWeight: 800, lineHeight: 1.15,
-                          letterSpacing: -0.6, color: c.tone || T.white,
-                          fontVariantNumeric: 'tabular-nums' }}>{c.v}</div>
+            {typeof c.n === 'number' ? (
+              <Num value={c.n} decimals={c.dp ?? 0} prefix={c.pre || ''}
+                   style={{ fontSize: 25, fontWeight: 800, lineHeight: 1.15,
+                            letterSpacing: -0.6, color: c.tone || T.white,
+                            display: 'block',
+                            fontVariantNumeric: 'tabular-nums' }} />
+            ) : (
+              <div style={{ fontSize: 25, fontWeight: 800, lineHeight: 1.15,
+                            letterSpacing: -0.6, color: c.tone || T.white,
+                            fontVariantNumeric: 'tabular-nums' }}>{c.v}</div>
+            )}
             {c.s ? (
               <div style={{ color: T.muted2, fontSize: 10.5, whiteSpace: 'nowrap',
                             overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.s}</div>

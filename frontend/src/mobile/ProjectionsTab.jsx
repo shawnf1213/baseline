@@ -3,7 +3,7 @@ import { T } from './theme'
 import { Card, Chip, Spinner, Empty, SectionLabel, PageTitle,
          GlassTabs } from './bits'
 import PlayerPhoto from './PlayerPhoto'
-import ConfidenceGauge from '../components/ConfidenceGauge'
+import { Reveal, Num, GrowBar, Ring } from './motion'
 import { usePlayerSearch } from '../hooks/usePlayerSearch'
 import { PROP_TYPES, SURFACES, shortProp, hitStrip, fmt } from './data'
 import { calcProp, fetchHistory } from '../utils/api'
@@ -444,16 +444,6 @@ function GameChart({ hist, line, lean }) {
   )
 }
 
-function Stat({ label, value, tone }) {
-  return (
-    <div style={{ textAlign: 'center', flex: 1 }}>
-      <div style={{ fontSize: 20, fontWeight: 800, color: tone || T.white,
-                    fontVariantNumeric: 'tabular-nums', lineHeight: 1.1 }}>{value}</div>
-      <div style={{ fontSize: 9, fontFamily: T.cond, fontWeight: 700, letterSpacing: 0.8,
-                    textTransform: 'uppercase', color: T.muted2, marginTop: 3 }}>{label}</div>
-    </div>
-  )
-}
 
 export default function ProjectionsTab() {
   const [tour, setTour] = useState('ATP')
@@ -531,6 +521,8 @@ export default function ProjectionsTab() {
   // lean from P(over), not from mean-vs-line, and that answer wins.
   const lean = (res?.lean || (edge == null ? null : edge > 0 ? 'OVER' : edge < 0 ? 'UNDER' : null))
   const leanTone = lean === 'OVER' ? T.green : lean === 'UNDER' ? T.red : T.muted2
+  const leanRgb = lean === 'OVER' ? '0,230,118'
+                : lean === 'UNDER' ? '255,68,68' : '107,107,107'
 
   const hitPct = useMemo(() => {
     const t = hist?.l10
@@ -666,57 +658,136 @@ export default function ProjectionsTab() {
 
       {res && !busy && (
         <>
-          {/* Verdict — the props.cash move: the answer, at a glance, first. */}
-          <Card style={{ padding: 16, marginBottom: 10 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 11, marginBottom: 14 }}>
-              <PlayerPhoto id={player.id} name={player.name} size={44} />
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 16, fontWeight: 800, color: T.white,
-                              whiteSpace: 'nowrap', overflow: 'hidden',
-                              textOverflow: 'ellipsis' }}>{player.name}</div>
-                <div style={{ fontSize: 11, color: T.muted2, whiteSpace: 'nowrap',
-                              overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                  vs {opponent.name} · {surface}{court ? ` · ${court}` : ''}
-                </div>
-              </div>
-              <PlayerPhoto id={opponent.id} name={opponent.name} size={32} />
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 13,
-                              letterSpacing: 1, textTransform: 'uppercase',
-                              color: T.muted, marginBottom: 4 }}>
-                  {shortProp(prop)}
-                </div>
-                <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
-                  <span style={{ fontSize: 40, fontWeight: 800, color: T.white,
-                                 lineHeight: 1, fontVariantNumeric: 'tabular-nums' }}>
-                    {proj != null ? fmt(proj) : '—'}
-                  </span>
-                  <span style={{ fontSize: 15, fontWeight: 800, color: leanTone }}>
-                    {lean || ''}
-                  </span>
-                </div>
-                <div style={{ fontSize: 12, color: T.muted2, marginTop: 6 }}>
-                  vs line {fmt(ln)}
-                </div>
-              </div>
-              {res.confidence != null && (
-                <ConfidenceGauge confidence={Math.round(res.confidence)} size={86} showLabel={false} />
-              )}
-            </div>
-          </Card>
+          {/* ── THE VERDICT ──────────────────────────────────────────────────
+              This was the number at 40px in the corner of a grey rectangle,
+              with a gauge bolted on beside it and a four-cell strip underneath
+              in a second identical rectangle. Everything the screen had to say
+              was the same weight as everything else.
 
-          <Card style={{ display: 'flex', padding: '14px 10px', marginBottom: 10 }}>
-            <Stat label="Edge" value={edge != null ? (edge > 0 ? `+${fmt(edge)}` : fmt(edge)) : '—'}
-                  tone={edge > 0 ? T.green : edge < 0 ? T.red : T.white} />
-            <Stat label="Confidence" value={res.confidence != null ? Math.round(res.confidence) : '—'}
-                  tone={res.confidence >= 75 ? T.green : res.confidence >= 60 ? T.amber : T.muted} />
-            <Stat label="L10 hit" value={hitPct != null ? `${hitPct}%` : '—'}
-                  tone={hitPct >= 70 ? T.green : hitPct >= 50 ? T.amber : hitPct != null ? T.red : T.muted} />
-            <Stat label="Win prob"
-                  value={res.p1_win_prob != null ? `${Math.round(res.p1_win_prob)}%` : '—'} />
-          </Card>
+              The projection is the ONE thing this screen exists to produce, so
+              it gets the size, a lit ground in its own direction, and it counts
+              up to itself. The supporting numbers sit inside the same card
+              rather than in another box below it — they are the working for
+              this number, not a separate subject. */}
+          <Reveal>
+            <div style={{
+              position: 'relative', overflow: 'hidden', marginBottom: T.s3,
+              borderRadius: T.r4, border: `1px solid rgba(${leanRgb},0.28)`,
+              background: T.glass,
+              boxShadow: `0 0 0 1px rgba(${leanRgb},0.08), 0 18px 46px rgba(0,0,0,0.5)`,
+            }}>
+              <div aria-hidden style={{
+                position: 'absolute', inset: 0, pointerEvents: 'none',
+                background: `radial-gradient(130% 95% at 8% 0%,`
+                          + ` rgba(${leanRgb},0.16), transparent 62%),`
+                          + ` radial-gradient(90% 70% at 100% 100%,`
+                          + ` rgba(255,255,255,0.035), transparent 60%)`,
+              }} />
+
+              <div style={{ position: 'relative', padding: '18px 18px 16px' }}>
+                {/* Who, with both faces and the tournament. */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 11 }}>
+                  <PlayerPhoto id={player.id} name={player.name} size={44} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontFamily: T.cond, fontWeight: 800,
+                                  fontSize: 19, color: T.white, lineHeight: 1.1,
+                                  whiteSpace: 'nowrap', overflow: 'hidden',
+                                  textOverflow: 'ellipsis' }}>{player.name}</div>
+                    <div style={{ fontSize: 11.5, color: T.muted2, marginTop: 2,
+                                  whiteSpace: 'nowrap', overflow: 'hidden',
+                                  textOverflow: 'ellipsis' }}>
+                      vs {opponent.name} · {surface}{court ? ` · ${court}` : ''}
+                    </div>
+                  </div>
+                  <PlayerPhoto id={opponent.id} name={opponent.name} size={34} />
+                </div>
+
+                {/* The number, at the size of the answer it is. */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: T.s3,
+                              marginTop: T.s4 }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontFamily: T.cond, fontWeight: 800,
+                                  fontSize: 11.5, letterSpacing: 1.6,
+                                  textTransform: 'uppercase', color: T.muted2 }}>
+                      {shortProp(prop)}
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'baseline',
+                                  gap: 10, marginTop: 2 }}>
+                      <Num value={proj} decimals={1} style={{
+                        fontSize: 'clamp(46px, 13vw, 62px)', fontWeight: 800,
+                        color: T.white, lineHeight: 1, letterSpacing: -2.5,
+                        fontVariantNumeric: 'tabular-nums' }} />
+                      <span style={{
+                        fontFamily: T.cond, fontWeight: 800, fontSize: 20,
+                        letterSpacing: 1, color: leanTone,
+                        padding: '3px 10px', borderRadius: 8,
+                        background: `rgba(${leanRgb},0.14)`,
+                        border: `1px solid rgba(${leanRgb},0.34)`,
+                      }}>{lean || '—'}</span>
+                    </div>
+                    <div style={{ fontSize: 12, color: T.muted, marginTop: 8 }}>
+                      book line <b style={{ color: T.white }}>{fmt(ln)}</b>
+                      {edge != null ? (
+                        <> · edge{' '}
+                          <b style={{ color: leanTone }}>
+                            {edge > 0 ? '+' : ''}{fmt(edge)}
+                          </b>
+                        </>
+                      ) : null}
+                    </div>
+                  </div>
+
+                  {res.confidence != null && (
+                    <Ring pct={res.confidence} size={92} stroke={8}
+                          tone={leanTone} delay={0.15}>
+                      <Num value={res.confidence} decimals={0} style={{
+                        fontSize: 24, fontWeight: 800, color: T.white,
+                        lineHeight: 1 }} />
+                      <span style={{ fontFamily: T.cond, fontWeight: 700,
+                                     fontSize: 9, letterSpacing: 1.2,
+                                     color: T.muted2, marginTop: 2 }}>CONF</span>
+                    </Ring>
+                  )}
+                </div>
+
+                {/* The working, inside the same card. */}
+                <div style={{
+                  display: 'grid', gap: T.s2, marginTop: T.s4, paddingTop: T.s3,
+                  borderTop: `1px solid ${T.glassLine}`,
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(88px, 1fr))',
+                }}>
+                  {[
+                    ['L10 hit', hitPct != null ? `${hitPct}%` : '—',
+                     hitPct >= 70 ? T.green : hitPct >= 50 ? T.amber
+                       : hitPct != null ? T.red : T.muted2, hitPct],
+                    ['Win prob', res.p1_win_prob != null
+                      ? `${Math.round(res.p1_win_prob)}%` : '—', T.white,
+                     res.p1_win_prob],
+                    ['Season avg', hist?.average != null
+                      ? fmt(hist.average) : '—', T.white, null],
+                    ['Sample', hist?.player_matches != null
+                      ? `${hist.player_matches}` : '—', T.muted, null],
+                  ].map(([k, v, tone, bar], i) => (
+                    <div key={k}>
+                      <div style={{ fontFamily: T.cond, fontWeight: 700,
+                                    fontSize: 9.5, letterSpacing: 1.2,
+                                    textTransform: 'uppercase',
+                                    color: T.muted2 }}>{k}</div>
+                      <div style={{ fontSize: 19, fontWeight: 800, color: tone,
+                                    lineHeight: 1.2, marginTop: 1,
+                                    fontVariantNumeric: 'tabular-nums' }}>{v}</div>
+                      {typeof bar === 'number' ? (
+                        <div style={{ marginTop: 5 }}>
+                          <GrowBar pct={bar} tone={tone} height={3}
+                                   delay={0.25 + i * 0.06} />
+                        </div>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </Reveal>
 
           {/* The evidence behind the number — the same rows Discord shows. */}
           <StatBlock prop={prop} res={res} surface={surface}
