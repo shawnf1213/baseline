@@ -104,6 +104,7 @@ export default function NflBoard({ onMeta }) {
   // Tapping a card opens the player's other props and his posted record —
   // the tennis board does the same thing with PlayerDashboard.
   const [open, setOpen] = useState(null)
+  const [openKey, setOpenKey] = useState(null)
 
   useEffect(() => {
     let alive = true
@@ -214,6 +215,8 @@ export default function NflBoard({ onMeta }) {
       <div className="baseline-cols">
         {viewRows.map((r, i) => (
           <PropRow key={r.key} r={r} index={i}
+                   open={openKey === r.key}
+                   onToggle={() => setOpenKey(k => (k === r.key ? null : r.key))}
                    saved={has(r.key)} onSave={() => toggle(r.key)}
                    onOpen={() => setOpen(r._pick)}
                    footNote={footNoteFor(r._pick)} />
