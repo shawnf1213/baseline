@@ -4,6 +4,7 @@ import { Chip, Spinner, Empty, SectionLabel } from './bits'
 import { PropRow } from './BoardTab'
 import { useBookmarks } from './useBookmarks'
 import { fetchNflBoard, fetchNflRecord } from '../utils/api'
+import NflPlayerSheet from './NflPlayerSheet'
 
 // ── NFL BOARD ────────────────────────────────────────────────────────────────
 // Renders the SAME card as the tennis board — PropRow, imported, not
@@ -99,6 +100,9 @@ export default function NflBoard() {
   const { has, toggle } = useBookmarks()
 
   const [posted, setPosted] = useState([])
+  // Tapping a card opens the player's other props and his posted record —
+  // the tennis board does the same thing with PlayerDashboard.
+  const [open, setOpen] = useState(null)
 
   useEffect(() => {
     let alive = true
@@ -200,10 +204,16 @@ export default function NflBoard() {
           return (
             <PropRow key={r.key} r={r} index={i}
                      saved={has(r.key)} onSave={() => toggle(r.key)}
+                     onOpen={() => setOpen(p)}
                      footNote={footNoteFor(p)} />
           )
         })}
       </div>
+
+      {open && (
+        <NflPlayerSheet player={open} rows={picks} posted={posted}
+                        onClose={() => setOpen(null)} />
+      )}
 
       <div style={{ color: T.muted2, fontSize: 11.5, textAlign: 'center',
                     padding: '16px 12px 4px', lineHeight: 1.5 }}>
