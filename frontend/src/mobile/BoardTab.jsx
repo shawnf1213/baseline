@@ -2,7 +2,7 @@ import { useMemo, useState, useEffect } from 'react'
 import { T } from './theme'
 import { Card, Heart, Spinner, Empty, Segment, tier, sideTone, SideRail, TierBadge, ConfBar, BigStat, tierCardStyle } from './bits'
 import FilterSheet from './FilterSheet'
-import { shortProp, startTimeLabel, fmt } from './data'
+import { shortProp, startTimeLabel, fmt, calibratedConfidence } from './data'
 import { projectRow, cachedProjection } from './project'
 import { useBookmarks, propBookmarkId } from './useBookmarks'
 import NflBoard from './NflBoard'
@@ -72,6 +72,9 @@ export default function BoardTab({ boards, book, setBook, loading, error, onOpen
     return merged
   }, [filtered, proj, filters.sort])
 
+  // Displayed confidence is CALIBRATED across the visible board — see
+  // data.calibratedConfidence. The raw score gates; it does not describe.
+  const calib = useMemo(() => calibratedConfidence(rows), [rows])
   const activeCount = ['prop', 'tour', 'surface'].filter(k => filters[k] !== 'All').length
   const projecting = filtered.slice(0, PROJECT_CAP).some(r => proj[r.key]?.loading)
 
@@ -151,7 +154,8 @@ export default function BoardTab({ boards, book, setBook, loading, error, onOpen
 
       <div className="baseline-cols">
         {!loading && !error && rows.map((r, i) => (
-          <PropRow key={r.key} r={r} index={i}
+          <PropRow key={r.key}
+            r={{ ...r, confidence: calib.get(r.key) ?? r.confidence }} index={i}
             saved={has(propBookmarkId(r))}
             onSave={() => toggle({ id: propBookmarkId(r), kind: 'prop', ...r })}
             onOpen={() => onOpenPlayer({ name: r.player, tour: r.tour })} />

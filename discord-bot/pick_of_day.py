@@ -198,7 +198,17 @@ POTD_THRESHOLD = 80   # uniform Pick-of-the-Day bar, every eligible prop
 # 15.5 led at conf 80 on a 13% win probability with a hold and return rate that
 # both rested on ZERO service games. It still populates the board and the 3x at
 # full weight; it just cannot be the headline play.
-POD_STAR_EXCLUDE_PROPS = {"Double Faults", "Player Total Games Won"}
+# EMPTIED 2026-09-13 (operator): any prop may hold the ⭐.
+#
+# The two entries were Double Faults and Player Total Games Won. Both were
+# blocked on structural worries rather than on results, and the graded record
+# does not support either: PTGW is the BEST prop on the board at 40-24 (62.5%),
+# and Double Faults runs 39-33 (54.2%). Blocking the strongest prop from the
+# headline was costing the ⭐ its best candidates.
+#
+# The set is kept rather than deleted so a prop can be blocked again by adding
+# one string, and so the mechanism stays visible instead of being rediscovered.
+POD_STAR_EXCLUDE_PROPS = set()
 # PROBATION (Fix C3, 2026-07-23): Fantasy Score is a composite scenario-mixture prop
 # that has NOT been out-of-sample backtested. It stays enabled and board/3x eligible,
 # but cannot hold the ⭐ until a calibration backtest certifies it (projected P(over)
@@ -208,7 +218,13 @@ POD_STAR_EXCLUDE_PROPS = {"Double Faults", "Player Total Games Won"}
 # never graded against a result, and its first version had to be reverted for a
 # volume error. It can populate a board but must not headline one until it has a
 # track record.
-POD_STAR_PROBATION_PROPS = {"Fantasy Score", "Break Points Saved"}
+# EMPTIED 2026-09-13 (operator): probation lifted with the exclusions above.
+#
+# Fantasy Score now HAS a record — 70-47 (59.8%), the second-best prop we post,
+# and the least biased of any (-1.7%). The probation was written when it had
+# none. Break Points Saved is still never posted (it is not in PROP_TYPES for
+# the board), so its entry was moot.
+POD_STAR_PROBATION_PROPS = set()
 
 # ── Demon props (boosted alternate lines, over-only) ─────────────────────────
 # Demons are evaluated through the normal projection chain but held to ELEVATED

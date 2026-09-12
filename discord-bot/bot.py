@@ -2246,6 +2246,7 @@ def threex_embed(legs: list) -> discord.Embed:
         bits = [f"{LEAN_DOT.get(lean, '⚪')} {_demon}**{play}**"]
         if isinstance(proj, (int, float)):
             bits.append(f"Proj {proj:.1f}")
+        conf = _shown_conf(leg)
         if isinstance(conf, (int, float)):
             bits.append(f"{conf:.0f}%")
         lines.append(f"**{i}. {leg['player']}** vs {_short_opp(leg.get('opponent'))}")
@@ -2392,6 +2393,21 @@ def _play_headline(pick: dict, rank: int = None) -> str:
             f"{pick['prop_type']} {pick['line']:g}")
 
 
+def _shown_conf(pick: dict):
+    """The confidence a SUBSCRIBER sees — calibrated, never the raw score.
+
+    The raw number gates eligibility (BOARD_MIN_CONF) and is not a probability:
+    measured on 640 graded picks it overstated its own hit rate at every band by
+    12-31 points and did not even order outcomes. The calibrated value is fitted
+    to what actually happened and lives in the honest 51-68 band.
+
+    Falls back to raw only when a pick predates the calibration, so an old row
+    still renders rather than showing a blank.
+    """
+    c = pick.get("confidence_calibrated")
+    return c if isinstance(c, (int, float)) else pick.get("confidence")
+
+
 def _play_statline(pick: dict) -> str:
     """The one-line stat row: '🔴 UNDER · Proj 4.2 · Edge -2.3 · 76%'.
     Fields that have no value are OMITTED rather than shown as blank/N-A."""
@@ -2403,7 +2419,7 @@ def _play_statline(pick: dict) -> str:
     edge = pick.get("edge")
     if isinstance(edge, (int, float)):
         bits.append(f"Edge {edge:+.1f}")
-    conf = pick.get("confidence")
+    conf = _shown_conf(pick)
     if isinstance(conf, (int, float)):
         bits.append(f"**{conf:.0f}%**")
     return " · ".join(bits)
@@ -2439,6 +2455,7 @@ def _ranked_line(pick: dict, rank: int, suppress_correlation_note: bool = False)
     if isinstance(proj, (int, float)):
         _is_ptgw = pick.get("prop_type") == "Player Total Games Won"
         bits.append(f"Proj {proj:g}" if _is_ptgw else f"Proj {proj:.1f}")
+    conf = _shown_conf(pick)
     if isinstance(conf, (int, float)):
         bits.append(f"{conf:.0f}%")
     out = l1 + "\n" + " · ".join(bits)
@@ -2497,6 +2514,7 @@ def potd_embed(pick: dict) -> discord.Embed:
         row.append(f"Proj {proj:.1f}")
     if isinstance(edge, (int, float)):
         row.append(f"Edge {edge:+.1f}")
+    conf = _shown_conf(pick)
     if isinstance(conf, (int, float)):
         row.append(f"Conf {conf:.0f}%")
     if row:

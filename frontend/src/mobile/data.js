@@ -521,3 +521,45 @@ export const fmtSigned = (v, d = 1) => {
   const n = Number(v)
   return (n > 0 ? '+' : n < 0 ? '−' : '') + Math.abs(n).toFixed(d)
 }
+
+// ── CALIBRATED CONFIDENCE ────────────────────────────────────────────────────
+// Mirrors pick_of_day.calibrated_confidence. The raw model confidence is not a
+// probability: measured on 640 graded picks it overstated its own hit rate at
+// every band by 12-31 points and did not order outcomes at all — the 70-74 band
+// (59.2%) beat the 80+ band (55.1%). What does order them is relative edge, so
+// the displayed number is fitted to that:
+//
+//     P(win) = 1 / (1 + exp(-(0.0425 + 0.6977 * pct)))
+//
+//     pct 0.00 -> 51.1%     observed bottom third   51.9%
+//     pct 0.50 -> 59.7%     observed middle third   61.1%
+//     pct 1.00 -> 67.7%     observed top third      65.7%
+//
+// PERCENTILE WITHIN THE VISIBLE BOARD, which is why this lives on the client:
+// the value depends on the pool a play is being compared against, and the
+// per-prop endpoint prices one line with no pool to rank it in.
+export const CALIB_B0 = 0.0425
+export const CALIB_B1 = 0.6977
+
+export const relEdge = (r) => {
+  const line = Number(r?.line)
+  const proj = Number(r?.projection)
+  if (!line || !Number.isFinite(proj)) return null
+  return Math.abs(proj - line) / Math.abs(line)
+}
+
+// Returns a Map keyed by row.key -> calibrated confidence (51-68).
+export function calibratedConfidence(rows) {
+  const out = new Map()
+  const scored = (rows || [])
+    .map(r => ({ key: r.key, rel: relEdge(r) }))
+    .filter(x => x.rel !== null)
+    .sort((a, b) => a.rel - b.rel)
+  const n = scored.length
+  scored.forEach((x, i) => {
+    const pct = n > 1 ? i / (n - 1) : 1
+    const p = 1 / (1 + Math.exp(-(CALIB_B0 + CALIB_B1 * pct))) * 100
+    out.set(x.key, Math.round(Math.min(70, Math.max(50, p)) * 10) / 10)
+  })
+  return out
+}
