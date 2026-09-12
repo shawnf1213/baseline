@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
 import { T, SAFE_TOP } from './theme'
-import { Card, SectionLabel, Empty, Spinner, MiniBars } from './bits'
+import { Card, SectionLabel, Empty, Spinner, sideTone, tier, TierBadge,
+         SideRail, ConfBar, BigStat, tierCardStyle } from './bits'
+import { team, TeamMark, GameLogChart, HitRing, FormStrip, DefenseMeter,
+         StatPill } from './nflviz'
 import { fetchNflPlayer } from '../utils/api'
 
 // ── NFL PLAYER SHEET ─────────────────────────────────────────────────────────
@@ -80,49 +83,43 @@ function MatchupBlock({ m, prop, over, opponent }) {
   // wrong half of the board.
   const favours = typeof factor === 'number'
     ? (over ? factor > 1 : factor < 1) : null
-  const tone = favours == null ? T.muted : favours ? T.green : '#E5534B'
-  const pos = Math.max(0, Math.min(1, (rank - 1) / Math.max(1, (of || 32) - 1)))
+  const tone = favours == null ? T.muted : favours ? T.green : T.red
 
   return (
-    <div style={{ marginTop: 10, paddingTop: 9,
+    <div style={{ marginTop: 12, paddingTop: 11,
                   borderTop: `1px solid ${T.border}` }}>
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
-        <span style={{ color: T.muted2, fontSize: 10, letterSpacing: 0.6,
-                       textTransform: 'uppercase', flex: 1 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <span style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 11,
+                       letterSpacing: 0.9, textTransform: 'uppercase',
+                       color: T.muted, flex: 1 }}>
           {opponent} defence {MATCHUP_LABEL[prop] || ''}
         </span>
-        <span style={{ color: tone, fontSize: 10.5, fontWeight: 800,
-                       textTransform: 'uppercase', letterSpacing: 0.4 }}>
+        <span style={{ fontFamily: T.cond, fontSize: 9.5, fontWeight: 800,
+                       letterSpacing: 1, textTransform: 'uppercase', color: tone,
+                       padding: '2.5px 7px', borderRadius: 6,
+                       background: `${tone}1F`, border: `1px solid ${tone}66` }}>
           {toughness(rank, of)}
         </span>
       </div>
 
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: 7,
-                    marginTop: 4, flexWrap: 'wrap' }}>
-        <span style={{ color: T.white, fontSize: 15, fontWeight: 800 }}>
-          {ordinal(rank)} <span style={{ color: T.muted, fontSize: 12,
-                                         fontWeight: 600 }}>of {of}</span>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8,
+                    marginTop: 6, flexWrap: 'wrap' }}>
+        <span style={{ color: tone, fontSize: 26, fontWeight: 800,
+                       lineHeight: 1, letterSpacing: -0.5,
+                       textShadow: `0 0 18px ${tone}55` }}>
+          {ordinal(rank)}
+        </span>
+        <span style={{ color: T.muted2, fontSize: 12, fontWeight: 700 }}>
+          of {of}
         </span>
         {typeof raw === 'number' ? (
-          <span style={{ color: T.muted, fontSize: 12 }}>
-            · {raw} {rawLabel}
+          <span style={{ color: T.muted, fontSize: 12, marginLeft: 'auto' }}>
+            <b style={{ color: T.white, fontSize: 14 }}>{raw}</b> {rawLabel}
           </span>
         ) : null}
       </div>
 
-      {/* Where that defence sits across the league — toughest at the left. */}
-      <div style={{ position: 'relative', height: 5, borderRadius: 3,
-                    marginTop: 7, marginBottom: 3,
-                    background: 'linear-gradient(90deg,'
-                                + ' rgba(63,185,80,0.18), rgba(229,83,75,0.28))' }}>
-        <div style={{ position: 'absolute', top: -2.5, left: `${pos * 100}%`,
-                      width: 10, height: 10, marginLeft: -5, borderRadius: 5,
-                      background: tone, border: `2px solid ${T.bg}` }} />
-      </div>
-      <div style={{ display: 'flex', justifyContent: 'space-between',
-                    color: T.muted2, fontSize: 9.5 }}>
-        <span>toughest</span><span>softest</span>
-      </div>
+      <DefenseMeter rank={rank} of={of} tone={tone} abbr={opponent} />
     </div>
   )
 }
@@ -130,15 +127,23 @@ function MatchupBlock({ m, prop, over, opponent }) {
 // ── ONE PROP, IN DETAIL ──────────────────────────────────────────────────────
 // The card used to say OVER 4.5 · proj 5.7 and stop, which is a claim with no
 // working shown. This is the working: every game against the line, how often he
-// cleared it, how often he cleared it against THIS opponent, and his average.
+// cleared it, what the defence allows, and his average.
 //
-// All of it is computed from the published game log rather than fetched — the
-// log is already on the client, and a hit rate is only meaningful against the
-// specific line being offered, which the server does not know.
-function PropDetail({ r, posted, form, matchups }) {
+// IT SPEAKS THE SAME VISUAL LANGUAGE AS THE BOARD — tierCardStyle, SideRail,
+// BigStat, ConfBar — rather than inventing a flat one of its own. A card that
+// looked like a spreadsheet next to a board that looks like a product is not a
+// small inconsistency; it reads as two different apps.
+//
+// All the game-log maths is computed on the client rather than fetched: the log
+// is already here, and a hit rate is only meaningful against the specific line
+// being offered, which the server does not know.
+function PropDetail({ r, posted, form, matchups, index = 0 }) {
   const matchup = (matchups && matchups[r.prop_type]) || null
   const lean = String(r.lean || '').toUpperCase()
   const over = lean === 'OVER'
+  const { tone, rgb } = sideTone(lean)
+  const conf = typeof r.confidence === 'number'
+    ? (r.confidence <= 1 ? r.confidence * 100 : r.confidence) : null
   const field = FORM_FIELD[r.prop_type]
   const games = (form && form.games) || []
   const line = typeof r.line === 'number' ? r.line : null
@@ -149,9 +154,6 @@ function PropDetail({ r, posted, form, matchups }) {
 
   const vals = played.map(g => g.v)
   const all = line != null ? tally(vals, line) : null
-  const last5 = line != null ? tally(vals.slice(-5), line) : null
-  // Against THIS opponent specifically — the question a reader asks second,
-  // right after "how often does he do it at all".
   const vsOpp = played.filter(g => g.opp && r.opponent && g.opp === r.opponent)
   const vsTally = line != null && vsOpp.length
     ? tally(vsOpp.map(g => g.v), line) : null
@@ -160,97 +162,105 @@ function PropDetail({ r, posted, form, matchups }) {
   // The side we are ON, so a hit rate reads as "our side landed", never as a
   // bare over-rate the reader has to invert in their head.
   const hits = all ? (over ? all.o : all.u) : null
-  const hitPct = all && all.n ? Math.round((hits / all.n) * 100) : null
-  const hit5 = last5 ? (over ? last5.o : last5.u) : null
 
   const res = posted && posted.result
 
   return (
-    <Card style={{ padding: 13, marginBottom: 10 }}>
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
-        <span style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 13,
-                       letterSpacing: 0.8, textTransform: 'uppercase',
-                       color: T.muted, flex: 1 }}>
+    <Card index={index} style={{
+      padding: '13px 14px 14px 17px', marginBottom: 10,
+      position: 'relative', overflow: 'hidden',
+      ...tierCardStyle(conf, rgb),
+    }}>
+      <SideRail rgb={rgb} weight={tier(conf).weight} />
+
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <span style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 14,
+                       letterSpacing: 1, textTransform: 'uppercase',
+                       color: T.white, flex: 1 }}>
           {PROP_LABEL[r.prop_type] || r.prop_type}
         </span>
-        {posted && posted.is_potd ? <span style={{ fontSize: 12 }}>⭐</span> : null}
+        <TierBadge conf={conf} tone={tone} rgb={rgb} />
+        {posted && posted.is_potd ? <span style={{ fontSize: 13 }}>⭐</span> : null}
         {res === 'W' || res === 'L' ? (
-          <span style={{ fontSize: 11, fontWeight: 800,
-                         color: res === 'W' ? '#3FB950' : '#E5534B' }}>
+          <span style={{ fontSize: 10.5, fontWeight: 800, padding: '2.5px 7px',
+                         borderRadius: 6,
+                         color: res === 'W' ? T.green : T.red,
+                         background: res === 'W' ? 'rgba(0,230,118,0.14)'
+                                                 : 'rgba(255,68,68,0.14)',
+                         border: `1px solid ${res === 'W' ? 'rgba(0,230,118,0.5)'
+                                                          : 'rgba(255,68,68,0.5)'}` }}>
             {res}{typeof posted.result_value === 'number'
               ? ` · ${posted.result_value}` : ''}
           </span>
         ) : null}
       </div>
 
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginTop: 6,
-                    flexWrap: 'wrap' }}>
-        <span style={{ fontSize: 13 }}>{over ? '🟢' : '🔴'}</span>
-        <span style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 19,
-                       color: over ? T.green : '#E5534B' }}>{lean || '—'}</span>
-        <span style={{ fontSize: 17, fontWeight: 800, color: T.white,
-                       fontVariantNumeric: 'tabular-nums' }}>{fmt(r.line)}</span>
-        <span style={{ color: T.muted, fontSize: 12.5 }}>
-          · proj <b style={{ color: T.white }}>{fmt(r.model_projection)}</b>
-          {typeof r.edge === 'number'
-            ? ` · edge ${r.edge > 0 ? '+' : ''}${fmt(r.edge)}` : ''}
-        </span>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12,
+                    marginTop: 9, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 7 }}>
+          <span style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 25,
+                         letterSpacing: 0.5, color: tone,
+                         textShadow: `0 0 20px rgba(${rgb},0.4)` }}>{lean || '—'}</span>
+          <span style={{ fontSize: 25, fontWeight: 800, color: T.white,
+                         fontVariantNumeric: 'tabular-nums',
+                         letterSpacing: -0.5 }}>{fmt(r.line)}</span>
+        </div>
+        <div style={{ marginLeft: 'auto' }}>
+          <BigStat value={typeof r.edge === 'number'
+                     ? `${r.edge > 0 ? '+' : ''}${fmt(r.edge)}` : '—'}
+                   label="EDGE" proj={fmt(r.model_projection)}
+                   tone={tone} rgb={rgb} />
+        </div>
       </div>
+
+      {conf != null && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 9, marginTop: 9 }}>
+          <span style={{ fontFamily: T.cond, fontWeight: 700, fontSize: 9.5,
+                         letterSpacing: 1.1, color: T.muted2 }}>CONFIDENCE</span>
+          <ConfBar conf={conf} tone={tone} max={200} />
+        </div>
+      )}
 
       {played.length ? (
         <>
-          <div style={{ marginTop: 11, marginBottom: 5 }}>
-            <MiniBars values={[...vals].reverse()} refLine={line} />
-          </div>
-          <div style={{ display: 'flex', justifyContent: 'space-between',
-                        color: T.muted2, fontSize: 10.5, marginBottom: 9 }}>
-            <span>oldest</span>
-            <span>{played.length} games · line {fmt(line)}</span>
-            <span>latest</span>
-          </div>
-
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)',
-                        gap: 8 }}>
-            <div>
-              <div style={{ color: T.muted2, fontSize: 10, letterSpacing: 0.6,
-                            textTransform: 'uppercase' }}>Hit rate</div>
-              <div style={{ color: T.white, fontSize: 15, fontWeight: 800 }}>
-                {hitPct != null ? `${hits}/${all.n} · ${hitPct}%` : '—'}
-              </div>
+          <div style={{ marginTop: 13, padding: '4px 2px 0',
+                        borderTop: `1px solid ${T.border}` }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between',
+                          alignItems: 'baseline', marginTop: 9, marginBottom: 2 }}>
+              <span style={{ fontFamily: T.cond, fontWeight: 700, fontSize: 10,
+                             letterSpacing: 1.1, color: T.muted2 }}>
+                {form && form.season ? `${form.season} GAME LOG` : 'GAME LOG'}
+              </span>
+              <span style={{ fontSize: 10.5, color: tone, fontWeight: 700 }}>
+                — — line {fmt(line)}
+              </span>
             </div>
-            <div>
-              <div style={{ color: T.muted2, fontSize: 10, letterSpacing: 0.6,
-                            textTransform: 'uppercase' }}>Last 5</div>
-              <div style={{ color: T.white, fontSize: 15, fontWeight: 800 }}>
-                {last5 && last5.n ? `${hit5}/${last5.n}` : '—'}
-              </div>
-            </div>
-            <div>
-              <div style={{ color: T.muted2, fontSize: 10, letterSpacing: 0.6,
-                            textTransform: 'uppercase' }}>Average</div>
-              <div style={{ color: T.white, fontSize: 15, fontWeight: 800 }}>
-                {avg != null ? avg.toFixed(1) : '—'}
-              </div>
-            </div>
+            <GameLogChart games={played} line={line} over={over} accent={tone} />
           </div>
 
-          {vsOpp.length ? (
-            <div style={{ marginTop: 9 }}>
-              <div style={{ color: T.muted2, fontSize: 10, letterSpacing: 0.6,
-                            textTransform: 'uppercase' }}>
-                He's faced {r.opponent}
-              </div>
-              <div style={{ color: T.white, fontSize: 12.5, marginTop: 3 }}>
-                {vsTally
-                  ? `${over ? vsTally.o : vsTally.u}/${vsTally.n} cleared · `
-                  : ''}
-                {vsOpp.map(g => `wk${g.wk} ${g.v}`).join('  ·  ')}
-              </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 14,
+                        marginTop: 10 }}>
+            <HitRing hits={hits} n={all ? all.n : 0} />
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontFamily: T.cond, fontWeight: 700, fontSize: 9.5,
+                            letterSpacing: 1.1, color: T.muted2,
+                            marginBottom: 5 }}>LAST 8</div>
+              <FormStrip games={played} line={line} over={over} />
+              {avg != null && line != null ? (
+                <div style={{ marginTop: 9, fontSize: 12, color: T.muted }}>
+                  Averages <b style={{ color: T.white, fontSize: 14 }}>
+                    {avg.toFixed(1)}</b>{' '}
+                  <span style={{ color: avg > line ? T.green : T.red,
+                                 fontWeight: 700 }}>
+                    ({avg > line ? '+' : ''}{(avg - line).toFixed(1)} vs line)
+                  </span>
+                </div>
+              ) : null}
             </div>
-          ) : null}
+          </div>
         </>
       ) : (
-        <div style={{ color: T.muted2, fontSize: 11.5, marginTop: 9 }}>
+        <div style={{ color: T.muted2, fontSize: 11.5, marginTop: 10 }}>
           No game log published for this player yet.
         </div>
       )}
@@ -260,26 +270,45 @@ function PropDetail({ r, posted, form, matchups }) {
           exactly the card where the matchup is the only evidence there is. */}
       <MatchupBlock m={matchup} prop={r.prop_type} over={over}
                     opponent={r.opponent} />
+
+      {vsOpp.length ? (
+        <div style={{ marginTop: 11, paddingTop: 9,
+                      borderTop: `1px solid ${T.border}`,
+                      display: 'flex', alignItems: 'center', gap: 9 }}>
+          <TeamMark abbr={r.opponent} size={30} />
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontFamily: T.cond, fontWeight: 700, fontSize: 9.5,
+                          letterSpacing: 1.1, color: T.muted2 }}>
+              HEAD TO HEAD
+            </div>
+            <div style={{ color: T.white, fontSize: 12.5, marginTop: 2 }}>
+              {vsTally ? (
+                <b style={{ color: (over ? vsTally.o : vsTally.u) > vsTally.n / 2
+                              ? T.green : T.red }}>
+                  {over ? vsTally.o : vsTally.u}/{vsTally.n} cleared
+                </b>
+              ) : null}
+              {vsTally ? ' · ' : ''}
+              {vsOpp.map(g => `wk${g.wk} ${g.v}`).join('  ·  ')}
+            </div>
+          </div>
+        </div>
+      ) : null}
     </Card>
   )
 }
 
 const pct1 = (v) => (typeof v === 'number' ? `${(v * 100).toFixed(1)}%` : '—')
 
+// Stats as tinted wells rather than a 2×2 of label-over-value, which was the
+// most spreadsheet-like thing on the page. Auto-fit so four stats sit 2-up on a
+// phone and 4-up on a desktop without a breakpoint.
 function StatGrid({ rows }) {
   return (
-    <Card style={{ padding: 13, marginBottom: 8 }}>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)',
-                    gap: '10px 14px' }}>
-        {rows.map(([k, v]) => (
-          <div key={k}>
-            <div style={{ color: T.muted2, fontSize: 10.5, letterSpacing: 0.6,
-                          textTransform: 'uppercase' }}>{k}</div>
-            <div style={{ color: T.white, fontSize: 15, fontWeight: 700 }}>{v}</div>
-          </div>
-        ))}
-      </div>
-    </Card>
+    <div style={{ display: 'grid', gap: 7, marginBottom: 9,
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(128px, 1fr))' }}>
+      {rows.map(([k, v]) => <StatPill key={k} label={k} value={v} />)}
+    </div>
   )
 }
 
@@ -338,7 +367,7 @@ function statsFor(p, props) {
        : (pos === 'RB' || pos === 'FB') ? RUSH_STATS(p) : REC_STATS(p)
 }
 
-function ProfileBlock({ prof, props }) {
+function ProfileBlock({ prof, props, teamAbbr }) {
   const p = prof.profile || {}
   const pos = String(p.position || '').toUpperCase()
   const priced = props || new Set()
@@ -352,11 +381,41 @@ function ProfileBlock({ prof, props }) {
   const comp = p.competition || {}
   const tg = p.targets || {}
   const form = prof.form || {}
+  const acc = team(teamAbbr).c1
+  const [allGames, setAllGames] = useState(false)
+  // Six is enough to see a trend; seventeen is a table. The rest is one tap
+  // away rather than a wall the reader has to scroll past every time.
+  const shownGames = allGames ? form.games || [] : (form.games || []).slice(-6)
   // n is printed when an opponent was faced more than once: most are faced
   // once in a 17-game season, and a single game is a fact about that Sunday
   // rather than a matchup problem.
-  const splitLine = (xs) => (xs || [])
-    .map(x => `${x.opp} ${x.mean}${x.n > 1 ? ` (${x.n}g)` : ''}`).join('  ·  ')
+  //
+  // Chips in club colours rather than a run-on line of "SEA 12 · SF 16 · GB 17",
+  // which is a spreadsheet row wearing a label. Colour is the club's, not a
+  // verdict — the section heading already says which end is which, and tinting
+  // these green and red would double up on that while fighting the crest.
+  const splitChips = (xs) => (
+    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 5 }}>
+      {(xs || []).map(x => {
+        const tc = team(x.opp)
+        return (
+          <span key={x.opp} style={{
+            display: 'inline-flex', alignItems: 'baseline', gap: 5,
+            padding: '4px 9px', borderRadius: 9,
+            background: `${tc.c1}16`, border: `1px solid ${tc.c1}55`,
+          }}>
+            <b style={{ fontFamily: T.cond, fontSize: 12, letterSpacing: 0.5,
+                        color: tc.c1 }}>{x.opp}</b>
+            <b style={{ color: T.white, fontSize: 13.5,
+                        fontVariantNumeric: 'tabular-nums' }}>{x.mean}</b>
+            {x.n > 1 ? (
+              <span style={{ color: T.muted2, fontSize: 10 }}>{x.n}g</span>
+            ) : null}
+          </span>
+        )
+      })}
+    </div>
+  )
 
   // Special-teams slots are never the role. nfl/usage.py::depth_rank now prefers
   // the offensive row, but a profile published before that fix would still say
@@ -371,83 +430,158 @@ function ProfileBlock({ prof, props }) {
       {/* THE SEASON, not "prior season only". The window phrase is the model's
           own vocabulary and means nothing a reader can check — and what it
           refers to silently changes every September. */}
-      <SectionLabel right={p.seasons || p.window || ''}>{role}</SectionLabel>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 9,
+                    margin: '4px 0 9px' }}>
+        <span style={{
+          fontFamily: T.cond, fontWeight: 800, fontSize: 13, letterSpacing: 1.2,
+          color: acc, padding: '3px 10px', borderRadius: 7,
+          background: `${acc}18`, border: `1px solid ${acc}66`,
+        }}>{role}</span>
+        <span style={{ height: 1, flex: 1, background: T.border }} />
+        <span style={{ fontFamily: T.cond, fontWeight: 700, fontSize: 11,
+                       letterSpacing: 1, color: T.muted2 }}>
+          {p.seasons || p.window || ''}
+        </span>
+      </div>
       <StatGrid rows={stats} />
 
       {sp.worst && sp.worst.length ? (
-        <Block label={`Toughest matchups (${sp.label || ''})`}>
-          <div style={{ color: T.white, fontSize: 13 }}>{splitLine(sp.worst)}</div>
+        <Card style={{ padding: 13, marginBottom: 9 }}>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+            <span style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 11,
+                           letterSpacing: 1, textTransform: 'uppercase',
+                           color: T.muted, flex: 1 }}>
+              Matchup splits · {sp.label || ''}
+            </span>
+            {typeof sp.mean === 'number' ? (
+              <span style={{ fontSize: 11.5, color: T.muted2 }}>
+                season avg <b style={{ color: T.white, fontSize: 13 }}>{sp.mean}</b>
+              </span>
+            ) : null}
+          </div>
+
+          <div style={{ marginTop: 8 }}>
+            <span style={{ fontFamily: T.cond, fontWeight: 700, fontSize: 9.5,
+                           letterSpacing: 1.1, color: T.red }}>TOUGHEST</span>
+            {splitChips(sp.worst)}
+          </div>
           {sp.best && sp.best.length ? (
-            <div style={{ marginTop: 8 }}>
-              <div style={{ color: T.muted2, fontSize: 10.5, letterSpacing: 0.6,
-                            textTransform: 'uppercase' }}>Best matchups</div>
-              <div style={{ color: T.white, fontSize: 13, marginTop: 3 }}>
-                {splitLine(sp.best)}
-              </div>
+            <div style={{ marginTop: 10 }}>
+              <span style={{ fontFamily: T.cond, fontWeight: 700, fontSize: 9.5,
+                             letterSpacing: 1.1, color: T.green }}>BEST</span>
+              {splitChips(sp.best)}
             </div>
           ) : null}
-          {typeof sp.mean === 'number' ? (
-            <div style={{ color: T.muted, fontSize: 11.5, marginTop: 8 }}>
-              Season average {sp.mean} {sp.label}
-            </div>
-          ) : null}
-        </Block>
+        </Card>
       ) : null}
 
       {showReceiving && tg.targets && tg.targets.length ? (
         <Block label="Throws to">
-          {tg.targets.map(t => (
-            <div key={t.player} style={{ display: 'flex',
-                  justifyContent: 'space-between', gap: 8, fontSize: 12.5,
-                  color: T.white, marginTop: 3 }}>
-              <span>{t.player}</span>
-              <span style={{ color: T.muted }}>
-                {t.targets} tgt ({Math.round((t.share || 0) * 100)}%) · {t.yards} yds
-              </span>
-            </div>
-          ))}
+          <ShareBars rows={tg.targets.map(t => ({
+            key: t.player, label: t.player, share: t.share,
+            right: `${t.targets} tgt · ${t.yards} yds`,
+          }))} accent={acc} />
         </Block>
       ) : null}
 
       {showReceiving && comp.targets && comp.targets.length && comp.rank ? (
         <Block label={`Target share on ${comp.team} — #${comp.rank} of ${comp.of}`}>
-          <div style={{ color: T.white, fontSize: 12.5 }}>
-            {comp.targets.map(t => {
-              const last = String(t.player).split(' ').slice(-1)[0]
-              const s = `${last} ${Math.round((t.share || 0) * 100)}%`
-              return t.is_player ? <b key={t.player}>{s}{'  '}</b>
-                                 : <span key={t.player}>{s}{'  '}</span>
-            })}
-          </div>
+          <ShareBars rows={comp.targets.map(t => ({
+            key: t.player, label: t.player, share: t.share, me: t.is_player,
+          }))} accent={acc} />
         </Block>
       ) : null}
 
       {form.games && form.games.length ? (
         <>
-          <SectionLabel right={String(form.season || '')}>Recent form</SectionLabel>
-          <Card style={{ padding: 13, marginBottom: 8 }}>
-            {form.games.map((gm, i) => (
-              <div key={i} style={{ display: 'flex', gap: 10, fontSize: 12.5,
-                                    color: T.white, marginTop: i ? 5 : 0 }}>
-                <span style={{ color: T.muted2, minWidth: 38 }}>wk{gm.week}</span>
-                <span style={{ color: T.muted, minWidth: 40 }}>
-                  {gm.opponent_team || ''}
-                </span>
-                <span>
-                  {gm.targets != null
-                    ? `${gm.receptions || 0}/${gm.targets} for ${gm.receiving_yards || 0}`
-                    : ''}
-                  {gm.carries ? `  ${gm.carries} car ${gm.rushing_yards || 0}` : ''}
-                  {gm.attempts
-                    ? `  ${gm.completions || 0}/${gm.attempts} for ${gm.passing_yards || 0}`
-                    : ''}
-                </span>
-              </div>
-            ))}
+          <SectionLabel right={String(form.season || '')}>Game log</SectionLabel>
+          <Card style={{ padding: '6px 0', marginBottom: 9, overflow: 'hidden' }}>
+            {shownGames.map((gm, i) => {
+              const tc = team(gm.opponent_team)
+              return (
+                <div key={i} style={{
+                  display: 'flex', alignItems: 'center', gap: 10,
+                  padding: '7px 13px',
+                  // Zebra striping rather than 17 identical lines — the eye
+                  // needs somewhere to rest when scanning a long log.
+                  background: i % 2 ? 'rgba(255,255,255,0.018)' : 'transparent',
+                }}>
+                  <span style={{ color: T.muted2, fontSize: 10.5, minWidth: 24,
+                                 fontFamily: T.cond, fontWeight: 700 }}>
+                    W{gm.week}
+                  </span>
+                  <span style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 12,
+                                 color: tc.c1, minWidth: 32, letterSpacing: 0.4 }}>
+                    {gm.opponent_team || '—'}
+                  </span>
+                  <span style={{ color: T.white, fontSize: 12.5, flex: 1,
+                                 textAlign: 'right',
+                                 fontVariantNumeric: 'tabular-nums' }}>
+                    {gm.attempts
+                      ? `${gm.completions || 0}/${gm.attempts} · ${gm.passing_yards || 0} yds`
+                      : ''}
+                    {gm.carries
+                      ? `${gm.attempts ? '   ' : ''}${gm.carries} car · ${gm.rushing_yards || 0} yds`
+                      : ''}
+                    {gm.targets != null && !gm.attempts
+                      ? `${gm.carries ? '   ' : ''}${gm.receptions || 0}/${gm.targets} · ${gm.receiving_yards || 0} yds`
+                      : ''}
+                  </span>
+                </div>
+              )
+            })}
+            {form.games.length > 6 ? (
+              <button onClick={() => setAllGames(v => !v)} style={{
+                width: '100%', minHeight: 40, background: 'transparent',
+                border: 'none', borderTop: `1px solid ${T.border}`,
+                color: T.muted, fontFamily: T.cond, fontWeight: 700,
+                fontSize: 11.5, letterSpacing: 1, textTransform: 'uppercase',
+                cursor: 'pointer', marginTop: 4,
+              }}>
+                {allGames ? 'Show less' : `All ${form.games.length} games`}
+              </button>
+            ) : null}
           </Card>
         </>
       ) : null}
     </>
+  )
+}
+
+// A share, as a bar. "McMillan 25% Legette 14% Coker 10%" is four facts in a
+// sentence; this is four facts you can compare without reading any of them.
+function ShareBars({ rows, accent = T.green }) {
+  const top = Math.max(...rows.map(r => r.share || 0), 0.0001)
+  return (
+    <div style={{ marginTop: 5 }}>
+      {rows.map((r, i) => (
+        <div key={r.key || i} style={{ marginTop: i ? 8 : 2 }}>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 8,
+                        fontSize: 12.5, marginBottom: 3 }}>
+            <span style={{ color: r.me ? T.white : T.muted,
+                           fontWeight: r.me ? 800 : 500, flex: 1,
+                           whiteSpace: 'nowrap', overflow: 'hidden',
+                           textOverflow: 'ellipsis' }}>{r.label}</span>
+            {r.right ? (
+              <span style={{ color: T.muted2, fontSize: 11 }}>{r.right}</span>
+            ) : null}
+            <b style={{ color: r.me ? accent : T.white, fontSize: 13,
+                        fontVariantNumeric: 'tabular-nums' }}>
+              {Math.round((r.share || 0) * 100)}%
+            </b>
+          </div>
+          <div style={{ height: 6, borderRadius: 4, background: '#191919',
+                        overflow: 'hidden' }}>
+            <div style={{
+              width: `${((r.share || 0) / top) * 100}%`, height: '100%',
+              borderRadius: 4,
+              background: r.me ? accent : '#2f2f2f',
+              boxShadow: r.me ? `0 0 10px ${accent}66` : 'none',
+            }} />
+          </div>
+        </div>
+      ))}
+    </div>
   )
 }
 
@@ -519,6 +653,17 @@ export default function NflPlayerSheet({ player, rows, posted, onClose }) {
 
   if (!player) return null
   const head = mine[0] || {}
+  const myTeam = team(head.team || player.team)
+  const oppTeam = team(head.opponent)
+  // Kickoff is published as a UTC instant; show it in the reader's own zone
+  // rather than as a Z-suffixed string only the scan cares about.
+  let kickoff = ''
+  try {
+    if (head.kickoff) {
+      kickoff = new Date(head.kickoff).toLocaleString(undefined, {
+        weekday: 'short', hour: 'numeric', minute: '2-digit' })
+    }
+  } catch { kickoff = '' }
 
   return (
     <div style={{
@@ -534,22 +679,68 @@ export default function NflPlayerSheet({ player, rows, posted, onClose }) {
           letterSpacing: 0.8, textTransform: 'uppercase', cursor: 'pointer',
         }}>← Back</button>
 
-        <div style={{ marginBottom: 4 }}>
-          <div style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 30,
-                        color: T.white, letterSpacing: 0.4, lineHeight: 1.05 }}>
-            {player.player}
+        {/* A HEADER THAT LOOKS LIKE SPORT. Name over a wash of his club's
+            colours, both crests, and the kickoff — the cues every scoreboard
+            uses, and the fastest way to say "this is a game" rather than "this
+            is a row". Colours come from the club, never from the model: tinting
+            a header by confidence would sell the pick before the card does. */}
+        <Card style={{
+          padding: '15px 16px', marginBottom: 11, position: 'relative',
+          overflow: 'hidden',
+          background: `linear-gradient(135deg, ${myTeam.c1}26 0%,`
+                    + ` ${myTeam.c2}14 42%, ${T.card} 78%)`,
+          border: `1px solid ${myTeam.c1}44`,
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 13 }}>
+            <TeamMark abbr={head.team || player.team} size={50} />
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 31,
+                            color: T.white, letterSpacing: 0.3, lineHeight: 1.02,
+                            textShadow: `0 2px 18px ${myTeam.c1}44` }}>
+                {player.player}
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 7,
+                            marginTop: 6, flexWrap: 'wrap' }}>
+                <span style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 13,
+                               letterSpacing: 0.8, color: myTeam.c1 }}>
+                  {head.team || player.team}
+                </span>
+                {head.opponent ? (
+                  <>
+                    <span style={{ color: T.muted2, fontSize: 11 }}>vs</span>
+                    <span style={{ fontFamily: T.cond, fontWeight: 800,
+                                   fontSize: 13, letterSpacing: 0.8,
+                                   color: oppTeam.c1 }}>{head.opponent}</span>
+                  </>
+                ) : null}
+                {kickoff ? (
+                  <span style={{ color: T.muted2, fontSize: 11.5,
+                                 paddingLeft: 4 }}>· {kickoff}</span>
+                ) : null}
+              </div>
+            </div>
+            {head.opponent ? <TeamMark abbr={head.opponent} size={40} /> : null}
           </div>
-          <div style={{ color: T.muted, fontSize: 13, marginTop: 5 }}>
-            {head.team || player.team}
-            {head.opponent ? ` vs ${head.opponent}` : ''}
-            {head.matchup ? ` · ${head.matchup}` : ''}
-          </div>
+
           {rec.w + rec.l > 0 && (
-            <div style={{ color: T.muted2, fontSize: 12, marginTop: 4 }}>
-              Posted record: <b style={{ color: T.white }}>{rec.w}-{rec.l}</b>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8,
+                          marginTop: 12, paddingTop: 10,
+                          borderTop: `1px solid ${T.border}` }}>
+              <span style={{ fontFamily: T.cond, fontWeight: 700, fontSize: 10,
+                             letterSpacing: 1.1, color: T.muted2 }}>
+                POSTED RECORD
+              </span>
+              <span style={{ fontSize: 15, fontWeight: 800, color: T.white,
+                             fontVariantNumeric: 'tabular-nums' }}>
+                {rec.w}<span style={{ color: T.muted2 }}>-</span>{rec.l}
+              </span>
+              <span style={{ fontSize: 12, fontWeight: 700,
+                             color: rec.w > rec.l ? T.green : T.red }}>
+                {Math.round((rec.w / (rec.w + rec.l)) * 100)}%
+              </span>
             </div>
           )}
-        </div>
+        </Card>
 
         {loadingProf && (
           <div style={{ display: 'flex', justifyContent: 'center', padding: 20 }}>
@@ -557,14 +748,10 @@ export default function NflPlayerSheet({ player, rows, posted, onClose }) {
           </div>
         )}
 
-        {!loadingProf && prof && prof.profile && (
-          <ProfileBlock prof={prof} props={pricedProps} />
-        )}
-
         <SectionLabel right={`${mine.length} priced`}>Props on this game</SectionLabel>
         {mine.length
-          ? mine.map(r => (
-              <PropDetail key={`${r.prop_type}-${r.id}`} r={r}
+          ? mine.map((r, i) => (
+              <PropDetail key={`${r.prop_type}-${r.id}`} r={r} index={i}
                           posted={postedFor.get(`${r.slate_date}|${r.prop_type}`)}
                           form={prof && prof.form}
                           matchups={((prof && prof.profile
@@ -573,28 +760,65 @@ export default function NflPlayerSheet({ player, rows, posted, onClose }) {
           : <Empty icon="🏈" title="No priced props"
                    hint="Nothing on this player for that slate." />}
 
+        {/* AFTER the props, not before them. The picks are why the card was
+            tapped; role and usage are the supporting case for them, and putting
+            a stat block first made the reader scroll past the answer to reach
+            the question. */}
+        {!loadingProf && prof && prof.profile && (
+          <>
+            <SectionLabel right={prof.profile.position || ''}>
+              Player profile
+            </SectionLabel>
+            <ProfileBlock prof={prof} props={pricedProps}
+                          teamAbbr={head.team || player.team} />
+          </>
+        )}
+
         {history.length > 0 && (
           <>
             <SectionLabel right={`${rec.w}-${rec.l}`}>Previously posted</SectionLabel>
-            {history.map(p => (
-              <Card key={p.id} style={{ padding: 11, marginBottom: 6 }}>
-                <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
-                  <span style={{ color: T.muted2, fontSize: 11.5, minWidth: 72 }}>
-                    {p.slate_date}
-                  </span>
-                  <span style={{ fontSize: 12.5, color: T.white, flex: 1 }}>
-                    {(p.lean || '').toUpperCase()} {fmt(p.line)}{' '}
-                    {PROP_LABEL[p.prop_type] || p.prop_type}
-                  </span>
-                  <span style={{ fontSize: 11.5, fontWeight: 800,
-                                 color: p.result === 'W' ? '#3FB950'
-                                   : p.result === 'L' ? '#E5534B' : T.muted2 }}>
-                    {p.result}
-                    {typeof p.result_value === 'number' ? ` · ${p.result_value}` : ''}
-                  </span>
-                </div>
-              </Card>
-            ))}
+            <Card style={{ padding: '5px 0', marginBottom: 9,
+                           overflow: 'hidden' }}>
+              {history.map((p, i) => {
+                const w = p.result === 'W'
+                const tn = w ? T.green : p.result === 'L' ? T.red : T.muted2
+                const st = sideTone(p.lean)
+                return (
+                  <div key={p.id} style={{
+                    display: 'flex', alignItems: 'center', gap: 9,
+                    padding: '8px 13px',
+                    background: i % 2 ? 'rgba(255,255,255,0.018)' : 'transparent',
+                  }}>
+                    <span style={{
+                      width: 20, height: 20, borderRadius: 5, flexShrink: 0,
+                      display: 'flex', alignItems: 'center',
+                      justifyContent: 'center', fontSize: 10, fontWeight: 800,
+                      color: tn, background: `${tn}22`,
+                      border: `1px solid ${tn}88`,
+                    }}>{p.result}</span>
+                    <span style={{ color: T.muted2, fontSize: 11, minWidth: 62,
+                                   fontVariantNumeric: 'tabular-nums' }}>
+                      {p.slate_date}
+                    </span>
+                    <span style={{ fontSize: 12.5, color: T.white, flex: 1 }}>
+                      <b style={{ color: st.tone, fontFamily: T.cond,
+                                  fontSize: 13, letterSpacing: 0.5 }}>
+                        {(p.lean || '').toUpperCase()}
+                      </b>{' '}{fmt(p.line)}{' '}
+                      <span style={{ color: T.muted }}>
+                        {PROP_LABEL[p.prop_type] || p.prop_type}
+                      </span>
+                    </span>
+                    {typeof p.result_value === 'number' ? (
+                      <span style={{ fontSize: 12.5, fontWeight: 800, color: tn,
+                                     fontVariantNumeric: 'tabular-nums' }}>
+                        {p.result_value}
+                      </span>
+                    ) : null}
+                  </div>
+                )
+              })}
+            </Card>
           </>
         )}
 
