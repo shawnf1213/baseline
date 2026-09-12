@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import PasswordGate from './PasswordGate.jsx'
+import Landing from './Landing.jsx'
 import { api } from '../utils/api'
 
 // ── AUTH GATE ────────────────────────────────────────────────────────────────
@@ -130,7 +131,17 @@ export default function AuthGate({ children }) {
       return
     }
     const tok = localStorage.getItem(SESSION_KEY) || ''
-    if (!tok) { setState(await gateOrPreview('landing')); return }
+    // ── THE FRONT DOOR COMES FIRST, AND THE CLOCK IS NOT RUNNING YET ─────────
+    // This used to call gateOrPreview, which asks /api/preview/status — and
+    // that endpoint STARTS the free-look clock on first contact. So a visitor
+    // who had never heard of Baseline was dropped into the app with sixty
+    // seconds already ticking, and spent them working out what they were
+    // looking at. The landing page then only appeared once the preview had
+    // expired, which is a paywall, not a front door.
+    //
+    // Now: the landing page renders with no preview call at all, and the clock
+    // starts when they press the button asking to see the board.
+    if (!tok) { setState({ phase: 'landing' }); return }
     try {
       const me = (await api.get('/api/auth/me', {
         headers: { Authorization: `Bearer ${tok}` },
@@ -202,6 +213,16 @@ export default function AuthGate({ children }) {
       setState(s => ({ phase: s.next || 'landing', me: s.me }))
     }
   }, [state.phase, state.left])
+
+  // Starts the free look ON REQUEST. gateOrPreview is what touches the server's
+  // clock, so nothing calls it until the visitor has actually asked to see the
+  // board. If the window is already used up this lands back on the landing page
+  // rather than an error — the pitch and the pricing are still the right screen
+  // for someone who cannot browse.
+  const startPreview = async () => {
+    setBusy(true)
+    try { setState(await gateOrPreview('landing')) } finally { setBusy(false) }
+  }
 
   const connectDiscord = async () => {
     setBusy(true)
@@ -373,6 +394,19 @@ export default function AuthGate({ children }) {
   // outside needs to subscribe. Giving either one the other's instructions is
   // the difference between a sale and a dead end.
   const inGuildNoRole = me.reason === 'in_guild_no_role'
+
+  // ── TWO DIFFERENT PAGES FOR TWO DIFFERENT PEOPLE ───────────────────────────
+  // A first-time visitor has never been told what this is, so they get the full
+  // landing page — the pitch, the live record, the pricing. Someone at the
+  // PAYWALL has already seen all of that, is signed in, and was stopped for a
+  // specific reason; making them scroll a marketing page to find out why would
+  // be answering a question they did not ask.
+  if (state.phase === 'landing') {
+    return (
+      <Landing onConnectDiscord={connectDiscord} onSubscribe={subscribe}
+               onPreview={startPreview} busy={busy} invite={invite} />
+    )
+  }
 
   return (
     <Shell>

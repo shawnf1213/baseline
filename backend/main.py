@@ -375,6 +375,18 @@ def _strip_breakdowns(node):
     return node
 
 
+@app.get("/api/results/summary")
+async def results_summary():
+    """Headline record for the PUBLIC landing page. A few hundred bytes.
+
+    The landing page was deriving these from /api/results/record, which returns
+    the entire pick log — 620KB before a first-time visitor sees anything, on
+    the one screen that decides whether they stay.
+    """
+    from src import database
+    return database.public_summary()
+
+
 @app.get("/api/results/record")
 async def results_record(full: bool = False):
     """Full pick log plus aggregate record (W/L, win rate, avg confidence on

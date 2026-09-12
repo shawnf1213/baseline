@@ -1023,6 +1023,64 @@ def record_summary() -> dict:
     return summary
 
 
+# ── PUBLIC HEADLINE RECORD ──────────────────────────────────────────────────
+# Props PULLED FROM THE BOARD after measuring badly. Mirrors the exclusions in
+# discord-bot/pick_of_day.py::_POD_EXCLUDE_PROPS — the bot decides what gets
+# posted, this only reports it, and if the two ever drift the headline would be
+# describing a board that no longer exists.
+RETIRED_PROPS = {"Aces", "Total Games"}
+
+
+def public_summary(days: int = 30) -> dict:
+    """The few figures the public landing page needs, and nothing else.
+
+    The page was computing these from /api/results/record, which ships the FULL
+    pick log — 620KB to arrive at four numbers, larger than the app's whole JS
+    bundle, on the one screen a first-time visitor judges the product by.
+
+    BOTH THE FILTERED AND THE UNFILTERED RECORD are returned, always. The
+    headline covers the props still being posted, which is the honest answer to
+    "what am I buying"; quoting only that without the all-time figure beside it
+    would be selecting a number rather than reporting one.
+    """
+    import datetime as _dt
+
+    def tally(rows):
+        w = sum(1 for p in rows if p.get("result") == "W")
+        n = sum(1 for p in rows if p.get("result") in ("W", "L"))
+        return {"wins": w, "losses": n - w, "total": n,
+                "win_rate": round(w / n * 100, 1) if n else None}
+
+    try:
+        # SAME POPULATION THE IN-APP RECORD HEADLINES — PrizePicks, excluding
+        # the 3x legs. record_summary() keeps Underdog on its own track for a
+        # stated reason ("a second book has its own lines, its own market, and
+        # must earn its own track record"), and folding it in here would put a
+        # different number on the landing page than the app shows. A visitor who
+        # compares the two and finds they disagree has learned something worse
+        # than either figure.
+        graded = [p for p in all_picks()
+                  if not p.get("excluded_from_record")
+                  and p.get("result") in ("W", "L")
+                  and pick_source(p) == "prizepicks"
+                  and (p.get("pick_group") or "potd").lower() != "3x"]
+        live = [p for p in graded if p.get("prop_type") not in RETIRED_PROPS]
+        cut = (_dt.datetime.now(_dt.timezone.utc)
+               - _dt.timedelta(days=days)).date().isoformat()
+        recent = [p for p in live
+                  if str(p.get("resolved_at") or "")[:10] >= cut]
+        days_active = len({str(p.get("resolved_at"))[:10] for p in graded
+                           if p.get("resolved_at")})
+        nfl = [p for p in nfl_picks() if p.get("result") in ("W", "L")]
+        return {"all_time": tally(graded), "live_props": tally(live),
+                "recent": tally(recent), "recent_days": days,
+                "days_active": days_active, "nfl": tally(nfl),
+                "retired_props": sorted(RETIRED_PROPS), "ready": True}
+    except Exception as exc:  # noqa: BLE001 — a marketing page must still render
+        logger.warning("public_summary failed: %s", exc)
+        return {"ready": False}
+
+
 # ── Anonymous preview window ────────────────────────────────────────────────
 def preview_reset(visitor_key: str) -> bool:
     """Clear one visitor's preview clock. Support use: someone who genuinely lost

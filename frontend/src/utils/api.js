@@ -79,3 +79,10 @@ export const fetchNflRecord = (signal) =>
 export const fetchRecord    = (signal) =>
   api.get('/api/results/record', { signal }).then(r => r.data)
 
+// The headline record only — a few hundred bytes, computed server-side. The
+// landing page is public and must paint fast; fetchRecord ships the whole pick
+// log (620KB) and is for the in-app track record, where that detail is the
+// point.
+export const fetchPublicRecord = (signal) =>
+  api.get('/api/results/summary', { signal }).then(r => r.data)
+
