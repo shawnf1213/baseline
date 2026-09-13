@@ -234,9 +234,14 @@ input, select, button { font-family: inherit; }
    accordion keeps its size. The placeholder height is a closed row.
 
    This is the single biggest win available here and it costs two declarations. */
-.baseline-cols > * {
-  content-visibility: auto;
-  contain-intrinsic-size: auto 96px;
+/* DESKTOP ONLY. content-visibility moves paint work to the scroll, which is a
+   win where three columns are on screen at once and a needless risk on a phone
+   that was already smooth. */
+@media (min-width: 1024px) {
+  .baseline-cols > * {
+    content-visibility: auto;
+    contain-intrinsic-size: auto 96px;
+  }
 }
 
 /* Desktop card flow. GRID, NOT MULTI-COLUMN.

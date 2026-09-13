@@ -2,7 +2,7 @@ import { useMemo, useState, useEffect } from 'react'
 import { T, useIsWide } from './theme'
 import { Card, Heart, Spinner, Empty, tier, sideTone, SideRail, TierBadge,
          ConfBar, tierCardStyle, PageTitle, Pill, GlassTabs,
-         SectionLabel } from './bits'
+         SectionLabel, ShowMore } from './bits'
 import FilterSheet from './FilterSheet'
 import { shortProp, startTimeLabel, fmt, calibratedConfidence } from './data'
 import { projectRow, cachedProjection } from './project'
@@ -51,6 +51,10 @@ export default function BoardTab({ boards, book, setBook, loading, error, onOpen
   // present the same title block rather than one being bare.
   const [nflMeta, setNflMeta] = useState({})
   const [openKey, setOpenKey] = useState(null)
+  // How many of the full board are rendered. Reset whenever the view
+  // changes, or a reader who paged deep into tennis would land in the
+  // middle of the NFL board.
+  const [shown, setShown] = useState(40)
   const { has, toggle } = useBookmarks()
   const board = boards?.[book]
 
@@ -64,6 +68,7 @@ export default function BoardTab({ boards, book, setBook, loading, error, onOpen
   }, [board, filters.prop, filters.tour, filters.surface])
 
   const proj = useBoardProjections(filtered)
+  useEffect(() => { setShown(40) }, [sport, book, filters])
 
   // Merge projections in, then sort.
   const rows = useMemo(() => {
@@ -206,7 +211,7 @@ export default function BoardTab({ boards, book, setBook, loading, error, onOpen
       )}
 
       <div className="baseline-cols">
-        {!loading && !error && rows.map((r, i) => (
+        {!loading && !error && rows.slice(0, shown).map((r, i) => (
           <PropRow key={r.key}
             r={{ ...r, confidence: calib.get(r.key) ?? r.confidence }} index={i}
             open={openKey === r.key}
@@ -216,6 +221,11 @@ export default function BoardTab({ boards, book, setBook, loading, error, onOpen
             onOpen={() => onOpenPlayer({ name: r.player, tour: r.tour })} />
         ))}
       </div>
+
+      {!loading && !error && (
+        <ShowMore shown={shown} total={rows.length}
+                  onMore={() => setShown(n => n + 40)} />
+      )}
 
       {!loading && !error && !!rows.length && (
         <div style={{ color: T.muted2, fontSize: 11.5, textAlign: 'center', padding: '16px 12px 4px', lineHeight: 1.5 }}>
@@ -467,11 +477,14 @@ export function PropRow({ r, saved, onSave, onOpen, index = 0, footNote,
       ...tierCardStyle(conf, rgb),
     }}>
       <SideRail rgb={side ? rgb : null} weight={w} />
-      {side && w >= 2 ? (
+      {side && (!wide || w >= 2) ? (
         <div aria-hidden style={{
           position: 'absolute', inset: 0, pointerEvents: 'none',
-          background: `linear-gradient(100deg, rgba(${rgb},`
-                    + `${0.03 + w * 0.02}), transparent 52%)`,
+          background: wide
+            ? `linear-gradient(100deg, rgba(${rgb},`
+              + `${0.03 + w * 0.02}), transparent 52%)`
+            : `radial-gradient(120% 90% at 0% 0%, rgba(${rgb},`
+              + `${0.02 + w * 0.018}), transparent 62%)`,
         }} />
       ) : null}
 
@@ -535,20 +548,28 @@ export function PropRow({ r, saved, onSave, onOpen, index = 0, footNote,
         </svg>
       </Tap>
 
-      {/* ── THE WORKING ─────────────────────────────────────────────────── */}
-      <div style={{
-        display: 'grid',
-        gridTemplateRows: open ? '1fr' : '0fr',
-        transition: 'grid-template-rows 260ms cubic-bezier(0.16,1,0.3,1)',
-        ...(wide && open ? {
-          position: 'absolute', top: '100%', left: -1, right: -1, zIndex: 20,
-          background: T.bgElev,
-          border: `1px solid ${T.glassLine}`, borderTop: 'none',
-          borderRadius: `0 0 ${T.r3}px ${T.r3}px`,
-          boxShadow: '0 18px 40px rgba(0,0,0,0.6)',
-        } : null),
-      }}>
-        <div style={{ overflow: 'hidden', minHeight: 0 }}>
+      {/* ── THE WORKING ──────────────────────────────────────────────────
+          RENDERED ONLY WHEN OPEN, at its natural height. The previous version
+          animated grid-template-rows from 0fr to 1fr, which works in flow and
+          CANNOT work out of flow: an absolutely positioned grid has no height
+          to resolve `1fr` against, so the row collapsed to zero and the panel
+          showed nothing at all. A closed row now costs nothing to render,
+          which is the point on a board of 168.
+
+          OUT OF FLOW ON A WIDE SCREEN so the grid row keeps its closed height
+          and the cards beside it do not gain a gap. In flow on a phone, where
+          growing is correct and an overlay would cover the next card. */}
+      {open ? (
+        <div style={{
+          animation: 'fade-in 160ms ease',
+          ...(wide ? {
+            position: 'absolute', top: '100%', left: -1, right: -1, zIndex: 20,
+            background: T.bgElev,
+            border: `1px solid ${T.glassLine}`, borderTop: 'none',
+            borderRadius: `0 0 ${T.r3}px ${T.r3}px`,
+            boxShadow: '0 16px 34px rgba(0,0,0,0.6)',
+          } : null),
+        }}>
           <div style={{ padding: '2px 14px 13px 17px' }}>
             <div style={{ height: 1, background: T.glassLine,
                           marginBottom: 10 }} />
@@ -591,7 +612,7 @@ export function PropRow({ r, saved, onSave, onOpen, index = 0, footNote,
             </div>
           </div>
         </div>
-      </div>
+      ) : null}
     </Card>
   )
 }

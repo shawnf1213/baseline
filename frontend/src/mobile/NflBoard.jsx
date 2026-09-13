@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { T } from './theme'
-import { Spinner, Empty, SectionLabel } from './bits'
+import { Spinner, Empty, SectionLabel, ShowMore } from './bits'
 import { PropRow, BoardSummary, TopPlays } from './BoardTab'
 import { useBookmarks } from './useBookmarks'
 import { fetchNflBoard, fetchNflRecord } from '../utils/api'
@@ -105,6 +105,7 @@ export default function NflBoard({ onMeta }) {
   // the tennis board does the same thing with PlayerDashboard.
   const [open, setOpen] = useState(null)
   const [openKey, setOpenKey] = useState(null)
+  const [shown, setShown] = useState(40)
 
   useEffect(() => {
     let alive = true
@@ -213,7 +214,7 @@ export default function NflBoard({ onMeta }) {
           ancestor. Reusing the class rather than a new grid keeps the two
           boards laying out identically at every breakpoint. */}
       <div className="baseline-cols">
-        {viewRows.map((r, i) => (
+        {viewRows.slice(0, shown).map((r, i) => (
           <PropRow key={r.key} r={r} index={i}
                    open={openKey === r.key}
                    onToggle={() => setOpenKey(k => (k === r.key ? null : r.key))}
@@ -222,6 +223,9 @@ export default function NflBoard({ onMeta }) {
                    footNote={footNoteFor(r._pick)} />
         ))}
       </div>
+
+      <ShowMore shown={shown} total={viewRows.length}
+                onMore={() => setShown(n => n + 40)} />
 
       {open && (
         <NflPlayerSheet player={open} rows={picks} posted={posted}

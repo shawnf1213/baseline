@@ -30,6 +30,12 @@ const REDUCED = typeof window !== 'undefined'
 // none of the benefit. A board of 168 rows was mounting 168 of these.
 const ANIMATE_UP_TO = 8
 
+// Desktop shows two or three columns at once on a viewport three times the
+// size, so a 30px blur is paid on far more cards per scrolled frame. A phone
+// was never the problem and keeps the softer shadow.
+const WIDE = typeof window !== 'undefined'
+  && window.matchMedia?.('(min-width: 1024px)').matches
+
 export function Card({ children, style, onClick, index = 0, ...rest }) {
   const base = {
     // GLASS, matching the landing page's cards. Translucent rather than a
@@ -38,7 +44,9 @@ export function Card({ children, style, onClick, index = 0, ...rest }) {
     // theme.js; blurring every card is what tanked scrolling before.
     background: T.glass,
     border: `1px solid ${T.glassLine}`, borderRadius: T.r3,
-    boxShadow: '0 4px 14px rgba(0,0,0,0.38)',
+    boxShadow: WIDE ? '0 4px 14px rgba(0,0,0,0.38)'
+                    : '0 1px 0 rgba(255,255,255,0.06) inset,'
+                      + ' 0 10px 30px rgba(0,0,0,0.45)',
     ...(onClick ? { cursor: 'pointer', WebkitTapHighlightColor: 'transparent' } : null),
     ...style,
   }
@@ -263,6 +271,29 @@ export function GlassTabs({ options, value, onChange, style }) {
   )
 }
 
+// ── RENDER A PAGE, NOT A SEASON ──────────────────────────────────────────────
+// Cheaper cards and skipped paint both help, but neither removes the work:
+// 168 rows is 168 React elements reconciled, 168 subtrees in the DOM, and on
+// desktop three columns of them within a couple of scrolls of the viewport.
+// The only way to stop paying for a row is not to render it.
+//
+// So the board renders a page and offers the rest. This is not a compromise on
+// the product: the board is SORTED, and a reader who has scrolled past sixty
+// plays has left the part of it the model is most confident about far behind.
+export function ShowMore({ shown, total, onMore, label = 'lines' }) {
+  const left = total - shown
+  if (left <= 0) return null
+  return (
+    <button onClick={onMore} style={{
+      width: '100%', minHeight: 46, marginTop: 4, marginBottom: T.s3,
+      borderRadius: T.r2, cursor: 'pointer', background: T.glass,
+      border: `1px solid ${T.glassLine}`, color: T.muted,
+      fontFamily: T.cond, fontWeight: 800, fontSize: 12.5, letterSpacing: 1.2,
+      textTransform: 'uppercase', WebkitTapHighlightColor: 'transparent',
+    }}>Show {Math.min(left, 40)} more {label} · {left} left</button>
+  )
+}
+
 // ── ONE PERSON, ONE ROW ──────────────────────────────────────────────────────
 // Players, Search and the saved-players list each drew this themselves, three
 // times, with three different paddings, avatar sizes and chevrons — the same
@@ -453,8 +484,12 @@ export function tierCardStyle(conf, rgb) {
     // ONE shadow, and the coloured ring is a spread rather than a blur — a
     // spread costs nothing to rasterise where a 30px blur is the single most
     // expensive thing on the card.
-    boxShadow: w >= 3
-      ? `0 0 0 1px rgba(${rgb},0.28), 0 6px 18px rgba(0,0,0,0.45)`
-      : '0 4px 14px rgba(0,0,0,0.38)',
+    boxShadow: WIDE
+      ? (w >= 3 ? `0 0 0 1px rgba(${rgb},0.28), 0 6px 18px rgba(0,0,0,0.45)`
+                : '0 4px 14px rgba(0,0,0,0.38)')
+      : (w >= 3
+          ? `0 0 0 1px rgba(${rgb},0.22), 0 10px 30px rgba(${rgb},0.10),`
+            + ' 0 10px 28px rgba(0,0,0,0.5)'
+          : '0 10px 28px rgba(0,0,0,0.45)'),
   }
 }
