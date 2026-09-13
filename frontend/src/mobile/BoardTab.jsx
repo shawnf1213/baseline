@@ -470,10 +470,18 @@ export function PropRow({ r, saved, onSave, onOpen, index = 0, footNote,
   return (
     <Card index={index} style={{
       padding: 0, marginBottom: T.s2, position: 'relative',
-      // overflow must stay visible while open on desktop or the hung panel is
-      // clipped by its own card.
       overflow: wide && open ? 'visible' : 'hidden',
       zIndex: open ? 20 : undefined,
+      // ── THESE TWO OPTIMISATIONS FIGHT EACH OTHER ───────────────────────────
+      // index.css puts content-visibility:auto on every board card, and that
+      // applies `contain: paint` — which CLIPS DESCENDANTS TO THE CARD'S BOX,
+      // exactly like overflow:hidden. The expanded panel hangs BELOW the card,
+      // so it was being clipped away entirely and the dropdown rendered blank
+      // on desktop and only on desktop, because that is where the rule applies.
+      //
+      // The open card opts out. It is on screen by definition — it is the one
+      // the reader just clicked — so there was never anything to skip.
+      ...(wide && open ? { contentVisibility: 'visible', contain: 'none' } : null),
       ...tierCardStyle(conf, rgb),
     }}>
       <SideRail rgb={side ? rgb : null} weight={w} />
