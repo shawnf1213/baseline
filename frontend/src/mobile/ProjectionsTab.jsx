@@ -766,7 +766,8 @@ function NflProjections() {
               border: `1px solid ${T.glassLine}`, textAlign: 'center',
               position: 'relative',
             }}>
-              <button onClick={() => setPlayer(null)} style={{
+              <button onClick={() => { setPlayer(null); setRes(null); setErr(null) }}
+                      style={{
                 position: 'absolute', top: 4, right: 6, background: 'transparent',
                 border: 'none', color: T.muted2, fontSize: 19, cursor: 'pointer',
                 lineHeight: 1, padding: 4,
@@ -873,7 +874,10 @@ function NflProjections() {
 
       {err && !busy && <Empty title="Could not project" hint={String(err)} />}
 
-      {res && !busy && (
+      {/* `player` guarded for the same reason as the tennis verdict: this
+          card is built from the player it was run for and reads his name
+          and his club straight off it. */}
+      {res && !busy && player && (
         <>
           <Verdict rgb={rgb}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 11 }}>
@@ -1104,6 +1108,27 @@ export default function ProjectionsTab() {
   const [hist, setHist] = useState(null)
   const [err, setErr] = useState(null)
 
+  // Clearing a selection must clear the ANSWER TOO. A verdict card is built
+  // entirely from the two players it was run for — it prints their names and
+  // their photos — so leaving one on screen after a player is removed is both
+  // wrong (it describes a matchup that is no longer selected) and fatal: the
+  // card reads player.name, and player is now null.
+  //
+  // That is the crash. Run an ATP projection, switch to WTA, press × on one of
+  // the ATP players, and the whole app goes down on a null dereference.
+  const clearResult = () => { setRes(null); setHist(null); setErr(null) }
+  const clearPlayer = () => { setPlayer(null); clearResult() }
+  const clearOpponent = () => { setOpponent(null); clearResult() }
+
+  // SWITCHING TOUR CLEARS BOTH PLAYERS. An ATP player cannot be part of a WTA
+  // matchup, so leaving them selected offers a projection that cannot be run
+  // and, worse, one that LOOKS runnable.
+  const switchTour = (t) => {
+    if (t === tour) return
+    setTour(t); setCourt(''); setPicking(null)
+    setPlayer(null); setOpponent(null); clearResult()
+  }
+
   // Readiness follows the MODE. A match question needs no line at all, and
   // gating that screen on a number it never uses would be asking for input to
   // throw away.
@@ -1194,7 +1219,7 @@ export default function ProjectionsTab() {
           settings on a single row beneath them. */}
       <Card style={{ padding: 16, marginBottom: T.s3 }}>
         <GlassTabs value={tour} style={{ marginBottom: T.s3 }}
-                   onChange={t => { setTour(t); setCourt('') }}
+                   onChange={switchTour}
                    options={[{ key: 'ATP', label: 'ATP' },
                              { key: 'WTA', label: 'WTA' }]} />
 
@@ -1202,7 +1227,7 @@ export default function ProjectionsTab() {
           <PlayerTile label="Player" value={player}
                       active={picking === 'player'}
                       onActivate={() => setPicking('player')}
-                      onClear={() => setPlayer(null)} />
+                      onClear={clearPlayer} />
           {/* The VS medallion. Two inputs with a word between them is a form;
               this is the thing a matchup actually looks like. */}
           <div style={{
@@ -1215,7 +1240,7 @@ export default function ProjectionsTab() {
           <PlayerTile label="Opponent" value={opponent}
                       active={picking === 'opponent'}
                       onActivate={() => setPicking('opponent')}
-                      onClear={() => setOpponent(null)} />
+                      onClear={clearOpponent} />
         </div>
 
         {picking ? (
@@ -1226,6 +1251,8 @@ export default function ProjectionsTab() {
             onPick={p => {
               if (picking === 'player') {
                 setPlayer(p)
+                // Not switchTour: that clears both players, and this fires
+                // BECAUSE one was just chosen.
                 if (p.tour && p.tour !== tour) { setTour(p.tour); setCourt('') }
               } else setOpponent(p)
               setPicking(null)
@@ -1306,7 +1333,7 @@ export default function ProjectionsTab() {
 
       {err && !busy && <Empty title="Could not project" hint={String(err)} />}
 
-      {res && !busy && (
+      {res && !busy && player && opponent && (
         <>
           {mode === 'spread' ? (
             <SpreadVerdict res={res} spread={spread} player={player}
