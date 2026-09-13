@@ -1,5 +1,5 @@
 import { useMemo, useState, useEffect } from 'react'
-import { T } from './theme'
+import { T, useIsWide } from './theme'
 import { Card, Heart, Spinner, Empty, tier, sideTone, SideRail, TierBadge,
          ConfBar, tierCardStyle, PageTitle, Pill, GlassTabs,
          SectionLabel } from './bits'
@@ -8,7 +8,6 @@ import { shortProp, startTimeLabel, fmt, calibratedConfidence } from './data'
 import { projectRow, cachedProjection } from './project'
 import { useBookmarks, propBookmarkId } from './useBookmarks'
 import NflBoard from './NflBoard'
-import { motion, AnimatePresence } from 'motion/react'
 import { Num, Reveal, Tap, EdgeScale } from './motion'
 import PlayerPhoto from './PlayerPhoto'
 import { TeamMark } from './nflviz'
@@ -450,6 +449,7 @@ export function TopPlays({ rows, onOpen, saved, onSave }) {
 // NFL has no per-play clock but does have a RESULT once the game is played.
 export function PropRow({ r, saved, onSave, onOpen, index = 0, footNote,
                           open, onToggle }) {
+  const wide = useIsWide()
   const start = startTimeLabel(r.startTs)
   const hasProj = r._state === 'done'
   const { side, tone, rgb } = sideTone(hasProj ? r.edge : null)
@@ -459,15 +459,19 @@ export function PropRow({ r, saved, onSave, onOpen, index = 0, footNote,
 
   return (
     <Card index={index} style={{
-      padding: 0, marginBottom: T.s2, overflow: 'hidden', position: 'relative',
+      padding: 0, marginBottom: T.s2, position: 'relative',
+      // overflow must stay visible while open on desktop or the hung panel is
+      // clipped by its own card.
+      overflow: wide && open ? 'visible' : 'hidden',
+      zIndex: open ? 20 : undefined,
       ...tierCardStyle(conf, rgb),
     }}>
       <SideRail rgb={side ? rgb : null} weight={w} />
-      {side ? (
+      {side && w >= 2 ? (
         <div aria-hidden style={{
           position: 'absolute', inset: 0, pointerEvents: 'none',
-          background: `radial-gradient(120% 90% at 0% 0%, rgba(${rgb},`
-                    + `${0.02 + w * 0.018}), transparent 62%)`,
+          background: `linear-gradient(100deg, rgba(${rgb},`
+                    + `${0.03 + w * 0.02}), transparent 52%)`,
         }} />
       ) : null}
 
@@ -532,58 +536,62 @@ export function PropRow({ r, saved, onSave, onOpen, index = 0, footNote,
       </Tap>
 
       {/* ── THE WORKING ─────────────────────────────────────────────────── */}
-      <AnimatePresence initial={false}>
-        {open && (
-          <motion.div
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: 'auto', opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
-            style={{ overflow: 'hidden', position: 'relative' }}>
-            <div style={{ padding: '2px 14px 13px 17px' }}>
-              <div style={{ height: 1, background: T.glassLine,
-                            marginBottom: 10 }} />
+      <div style={{
+        display: 'grid',
+        gridTemplateRows: open ? '1fr' : '0fr',
+        transition: 'grid-template-rows 260ms cubic-bezier(0.16,1,0.3,1)',
+        ...(wide && open ? {
+          position: 'absolute', top: '100%', left: -1, right: -1, zIndex: 20,
+          background: T.bgElev,
+          border: `1px solid ${T.glassLine}`, borderTop: 'none',
+          borderRadius: `0 0 ${T.r3}px ${T.r3}px`,
+          boxShadow: '0 18px 40px rgba(0,0,0,0.6)',
+        } : null),
+      }}>
+        <div style={{ overflow: 'hidden', minHeight: 0 }}>
+          <div style={{ padding: '2px 14px 13px 17px' }}>
+            <div style={{ height: 1, background: T.glassLine,
+                          marginBottom: 10 }} />
 
-              {hasProj ? (
-                <EdgeScale line={r.line} proj={r.projection}
-                           tone={tone} rgb={rgb} />
-              ) : (
-                <div style={{ color: T.muted2, fontSize: 12, padding: '6px 0' }}>
-                  No projection for this line yet.
-                </div>
-              )}
-
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10,
-                            marginTop: 8 }}>
-                <span style={{ fontFamily: T.cond, fontWeight: 700,
-                               fontSize: 9.5, letterSpacing: 1.2,
-                               color: T.muted2 }}>CONF</span>
-                <ConfBar conf={conf} tone={tone} max={128} />
-                <div style={{ flex: 1 }} />
-                <Heart active={saved} onClick={onSave} />
+            {hasProj ? (
+              <EdgeScale line={r.line} proj={r.projection}
+                         tone={tone} rgb={rgb} />
+            ) : (
+              <div style={{ color: T.muted2, fontSize: 12, padding: '6px 0' }}>
+                No projection for this line yet.
               </div>
+            )}
 
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10,
-                            marginTop: 10 }}>
-                <span style={{ color: T.muted2, fontSize: 11, flex: 1,
-                               minWidth: 0, whiteSpace: 'nowrap',
-                               overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                  {footNote !== undefined ? footNote : (start ? `⏱ ${start}` : '')}
-                </span>
-                <button onClick={(e) => { e.stopPropagation(); onOpen?.() }}
-                        style={{
-                  minHeight: 36, padding: '0 14px', borderRadius: T.r1,
-                  cursor: 'pointer', background: `rgba(${rgb},0.12)`,
-                  border: `1px solid rgba(${rgb},0.34)`, color: tone,
-                  fontFamily: T.cond, fontWeight: 800, fontSize: 12,
-                  letterSpacing: 1, textTransform: 'uppercase',
-                  WebkitTapHighlightColor: 'transparent', flexShrink: 0,
-                }}>Player →</button>
-              </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10,
+                          marginTop: 8 }}>
+              <span style={{ fontFamily: T.cond, fontWeight: 700,
+                             fontSize: 9.5, letterSpacing: 1.2,
+                             color: T.muted2 }}>CONF</span>
+              <ConfBar conf={conf} tone={tone} max={128} />
+              <div style={{ flex: 1 }} />
+              <Heart active={saved} onClick={onSave} />
             </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10,
+                          marginTop: 10 }}>
+              <span style={{ color: T.muted2, fontSize: 11, flex: 1,
+                             minWidth: 0, whiteSpace: 'nowrap',
+                             overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                {footNote !== undefined ? footNote : (start ? `⏱ ${start}` : '')}
+              </span>
+              <button onClick={(e) => { e.stopPropagation(); onOpen?.() }}
+                      style={{
+                minHeight: 36, padding: '0 14px', borderRadius: T.r1,
+                cursor: 'pointer', background: `rgba(${rgb},0.12)`,
+                border: `1px solid rgba(${rgb},0.34)`, color: tone,
+                fontFamily: T.cond, fontWeight: 800, fontSize: 12,
+                letterSpacing: 1, textTransform: 'uppercase',
+                WebkitTapHighlightColor: 'transparent', flexShrink: 0,
+              }}>Player →</button>
+            </div>
+          </div>
+        </div>
+      </div>
     </Card>
   )
 }

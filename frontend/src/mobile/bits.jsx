@@ -38,7 +38,7 @@ export function Card({ children, style, onClick, index = 0, ...rest }) {
     // theme.js; blurring every card is what tanked scrolling before.
     background: T.glass,
     border: `1px solid ${T.glassLine}`, borderRadius: T.r3,
-    boxShadow: '0 1px 0 rgba(255,255,255,0.06) inset, 0 10px 30px rgba(0,0,0,0.45)',
+    boxShadow: '0 4px 14px rgba(0,0,0,0.38)',
     ...(onClick ? { cursor: 'pointer', WebkitTapHighlightColor: 'transparent' } : null),
     ...style,
   }
@@ -450,9 +450,11 @@ export function tierCardStyle(conf, rgb) {
   return {
     border: `1px solid ${w >= 3 ? `rgba(${rgb},0.42)`
                        : w === 2 ? `rgba(${rgb},0.22)` : T.glassLine}`,
+    // ONE shadow, and the coloured ring is a spread rather than a blur — a
+    // spread costs nothing to rasterise where a 30px blur is the single most
+    // expensive thing on the card.
     boxShadow: w >= 3
-      ? `0 0 0 1px rgba(${rgb},0.22), 0 10px 30px rgba(${rgb},0.10),`
-        + ' 0 10px 28px rgba(0,0,0,0.5)'
-      : '0 10px 28px rgba(0,0,0,0.45)',
+      ? `0 0 0 1px rgba(${rgb},0.28), 0 6px 18px rgba(0,0,0,0.45)`
+      : '0 4px 14px rgba(0,0,0,0.38)',
   }
 }

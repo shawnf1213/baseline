@@ -236,7 +236,7 @@ input, select, button { font-family: inherit; }
    This is the single biggest win available here and it costs two declarations. */
 .baseline-cols > * {
   content-visibility: auto;
-  contain-intrinsic-size: auto 132px;
+  contain-intrinsic-size: auto 96px;
 }
 
 /* Desktop card flow. GRID, NOT MULTI-COLUMN.
@@ -299,6 +299,15 @@ body::before {
     linear-gradient(rgba(255, 255, 255, 0.018) 1px, transparent 1px),
     linear-gradient(90deg, rgba(255, 255, 255, 0.018) 1px, transparent 1px);
   background-size: auto, auto, auto, 56px 56px, 56px 56px;
+
+  /* PROMOTE IT AND LEAVE IT ALONE. Five stacked gradient layers across a 2560px
+     desktop viewport is a large raster; on its own compositor layer the browser
+     paints it once and then only ever translates it, instead of re-rasterising
+     during a scroll. `contain: strict` says nothing inside can affect layout
+     elsewhere, so it is never a reason to re-run one. */
+  transform: translateZ(0);
+  will-change: transform;
+  contain: strict;
 }
 
 /* Three tracks once there is genuinely room for them. At 1560px two columns
