@@ -578,6 +578,34 @@ export function PlayerGroup({ g, saved, onSave, onOpen, index = 0,
           } : null),
         }}>
           <div style={{ padding: '2px 14px 12px 17px' }}>
+            {/* ── WHAT THE TRACK IS SHOWING ──────────────────────────────────
+                The compact scale drops the per-marker labels, because
+                repeating "BOOK LINE" and "BASELINE" under each of four props is
+                three-quarters noise — but stripped bare it left two dots
+                meaning nothing. The key belongs here: said ONCE for the card,
+                and it reads as a key rather than as a caption repeated. */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 14,
+                          paddingTop: 9, color: T.muted2, fontSize: 10 }}>
+              <span style={{ display: 'inline-flex', alignItems: 'center',
+                             gap: 5 }}>
+                <span style={{ width: 7, height: 7, borderRadius: 4,
+                               background: T.muted2, flexShrink: 0 }} />
+                Book line
+              </span>
+              <span style={{ display: 'inline-flex', alignItems: 'center',
+                             gap: 5 }}>
+                {/* The card's own colour, not a fixed one — each row's
+                    projection dot carries ITS lean, so a white swatch here
+                    would contradict every dot it is meant to explain. */}
+                <span style={{ width: 9, height: 9, borderRadius: 5,
+                               background: tone, flexShrink: 0 }} />
+                Baseline projection
+              </span>
+              <span style={{ marginLeft: 'auto', whiteSpace: 'nowrap' }}>
+                gap = edge
+              </span>
+            </div>
+
             {g.rows.map((r, i) => {
               const st = sideTone(r._state === 'done' ? r.edge : null)
               return (
@@ -610,7 +638,11 @@ export function PlayerGroup({ g, saved, onSave, onOpen, index = 0,
                       <div style={{ display: 'flex', alignItems: 'baseline',
                                     gap: 8, marginTop: 3 }}>
                         <span style={{ color: T.muted2, fontSize: 11 }}>
-                          proj <b style={{ color: T.white, fontSize: 13 }}>
+                          line <b style={{ color: T.muted, fontSize: 12.5 }}>
+                            {fmt(r.line, Number.isInteger(r.line) ? 0 : 1)}</b>
+                        </span>
+                        <span style={{ color: T.muted2, fontSize: 11 }}>
+                          proj <b style={{ color: st.tone, fontSize: 13 }}>
                             {fmt(r.projection)}</b>
                         </span>
                         <span style={{ color: st.tone, fontSize: 11.5,
