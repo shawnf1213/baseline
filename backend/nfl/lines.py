@@ -34,7 +34,7 @@ reason the tennis board filters on odds_type. User instruction 2026-09-05:
 
 UNDERDOG IS RETURNING 426 AS OF 2026-09-08
 -------------------------------------------
-`api.underdogfantasy.com/beta/v6/over_under_lines` — the URL tennis, MLB and
+`api.underdogfantasy.com/v1/over_under_lines` — the URL tennis, MLB and
 this module all use — now answers `426 upgrade_required` for every sport. v5
 does the same; v7 and v8 do not exist. The one live endpoint, /v2, requires a
 `product` parameter whose accepted values are not public.
@@ -54,7 +54,14 @@ import requests
 
 log = logging.getLogger("baseline.nfl.lines")
 
-BOARD_URL = "https://api.underdogfantasy.com/beta/v6/over_under_lines"
+# UNDERDOG MOVED THE BOARD, it did not close it. `beta/v6` answers 426
+# "a new version is required to continue" to everyone now — which reads
+# like a deliberate block and is not one: they shipped a new client on
+# app.underdogsports.com and retired the beta prefix. The current path is
+# plain `v1`, it is unauthenticated, needs no headers, and returns the same
+# payload shape (over_under_lines / appearances / players / games) — 9,064
+# lines across NFL, MLB and tennis when this was changed.
+BOARD_URL = "https://api.underdogfantasy.com/v1/over_under_lines"
 PRIZEPICKS_URL = "https://partner-api.prizepicks.com/projections?per_page=1000"
 TIMEOUT = 40
 

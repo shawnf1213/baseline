@@ -56,7 +56,14 @@ import requests
 
 log = logging.getLogger("baseline.mlb.lines")
 
-BOARD_URL = "https://api.underdogfantasy.com/beta/v6/over_under_lines"
+# UNDERDOG MOVED THE BOARD, it did not close it. `beta/v6` answers 426
+# "a new version is required to continue" to everyone now — which reads
+# like a deliberate block and is not one: they shipped a new client on
+# app.underdogsports.com and retired the beta prefix. The current path is
+# plain `v1`, it is unauthenticated, needs no headers, and returns the same
+# payload shape (over_under_lines / appearances / players / games) — 9,064
+# lines across NFL, MLB and tennis when this was changed.
+BOARD_URL = "https://api.underdogfantasy.com/v1/over_under_lines"
 PRIZEPICKS_URL = "https://partner-api.prizepicks.com/projections?per_page=1000"
 TIMEOUT = 40
 

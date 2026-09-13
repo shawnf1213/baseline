@@ -35,8 +35,13 @@ export const fetchPrizePicksBoard = (signal) =>
 
 // Underdog publishes its whole board on one unauthenticated endpoint, but it is
 // CORS-locked to browsers, so it takes the same same-origin `/ud` proxy treatment.
+//
+// `v1`, NOT `beta/v6`. The beta prefix now answers 426 "a new version is
+// required to continue" to everyone, which reads like a block and is not one —
+// they shipped a new client and retired that path. The timeout is generous
+// because the response is ~25MB: every sport on one endpoint.
 export const fetchUnderdogBoard = (signal) =>
-  axios.get('/ud/beta/v6/over_under_lines', { timeout: 25000, signal }).then(r => r.data)
+  axios.get('/ud/v1/over_under_lines', { timeout: 45000, signal }).then(r => r.data)
 
 export const searchPlayers  = (query, tour, signal) =>
   api.get('/api/search', { params: { query, tour }, signal }).then(r => r.data)

@@ -222,21 +222,15 @@ export default function BoardTab({ boards, book, setBook, loading, error, onOpen
       )}
 
       {!loading && !error && !rows.length && (
-        /* AN EMPTY UNDERDOG BOARD IS NOT AN EMPTY MARKET. Their API answers
-           426 "a new version is required to continue" to every request — a
-           client-version gate, not a quiet day — and telling a reader to check
-           back when matches are near sends them to wait for something that will
-           not arrive. Say which it is. */
-        <Empty icon={book === 'underdog' ? '🔒' : '🎾'}
+        /* Underdog reads again — the 426 was a retired path, not a block, and
+           v1 answers unauthenticated. So an empty board here means an empty
+           board again, and this says so. */
+        <Empty icon="🎾"
           title={board?.rows?.length ? 'No props match these filters'
-            : book === 'underdog' ? 'Underdog is unavailable'
             : 'No tennis props on the board'}
           hint={board?.rows?.length ? 'Try clearing a filter.'
-            : book === 'underdog'
-              ? 'Underdog version-gated their public board, so we cannot read it'
-                + ' for any sport. PrizePicks is unaffected.'
-              : 'PrizePicks has no tennis lines up right now. Check back when'
-                + ' matches are near.'} />
+            : `${book === 'underdog' ? 'Underdog' : 'PrizePicks'} has no tennis`
+              + ' lines up right now. Check back when matches are near.'} />
       )}
 
       <div className="baseline-cols">

@@ -134,6 +134,15 @@ def proxies_for(sport: str, session_id: str = None):
     return {"http": url, "https": url}, port
 
 
+# HOSTS THAT ANSWER A DATACENTRE IP AND REFUSE THE PROXY. The usual problem is
+# the opposite — ESPN 403s Railway and answers a residential address, which is
+# why this module exists — but Underdog is the mirror image: every proxy port
+# gets a 403 while Vercel's edge and Railway both get a clean 200. Sending it
+# through the proxy costs a full rotation of failures before the direct fallback
+# succeeds anyway, so it is asked to skip straight there.
+DIRECT_ONLY = ("api.underdogfantasy.com",)
+
+
 def get(url, sport: str, session_id: str = None, retries: int = 2, **kw):
     """requests.get through the sport's proxy, falling back to DIRECT.
 
@@ -144,6 +153,13 @@ def get(url, sport: str, session_id: str = None, retries: int = 2, **kw):
     Returns a Response, or None when every attempt failed. Never raises.
     """
     import requests
+    if any(h in str(url) for h in DIRECT_ONLY):
+        try:
+            return requests.get(url, **kw)
+        except Exception as exc:  # noqa: BLE001 — Rule 2
+            log.warning("direct-only fetch failed for %s: %s",
+                        str(url)[:60], str(exc)[:120])
+            return None
     last = None
     for attempt in range(max(1, retries)):
         px, port = proxies_for(sport, session_id=session_id)
