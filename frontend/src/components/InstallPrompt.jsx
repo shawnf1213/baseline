@@ -21,6 +21,17 @@ function isIOS() {
   return /iphone|ipad|ipod/i.test(ua) && !window.MSStream
 }
 
+const DownloadIcon = () => (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#000" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M12 3v12M7 11l5 5 5-5M4 21h16" />
+  </svg>
+)
+const ShareIcon = () => (
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke={T.green} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ verticalAlign: 'middle', display: 'inline' }}>
+    <path d="M12 16V4M8 8l4-4 4 4M6 12v7a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1v-7" />
+  </svg>
+)
+
 export default function InstallPrompt() {
   const [deferred, setDeferred] = useState(null)   // Android BeforeInstallPromptEvent
   const [showAndroid, setShowAndroid] = useState(false)
@@ -147,14 +158,3 @@ function Step({ n, children }) {
     </div>
   )
 }
-
-const DownloadIcon = () => (
-  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#000" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M12 3v12M7 11l5 5 5-5M4 21h16" />
-  </svg>
-)
-const ShareIcon = () => (
-  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke={T.green} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ verticalAlign: 'middle', display: 'inline' }}>
-    <path d="M12 16V4M8 8l4-4 4 4M6 12v7a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1v-7" />
-  </svg>
-)

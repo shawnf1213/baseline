@@ -87,20 +87,26 @@ export default function BoardTab({ boards, book, setBook, loading, error, onOpen
 
   // Displayed confidence is CALIBRATED across the visible board — see
   // data.calibratedConfidence. The raw score gates; it does not describe.
-  // ONE PAGE IS WHAT RENDERS. Slicing here rather than in the JSX keeps the
-  // page maths in one place and out of the render path.
-  // ONE CARD PER PLAYER. Grouping happens after the calibration below, so a
-  // group's ordering uses the confidence the board actually shows.
-  const pages = Math.max(1, Math.ceil(groups.length / PAGE_SIZE))
-  const pageGroups = useMemo(
-    () => groups.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE),
-    [groups, page])
-
+  // Displayed confidence is CALIBRATED across the visible board — see
+  // data.calibratedConfidence. The raw score gates; it does not describe.
   const calib = useMemo(() => calibratedConfidence(rows), [rows])
+
+  // ONE CARD PER PLAYER, built on the CALIBRATED confidence so a group's
+  // ordering matches the number the board shows. Declared after calib for that
+  // reason — and pages must come after this, not before it: the previous
+  // ordering read `groups` above its own declaration, which is a temporal dead
+  // zone error and crashed the whole app on load.
   const groups = useMemo(
     () => groupByPlayer(rows.map(
       r => ({ ...r, confidence: calib.get(r.key) ?? r.confidence }))),
     [rows, calib])
+
+  // ONE PAGE IS WHAT RENDERS. Slicing here rather than in the JSX keeps the
+  // page maths in one place and out of the render path.
+  const pages = Math.max(1, Math.ceil(groups.length / PAGE_SIZE))
+  const pageGroups = useMemo(
+    () => groups.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE),
+    [groups, page])
   const activeCount = ['prop', 'tour', 'surface'].filter(k => filters[k] !== 'All').length
   const projecting = filtered.slice(0, PROJECT_CAP).some(r => proj[r.key]?.loading)
 
