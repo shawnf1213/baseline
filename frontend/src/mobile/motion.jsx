@@ -142,7 +142,7 @@ export function Tap({ children, onClick, style, plain, ...rest }) {
 // The dots still move, so the gap between them is still the picture — and when
 // there is barely an edge they sit almost on top of each other, which is
 // exactly what that means.
-export function EdgeScale({ line, proj, tone, rgb }) {
+export function EdgeScale({ line, proj, tone, rgb, compact }) {
   if (typeof line !== 'number' || typeof proj !== 'number') return null
   const lo = Math.min(line, proj), hi = Math.max(line, proj)
   // Pad beyond the pair so neither marker ever sits on an end — a dot pinned to
@@ -162,6 +162,28 @@ export function EdgeScale({ line, proj, tone, rgb }) {
                borderRadius: d, background: c,
                border: `2px solid ${T.ground}` }} />
   )
+
+  // COMPACT drops the labels and keeps the track. Inside a player's prop list
+  // the two numbers are already on the row, so repeating them under every one
+  // of four props is three-quarters noise.
+  if (compact) {
+    return (
+      <div style={{ position: 'relative', height: 12 }}>
+        <div style={{ position: 'absolute', left: 0, right: 0, top: '50%',
+                      marginTop: -1.5, height: 3, borderRadius: 3,
+                      background: 'rgba(255,255,255,0.07)' }} />
+        <motion.div
+          initial={REDUCED ? false : { width: 0 }}
+          animate={{ width: `${width}%` }}
+          transition={{ duration: 0.6, ease: EASE, delay: 0.05 }}
+          style={{ position: 'absolute', left: `${from}%`, top: '50%',
+                   marginTop: -1.5, height: 3, borderRadius: 3,
+                   background: `rgba(${rgb},0.85)` }} />
+        {dot(T.muted2, 7, lPct, 0.2)}
+        {dot(tone || T.white, 9, pPct, 0.28)}
+      </div>
+    )
+  }
 
   return (
     <div style={{ marginTop: 4 }}>

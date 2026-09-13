@@ -89,12 +89,18 @@ export default function BoardTab({ boards, book, setBook, loading, error, onOpen
   // data.calibratedConfidence. The raw score gates; it does not describe.
   // ONE PAGE IS WHAT RENDERS. Slicing here rather than in the JSX keeps the
   // page maths in one place and out of the render path.
-  const pages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE))
-  const pageRows = useMemo(
-    () => rows.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE),
-    [rows, page])
+  // ONE CARD PER PLAYER. Grouping happens after the calibration below, so a
+  // group's ordering uses the confidence the board actually shows.
+  const pages = Math.max(1, Math.ceil(groups.length / PAGE_SIZE))
+  const pageGroups = useMemo(
+    () => groups.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE),
+    [groups, page])
 
   const calib = useMemo(() => calibratedConfidence(rows), [rows])
+  const groups = useMemo(
+    () => groupByPlayer(rows.map(
+      r => ({ ...r, confidence: calib.get(r.key) ?? r.confidence }))),
+    [rows, calib])
   const activeCount = ['prop', 'tour', 'surface'].filter(k => filters[k] !== 'All').length
   const projecting = filtered.slice(0, PROJECT_CAP).some(r => proj[r.key]?.loading)
 
@@ -204,7 +210,7 @@ export default function BoardTab({ boards, book, setBook, loading, error, onOpen
                     onSave={(r, e) => { e.stopPropagation()
                       toggle({ id: propBookmarkId(r), kind: 'prop', ...r }) }} />
           <SectionLabel right={<span style={{ color: T.muted2, fontSize: 11 }}>
-            {rows.length} lines
+            {groups.length} players · {rows.length} lines
           </span>}>Full board</SectionLabel>
         </>
       )}
@@ -217,19 +223,21 @@ export default function BoardTab({ boards, book, setBook, loading, error, onOpen
       )}
 
       <div className="baseline-cols">
-        {!loading && !error && pageRows.map((r, i) => (
-          <PropRow key={r.key}
-            r={{ ...r, confidence: calib.get(r.key) ?? r.confidence }} index={i}
-            open={openKey === r.key}
-            onToggle={() => setOpenKey(k => (k === r.key ? null : r.key))}
-            saved={has(propBookmarkId(r))}
-            onSave={() => toggle({ id: propBookmarkId(r), kind: 'prop', ...r })}
-            onOpen={() => onOpenPlayer({ name: r.player, tour: r.tour })} />
+        {!loading && !error && pageGroups.map((g, i) => (
+          <PlayerGroup key={g.key} g={g} index={i}
+            open={openKey === g.key}
+            onToggle={() => setOpenKey(k => (k === g.key ? null : g.key))}
+            saved={has(propBookmarkId(g.rows[0]))}
+            onSave={() => toggle({ id: propBookmarkId(g.rows[0]),
+                                   kind: 'prop', ...g.rows[0] })}
+            onOpen={() => onOpenPlayer({ name: g.player,
+                                         tour: g.rows[0].tour })} />
         ))}
       </div>
 
       {!loading && !error && (
-        <Pager page={page} pages={pages} onPage={setPage} total={rows.length} />
+        <Pager page={page} pages={pages} onPage={setPage}
+               total={groups.length} label="players" />
       )}
 
       {!loading && !error && !!rows.length && (
@@ -440,52 +448,39 @@ export function TopPlays({ rows, onOpen, saved, onSave }) {
   )
 }
 
-// EXPORTED so the NFL board renders this exact component. A second card that
-// merely looks similar drifts the moment either is touched; there is one board
-// card in this app and both sports use it.
+// ── ONE CARD PER PLAYER ──────────────────────────────────────────────────────
+// The board was one card per PROP, so a player the model priced four ways got
+// four cards — the same face, the same matchup and the same opponent repeated
+// down the page with one line different each time. Ilia Simakin appeared twice
+// in a single screenful; Alexander Zverev twice in the top three.
 //
-// ── COLLAPSED BY DEFAULT, ONE OPEN AT A TIME ─────────────────────────────────
-// A hundred and sixty-eight cards, each carrying its full working, is not a
-// board — it is a wall, and a reader who has two minutes bounces off it. So the
-// closed row says only what raises the question: who, the call, and how big the
-// disagreement is. That is the hook.
+// Grouping by player fixes three things at once:
+//   • The duplication. A reader looking at Simakin wants his card, not three of
+//     them scattered among other people's.
+//   • The comparison. His fantasy score and his total games are the same bet on
+//     the same match from two angles, and they were never side by side.
+//   • The cost. 168 NFL props are about 60 players, and a card is the expensive
+//     unit — this is a bigger saving than every paint optimisation together,
+//     and unlike them it makes the board better rather than merely cheaper.
 //
-// Everything that ANSWERS the question — the two numbers on a shared scale, the
-// confidence, the matchup — is one tap away. A reader chooses what to look into
-// rather than being handed everything at once, and because the parent keeps a
-// single open key, opening one closes the last. The board can never return to
-// being a wall.
-//
-// TAPPING THE ROW EXPANDS; the player screen is a deliberate second step inside
-// the open row. Making the whole row navigate away was the old behaviour and it
-// meant a reader could not inspect a play without leaving the board.
-//
-// `footNote` overrides the bottom-left slot. Tennis puts a start time there;
-// NFL has no per-play clock but does have a RESULT once the game is played.
-export function PropRow({ r, saved, onSave, onOpen, index = 0, footNote,
-                          open, onToggle }) {
+// The closed card carries the player's BEST play, because that is what decides
+// whether the card is worth opening. The rest are one tap down.
+export function PlayerGroup({ g, saved, onSave, onOpen, index = 0,
+                             open, onToggle, footNoteFor }) {
   const wide = useIsWide()
-  const start = startTimeLabel(r.startTs)
-  const hasProj = r._state === 'done'
-  const { side, tone, rgb } = sideTone(hasProj ? r.edge : null)
-  const conf = hasProj ? r.confidence : null
+  const best = g.rows[0]
+  const { side, tone, rgb } = sideTone(best._state === 'done' ? best.edge : null)
+  const conf = best._state === 'done' ? best.confidence : null
   const w = tier(conf).weight
-  const isNfl = r.tour === 'NFL'
+  const isNfl = best.tour === 'NFL'
 
   return (
     <Card index={index} style={{
       padding: 0, marginBottom: T.s2, position: 'relative',
       overflow: wide && open ? 'visible' : 'hidden',
       zIndex: open ? 20 : undefined,
-      // ── THESE TWO OPTIMISATIONS FIGHT EACH OTHER ───────────────────────────
-      // index.css puts content-visibility:auto on every board card, and that
-      // applies `contain: paint` — which CLIPS DESCENDANTS TO THE CARD'S BOX,
-      // exactly like overflow:hidden. The expanded panel hangs BELOW the card,
-      // so it was being clipped away entirely and the dropdown rendered blank
-      // on desktop and only on desktop, because that is where the rule applies.
-      //
-      // The open card opts out. It is on screen by definition — it is the one
-      // the reader just clicked — so there was never anything to skip.
+      // content-visibility applies `contain: paint`, which clips the hung panel
+      // to the card's box. The open card opts out — see the note in PropRow.
       ...(wide && open ? { contentVisibility: 'visible', contain: 'none' } : null),
       ...tierCardStyle(conf, rgb),
     }}>
@@ -494,36 +489,41 @@ export function PropRow({ r, saved, onSave, onOpen, index = 0, footNote,
         <div aria-hidden style={{
           position: 'absolute', inset: 0, pointerEvents: 'none',
           background: wide
-            ? `linear-gradient(100deg, rgba(${rgb},`
-              + `${0.03 + w * 0.02}), transparent 52%)`
+            ? `linear-gradient(100deg, rgba(${rgb},${0.03 + w * 0.02}),`
+              + ' transparent 52%)'
             : `radial-gradient(120% 90% at 0% 0%, rgba(${rgb},`
               + `${0.02 + w * 0.018}), transparent 62%)`,
         }} />
       ) : null}
 
-      {/* ── THE CLOSED ROW ──────────────────────────────────────────────── */}
       <Tap onClick={onToggle} plain style={{
         position: 'relative', display: 'flex', alignItems: 'center', gap: 10,
         padding: '11px 12px 11px 17px',
       }}>
-        {isNfl ? <TeamMark abbr={r._pick?.team} size={34} />
-               : <PlayerPhoto name={r.player} size={34} ring={false} />}
+        {isNfl ? <TeamMark abbr={best._pick?.team} size={34} />
+               : <PlayerPhoto name={g.player} size={34} ring={false} />}
 
         <div style={{ minWidth: 0, flex: 1 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
             <span style={{ fontFamily: T.cond, fontWeight: 800, fontSize: 17,
                            color: T.white, letterSpacing: 0.2, lineHeight: 1.1,
                            whiteSpace: 'nowrap', overflow: 'hidden',
-                           textOverflow: 'ellipsis' }}>{r.player}</span>
+                           textOverflow: 'ellipsis' }}>{g.player}</span>
             {w >= 3 ? <TierBadge conf={conf} tone={tone} rgb={rgb} /> : null}
           </div>
           <div style={{ color: T.muted2, fontSize: 11.5, marginTop: 1,
                         whiteSpace: 'nowrap', overflow: 'hidden',
                         textOverflow: 'ellipsis' }}>
-            {shortProp(r.propType)} · vs {r.opponent}
+            vs {g.opponent}
+            {' · '}
+            <span style={{ color: T.muted }}>
+              {g.rows.length} prop{g.rows.length === 1 ? '' : 's'}
+            </span>
           </div>
         </div>
 
+        {/* The BEST play on this player, because that is what decides whether
+            the card is worth opening. */}
         <div style={{ textAlign: 'right', flexShrink: 0 }}>
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 5,
                         justifyContent: 'flex-end' }}>
@@ -531,27 +531,26 @@ export function PropRow({ r, saved, onSave, onOpen, index = 0, footNote,
                            color: tone, letterSpacing: 0.4 }}>{side || '—'}</span>
             <span style={{ fontSize: 15, fontWeight: 800, color: T.white,
                            fontVariantNumeric: 'tabular-nums' }}>
-              {fmt(r.line, Number.isInteger(r.line) ? 0 : 1)}
+              {fmt(best.line, Number.isInteger(best.line) ? 0 : 1)}
             </span>
           </div>
-          {hasProj ? (
-            <div style={{ fontSize: 12.5, fontWeight: 800, color: tone,
-                          marginTop: 1, fontVariantNumeric: 'tabular-nums' }}>
-              {r.edge > 0 ? '+' : ''}{fmt(r.edge)}
-              <span style={{ color: T.muted2, fontWeight: 700,
-                             fontSize: 9.5, marginLeft: 3 }}>EDGE</span>
+          {best._state === 'done' ? (
+            <div style={{ fontSize: 11.5, color: T.muted2, marginTop: 1,
+                          whiteSpace: 'nowrap' }}>
+              {shortProp(best.propType)}
+              <b style={{ color: tone, marginLeft: 5 }}>
+                {best.edge > 0 ? '+' : ''}{fmt(best.edge)}
+              </b>
             </div>
           ) : (
             <div style={{ marginTop: 3 }}>
-              {r._state === 'loading'
+              {best._state === 'loading'
                 ? <Spinner size={13} />
                 : <span style={{ color: T.muted2, fontSize: 11 }}>—</span>}
             </div>
           )}
         </div>
 
-        {/* The affordance. Without it a closed row gives no sign there is more,
-            and a reader never finds the half of the product that persuades. */}
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none"
              stroke={open ? tone : T.muted2} strokeWidth="2.5"
              strokeLinecap="round" strokeLinejoin="round"
@@ -561,17 +560,6 @@ export function PropRow({ r, saved, onSave, onOpen, index = 0, footNote,
         </svg>
       </Tap>
 
-      {/* ── THE WORKING ──────────────────────────────────────────────────
-          RENDERED ONLY WHEN OPEN, at its natural height. The previous version
-          animated grid-template-rows from 0fr to 1fr, which works in flow and
-          CANNOT work out of flow: an absolutely positioned grid has no height
-          to resolve `1fr` against, so the row collapsed to zero and the panel
-          showed nothing at all. A closed row now costs nothing to render,
-          which is the point on a board of 168.
-
-          OUT OF FLOW ON A WIDE SCREEN so the grid row keeps its closed height
-          and the cards beside it do not gain a gap. In flow on a phone, where
-          growing is correct and an overlay would cover the next card. */}
       {open ? (
         <div style={{
           animation: 'fade-in 160ms ease',
@@ -583,41 +571,79 @@ export function PropRow({ r, saved, onSave, onOpen, index = 0, footNote,
             boxShadow: '0 16px 34px rgba(0,0,0,0.6)',
           } : null),
         }}>
-          <div style={{ padding: '2px 14px 13px 17px' }}>
-            <div style={{ height: 1, background: T.glassLine,
-                          marginBottom: 10 }} />
+          <div style={{ padding: '2px 14px 12px 17px' }}>
+            {g.rows.map((r, i) => {
+              const st = sideTone(r._state === 'done' ? r.edge : null)
+              return (
+                <div key={r.key} style={{
+                  paddingTop: 10, marginTop: i ? 10 : 0,
+                  borderTop: `1px solid ${T.glassLine}`,
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'baseline',
+                                gap: 8 }}>
+                    <span style={{ fontFamily: T.cond, fontWeight: 800,
+                                   fontSize: 12, letterSpacing: 1,
+                                   textTransform: 'uppercase', color: T.muted,
+                                   flex: 1, minWidth: 0, whiteSpace: 'nowrap',
+                                   overflow: 'hidden',
+                                   textOverflow: 'ellipsis' }}>
+                      {shortProp(r.propType)}
+                    </span>
+                    <span style={{ fontFamily: T.cond, fontWeight: 800,
+                                   fontSize: 15, color: st.tone,
+                                   letterSpacing: 0.4 }}>{st.side || '—'}</span>
+                    <span style={{ fontSize: 15, fontWeight: 800,
+                                   color: T.white,
+                                   fontVariantNumeric: 'tabular-nums' }}>
+                      {fmt(r.line, Number.isInteger(r.line) ? 0 : 1)}
+                    </span>
+                  </div>
 
-            {hasProj ? (
-              <EdgeScale line={r.line} proj={r.projection}
-                         tone={tone} rgb={rgb} />
-            ) : (
-              <div style={{ color: T.muted2, fontSize: 12, padding: '6px 0' }}>
-                No projection for this line yet.
-              </div>
-            )}
+                  {r._state === 'done' ? (
+                    <>
+                      <div style={{ display: 'flex', alignItems: 'baseline',
+                                    gap: 8, marginTop: 3 }}>
+                        <span style={{ color: T.muted2, fontSize: 11 }}>
+                          proj <b style={{ color: T.white, fontSize: 13 }}>
+                            {fmt(r.projection)}</b>
+                        </span>
+                        <span style={{ color: st.tone, fontSize: 11.5,
+                                       fontWeight: 800 }}>
+                          {r.edge > 0 ? '+' : ''}{fmt(r.edge)} edge
+                        </span>
+                        <div style={{ flex: 1 }} />
+                        <ConfBar conf={r.confidence} tone={st.tone} max={104} />
+                      </div>
+                      <div style={{ marginTop: 5 }}>
+                        <EdgeScale compact line={r.line} proj={r.projection}
+                                   tone={st.tone} rgb={st.rgb} />
+                      </div>
+                    </>
+                  ) : (
+                    <div style={{ color: T.muted2, fontSize: 11.5,
+                                  marginTop: 3 }}>
+                      {r._state === 'loading' ? 'Projecting…'
+                        : 'No projection for this line yet.'}
+                    </div>
+                  )}
+
+                  {footNoteFor ? (
+                    <div style={{ color: T.muted2, fontSize: 10.5,
+                                  marginTop: 4 }}>{footNoteFor(r)}</div>
+                  ) : null}
+                </div>
+              )
+            })}
 
             <div style={{ display: 'flex', alignItems: 'center', gap: 10,
-                          marginTop: 8 }}>
-              <span style={{ fontFamily: T.cond, fontWeight: 700,
-                             fontSize: 9.5, letterSpacing: 1.2,
-                             color: T.muted2 }}>CONF</span>
-              <ConfBar conf={conf} tone={tone} max={128} />
-              <div style={{ flex: 1 }} />
-              <Heart active={saved} onClick={onSave} />
-            </div>
-
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10,
-                          marginTop: 10 }}>
+                          marginTop: 12, paddingTop: 10,
+                          borderTop: `1px solid ${T.glassLine}` }}>
               <span style={{ color: T.muted2, fontSize: 11, flex: 1,
                              minWidth: 0, whiteSpace: 'nowrap',
                              overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                {footNote !== undefined ? footNote : (start ? `⏱ ${start}` : '')}
+                {startTimeLabel(best.startTs) ? `⏱ ${startTimeLabel(best.startTs)}` : ''}
               </span>
-              {/* NEUTRAL, ALWAYS. This took the lean's colour, so the same
-                  control was green on one card and red on the next — and
-                  colour in this app MEANS something: it is the side the model
-                  is on. Spending it on a navigation button says this play is an
-                  under, which is not what opening a player page does. */}
+              <Heart active={saved} onClick={onSave} />
               <button onClick={(e) => { e.stopPropagation(); onOpen?.() }}
                       style={{
                 minHeight: 36, padding: '0 14px', borderRadius: T.r1,
@@ -634,4 +660,28 @@ export function PropRow({ r, saved, onSave, onOpen, index = 0, footNote,
     </Card>
   )
 }
+
+// Group priced rows by the PERSON AND THE MATCH. Keyed on both because a name
+// alone would merge a player's two fixtures into one card, and on an NFL board
+// that spans two slates it would put Sunday's line under Saturday's game.
+//
+// Within a group the best play leads — conviction tier first, then edge — so
+// the closed card shows the reason to open it. Groups are ordered by their own
+// best play, so the board stays sorted by exactly what it sorted by before.
+export function groupByPlayer(rows) {
+  const m = new Map()
+  for (const r of rows) {
+    const k = `${r.player}|${r.opponent}|${r.slate_date || ''}`
+    if (!m.has(k)) m.set(k, { key: k, player: r.player, opponent: r.opponent,
+                              rows: [] })
+    m.get(k).rows.push(r)
+  }
+  const rank = (a, b) => (tier(b.confidence).weight - tier(a.confidence).weight)
+    || (Math.abs(b.edge ?? -1) - Math.abs(a.edge ?? -1))
+  const out = [...m.values()]
+  for (const g of out) g.rows.sort(rank)
+  out.sort((a, b) => rank(a.rows[0], b.rows[0]))
+  return out
+}
+
 

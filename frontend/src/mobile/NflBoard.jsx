@@ -1,16 +1,17 @@
 import { useEffect, useMemo, useState } from 'react'
 import { T } from './theme'
 import { Spinner, Empty, SectionLabel, Pager, PAGE_SIZE } from './bits'
-import { PropRow, BoardSummary, TopPlays } from './BoardTab'
+import { BoardSummary, TopPlays, PlayerGroup,
+         groupByPlayer } from './BoardTab'
 import { useBookmarks } from './useBookmarks'
 import { fetchNflBoard, fetchNflRecord } from '../utils/api'
 import NflPlayerSheet from './NflPlayerSheet'
 
 // ── NFL BOARD ────────────────────────────────────────────────────────────────
-// Renders the SAME card as the tennis board — PropRow, imported, not
-// reimplemented. A lookalike card drifts the moment either sport is touched,
-// and the two boards are the same idea: a player, a prop, a line, our number,
-// and how confident we are.
+// Renders the SAME cards as the tennis board — PlayerGroup, BoardSummary and
+// TopPlays, imported, not reimplemented. A lookalike drifts the moment either
+// sport is touched, and the two boards are the same idea: a player, the props
+// we priced on him, our number against the book's, and how confident we are.
 //
 // THE FULL SCANNED MARKET, like tennis — every line the model could price, not
 // the eight that went to Discord. 171 props across 13 games on a Sunday.
@@ -47,7 +48,7 @@ function prettyDate(iso) {
     { weekday: 'short', month: 'numeric', day: 'numeric', timeZone: 'UTC' })
 }
 
-// NFL pick -> the shape PropRow already speaks.
+// NFL pick -> the row shape the shared board components speak.
 function toRow(p) {
   return {
     key: `nfl-${p.id}`,
@@ -170,10 +171,14 @@ export default function NflBoard({ onMeta }) {
   // board than the others.
   const viewRows = useMemo(() => rows.map(toRow), [rows])
 
-  const pages = Math.max(1, Math.ceil(viewRows.length / PAGE_SIZE))
-  const pageRows = useMemo(
-    () => viewRows.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE),
-    [viewRows, page])
+  // The SAME grouping the tennis board uses — 168 props across roughly sixty
+  // players, so the board is sixty cards instead of a hundred and sixty-eight
+  // with the same faces repeated four times each.
+  const groups = useMemo(() => groupByPlayer(viewRows), [viewRows])
+  const pages = Math.max(1, Math.ceil(groups.length / PAGE_SIZE))
+  const pageGroups = useMemo(
+    () => groups.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE),
+    [groups, page])
 
   const tally = useMemo(() => {
     const w = rows.filter(p => p.result === 'W').length
@@ -210,8 +215,8 @@ export default function NflBoard({ onMeta }) {
 
       <SectionLabel right={
         tally.w + tally.l > 0
-          ? `${tally.w}-${tally.l} · ${rows.length} props`
-          : `${rows.length} lines`
+          ? `${tally.w}-${tally.l} · ${groups.length} players`
+          : `${groups.length} players · ${rows.length} lines`
       }>Full board</SectionLabel>
 
       {/* The SAME wrapper the tennis board uses — CSS multi-column, 2 up on a
@@ -219,18 +224,19 @@ export default function NflBoard({ onMeta }) {
           ancestor. Reusing the class rather than a new grid keeps the two
           boards laying out identically at every breakpoint. */}
       <div className="baseline-cols">
-        {pageRows.map((r, i) => (
-          <PropRow key={r.key} r={r} index={i}
-                   open={openKey === r.key}
-                   onToggle={() => setOpenKey(k => (k === r.key ? null : r.key))}
-                   saved={has(r.key)} onSave={() => toggle(r.key)}
-                   onOpen={() => setOpen(r._pick)}
-                   footNote={footNoteFor(r._pick)} />
+        {pageGroups.map((g, i) => (
+          <PlayerGroup key={g.key} g={g} index={i}
+                       open={openKey === g.key}
+                       onToggle={() => setOpenKey(k => (k === g.key ? null : g.key))}
+                       saved={has(g.rows[0].key)}
+                       onSave={() => toggle(g.rows[0].key)}
+                       onOpen={() => setOpen(g.rows[0]._pick)}
+                       footNoteFor={r => footNoteFor(r._pick)} />
         ))}
       </div>
 
       <Pager page={page} pages={pages} onPage={setPage}
-             total={viewRows.length} />
+             total={groups.length} label="players" />
 
       {open && (
         <NflPlayerSheet player={open} rows={picks} posted={posted}
