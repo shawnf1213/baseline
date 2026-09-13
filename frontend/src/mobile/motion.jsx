@@ -128,63 +128,79 @@ export function Tap({ children, onClick, style, plain, ...rest }) {
 // ── THE EDGE, AS A DISTANCE ──────────────────────────────────────────────────
 // "31.3 | −19.2" in a box is two numbers you have to hold in your head and
 // subtract. The edge IS a gap between two points, so this draws it as one: the
-// book's line and our projection on a shared track with the space between them
-// filled. A reader sees how far apart they are before reading either figure,
-// which is the whole claim the product makes.
+// book's number and ours on a shared track with the space between them filled.
+// A reader sees how far apart they are before reading either figure, which is
+// the whole claim the product makes.
 //
-// The scale pads 35% beyond the pair so neither marker ever sits on an end —
-// a dot pinned to the edge of a track reads as clipped rather than extreme.
+// THE LABELS ARE FIXED, THE MARKERS ARE NOT. They used to be centred on their
+// own values, which works only while the two are far apart — on a thin edge
+// (21.4 against 21.5) the two labels sat on the same few pixels and printed
+// over each other. Book on the left, ours on the right, always, and the reader
+// ties each to its dot by COLOUR rather than by position: the book is grey like
+// its marker, ours carries the lean like its own.
+//
+// The dots still move, so the gap between them is still the picture — and when
+// there is barely an edge they sit almost on top of each other, which is
+// exactly what that means.
 export function EdgeScale({ line, proj, tone, rgb }) {
   if (typeof line !== 'number' || typeof proj !== 'number') return null
   const lo = Math.min(line, proj), hi = Math.max(line, proj)
+  // Pad beyond the pair so neither marker ever sits on an end — a dot pinned to
+  // the edge of a track reads as clipped rather than extreme.
   const pad = Math.max((hi - lo) * 0.35, Math.abs(hi) * 0.06, 0.5)
   const a = lo - pad, b = hi + pad
   const at = (v) => ((v - a) / (b - a || 1)) * 100
   const lPct = at(line), pPct = at(proj)
   const from = Math.min(lPct, pPct), width = Math.abs(pPct - lPct)
-
-  const Marker = ({ pct, label, value, colour, strong }) => (
-    <div style={{ position: 'absolute', left: `${pct}%`, top: 0,
-                  transform: 'translateX(-50%)', textAlign: 'center' }}>
-      <div style={{ fontFamily: T.cond, fontWeight: 700, fontSize: 8.5,
-                    letterSpacing: 1, textTransform: 'uppercase',
-                    color: T.muted2, whiteSpace: 'nowrap' }}>{label}</div>
-      <div style={{ fontSize: strong ? 17 : 14, fontWeight: 800, color: colour,
-                    lineHeight: 1.15, whiteSpace: 'nowrap',
-                    fontVariantNumeric: 'tabular-nums' }}>{value}</div>
-    </div>
+  const dot = (c, d, p, delay) => (
+    <motion.div key={p}
+      initial={REDUCED ? false : { scale: 0, opacity: 0 }}
+      animate={{ scale: 1, opacity: 1 }}
+      transition={{ duration: 0.35, ease: EASE, delay }}
+      style={{ position: 'absolute', left: `${p}%`, top: '50%',
+               width: d, height: d, marginLeft: -d / 2, marginTop: -d / 2,
+               borderRadius: d, background: c,
+               border: `2px solid ${T.ground}` }} />
   )
 
   return (
-    <div style={{ position: 'relative', height: 56, marginTop: 4 }}>
-      <Marker pct={Math.min(88, Math.max(12, lPct))} label="Book line"
-              value={line} colour={T.muted} />
-      <Marker pct={Math.min(88, Math.max(12, pPct))} label="Baseline"
-              value={proj} colour={colourOf(tone)} strong />
+    <div style={{ marginTop: 4 }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontFamily: T.cond, fontWeight: 700, fontSize: 8.5,
+                        letterSpacing: 1, textTransform: 'uppercase',
+                        color: T.muted2 }}>Book line</div>
+          <div style={{ fontSize: 14, fontWeight: 800, color: T.muted,
+                        lineHeight: 1.15,
+                        fontVariantNumeric: 'tabular-nums' }}>{line}</div>
+        </div>
+        <div style={{ flex: 1 }} />
+        <div style={{ minWidth: 0, textAlign: 'right' }}>
+          <div style={{ fontFamily: T.cond, fontWeight: 700, fontSize: 8.5,
+                        letterSpacing: 1, textTransform: 'uppercase',
+                        color: T.muted2 }}>Baseline</div>
+          <div style={{ fontSize: 17, fontWeight: 800, color: tone || T.white,
+                        lineHeight: 1.15,
+                        fontVariantNumeric: 'tabular-nums' }}>{proj}</div>
+        </div>
+      </div>
 
-      <div style={{ position: 'absolute', left: 0, right: 0, bottom: 6,
-                    height: 4, borderRadius: 3,
-                    background: 'rgba(255,255,255,0.07)' }} />
-      {/* The gap itself. This is the product. */}
-      <motion.div
-        initial={REDUCED ? false : { width: 0 }}
-        animate={{ width: `${width}%` }}
-        transition={{ duration: 0.75, ease: EASE, delay: 0.1 }}
-        style={{ position: 'absolute', left: `${from}%`, bottom: 6, height: 4,
-                 borderRadius: 3,
-                 background: `linear-gradient(90deg, rgba(${rgb},0.35),`
-                           + ` rgba(${rgb},0.95))` }} />
-      {[[lPct, T.muted2, 7], [pPct, colourOf(tone), 10]].map(([p, c, d], i) => (
-        <motion.div key={i}
-          initial={REDUCED ? false : { scale: 0, opacity: 0 }}
-          animate={{ scale: 1, opacity: 1 }}
-          transition={{ duration: 0.35, ease: EASE, delay: 0.35 + i * 0.12 }}
-          style={{ position: 'absolute', left: `${p}%`, bottom: 8 - d / 2 + 2,
-                   width: d, height: d, marginLeft: -d / 2, borderRadius: d,
-                   background: c, border: `2px solid ${T.ground}` }} />
-      ))}
+      <div style={{ position: 'relative', height: 14, marginTop: 6 }}>
+        <div style={{ position: 'absolute', left: 0, right: 0, top: '50%',
+                      marginTop: -2, height: 4, borderRadius: 3,
+                      background: 'rgba(255,255,255,0.07)' }} />
+        <motion.div
+          initial={REDUCED ? false : { width: 0 }}
+          animate={{ width: `${width}%` }}
+          transition={{ duration: 0.75, ease: EASE, delay: 0.1 }}
+          style={{ position: 'absolute', left: `${from}%`, top: '50%',
+                   marginTop: -2, height: 4, borderRadius: 3,
+                   background: `linear-gradient(90deg, rgba(${rgb},0.35),`
+                             + ` rgba(${rgb},0.95))` }} />
+        {dot(T.muted2, 8, lPct, 0.35)}
+        {dot(tone || T.white, 11, pPct, 0.47)}
+      </div>
     </div>
   )
 }
 
-const colourOf = (t) => t || T.white
