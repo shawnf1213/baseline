@@ -157,6 +157,11 @@ input, select, button { font-family: inherit; }
   border-radius: 8px;
 }
 
+/* The press response for list rows, in CSS. A motion component per row costs a
+   per-frame subscription for feedback the reader gets on exactly one of them. */
+.tap-press { transition: transform 110ms ease; }
+.tap-press:active { transform: scale(0.985); }
+
 .btn-press { transition: transform 120ms ease; }
 .btn-press:active { transform: scale(0.97); }
 
@@ -214,6 +219,25 @@ input, select, button { font-family: inherit; }
   input, select, textarea { font-size: 16px; }
 }
 
+
+/* ── OFF-SCREEN CARDS COST NOTHING ───────────────────────────────────────────
+   The board renders every row it has — 168 on an NFL Sunday — and each one is a
+   real card with a rail, a gradient wash, shadows and an accordion. All of it
+   was being laid out and painted whether or not it was anywhere near the
+   viewport. A phone hides that behind a one-column scroll; a desktop shows two
+   or three columns at once on a viewport three times the size, which is why it
+   dragged there and not on a phone.
+
+   content-visibility:auto lets the browser skip layout AND paint for anything
+   off-screen, and `contain-intrinsic-size: auto` makes it remember each card's
+   real height once measured — so the scrollbar does not jump and an expanded
+   accordion keeps its size. The placeholder height is a closed row.
+
+   This is the single biggest win available here and it costs two declarations. */
+.baseline-cols > * {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 132px;
+}
 
 /* Desktop card flow. GRID, NOT MULTI-COLUMN.
    `columns` was the right call while every card was a fixed height: it packs a

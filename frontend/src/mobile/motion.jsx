@@ -22,6 +22,10 @@ const EASE = [0.16, 1, 0.3, 1]
 // Reveal on mount, staggered by position. `i` is the item's index in its list —
 // a section of four cards cascades instead of appearing as a block.
 export function Reveal({ children, i = 0, y = 12, style, ...rest }) {
+  // Past the fold there is nothing to reveal to anybody — see bits.jsx::Card.
+  if (REDUCED || i > 8) {
+    return <div style={style} {...rest}>{children}</div>
+  }
   return (
     <motion.div
       initial={REDUCED ? false : { opacity: 0, y }}
@@ -99,7 +103,19 @@ export function Ring({ pct, size = 96, stroke = 8, tone = T.green,
 
 // A press response. Touch targets that do not acknowledge a tap feel broken on
 // a phone long before they feel plain.
-export function Tap({ children, onClick, style, ...rest }) {
+export function Tap({ children, onClick, style, plain, ...rest }) {
+  // whileTap costs a motion component per instance, and PropRow puts one in
+  // every row. On a list that is hundreds of them for a press response the
+  // reader gets on one. `plain` opts a list row out; the CSS :active in
+  // index.css covers the feedback.
+  if (REDUCED || plain) {
+    return (
+      <div onClick={onClick} className="tap-press"
+           style={{ WebkitTapHighlightColor: 'transparent',
+                    cursor: onClick ? 'pointer' : undefined, ...style }}
+           {...rest}>{children}</div>
+    )
+  }
   return (
     <motion.div onClick={onClick}
       whileTap={REDUCED ? undefined : { scale: 0.985 }}

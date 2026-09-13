@@ -24,30 +24,41 @@ import { fmtSigned } from './data'
 const REDUCED = typeof window !== 'undefined'
   && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
 
+// The entrance stagger is capped at this index. Past it a card is below the
+// fold on any screen, so it can never be SEEN arriving — and paying for a
+// motion component to animate something nobody watches is the whole cost with
+// none of the benefit. A board of 168 rows was mounting 168 of these.
+const ANIMATE_UP_TO = 8
+
 export function Card({ children, style, onClick, index = 0, ...rest }) {
+  const base = {
+    // GLASS, matching the landing page's cards. Translucent rather than a
+    // solid dark fill, so the mesh ground shows through and the app reads
+    // as the same surface as its own front door. No backdrop-filter — see
+    // theme.js; blurring every card is what tanked scrolling before.
+    background: T.glass,
+    border: `1px solid ${T.glassLine}`, borderRadius: T.r3,
+    boxShadow: '0 1px 0 rgba(255,255,255,0.06) inset, 0 10px 30px rgba(0,0,0,0.45)',
+    ...(onClick ? { cursor: 'pointer', WebkitTapHighlightColor: 'transparent' } : null),
+    ...style,
+  }
+
+  // A PLAIN DIV once past the fold. Identical styling, none of the per-frame
+  // subscription — and because it never animates, its final state IS its only
+  // state, so nothing about how the list looks changes.
+  if (REDUCED || index > ANIMATE_UP_TO) {
+    return <div onClick={onClick} style={base} {...rest}>{children}</div>
+  }
+
   return (
     <motion.div
       onClick={onClick}
-      initial={REDUCED ? false : { opacity: 0, y: 10 }}
+      initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
-      transition={{
-        duration: 0.26, ease: [0.16, 1, 0.3, 1],
-        // Stagger by position so a list cascades instead of appearing at once.
-        // Capped at 6 items — beyond that the last card would visibly lag.
-        delay: REDUCED ? 0 : Math.min(index, 6) * 0.035,
-      }}
-      whileTap={onClick && !REDUCED ? { scale: 0.985 } : undefined}
-      style={{
-        // GLASS, matching the landing page's cards. Translucent rather than a
-        // solid dark fill, so the mesh ground shows through and the app reads
-        // as the same surface as its own front door. No backdrop-filter — see
-        // theme.js; blurring every card is what tanked scrolling before.
-        background: T.glass,
-        border: `1px solid ${T.glassLine}`, borderRadius: T.r3,
-        boxShadow: '0 1px 0 rgba(255,255,255,0.06) inset, 0 10px 30px rgba(0,0,0,0.45)',
-        ...(onClick ? { cursor: 'pointer', WebkitTapHighlightColor: 'transparent' } : null),
-        ...style,
-      }} {...rest}>{children}</motion.div>
+      transition={{ duration: 0.26, ease: [0.16, 1, 0.3, 1],
+                    delay: Math.min(index, 6) * 0.035 }}
+      whileTap={onClick ? { scale: 0.985 } : undefined}
+      style={base} {...rest}>{children}</motion.div>
   )
 }
 

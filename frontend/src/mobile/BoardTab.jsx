@@ -472,7 +472,7 @@ export function PropRow({ r, saved, onSave, onOpen, index = 0, footNote,
       ) : null}
 
       {/* ── THE CLOSED ROW ──────────────────────────────────────────────── */}
-      <Tap onClick={onToggle} style={{
+      <Tap onClick={onToggle} plain style={{
         position: 'relative', display: 'flex', alignItems: 'center', gap: 10,
         padding: '11px 12px 11px 17px',
       }}>
