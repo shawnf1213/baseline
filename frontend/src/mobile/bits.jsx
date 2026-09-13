@@ -271,26 +271,65 @@ export function GlassTabs({ options, value, onChange, style }) {
   )
 }
 
-// ── RENDER A PAGE, NOT A SEASON ──────────────────────────────────────────────
-// Cheaper cards and skipped paint both help, but neither removes the work:
-// 168 rows is 168 React elements reconciled, 168 subtrees in the DOM, and on
-// desktop three columns of them within a couple of scrolls of the viewport.
-// The only way to stop paying for a row is not to render it.
+// ── PAGES, NOT AN EVER-GROWING LIST ──────────────────────────────────────────
+// "Show more" was the wrong shape: it appends, so by the third press the board
+// is back to the full 168 rows and the lag it was meant to fix is back with it.
+// The rendered count has to stay CONSTANT, which means pages.
 //
-// So the board renders a page and offers the rest. This is not a compromise on
-// the product: the board is SORTED, and a reader who has scrolled past sixty
-// plays has left the part of it the model is most confident about far behind.
-export function ShowMore({ shown, total, onMore, label = 'lines' }) {
-  const left = total - shown
-  if (left <= 0) return null
+// It also suits the data. The board is SORTED — page one is the plays the model
+// is most confident about — so a page boundary is a real division rather than
+// an arbitrary cut through a flat list.
+export const PAGE_SIZE = 24
+
+export function Pager({ page, pages, onPage, total, label = 'lines' }) {
+  if (pages <= 1) return null
+  const go = (p) => {
+    onPage(Math.max(0, Math.min(pages - 1, p)))
+    // Back to the top of the list. Changing page and being left halfway down
+    // the previous one is the classic way pagination feels broken.
+    if (typeof window !== 'undefined') window.scrollTo({ top: 0, behavior: 'smooth' })
+  }
+  const btn = (enabled) => ({
+    minHeight: 40, padding: '0 14px', borderRadius: T.r1,
+    cursor: enabled ? 'pointer' : 'default',
+    background: enabled ? T.glass : 'transparent',
+    border: `1px solid ${enabled ? T.glassLine : 'rgba(255,255,255,0.04)'}`,
+    color: enabled ? T.white : T.muted2,
+    fontFamily: T.cond, fontWeight: 800, fontSize: 12.5, letterSpacing: 1,
+    textTransform: 'uppercase', WebkitTapHighlightColor: 'transparent',
+  })
+  // A window of five around the current page: every page reachable in a couple
+  // of presses without a row of twenty numbers on a phone.
+  const from = Math.max(0, Math.min(page - 2, pages - 5))
+  const nums = Array.from({ length: Math.min(5, pages) }, (_, k) => from + k)
+
   return (
-    <button onClick={onMore} style={{
-      width: '100%', minHeight: 46, marginTop: 4, marginBottom: T.s3,
-      borderRadius: T.r2, cursor: 'pointer', background: T.glass,
-      border: `1px solid ${T.glassLine}`, color: T.muted,
-      fontFamily: T.cond, fontWeight: 800, fontSize: 12.5, letterSpacing: 1.2,
-      textTransform: 'uppercase', WebkitTapHighlightColor: 'transparent',
-    }}>Show {Math.min(left, 40)} more {label} · {left} left</button>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6,
+                  justifyContent: 'center', flexWrap: 'wrap',
+                  margin: `${T.s3}px 0 ${T.s2}px` }}>
+      <button onClick={() => go(page - 1)} disabled={page === 0}
+              style={btn(page > 0)}>Prev</button>
+      {nums.map(p => {
+        const on = p === page
+        return (
+          <button key={p} onClick={() => go(p)} style={{
+            minWidth: 40, minHeight: 40, borderRadius: T.r1, cursor: 'pointer',
+            border: `1px solid ${on ? `${T.green}66` : T.glassLine}`,
+            background: on
+              ? `linear-gradient(160deg, ${T.green}2E, ${T.green}12)` : T.glass,
+            color: on ? T.green : T.muted,
+            fontFamily: T.cond, fontWeight: 800, fontSize: 13.5,
+            WebkitTapHighlightColor: 'transparent',
+          }}>{p + 1}</button>
+        )
+      })}
+      <button onClick={() => go(page + 1)} disabled={page >= pages - 1}
+              style={btn(page < pages - 1)}>Next</button>
+      <div style={{ width: '100%', textAlign: 'center', color: T.muted2,
+                    fontSize: 11, marginTop: 4 }}>
+        {total} {label} · page {page + 1} of {pages}
+      </div>
+    </div>
   )
 }
 

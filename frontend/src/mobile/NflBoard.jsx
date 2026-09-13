@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { T } from './theme'
-import { Spinner, Empty, SectionLabel, ShowMore } from './bits'
+import { Spinner, Empty, SectionLabel, Pager, PAGE_SIZE } from './bits'
 import { PropRow, BoardSummary, TopPlays } from './BoardTab'
 import { useBookmarks } from './useBookmarks'
 import { fetchNflBoard, fetchNflRecord } from '../utils/api'
@@ -105,7 +105,7 @@ export default function NflBoard({ onMeta }) {
   // the tennis board does the same thing with PlayerDashboard.
   const [open, setOpen] = useState(null)
   const [openKey, setOpenKey] = useState(null)
-  const [shown, setShown] = useState(40)
+  const [page, setPage] = useState(0)
 
   useEffect(() => {
     let alive = true
@@ -170,6 +170,11 @@ export default function NflBoard({ onMeta }) {
   // board than the others.
   const viewRows = useMemo(() => rows.map(toRow), [rows])
 
+  const pages = Math.max(1, Math.ceil(viewRows.length / PAGE_SIZE))
+  const pageRows = useMemo(
+    () => viewRows.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE),
+    [viewRows, page])
+
   const tally = useMemo(() => {
     const w = rows.filter(p => p.result === 'W').length
     const l = rows.filter(p => p.result === 'L').length
@@ -214,7 +219,7 @@ export default function NflBoard({ onMeta }) {
           ancestor. Reusing the class rather than a new grid keeps the two
           boards laying out identically at every breakpoint. */}
       <div className="baseline-cols">
-        {viewRows.slice(0, shown).map((r, i) => (
+        {pageRows.map((r, i) => (
           <PropRow key={r.key} r={r} index={i}
                    open={openKey === r.key}
                    onToggle={() => setOpenKey(k => (k === r.key ? null : r.key))}
@@ -224,8 +229,8 @@ export default function NflBoard({ onMeta }) {
         ))}
       </div>
 
-      <ShowMore shown={shown} total={viewRows.length}
-                onMore={() => setShown(n => n + 40)} />
+      <Pager page={page} pages={pages} onPage={setPage}
+             total={viewRows.length} />
 
       {open && (
         <NflPlayerSheet player={open} rows={picks} posted={posted}

@@ -2,7 +2,7 @@ import { useMemo, useState, useEffect } from 'react'
 import { T, useIsWide } from './theme'
 import { Card, Heart, Spinner, Empty, tier, sideTone, SideRail, TierBadge,
          ConfBar, tierCardStyle, PageTitle, Pill, GlassTabs,
-         SectionLabel, ShowMore } from './bits'
+         SectionLabel, Pager, PAGE_SIZE } from './bits'
 import FilterSheet from './FilterSheet'
 import { shortProp, startTimeLabel, fmt, calibratedConfidence } from './data'
 import { projectRow, cachedProjection } from './project'
@@ -51,10 +51,9 @@ export default function BoardTab({ boards, book, setBook, loading, error, onOpen
   // present the same title block rather than one being bare.
   const [nflMeta, setNflMeta] = useState({})
   const [openKey, setOpenKey] = useState(null)
-  // How many of the full board are rendered. Reset whenever the view
-  // changes, or a reader who paged deep into tennis would land in the
-  // middle of the NFL board.
-  const [shown, setShown] = useState(40)
+  // Which page of the board is rendered. Reset whenever the view changes, or a
+  // reader on page 5 of tennis lands past the end of a shorter NFL board.
+  const [page, setPage] = useState(0)
   const { has, toggle } = useBookmarks()
   const board = boards?.[book]
 
@@ -68,7 +67,7 @@ export default function BoardTab({ boards, book, setBook, loading, error, onOpen
   }, [board, filters.prop, filters.tour, filters.surface])
 
   const proj = useBoardProjections(filtered)
-  useEffect(() => { setShown(40) }, [sport, book, filters])
+  useEffect(() => { setPage(0) }, [sport, book, filters])
 
   // Merge projections in, then sort.
   const rows = useMemo(() => {
@@ -88,6 +87,13 @@ export default function BoardTab({ boards, book, setBook, loading, error, onOpen
 
   // Displayed confidence is CALIBRATED across the visible board — see
   // data.calibratedConfidence. The raw score gates; it does not describe.
+  // ONE PAGE IS WHAT RENDERS. Slicing here rather than in the JSX keeps the
+  // page maths in one place and out of the render path.
+  const pages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE))
+  const pageRows = useMemo(
+    () => rows.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE),
+    [rows, page])
+
   const calib = useMemo(() => calibratedConfidence(rows), [rows])
   const activeCount = ['prop', 'tour', 'surface'].filter(k => filters[k] !== 'All').length
   const projecting = filtered.slice(0, PROJECT_CAP).some(r => proj[r.key]?.loading)
@@ -211,7 +217,7 @@ export default function BoardTab({ boards, book, setBook, loading, error, onOpen
       )}
 
       <div className="baseline-cols">
-        {!loading && !error && rows.slice(0, shown).map((r, i) => (
+        {!loading && !error && pageRows.map((r, i) => (
           <PropRow key={r.key}
             r={{ ...r, confidence: calib.get(r.key) ?? r.confidence }} index={i}
             open={openKey === r.key}
@@ -223,8 +229,7 @@ export default function BoardTab({ boards, book, setBook, loading, error, onOpen
       </div>
 
       {!loading && !error && (
-        <ShowMore shown={shown} total={rows.length}
-                  onMore={() => setShown(n => n + 40)} />
+        <Pager page={page} pages={pages} onPage={setPage} total={rows.length} />
       )}
 
       {!loading && !error && !!rows.length && (
@@ -608,11 +613,16 @@ export function PropRow({ r, saved, onSave, onOpen, index = 0, footNote,
                              overflow: 'hidden', textOverflow: 'ellipsis' }}>
                 {footNote !== undefined ? footNote : (start ? `⏱ ${start}` : '')}
               </span>
+              {/* NEUTRAL, ALWAYS. This took the lean's colour, so the same
+                  control was green on one card and red on the next — and
+                  colour in this app MEANS something: it is the side the model
+                  is on. Spending it on a navigation button says this play is an
+                  under, which is not what opening a player page does. */}
               <button onClick={(e) => { e.stopPropagation(); onOpen?.() }}
                       style={{
                 minHeight: 36, padding: '0 14px', borderRadius: T.r1,
-                cursor: 'pointer', background: `rgba(${rgb},0.12)`,
-                border: `1px solid rgba(${rgb},0.34)`, color: tone,
+                cursor: 'pointer', background: 'rgba(255,255,255,0.05)',
+                border: `1px solid ${T.glassLine}`, color: T.white,
                 fontFamily: T.cond, fontWeight: 800, fontSize: 12,
                 letterSpacing: 1, textTransform: 'uppercase',
                 WebkitTapHighlightColor: 'transparent', flexShrink: 0,
