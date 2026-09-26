@@ -65,33 +65,130 @@ HEADERS = {
 # that then got cached and looked like a persistent player-specific outage.
 # We filter the candidate list against what the installed build actually
 # supports so a version mismatch can never silently break fetching again.
-_CHROME_PROFILE_CANDIDATES = ["chrome124", "chrome123", "chrome120", "chrome131", "chrome119"]
+# SAFARI FIRST (2026-09-25). Sofascore began 403ing every Chrome profile we
+# present — on the proxy AND direct, on search, rankings and /team alike, which
+# read as a total outage and emptied the 17:00 board (evaluated=40 eligible=0).
+# It is not an IP problem: PrizePicks and ESPN answer 200 direct from the same
+# host at the same moment, and Sofascore refuses that host too. Measured:
+#
+#     bare  chrome124   -> 403
+#     bare  chrome120   -> 403
+#     bare  safari17_0  -> 200  results=20
+#
+# So the Chrome fingerprints are the thing being rejected. This is the same
+# impersonation the client has always used, with different profiles in the
+# rotation — Safari ones first because they are the ones currently answering.
+# The Chrome entries stay: whichever side of this changes next, the rotation
+# should still have something that works, and _supported_chrome_profiles
+# already drops anything the installed curl_cffi cannot actually do.
+_CHROME_PROFILE_CANDIDATES = ["safari17_0", "safari17_2_1", "safari15_5",
+                              "chrome124", "chrome123", "chrome120",
+                              "chrome131", "chrome119"]
 
 
 def _supported_chrome_profiles() -> list:
-    """Intersect our candidate profiles with what the installed curl_cffi
-    build supports. Falls back to chrome124 (proven working) if introspection
-    fails or yields nothing."""
+    """The NEWEST browser fingerprints this curl_cffi build can produce.
+
+    WHY THIS IS DERIVED AND NOT A LIST. It used to be a hardcoded set of
+    candidates intersected with what the build supported, and that list went
+    stale: it pinned chrome119-131 while the installed curl_cffi 0.15.0 ships
+    chrome146. curl_cffi replays a FIXED TLS signature per profile — real
+    Chrome moves on, the profile does not — so by 2026-09-25 we were presenting
+    a handshake ~20 major versions old. That is not "looking like Chrome", it
+    is a signature no real user produces, and it is exactly what a WAF rule can
+    match. Sofascore started refusing every Chrome profile from EVERY ip
+    (residential, Railway, all proxy ports) while Safari answered from the same
+    address in the same second.
+
+    So: take what the build actually has, newest first, and never pin a version
+    again. When curl_cffi is upgraded this follows automatically; when a family
+    is blocked the others are already in the rotation behind it.
+
+    Desktop, numerically-versioned profiles only — `chrome_android` and friends
+    carry mobile signatures we do not want to claim from a server.
+    """
+    import re as _re
     try:
         from curl_cffi.requests.impersonate import BrowserTypeLiteral
         import typing
-        supported = set(typing.get_args(BrowserTypeLiteral))
-        usable = [p for p in _CHROME_PROFILE_CANDIDATES if p in supported]
-        if usable:
-            return usable
+        supported = [str(p) for p in typing.get_args(BrowserTypeLiteral)]
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning("Could not introspect curl_cffi profiles: %s", exc)
-    return ["chrome124"]
+        return ["safari17_0"]
+
+    # Family order is a preference, not a filter: safari first because it is
+    # what is currently answering, then chrome, then firefox as a third option.
+    FAMILY_ORDER = {"safari": 0, "chrome": 1, "firefox": 2, "edge": 3}
+    ranked = []
+    for p in supported:
+        m = _re.fullmatch(r"(safari|chrome|firefox|edge)(\d+)(?:_(\d+))?", p)
+        if not m:
+            continue                      # skips *_android, *_ios, *_beta, bare names
+        fam, major = m.group(1), int(m.group(2))
+        ranked.append((FAMILY_ORDER.get(fam, 9), -major, p))
+    ranked.sort()
+    usable = [p for _, _, p in ranked]
+    if usable:
+        logger.info("IMPERSONATE profiles (newest first): %s", usable[:6])
+        return usable
+    return ["safari17_0"]
 
 
 _CHROME_PROFILES = _supported_chrome_profiles()
-_UA_POOL = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.6367.207 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.6422.141 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.6367.155 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.6367.207 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.6422.76 Safari/537.36",
-]
+
+
+# Try Sofascore WITHOUT the proxy before trying through it. Off by default;
+# turn it on only while the proxy's exit IPs are being refused. See _get.
+SS_PREFER_DIRECT = (os.getenv("SS_PREFER_DIRECT", "0") or "0").strip().lower() \
+    in ("1", "true", "yes", "on")
+
+
+def _try_direct(url: str, params: dict = None, timeout: int = 12):
+    """One proxy-less attempt at a Sofascore URL. JSON on 200, else None.
+
+    Only ever called after the proxy has already failed, so it adds no load in
+    normal operation. Uses the same impersonation profile the proxied path uses
+    — the only difference is the absence of an intermediary.
+
+    `timeout` is short on the autocomplete path, which has three seconds total.
+    """
+    try:
+        from curl_cffi import requests as cf
+        r = cf.get(url, params=params, timeout=timeout, impersonate=_pick_profile())
+        if r.status_code == 200:
+            _challenge_note(False)      # a working path closes the breaker
+            return r.json()
+        logger.info("DIRECT attempt returned %s for %s", r.status_code, url)
+    except Exception as exc:  # noqa: BLE001 — a fallback must never raise
+        logger.info("DIRECT attempt failed for %s: %s", url, str(exc)[:120])
+    return None
+
+
+def _pick_profile() -> str:
+    """The impersonation profile for a one-off session.
+
+    Six call sites used to hardcode "chrome124"/"chrome120". When Sofascore
+    started refusing Chrome fingerprints on 2026-09-25 those six kept presenting
+    the dead profile no matter what the rotation held, so half the client stayed
+    blocked even once the candidate list was fixed. Going through here means one
+    place decides, and the next time a profile dies only this list changes.
+    """
+    try:
+        return _CHROME_PROFILES[0] if _CHROME_PROFILES else "safari17_0"
+    except Exception:  # noqa: BLE001
+        return "safari17_0"
+# _UA_POOL DELETED 2026-09-26 — DO NOT REINTRODUCE IT.
+# It held five Chrome User-Agent strings that _new_session() layered on top of
+# whatever profile curl_cffi was impersonating. That is only ever harmless when
+# the profile happens to be the same Chrome build; the moment the rotation
+# preferred Safari, every request became a Safari TLS handshake announcing
+# Chrome, and Sofascore answered {"error":{"code":403,"reason":"challenge"}} to
+# all of it — on the proxy, direct, and from a plain residential line alike.
+#
+# There is no correct value for this list, because the right User-Agent is a
+# property of the impersonated profile, not something to choose alongside it.
+# curl_cffi already sends it. Rotating UA strings independently of the TLS
+# fingerprint does not add cover; it manufactures an impossible client.
 
 # ---------------------------------------------------------------------------
 # Proxy
@@ -172,6 +269,89 @@ _counter_day: Optional[str] = None
 _search_blocked: bool = False
 _search_blocked_ts: float = 0.0
 
+# ---------------------------------------------------------------------------
+# CHALLENGE CIRCUIT BREAKER
+# ---------------------------------------------------------------------------
+# On 2026-09-26 Sofascore began answering {"error":{"code":403,"reason":
+# "challenge"}} to EVERY request from both the Decodo residential pool (12/12
+# probes across 10 distinct exit IPs) and Railway's own address. The identical
+# code and impersonation profile got 200 on every endpoint from an ordinary
+# residential connection, so this is an IP-reputation block on the commercial
+# proxy pool and the datacenter range — not our fingerprint, and not something
+# a retry can solve.
+#
+# The retry machinery did not know that. Each refused page cost 3 attempts at
+# 8s plus two port rotations plus a 12s direct attempt (~36s), and
+# _get_player_recent_events retries failed pages SEQUENTIALLY, so five refused
+# pages took ~180s. That is the 105-200s projection: not slowness, a retry
+# storm against a wall. Subscribers saw "Unable to reach Baseline servers"
+# because the bot gave up waiting, while the backend was still dutifully
+# rotating ports.
+#
+# So: once the wall is proven, stop walking into it. After _CHALLENGE_TRIP_N
+# consecutive refusals the breaker opens and every request fails IMMEDIATELY
+# for _CHALLENGE_COOLDOWN seconds, which turns a 200s hang into a ~0s
+# "temporarily unavailable" the caller can act on, and stops us hammering a
+# host that is already refusing us. One request in _CHALLENGE_PROBE_EVERY is
+# let through as a probe so recovery is detected without any manual reset; a
+# single 200 closes the breaker.
+#
+# This is a back-off, NOT a way around the challenge. It sends fewer requests,
+# not cleverer ones.
+_CHALLENGE_TRIP_N       = int(os.getenv("SS_CHALLENGE_TRIP_N", "8") or 8)
+_CHALLENGE_COOLDOWN     = int(os.getenv("SS_CHALLENGE_COOLDOWN", "300") or 300)
+_CHALLENGE_PROBE_EVERY  = int(os.getenv("SS_CHALLENGE_PROBE_EVERY", "25") or 25)
+_challenge_streak: int  = 0
+_challenge_open_ts: float = 0.0
+_challenge_probe_n: int = 0
+_challenge_lock = threading.Lock()
+
+
+def _challenge_note(refused: bool) -> None:
+    """Record one request outcome. A 200 closes the breaker outright."""
+    global _challenge_streak, _challenge_open_ts
+    with _challenge_lock:
+        if not refused:
+            if _challenge_open_ts or _challenge_streak:
+                logger.info("SS_CHALLENGE_CLEAR | a request succeeded — breaker closed")
+            _challenge_streak = 0
+            _challenge_open_ts = 0.0
+            return
+        _challenge_streak += 1
+        if _challenge_streak >= _CHALLENGE_TRIP_N and not _challenge_open_ts:
+            _challenge_open_ts = time.time()
+            logger.error(
+                "SS_CHALLENGE_OPEN | %d consecutive refusals — failing fast for %ds. "
+                "Sofascore is refusing this network, not this request; retrying "
+                "only makes it slower.", _challenge_streak, _CHALLENGE_COOLDOWN)
+
+
+def _challenge_is_open() -> bool:
+    """True when we should fail immediately instead of attempting the network."""
+    global _challenge_open_ts, _challenge_probe_n, _challenge_streak
+    with _challenge_lock:
+        if not _challenge_open_ts:
+            return False
+        if time.time() - _challenge_open_ts > _CHALLENGE_COOLDOWN:
+            logger.info("SS_CHALLENGE_RETEST | cooldown elapsed — allowing traffic again")
+            _challenge_open_ts = 0.0
+            _challenge_streak = 0
+            return False
+        _challenge_probe_n += 1
+        if _challenge_probe_n % _CHALLENGE_PROBE_EVERY == 0:
+            return False          # occasional probe so recovery is self-detecting
+        return True
+
+
+def challenge_state() -> dict:
+    """Diagnostic snapshot of the breaker (surfaced by /api/proxy/usage)."""
+    with _challenge_lock:
+        return {
+            "open": bool(_challenge_open_ts),
+            "streak": _challenge_streak,
+            "seconds_open": round(time.time() - _challenge_open_ts, 1) if _challenge_open_ts else 0.0,
+        }
+
 
 class SofascoreBlockedError(Exception):
     """Raised when Sofascore returns 403 across all retry attempts during search."""
@@ -221,11 +401,34 @@ def _new_session(force_port: bool = True) -> None:
         if port is not None:
             _used_ports = (_used_ports + [port])[-4:]
     _current_session_id = _fresh_session_id()
-    profile = random.choice(_CHROME_PROFILES)
-    ua      = random.choice(_UA_POOL)
+    # PREFERRED PROFILE, NOT A COIN FLIP. This was random.choice over the whole
+    # list, which is right when every profile works and actively harmful when
+    # one family is being refused: with Sofascore 403ing all Chrome
+    # fingerprints on 2026-09-25, a random pick drew a dead profile 5 times in 7
+    # and three retries could all draw dead ones. _pick_profile() returns the
+    # head of the list — the profile currently known to answer — and the rest
+    # stay available as the fallbacks tried on a retry.
+    profile = _pick_profile()
+    # ── DO NOT SET User-Agent HERE ───────────────────────────────────────────
+    # curl_cffi's impersonation already sends the User-Agent belonging to the
+    # profile, matched to the TLS/JA3 and HTTP/2 fingerprint it replays.
+    # Overriding it with a string from _UA_POOL broke that pairing: _UA_POOL is
+    # Chrome-only, so once _pick_profile() started preferring Safari (2026-09-25)
+    # every request did a Safari handshake while announcing Chrome — a
+    # combination no real browser produces, and exactly what a bot rule keys on.
+    #
+    # Measured 2026-09-26 through the production proxy, IP held constant:
+    #     safari2601 + Chrome UA override  ->  0/4 OK   (403 "challenge")
+    #     safari2601 + native profile UA   ->  4/4 OK
+    # and from a residential line, same split. The proxy pool was never blocked
+    # and neither was the datacenter range; we were fingerprinting ourselves.
+    #
+    # Leaving the UA to curl_cffi keeps it correct for whatever profile the
+    # rotation picks, including profiles added by a future upgrade. A hardcoded
+    # Safari string would rot the same way _UA_POOL did.
     from curl_cffi import requests as cf
     s = cf.Session(impersonate=profile)
-    s.headers.update({**HEADERS, "User-Agent": ua})
+    s.headers.update(HEADERS)
     if current_proxy_port and _proxy_ok():
         pu = _proxy_url(current_proxy_port, _current_session_id)
         s.proxies = {"http": pu, "https": pu}
@@ -406,7 +609,7 @@ def run_session_format_test() -> dict:
     def _fetch_ip(session_username: str) -> dict:
         pu = f"http://{session_username}:{_PROXY_PASS}@{_PROXY_HOST}:{port}"
         try:
-            s = cf.Session(impersonate="chrome124")
+            s = cf.Session(impersonate=_pick_profile())
             s.proxies = {"http": pu, "https": pu}
             r = s.get("https://ip.decodo.com/json", timeout=10)
             ip = ""
@@ -435,7 +638,7 @@ def run_session_format_test() -> dict:
     for p in _PROXY_PORTS[:3]:
         pu = f"http://{_PROXY_USER}:{_PROXY_PASS}@{_PROXY_HOST}:{p}"
         try:
-            s = cf.Session(impersonate="chrome124")
+            s = cf.Session(impersonate=_pick_profile())
             s.proxies = {"http": pu, "https": pu}
             r = s.get("https://ip.decodo.com/json", timeout=10)
             ip = ""
@@ -451,7 +654,7 @@ def run_session_format_test() -> dict:
     sofa: dict
     try:
         pu = f"http://{u1}:{_PROXY_PASS}@{_PROXY_HOST}:{port}"
-        s = cf.Session(impersonate="chrome124")
+        s = cf.Session(impersonate=_pick_profile())
         s.headers.update(HEADERS)
         s.proxies = {"http": pu, "https": pu}
         r = s.get(f"{BASE_URL}/search/all", params={"q": "sinner"}, timeout=12)
@@ -482,11 +685,45 @@ def run_session_format_test() -> dict:
     }
 
 
-def _get(url: str, params: dict = None, fast: bool = False) -> dict:
+def _get(url: str, params: dict = None, fast: bool = False,
+         with_status: bool = False):
     """fast=True is for latency-critical search/autocomplete calls (Discord has a
     hard 3s autocomplete limit): on a 403 it fails immediately instead of doing
-    the 5-10s anti-block backoff, which would blow the autocomplete deadline."""
+    the 5-10s anti-block backoff, which would blow the autocomplete deadline.
+
+    with_status=True returns (data, status) instead of just data. 200 means the
+    body is real, 404 means the resource genuinely is not there, and 0 means the
+    fetch FAILED (403, dead proxy port, timeout). Callers that cannot tell those
+    apart end up treating a failure as an empty result — see _fetch_event_page.
+    Default False, so every existing caller is untouched."""
+    def _out(data, code):
+        return (data, code) if with_status else data
     global _proxy_session, _search_blocked, _search_blocked_ts
+
+    # Breaker open: Sofascore is refusing this network wholesale. Fail now so
+    # the caller degrades in milliseconds instead of after a ~36s rotation that
+    # cannot succeed. 403 (not 0) so callers keep telling "refused" apart from
+    # "the fetch broke" — _fetch_event_page depends on that distinction.
+    if _challenge_is_open():
+        return _out({}, 403)
+
+    # ── DIRECT-FIRST WHILE THE PROXY POOL IS BURNED (2026-09-25) ─────────────
+    # With every exit IP 403ing, the normal order costs three failed attempts
+    # and two port rotations before the direct fallback below finally answers —
+    # which is why a single projection took 47s and the 17:00 board timed out
+    # with evaluated=40 eligible=0. Flipping the order makes the path that
+    # actually works the first one tried.
+    #
+    # NOT the default, and it should go back off once the pool is healthy: the
+    # proxy exists because some targets refuse Railway's address (see the ESPN
+    # note in core/proxy.py), and putting every request through one datacenter
+    # IP is how that address gets rate-limited too. A switch for an incident,
+    # not a new architecture.
+    if SS_PREFER_DIRECT:
+        _d = _try_direct(url, params)
+        if _d is not None:
+            return _out(_d, 200)
+        logger.info("PREFER_DIRECT miss — falling through to the proxy for %s", url)
 
     if _proxy_session is None:
         _new_session(force_port=True)
@@ -498,25 +735,66 @@ def _get(url: str, params: dict = None, fast: bool = False) -> dict:
             record_live_fetch()
             r = _proxy_session.get(url, params=params, timeout=8)
             if r.status_code == 200:
-                return r.json()
+                _challenge_note(False)
+                return _out(r.json(), 200)
             if r.status_code == 407:
                 if _maybe_disable_sessions():
                     continue
                 _mark_bad(current_proxy_port)
                 continue
             if r.status_code == 403:
+                _challenge_note(True)
                 logger.warning("403 %s port=%s fast=%s", url, current_proxy_port, fast)
                 if fast:
-                    return {}
+                    # ── THE FAST PATH GETS ONE DIRECT SHOT TOO ───────────────
+                    # `fast` exists because Discord autocomplete has three
+                    # seconds, so it skips the proxy ROTATION — three attempts
+                    # at ~6.5s each arrives long after Discord stopped
+                    # listening. But it was also skipping the direct fallback,
+                    # which is the path currently WORKING (33 successes in the
+                    # log window against a proxy pool that is 403ing wholesale).
+                    # So every autocomplete keystroke and every
+                    # api.sofascore.com retry gave up while a good answer was
+                    # one request away.
+                    #
+                    # A single direct call on a short timeout, not a rotation:
+                    # it has to fit the same three seconds. If it misses, this
+                    # returns 403 exactly as before.
+                    _fd = _try_direct(url, params, timeout=4)
+                    if _fd is not None:
+                        logger.info("SOFASCORE DIRECT OK (fast path) for %s", url)
+                        return _out(_fd, 200)
+                    return _out({}, 403)
                 _new_session(force_port=True)   # rotate port and retry
                 if attempt >= 2:
+                    # ── LAST RESORT: ASK WITHOUT THE PROXY ───────────────────
+                    # Every proxy port is 403ing (2026-09-25), which emptied the
+                    # 17:00 board. core/proxy.get() has always ended its rotation
+                    # with one direct attempt — "what keeps a dev machine and a
+                    # proxy outage both working" — but this client never had one,
+                    # so Sofascore-direct-from-Railway had literally never been
+                    # tried. It costs one request, only after the proxy has
+                    # already failed three times, and it answers the question
+                    # the logs could not: whether the block is on the proxy's
+                    # exit IPs or on us generally.
+                    #
+                    # NOT a way around the block: same public endpoint, same
+                    # impersonation, just no intermediary. If Railway's own
+                    # address is refused too, this fails identically and the
+                    # error path below is unchanged.
+                    _direct = _try_direct(url, params)
+                    if _direct is not None:
+                        logger.warning("SOFASCORE DIRECT OK | proxy exhausted but "
+                                       "a direct request succeeded for %s", url)
+                        return _out(_direct, 200)
                     _search_blocked = True
                     _search_blocked_ts = time.time()
-                    logger.error("SOFASCORE BLOCKED: 403 on all attempts for %s", url)
-                    return {}
+                    logger.error("SOFASCORE BLOCKED: 403 on all attempts (proxy "
+                                 "AND direct) for %s", url)
+                    return _out({}, 403)
                 continue
             logger.debug("HTTP %d %s", r.status_code, url)
-            return {}
+            return _out({}, r.status_code)
         except Exception as e:
             msg = str(e).lower()
             if any(x in msg for x in ("proxy", "tunnel", "connect", "407")):
@@ -536,8 +814,8 @@ def _get(url: str, params: dict = None, fast: bool = False) -> dict:
             else:
                 logger.debug("Error %s: %s", url, e)
             if attempt == 2:
-                return {}
-    return {}
+                return _out({}, 0)
+    return _out({}, 0)
 
 
 # ---------------------------------------------------------------------------
@@ -558,7 +836,7 @@ def _check_proxy_health() -> None:
         for port in _PROXY_PORTS:
             pu  = _proxy_url(port)
             try:
-                s = cf.Session(impersonate="chrome124")
+                s = cf.Session(impersonate=_pick_profile())
                 s.proxies = {"http": pu, "https": pu}
                 r = s.get("https://ip.decodo.com/json", timeout=8)
                 if r.status_code == 200:
@@ -601,7 +879,7 @@ def _proxy_health_once() -> None:
     for p in sample:
         pu = _proxy_url(p)
         try:
-            s = cf.Session(impersonate="chrome124")
+            s = cf.Session(impersonate=_pick_profile())
             s.headers.update(HEADERS)
             s.proxies = {"http": pu, "https": pu}
             r = s.get(f"{BASE_URL}/search/all", params={"q": "sinner"}, timeout=10)
@@ -763,6 +1041,192 @@ def _ground_str_to_surface(s: str):
     return None
 
 
+# ── TEAM-COMPETITION SURFACES (Davis Cup, BJK Cup, United Cup) ──────────
+# Sofascore publishes NO groundType for these at all — not on the event, not on
+# the tournament, not on the unique tournament. Verified on the 2026 Davis Cup:
+# the words "clay", "hard" and "grass" do not appear anywhere in the event
+# payload. So _infer_surface_from_event fell through to keyword matching on
+# "Davis Cup Single Matches", which contains no surface word, and _infer_surface
+# ends in a bare `return "Hard"`. Every Davis Cup tie was therefore priced on
+# generic hard.
+#
+# That is not a small default. On 2026-09-19 the ⭐ Pick of the Day was Bergs v
+# Rodionov in Vienna — a tie played on CLAY — priced on hard.
+#
+# AND THE VENUE CANNOT SETTLE IT. The event names Wiener Stadthalle, which is
+# the Vienna Open's indoor HARD arena; Austria laid clay in it for this tie,
+# which is exactly what host nations do. A venue lookup would have been just as
+# wrong, more expensively. The surface of a tie is a fact about the tie, so it
+# is recorded per tie, keyed on the HOST nation and season.
+_TEAM_EVENT_KEYWORDS = ("davis cup", "billie jean king cup", "fed cup",
+                        "united cup", "atp cup")
+
+# THE TIE, NOT THE HOST. Keyed on (home nation, away nation, season): a nation
+# can host more than one tie in a year and choose a different surface for each,
+# so (host, year) alone would answer for a tie it was never told about. The two
+# singles rubbers of a tie share a parentEventId, which is where the nations
+# live — the rubber itself lists PLAYERS as its teams.
+#
+# Home first, deliberately: the host nation picks the surface, so the pair is
+# ordered and not normalised. A reversed key is a different tie.
+# OPERATOR OVERRIDE, normally EMPTY. src.api.tie_surfaces answers from
+# Wikipedia's tie boxes and carries the indoor flag too, so a hand-written entry
+# is both redundant and poorer. This exists for the case the feed cannot cover:
+# a tie Wikipedia has not written up yet, or one it has wrong. An entry here
+# beats the feed.
+#
+#     ("AUT", "BEL", "2026"): "Clay",
+#
+# Home nation first — the host picks the surface, so the pair is ordered.
+DAVIS_CUP_TIE_SURFACES: dict = {}
+
+_tie_surface_cache: dict = {}
+_tie_parent_cache: dict = {}
+
+
+def _is_team_event(name: str) -> bool:
+    n = (name or "").lower()
+    return any(k in n for k in _TEAM_EVENT_KEYWORDS)
+
+
+def tie_meta_for_event(event: dict) -> dict:
+    """{surface, indoor, source} for a team-competition tie, or {} if unknown.
+
+    A Davis Cup rubber lists the two PLAYERS as its teams, so the nations come
+    from the parent event — the tie — which the rubber points at via
+    parentEventId and which the list endpoint does not carry. Both singles
+    rubbers of a tie share that parent, so it is fetched once per tie.
+
+    Order of authority: the hand-written override, then Wikipedia. The override
+    exists so an operator who knows a surface can always beat the feed.
+
+    Never raises: any failure returns {} and the caller falls through to the
+    keyword default, exactly as before this existed.
+    """
+    eid = event.get("id")
+    if eid in _tie_surface_cache:
+        return _tie_surface_cache[eid]
+    meta = {}
+    try:
+        parent_id = event.get("parentEventId")
+        if not parent_id and eid:
+            detail, status = _get(f"{BASE_URL}/event/{eid}", with_status=True)
+            if status == 200:
+                parent_id = ((detail or {}).get("event") or {}).get("parentEventId")
+        if parent_id in _tie_parent_cache:
+            meta = _tie_parent_cache[parent_id]
+        elif parent_id:
+            pdet, pstatus = _get(f"{BASE_URL}/event/{parent_id}", with_status=True)
+            pe = (pdet or {}).get("event") or {} if pstatus == 200 else {}
+            home = ((pe.get("homeTeam") or {}).get("country") or {}).get("alpha3")
+            away = ((pe.get("awayTeam") or {}).get("country") or {}).get("alpha3")
+            year = str((pe.get("season") or {}).get("year") or "")
+            if home and away and year:
+                override = DAVIS_CUP_TIE_SURFACES.get((home, away, year))
+                if override:
+                    meta = {"surface": override, "indoor": None,
+                            "source": "override"}
+                else:
+                    try:
+                        from src.api import tie_surfaces as _ts
+                        hit = _ts.lookup(home, away, year)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("tie surface feed unavailable: %s", exc)
+                        hit = None
+                    if hit:
+                        meta = {"surface": hit["surface"],
+                                "indoor": hit.get("indoor"),
+                                "source": "wikipedia"}
+                    else:
+                        logger.warning(
+                            "TIE_SURFACE_UNKNOWN | tie=%s | %s v %s %s | venue=%r "
+                            "| not in the feed or the override table — falling "
+                            "back to the keyword default, which is Hard.",
+                            parent_id, home, away, year,
+                            (pe.get("venue") or {}).get("name"))
+            _tie_parent_cache[parent_id] = meta
+    except Exception as exc:  # noqa: BLE001 — never break surface resolution
+        logger.warning("tie surface lookup failed for event %s: %s", eid, exc)
+        meta = {}
+    if eid:
+        _tie_surface_cache[eid] = meta
+    return meta
+
+
+def _tie_surface_for_event(event: dict):
+    """Just the surface. See tie_meta_for_event for the indoor flag too."""
+    return (tie_meta_for_event(event) or {}).get("surface")
+
+
+def _ground_candidates(event: dict) -> tuple:
+    """Every place Sofascore has been seen to publish groundType, in order.
+
+    Extracted so the surface and the INDOOR flag read exactly the same fields —
+    they are two halves of one value ("Hardcourt indoor", "Red clay indoor") and
+    reading them from different places is how they drift apart.
+    """
+    tournament = event.get("tournament") or {}
+    unique_t   = tournament.get("uniqueTournament") or {}
+    top_unique = event.get("uniqueTournament") or {}
+    category   = tournament.get("category") or {}
+    return (
+        event.get("groundType"),
+        tournament.get("groundType"),
+        unique_t.get("groundType"),
+        top_unique.get("groundType"),
+        category.get("groundType"),
+        unique_t.get("groundTypeEnum"),
+        top_unique.get("groundTypeEnum"),
+    )
+
+
+# Sofascore's numeric groundType already distinguishes the two hard courts: 1 is
+# outdoor hard and 5 is indoor hard. Carpet (4) is always indoor.
+_INDOOR_GROUND_CODES = {4, 5}
+
+
+def infer_indoor_from_event(event: dict):
+    """True / False / None — is this match indoors, per Sofascore?
+
+    None means "not stated", NOT "outdoors". The caller must be able to tell a
+    venue Sofascore says is outdoor from one it says nothing about, because the
+    fallback for the second case is the hand-maintained INDOOR_TOURNAMENTS list
+    and the fallback for the first should be nothing at all.
+
+    WHY THIS EXISTS: indoor was being decided purely by matching the tournament
+    NAME against that list, so every venue had to be discovered by hand and
+    added. Singapore WTA is indoor hard, was not on the list, and the entire
+    2026 Asia swing was therefore priced as an outdoor court — aces 6.5% light
+    and break points 4% heavy — until someone noticed. Sofascore had been
+    publishing the answer the whole time, in the same field the surface is
+    already read from; only the surface half was being kept.
+    """
+    for gt in _ground_candidates(event):
+        if gt is None:
+            continue
+        if isinstance(gt, dict):
+            gt = gt.get("name") or ""
+        if isinstance(gt, int):
+            return gt in _INDOOR_GROUND_CODES
+        if isinstance(gt, str):
+            s = gt.strip().lower()
+            if not s:
+                continue
+            try:                      # "1" / "5" arrive as strings sometimes
+                return int(s) in _INDOOR_GROUND_CODES
+            except (ValueError, TypeError):
+                pass
+            if "indoor" in s:
+                return True
+            if "outdoor" in s:
+                return False
+            if "carpet" in s:         # carpet is only ever laid indoors
+                return True
+            # A bare "hard" / "clay" / "grass" says nothing either way; keep
+            # looking rather than reporting a guess as an answer.
+    return None
+
+
 def _infer_surface_from_event(event: dict, log_missing: bool = False) -> str:
     """
     Try Sofascore native groundType fields first (numeric or string),
@@ -782,16 +1246,8 @@ def _infer_surface_from_event(event: dict, log_missing: bool = False) -> str:
     top_unique = event.get("uniqueTournament") or {}
     category   = tournament.get("category") or {}
 
-    candidates = (
-        event.get("groundType"),
-        tournament.get("groundType"),
-        unique_t.get("groundType"),
-        top_unique.get("groundType"),
-        category.get("groundType"),
-        # groundTypeEnum — additional field path used in some Challenger events
-        unique_t.get("groundTypeEnum"),
-        top_unique.get("groundTypeEnum"),
-    )
+    # One list of field paths, shared with infer_indoor_from_event.
+    candidates = _ground_candidates(event)
 
     for gt_raw in candidates:
         if gt_raw is None:
@@ -823,6 +1279,18 @@ def _infer_surface_from_event(event: dict, log_missing: bool = False) -> str:
         unique_t.get("name", ""),
         top_unique.get("name", ""),
     ]))
+
+    # TEAM COMPETITIONS BEFORE THE KEYWORD GUESS. Davis Cup carries no
+    # groundType anywhere, and "Davis Cup Single Matches" holds no surface word,
+    # so the keyword path below would return its bare `Hard` default for a tie
+    # that may well be on clay. See _tie_surface_for_event.
+    if _is_team_event(tourn_name):
+        tie = _tie_surface_for_event(event)
+        if tie:
+            logger.info("TIE_SURFACE | event=%s | %s -> %s",
+                        event.get("id"), tourn_name, tie)
+            return tie
+
     surface = _infer_surface(tourn_name)
     if log_missing:
         logger.debug(
@@ -1413,10 +1881,33 @@ def _parse_match_stats(stats_data: dict, event: dict, player_id: int) -> Optiona
 # ---------------------------------------------------------------------------
 # Event fetching
 # ---------------------------------------------------------------------------
-def _fetch_event_page(player_id: int, page: int) -> list:
-    """Fetch one page of a player's event history. Returns list (may be empty)."""
-    data = _get(f"{BASE_URL}/team/{player_id}/events/last/{page}")
-    return data.get("events", [])
+# Health of the most recent history fetch, per player. Read by the projection
+# layer so a card built on an incomplete history can SAY SO rather than quietly
+# being a different number than the last time it was run.
+_FETCH_HEALTH: dict = {}
+
+
+def _fetch_event_page(player_id: int, page: int):
+    """One page of a player's event history.
+
+    Returns [] when the page GENUINELY has no events (a 200 with an empty list,
+    or a 404 past the end of history) and None when the FETCH FAILED — a 403, a
+    dead proxy port, a timeout.
+
+    THOSE TWO USED TO BE THE SAME VALUE, and that is the bug. A transient failure
+    on one page of a parallel batch silently removed ~30 matches from the middle
+    of a player's history; its siblings succeeded so the scan carried on, and the
+    only trace was a PAGE_SCAN line reading total_events=0, which is exactly what
+    the end of history looks like. The projection then came out different from
+    the last run with nothing anywhere reporting a problem.
+    """
+    data, status = _get(f"{BASE_URL}/team/{player_id}/events/last/{page}",
+                        with_status=True)
+    if status == 200:
+        return data.get("events", []) or []
+    if status == 404:
+        return []                      # genuinely past the end of history
+    return None                        # transient failure — NOT an empty page
 
 
 MAX_PAGES_DEFAULT = 50    # fetch up to 50 pages (~500 events) — covers full career history
@@ -1471,6 +1962,7 @@ def _get_player_recent_events(player_id: int, max_pages: int = MAX_PAGES_DEFAULT
     begin_player_session()
 
     all_events: list = []
+    health = {"failed_pages": [], "truncated": False}
     now = time.time()
     page = 0
     batch_num = 0
@@ -1488,9 +1980,32 @@ def _get_player_recent_events(player_id: int, max_pages: int = MAX_PAGES_DEFAULT
             for fut in as_completed(fut_map):
                 page_results[fut_map[fut]] = fut.result()
 
+        # A FAILED PAGE GETS RETRIED ON A FRESH PORT BEFORE WE ACCEPT A HOLE.
+        failed = [q for q in batch if page_results.get(q) is None]
+        if failed:
+            logger.warning(
+                "PAGE_SCAN | player_id=%s | %d page(s) failed %s — rotating port "
+                "and retrying", player_id, len(failed), failed)
+            _new_session(force_port=True)
+            for q in failed:
+                page_results[q] = _fetch_event_page(player_id, q)
+            still = [q for q in batch if page_results.get(q) is None]
+            if still:
+                health["failed_pages"].extend(still)
+                logger.error(
+                    "PAGE_SCAN | player_id=%s | %d page(s) STILL failing %s — this "
+                    "player's history has a hole in it and the projection will be "
+                    "flagged incomplete rather than quietly differing",
+                    player_id, len(still), still)
+
         got_any = False
+        answered_any = False
         for p in sorted(batch):
-            evts = page_results.get(p, [])
+            evts = page_results.get(p)
+            if evts is None:
+                evts = []                 # a hole; already recorded in health
+            else:
+                answered_any = True
             surface_this_page: dict = {}
             for e in evts:
                 ts = e.get("startTimestamp", 0) or 0
@@ -1515,6 +2030,17 @@ def _get_player_recent_events(player_id: int, max_pages: int = MAX_PAGES_DEFAULT
 
         page += len(batch)
         batch_num += 1
+
+        if not got_any and not answered_any:
+            # EVERY page in this batch failed. That is not the end of history —
+            # we simply do not know what is out there. Stop, but record it as a
+            # truncation so the projection can say the history is partial.
+            health["truncated"] = True
+            logger.error(
+                "PAGE_SCAN | player_id=%s | entire batch failed at page=%d — "
+                "stopping with %d events; history is TRUNCATED, not complete",
+                player_id, page, len(all_events))
+            break
 
         if not got_any:
             # An empty FIRST batch (nothing accumulated yet) for a real player
@@ -1542,6 +2068,11 @@ def _get_player_recent_events(player_id: int, max_pages: int = MAX_PAGES_DEFAULT
             "PAGE_SCAN | player_id=%s | cumulative_events=%d | batches_fetched=%d",
             player_id, len(all_events), batch_num,
         )
+        _FETCH_HEALTH[str(player_id)] = {
+            "failed_pages": sorted(set(health["failed_pages"])),
+            "truncated": bool(health["truncated"]),
+            "events": len(all_events),
+        }
 
     # Diagnostic: log the most recent match date found and total events fetched.
     finished_events = [
@@ -1690,7 +2221,7 @@ def _fetch_stats_parallel(event_ids: list) -> dict:
 
     def _fetch_one(event_id: int):
         from curl_cffi import requests as cf
-        s = cf.Session(impersonate="chrome120")
+        s = cf.Session(impersonate=_pick_profile())
         s.headers.update(HEADERS)
         if port and _proxy_ok():
             pu = _proxy_url(port)
@@ -1810,7 +2341,218 @@ _IOC_TO_ALPHA2 = {
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
-def search_players(query: str, tour: str = "ATP") -> list:
+# ── SEARCH CACHE ─────────────────────────────────────────────────────────────
+# A PLAIN DICT, BECAUSE THE OLD ONE WAS NEVER A CACHE. The previous version
+# keyed into st.session_state — Streamlit session state — inside a FastAPI
+# process, where it holds nothing between requests. Measured 2026-09-23: three
+# identical /api/search?query=sweeny calls took 19.38s, 19.49s and 19.42s. Every
+# keystroke of every autocomplete was a fresh proxied round trip, and during the
+# proxy's 407 outage that meant Discord's 3s budget was blown on every one.
+#
+# Keyed (tour, normalised query) with a TTL rather than a 15-minute wall-clock
+# bucket, so a hit is a hit regardless of where in the bucket it lands. Bounded,
+# because autocomplete generates a new key per keystroke and this must not grow
+# without limit.
+_SEARCH_CACHE: dict = {}
+_SEARCH_CACHE_TTL = int(os.getenv("SS_SEARCH_TTL", "900") or 900)
+_SEARCH_CACHE_MAX = 2000
+
+
+def _search_cache_get(tour: str, q: str):
+    hit = _SEARCH_CACHE.get((tour, q))
+    if not hit:
+        return None
+    at, val = hit
+    if (time.time() - at) > _SEARCH_CACHE_TTL:
+        _SEARCH_CACHE.pop((tour, q), None)
+        return None
+    return val
+
+
+def _search_cache_put(tour: str, q: str, val: list) -> None:
+    if len(_SEARCH_CACHE) >= _SEARCH_CACHE_MAX:
+        for k in sorted(_SEARCH_CACHE, key=lambda k: _SEARCH_CACHE[k][0])[:200]:
+            _SEARCH_CACHE.pop(k, None)
+    _SEARCH_CACHE[(tour, q)] = (time.time(), val)
+
+
+# ── DURABLE NAME -> ID MEMORY ────────────────────────────────────────────────
+# A Sofascore player id is permanent, so a name resolved once never needs to be
+# asked about again. The 15-minute in-process cache above cannot carry that: it
+# dies with the process and expires long before one of Sofascore's 403 waves
+# does. These back it with database.CacheEntry so a resolved name survives both.
+#
+# 30 days, because the thing being remembered is an identifier, not a statistic.
+# Both helpers swallow everything — a cache is never allowed to break a lookup.
+_DURABLE_SEARCH_TTL = int(os.getenv("SS_SEARCH_DURABLE_TTL", "2592000") or 2592000)
+
+
+def _durable_search_key(tour: str, q_norm: str) -> str:
+    return "ss_search:%s:%s" % ((tour or "ATP").upper(), q_norm)
+
+
+# ── NAME INDEX FROM THE RANKINGS FEED (2026-09-25) ───────────────────────────
+# TWO REQUESTS INSTEAD OF FORTY, and that is the whole fix.
+#
+# Diagnosed 2026-09-25: Sofascore's 403s are not Cloudflare, not bot management
+# and not an IP ban — the responses carry `server: nginx` with no challenge and
+# no rate-limit headers, and six requests spaced six seconds apart ALL returned
+# 200 on the same endpoints that were refusing everything moments earlier. It is
+# a burst throttle on volume.
+#
+# A board scan resolves ~40 player names through /search/all back to back, which
+# is precisely the pattern that trips it — and then everything downstream fails
+# because nothing has an id. But /rankings/type/{5,6} returns the top ~1000 of
+# each tour WITH BOTH name AND id in a SINGLE response. Two calls cover nearly
+# every player who appears on a PrizePicks or Underdog board.
+#
+# So: build the index once, cache it durably for a week (ranks move, ids never
+# do), and let name lookups hit it instead of the search endpoint. The search
+# endpoint stays as the fallback for anyone outside the top 1000.
+_RANK_INDEX_TTL = int(os.getenv("SS_RANK_INDEX_TTL", "604800") or 604800)
+_RANK_INDEX_KEY = "ss_rank_name_index_v1"
+_rank_index_mem = {"at": 0.0, "data": None}
+
+
+def _norm_name(s: str) -> str:
+    import unicodedata
+    s = unicodedata.normalize("NFKD", str(s or ""))
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    return " ".join(s.lower().replace(".", " ").replace("-", " ").split())
+
+
+def get_ranked_name_index(force: bool = False) -> dict:
+    """{normalised name: {"id", "name", "tour"}} for the ranked ATP + WTA field.
+
+    One request per tour, cached in-process and durably. Returns {} rather than
+    raising — a missing index must degrade to the search endpoint, never break a
+    lookup.
+    """
+    now = time.time()
+    if (not force and _rank_index_mem["data"]
+            and (now - _rank_index_mem["at"]) < 3600):
+        return _rank_index_mem["data"]
+    if not force:
+        try:
+            from .. import database as _db
+            cached = _db.cache_get(_RANK_INDEX_KEY)
+            if isinstance(cached, dict) and cached:
+                _rank_index_mem.update({"at": now, "data": cached})
+                return cached
+        except Exception:  # noqa: BLE001
+            pass
+    out = {}
+    for rtype, tour in ((5, "ATP"), (6, "WTA")):
+        try:
+            d = _get("%s/rankings/type/%d" % (BASE_URL, rtype))
+            for row in ((d or {}).get("rankings") or []):
+                t = row.get("team") or {}
+                nm, tid = t.get("name"), t.get("id")
+                if not nm or tid is None:
+                    continue
+                # `rank` is kept so a partial query can put the better-known
+                # player first — someone typing three letters usually means the
+                # higher-ranked one. Ids never change; ranks do, hence the
+                # one-week TTL on this index.
+                try:
+                    _rk = int(row.get("ranking")) if row.get("ranking") else None
+                except (TypeError, ValueError):
+                    _rk = None
+                out[_norm_name(nm)] = {"id": int(tid), "name": nm, "tour": tour,
+                                       "rank": _rk}
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("rank index fetch failed for %s: %s", tour, str(exc)[:120])
+    if out:
+        _rank_index_mem.update({"at": now, "data": out})
+        try:
+            from .. import database as _db
+            _db.cache_set(_RANK_INDEX_KEY, out, _RANK_INDEX_TTL)
+        except Exception:  # noqa: BLE001
+            pass
+        logger.info("RANK_INDEX built: %d ranked players (ATP+WTA)", len(out))
+    return out
+
+
+def _rank_index_lookup(query: str, tour: str = "", limit: int = 8):
+    """Resolve names from the ranked index, the way a person types them.
+
+    THIS HAS TO BE FUZZY, and the first version was not — that was a straight
+    regression. It did an exact full-name match and then matched the LAST word
+    only, which is fine for "alcaraz" and useless for everything else:
+    "sinja" is a FIRST name, so the last-word test compared it against
+    "kraus" and found nothing, and Discord autocomplete sends a partial on
+    every keystroke ("sin", "sinj", "sinja"). /search/all matches loosely; by
+    routing lookups through an exact-match index I removed that and broke
+    every query that is not a bare surname.
+
+    Ranking, best first:
+      0  exact normalised full name          "sinja kraus"
+      1  a word begins with the query        "sinja" -> Sinja Kraus
+      2  the full key begins with the query  "sinja kr"
+      3  the query appears anywhere in it
+    Ties break on the player's rank, so the better-known player leads — which
+    is what someone typing three letters almost always means.
+    """
+    try:
+        idx = get_ranked_name_index()
+        if not idx:
+            return None
+        q = _norm_name(query)
+        if not q:
+            return None
+        want = (tour or "").upper()
+        scored = []
+        for key, v in idx.items():
+            if want and v.get("tour") and v["tour"] != want:
+                continue
+            if key == q:
+                rank = 0
+            elif any(w.startswith(q) for w in key.split()):
+                rank = 1
+            elif key.startswith(q):
+                rank = 2
+            elif q in key:
+                rank = 3
+            else:
+                continue
+            scored.append((rank, v.get("rank") or 9999, v))
+        if not scored:
+            return None
+        scored.sort(key=lambda t: (t[0], t[1]))
+        return [{"id": v["id"], "name": v["name"], "currentRank": v.get("rank"),
+                 "countryAcr": "", "countryCode": "", "gender": ""}
+                for _, _, v in scored[:limit]]
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _durable_search_get(tour: str, q_norm: str):
+    try:
+        from .. import database as _db
+        val = _db.cache_get(_durable_search_key(tour, q_norm))
+        return val if isinstance(val, list) and val else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _durable_search_put(tour: str, q_norm: str, val: list) -> None:
+    try:
+        from .. import database as _db
+        _db.cache_set(_durable_search_key(tour, q_norm), val, _DURABLE_SEARCH_TTL)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def search_players(query: str, tour: str = "ATP", fast: bool = False) -> list:
+    """Resolve a player name. `fast` is for Discord autocomplete.
+
+    DISCORD GIVES AUTOCOMPLETE THREE SECONDS. This used to fetch with
+    fast=False unconditionally — deliberately, to grind through Sofascore's
+    intermittent 403s by rotating ports — which is the right trade for the board
+    scan and the wrong one for a keystroke: three attempts at ~6.5s is ~19s, and
+    the answer arrives sixteen seconds after Discord stopped listening. fast
+    lets the caller say which of those two it is.
+    """
     global _search_blocked, _search_blocked_ts
     if len(query) < 3:
         return []
@@ -1819,8 +2561,7 @@ def search_players(query: str, tour: str = "ATP") -> list:
     # prefixes/names repeatedly across users, so caching makes those instant and
     # avoids a live proxy request entirely. Cache-first before any block check.
     _q_norm = query.strip().lower()
-    _scache_key = f"ss_search_{tour}_{_q_norm}_{int(time.time()) // 900}"
-    _cached = st.session_state.get(_scache_key)
+    _cached = _search_cache_get(tour, _q_norm)
     if _cached is not None:
         logger.info("SEARCH_CACHE_HIT | query=%r tour=%s", query, tour)
         record_cache_hit()
@@ -1850,7 +2591,7 @@ def search_players(query: str, tour: str = "ATP") -> list:
     # fast=False so search retries + rotates ports through Sofascore's
     # intermittent 403s (same way the player-stats fetch gets through), instead
     # of giving up on the first block. Slower, but it actually resolves players.
-    data = _get(f"{BASE_URL}/search/all", {"q": query}, fast=False)
+    data = _get(f"{BASE_URL}/search/all", {"q": query}, fast=fast)
 
     raw_results = data.get("results", [])
     logger.info("SEARCH_RAW | query=%r www_results=%d data_keys=%s",
@@ -1981,7 +2722,44 @@ def search_players(query: str, tour: str = "ATP") -> list:
     # Cache non-empty results for the 15-min window (don't cache empties — a
     # transient block shouldn't be remembered as "no such player").
     if out:
-        st.session_state[_scache_key] = out
+        _search_cache_put(tour, _q_norm, out)
+        _durable_search_put(tour, _q_norm, out)
+        return out
+
+    # ── NOTHING CAME BACK. TRY WHAT WE ALREADY KNEW. ─────────────────────────
+    # Sofascore 403s the search endpoint in waves, on every host, port and
+    # profile at once, and the route still answers HTTP 200 with an empty list —
+    # so the app shows "no such player" rather than "we could not ask". On
+    # 2026-09-25 that took out player search, Discord autocomplete and every
+    # name-to-id lookup while projections on KNOWN ids kept working fine.
+    #
+    # A player's Sofascore id never changes, so a name we have resolved before
+    # does not need to be asked about again. The 15-minute in-process cache was
+    # the only memory we had: it dies with the process and expires in a quarter
+    # of an hour, which is exactly when a block wave outlasts it.
+    #
+    # This reads the DURABLE cache (database.CacheEntry) that successful
+    # searches now write to. It is our own previously-fetched data being reused
+    # — not a way around the block. A name we have never resolved still cannot
+    # be resolved while the block holds, and that is stated honestly upstream.
+    # THE RANKED INDEX FIRST: two cached requests cover the top 1000 of each
+    # tour, so the burst-throttled search endpoint is not needed for anyone in
+    # it. See get_ranked_name_index.
+    _ranked = _rank_index_lookup(query, tour)
+    if _ranked:
+        logger.info("SEARCH_RANK_INDEX | query=%r tour=%s -> %s",
+                    query, tour, _ranked[0]["name"])
+        _search_cache_put(tour, _q_norm, _ranked)
+        _durable_search_put(tour, _q_norm, _ranked)
+        return _ranked
+
+    _stale = _durable_search_get(tour, _q_norm)
+    if _stale:
+        logger.warning("SEARCH_DURABLE_FALLBACK | query=%r tour=%s — live search "
+                       "returned nothing, serving %d previously-resolved result(s)",
+                       query, tour, len(_stale))
+        _search_cache_put(tour, _q_norm, _stale)
+        return _stale
     return out
 
 
@@ -2615,6 +3393,11 @@ def get_player_next_match(player_id, tour: str = "ATP") -> dict:
             result = {
                 "tournament": (ev.get("tournament") or {}).get("name", ""),
                 "surface": _infer_surface_from_event(ev),
+                # True / False / None — see infer_indoor_from_event. None means
+                # Sofascore did not say, and the caller falls back to the
+                # hand-maintained INDOOR_TOURNAMENTS list; it must not be
+                # collapsed to False on the way through.
+                "indoor": infer_indoor_from_event(ev),
                 "opponent_name": opp.get("name", ""),
                 "opponent_id": opp.get("id"),
                 "start_timestamp": ts,
@@ -2764,6 +3547,40 @@ _TENNIS_CATEGORY_IDS = {"ATP": 3, "WTA": 6}
 _SCHED_LAST_GOOD: dict = {}
 
 
+# ── SCHEDULE FETCH HEALTH (2026-09-26) ───────────────────────────────────────
+# "Blocked" and "nobody is playing" are different facts and must not render as
+# the same sentence. The 00:00 slate on 2026-09-26 posted "No live or upcoming
+# matches found" for a full Saturday card because the category fetches were
+# 403ing under the burst throttle and an empty list looks exactly like an empty
+# day. get_slate reads scheduled_fetch_blocked() to tell them apart.
+_SCHED_FETCH_FAILED: dict = {}
+_SCHED_DURABLE_TTL = int(os.getenv("SS_SCHED_DURABLE_TTL", "86400") or 86400)
+
+
+def scheduled_fetch_blocked(date_str: str) -> bool:
+    """True when the last attempt for this date was REFUSED, not merely empty."""
+    return bool(_SCHED_FETCH_FAILED.get(date_str))
+
+
+def _durable_sched_get(date_str: str):
+    """Last good schedule for a date, surviving restarts. The in-process
+    snapshot dies with the process, which is exactly when it is needed."""
+    try:
+        from .. import database as _db
+        v = _db.cache_get("ss_sched:%s" % date_str)
+        return v if isinstance(v, list) and v else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _durable_sched_put(date_str: str, val: list) -> None:
+    try:
+        from .. import database as _db
+        _db.cache_set("ss_sched:%s" % date_str, val, _SCHED_DURABLE_TTL)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def get_scheduled_events(date_str: str = "", tours=("ATP", "WTA")) -> list:
     """Today's (or a given date's) scheduled ATP/WTA SINGLES matches from
     Sofascore. Returns a list of normalized dicts:
@@ -2782,6 +3599,7 @@ def get_scheduled_events(date_str: str = "", tours=("ATP", "WTA")) -> list:
         return st.session_state[cache_key]
 
     out: list = []
+    _blocked = False
     _last_good = _SCHED_LAST_GOOD.get(date_str)
     try:
         # NOTE: the sport-level /sport/tennis/scheduled-events/{date} endpoint now
@@ -2791,7 +3609,12 @@ def get_scheduled_events(date_str: str = "", tours=("ATP", "WTA")) -> list:
             cid = _TENNIS_CATEGORY_IDS.get(tname.upper())
             if not cid:
                 continue
-            data = _get(f"{BASE_URL}/category/{cid}/scheduled-events/{date_str}")
+            data, _code = _get(
+                f"{BASE_URL}/category/{cid}/scheduled-events/{date_str}",
+                with_status=True)
+            if _code != 200:
+                # Remember that we were REFUSED rather than told "no matches".
+                _blocked = True
             for e in (data.get("events", []) or []):
                 ht = (e.get("homeTeam") or {})
                 at = (e.get("awayTeam") or {})
@@ -2815,12 +3638,33 @@ def get_scheduled_events(date_str: str = "", tours=("ATP", "WTA")) -> list:
     if out:
         st.session_state[cache_key] = out
         _SCHED_LAST_GOOD[date_str] = out
-    elif _last_good:
-        # A cold/slow fetch returned nothing — serve the last good result rather
-        # than an empty "unavailable" slate.
+        _SCHED_FETCH_FAILED.pop(date_str, None)
+        _durable_sched_put(date_str, out)
+        return out
+
+    # ── NOTHING CAME BACK ────────────────────────────────────────────────────
+    # The in-process last-good only helps a process that has already seen a
+    # good fetch. The bot restarted repeatedly on 2026-09-25, so at the 00:00
+    # slate post it was empty, the category fetches were 403ing under the burst
+    # throttle, and an empty list became "No live or upcoming matches found" —
+    # a Saturday of tennis reported as no tennis.
+    if not _last_good:
+        _last_good = _durable_sched_get(date_str)
+        if _last_good:
+            logger.info("scheduled-events: durable last-good for %s (%d events)",
+                        date_str, len(_last_good))
+    if _last_good:
         logger.info("scheduled-events: serving last-good for %s (%d events)",
                     date_str, len(_last_good))
-        out = _last_good
+        return _last_good
+
+    # NO DATA AND NO SNAPSHOT. Record WHY, because "we could not ask" and
+    # "nobody is playing" must not render as the same sentence. get_slate reads
+    # this to choose between "unavailable" and "no matches".
+    _SCHED_FETCH_FAILED[date_str] = bool(_blocked)
+    if _blocked:
+        logger.error("scheduled-events: BLOCKED for %s — reporting unavailable, "
+                     "not an empty slate", date_str)
     return out
 
 
