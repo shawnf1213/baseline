@@ -2857,16 +2857,33 @@ def get_player_stats_by_surface(player_id, tour: str = "ATP", force_fresh: bool 
     if force_fresh:
         st.session_state.pop(cache_key, None)
     else:
-        if cache_key in st.session_state:
+        # An EMPTY snapshot is treated as a miss, not a hit. Rows written before
+        # the write-guard below existed are still out there with up to 6h left on
+        # them, and a cached "this player has no matches" is never worth serving:
+        # it turns one refused fetch into hours of DATA_GAP_REFUSE. Reading it as
+        # a miss lets those rows heal themselves on the next request instead of
+        # needing the TTL to expire.
+        _mem = st.session_state.get(cache_key)
+        if _mem is not None and not _mem.get("all_matches"):
+            logger.warning("SURFACE_CACHE_EMPTY | pid=%s | discarding empty cached "
+                           "snapshot and refetching", pid)
+            st.session_state.pop(cache_key, None)
+            _mem = None
+        if _mem is not None:
             logger.info("SURFACE_CACHE_HIT | pid=%s | bucket=%s", pid, _bucket)
             record_cache_hit()
-            return st.session_state[cache_key]
+            return _mem
 
         # Durable layer (scope 2/3): read ONCE on a memory miss, then hydrate memory
         # so the rest of this bucket never touches the DB again. TTL is enforced
         # inside cache_get, so a row that merely survived a restart cannot be served
         # stale — an expired row is a miss and we refetch below.
         _durable = _player_surface_from_db(pid)
+        if _durable and not _durable.get("all_matches"):
+            logger.warning("SURFACE_DB_EMPTY | pid=%s | Postgres row holds an empty "
+                           "snapshot (written during an upstream outage) — ignoring "
+                           "it and refetching", pid)
+            _durable = None
         if _durable:
             logger.info("SURFACE_DB_HIT | pid=%s | hydrated from Postgres (survived "
                         "restart) — no refetch", pid)
@@ -3304,6 +3321,29 @@ def get_player_stats_by_surface(player_id, tour: str = "ATP", force_fresh: bool 
         # No prior snapshot: return the degraded result so the caller still gets
         # SOMETHING, but do NOT cache it — the next request re-fetches and can
         # recover as soon as the proxy/stats API is healthy again.
+        surfaces["_degraded_fetch"] = True
+        return surfaces
+
+    # ── ZERO DATA IS NEVER AUTHORITATIVE ─────────────────────────────────────
+    # The degraded guard above only runs when _requested >= _DEGRADED_MIN_REQUESTED,
+    # because it is built to spot PARTIAL stat degradation. A total failure asks
+    # for nothing, so _requested is 0, the whole check is skipped, and an empty
+    # snapshot used to be written through to Postgres as fact.
+    #
+    # That is what kept Coleman Wong broken on 2026-09-26. His history fetch was
+    # refused during the block, the resulting empty snapshot was persisted with a
+    # 6h TTL, and because the durable read short-circuits before any refetch it
+    # survived two redeploys — DATA_GAP_REFUSE kept firing for hours after
+    # Sofascore was answering normally and a refetch would have worked.
+    #
+    # A player with genuinely no matches costs one cheap refetch by not being
+    # cached. A cached empty player costs every caller until the TTL expires.
+    if not surfaces.get("all_matches"):
+        logger.error(
+            "SURFACE_EMPTY_UNCACHED | pid=%d | no matches after fetch — returning "
+            "UNCACHED so the next request retries instead of pinning this for %dh",
+            pid, _CACHE_BUCKET_SECS // 3600,
+        )
         surfaces["_degraded_fetch"] = True
         return surfaces
 

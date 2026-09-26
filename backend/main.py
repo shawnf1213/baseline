@@ -2696,6 +2696,25 @@ def _proj_cache_get(req):
 
 def _proj_cache_put(req, val) -> None:
     try:
+        # NEVER CACHE A FAILURE. A refused upstream fetch returns a payload with
+        # data_unavailable=True and no projection; storing that pins the outage
+        # in place for the full TTL, so the cache keeps serving "temporarily
+        # unavailable" long after the cause is fixed and the next request would
+        # have succeeded. Exactly that happened on 2026-09-26: one Coleman Wong
+        # lookup refused during the block, and the error was still being served
+        # from cache in 0.2s after the fix shipped and Sofascore was answering.
+        #
+        # Same rule the event and statistics caches already state in their own
+        # words ("Never cache an empty fetch", "ONLY cache a real payload"): a
+        # transient failure must never become sticky. A miss costs one refetch;
+        # a poisoned hit costs every caller until the TTL expires.
+        if not isinstance(val, dict) or val.get("data_unavailable") \
+                or val.get("model_projection") is None:
+            logger.info("PROJ_CACHE_SKIP | %s vs %s %s — not caching a failed "
+                        "projection", getattr(req, "player_name", "?"),
+                        getattr(req, "opponent_name", "?"),
+                        getattr(req, "prop_type", "?"))
+            return
         if len(_PROJ_CACHE) >= _PROJ_CACHE_MAX:
             for k in sorted(_PROJ_CACHE, key=lambda k: _PROJ_CACHE[k][0])[:500]:
                 _PROJ_CACHE.pop(k, None)
