@@ -2196,8 +2196,10 @@ def pick_embed(pick: dict) -> discord.Embed:
 _line_monitor_task = None
 
 
-def _pick_to_record(p: dict, group: str = "potd") -> dict:
+def _pick_to_record(p: dict, group: str = "potd", excluded: bool = False) -> dict:
     return {
+        # 1 for shadow props: graded normally, never counted in the record.
+        "excluded_from_record": 1 if excluded else 0,
         "player": p.get("player", ""), "opponent": p.get("opponent", ""),
         "prop_type": p.get("prop_type", ""), "line": p.get("line"),
         "model_projection": p.get("projection"), "lean": (p.get("lean") or "").upper(),
@@ -2368,7 +2370,7 @@ def _breakdown_json(p: dict) -> str:
         return ""
 
 
-async def _log_picks_pending(picks: list, group: str = "potd"):
+async def _log_picks_pending(picks: list, group: str = "potd", excluded: bool = False):
     """Feature 1 — log each pick to the durable results tracker as PENDING,
     tagged with its pick group ("potd" or "3x").
 
@@ -2406,7 +2408,8 @@ async def _log_picks_pending(picks: list, group: str = "potd"):
             log.info("POD: skip duplicate log (already logged today): %s %s [%s]",
                      p.get("player"), p.get("prop_type"), group)
             continue
-        rec = await asyncio.to_thread(results_tracker.log_pick, _pick_to_record(p, group))
+        rec = await asyncio.to_thread(results_tracker.log_pick,
+                                      _pick_to_record(p, group, excluded=excluded))
         if rec:
             p["pick_id"] = rec.get("id")
             logged += 1
@@ -3125,6 +3128,20 @@ async def _post_daily_picks(channel, track: bool = True) -> str:
         if has_star and ranked:
             ranked[0]["is_potd"] = True
         await _log_picks_pending(ranked, group="potd")
+
+    # SHADOW PROPS — logged, never posted. _rank_board collected these while
+    # evaluating the same board, so they cost no extra Sofascore work. They go in
+    # as excluded_from_record, so the resolver grades them and record_summary
+    # ignores them; after ~40-50 graded picks each, Aces and Double Faults can be
+    # judged on out-of-sample evidence instead of the in-sample point estimate
+    # that today's walk-forward produced. See SHADOW_PROPS in pick_of_day.
+    _shadow = list(getattr(pick_of_day, "LAST_SHADOW_PICKS", []) or [])
+    if _shadow:
+        log.info("SHADOW | logging %d qualified play(s) not posted: %s",
+                 len(_shadow),
+                 ", ".join("%s %s" % (s.get("player"), s.get("prop_type"))
+                           for s in _shadow[:6]))
+        await _log_picks_pending(_shadow, group="shadow", excluded=True)
 
     # Baseline 3x — a SEPARATE post right after the ranked list.
     # TWO LEGS OR NOTHING. `if slip:` posted a one-leg slip on 9/3 under the 3x

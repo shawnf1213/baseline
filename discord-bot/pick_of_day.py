@@ -371,7 +371,58 @@ if _env_excl.strip():
 #
 # Both remain fully implemented and projectable — /prop still prices them, and
 # the website still shows them. This is a BOARD policy, not a model deletion.
-_POD_EXCLUDE_PROPS = {"Double Faults", "Aces", "Total Games"}
+# TOTAL GAMES STAYS OUT. Aces and Double Faults moved to SHADOW_PROPS below
+# (2026-09-26) — see the note there. Total Games did not move, and the reason is
+# that it is the one prop bias correction cannot reach: walk-forward re-grade at
+# every clamp leaves it flat (53.8% uncorrected -> 53.4% at clamp 1.5/2.5/5.0),
+# its projection correlates with the outcome at only 0.37, the BOOK's line is a
+# closer predictor than ours (MAE 4.71 vs 5.16), and out of sample it grades
+# 33-41 (44.6%, z=-2.27) — below breakeven, not merely short of it. That matches
+# the games_per_set fit in backend/src/calculations/confidence.py finding
+# combined hold explains R^2 0.09-0.16 of the variance, and is why books price
+# it -120/-120 both ways. There is no level correction for a prop that is close
+# to a coin flip.
+_POD_EXCLUDE_PROPS = {"Total Games"}
+
+# ── SHADOW PROPS: EVALUATED AND LOGGED, NEVER POSTED (2026-09-26) ────────────
+# Aces and Double Faults were dropped from the board on 2026-09-11 ("Board: drop
+# Aces and Total Games"), and that commit recorded the reason: "Aces ...
+# projections -19.5% biased". The bias was real and the response was to remove
+# the prop rather than correct the level.
+#
+# PROP_BIAS_CLAMP moved 1.5 -> 2.5 on 2026-09-26, which is the correction that
+# was missing. Walk-forward re-grade over 904 graded picks with actual outcomes,
+# recomputing the bias from PRIOR picks only at each step (no lookahead):
+#
+#     Aces           41.5% uncorrected -> 50.0% @1.5 -> 59.3% @2.5 (57.6% @5.0)
+#     Double Faults  57.1% uncorrected -> 61.2% @1.5 -> 61.2% @2.5
+#
+# Clamp 5.0 being WORSE than 2.5 says 2.5 is near the optimum rather than the
+# best of a monotone sweep. Aces also has the highest projection/outcome
+# correlation of any prop (0.59) — the model knows who serves aces; it was the
+# level that was wrong, which is exactly what a bias term fixes.
+#
+# SO WHY NOT PUT THEM STRAIGHT BACK ON THE BOARD: the out-of-sample halves are
+# 11-14 (44.0%) and 12-14 (46.2%). Tiny, because the props were dropped on 09-11
+# so barely any recent data exists, and what does exist is partly the stretch
+# that motivated dropping them. Neither half separates from breakeven. A 59.3%
+# point estimate built on 93 in-sample picks is a reason to gather evidence, not
+# a reason to publish.
+#
+# Shadow is how this resolves itself: evaluated every day, logged to the DB as
+# excluded_from_record so the published record cannot move, graded by the normal
+# resolver, and re-checked once each has ~40-50 out-of-sample picks. Same pattern
+# as PTGW and FS, and what the project's north star asks for — new props ship in
+# shadow. While they sat in _POD_EXCLUDE_PROPS they produced no data at all, so
+# the question could never be settled.
+SHADOW_PROPS = {
+    x.strip() for x in os.getenv("SHADOW_PROPS", "Aces,Double Faults").split(",")
+    if x.strip()
+}
+# Populated by _rank_board on every run; the caller logs it under pick_group
+# "shadow". Module-level rather than an extra return value because _rank_board
+# has seven callers and none of them should have to care.
+LAST_SHADOW_PICKS: list = []
 
 
 def _is_excluded(name: str) -> bool:
@@ -1340,6 +1391,10 @@ async def _rank_board(props: list = None):
         log.info("POD: no eligible tennis props on the board")
         return None
 
+    # Reset per run — this list is read by the caller straight after, and a stale
+    # entry would be logged twice on the next board.
+    LAST_SHADOW_PICKS.clear()
+
     # One evaluation per (player, prop, odds_type) — the projection is line-
     # independent, but a demon carries a DIFFERENT (boosted) line than the
     # standard, so both variants must be evaluated separately against their lines.
@@ -1446,6 +1501,16 @@ async def _rank_board(props: list = None):
                      r.get("line"), conf, r.get("projection") or 0.0, r.get("edge") or 0.0,
                      _recent_supports_lean(r), bar,
                      "QUALIFIES" if ok else ("below v2 floor %d" % bar))
+        # SHADOW: qualified, but diverted before it can reach the board, the star
+        # or the 3x. Collected so the caller can log it as excluded_from_record —
+        # the whole point is to accumulate graded out-of-sample picks.
+        if ok and ptype in SHADOW_PROPS:
+            LAST_SHADOW_PICKS.append(r)
+            log.info("POD_SHADOW | %-22s %-18s line=%-5s conf=%-3.0f proj=%-6.2f "
+                     "lean=%-5s — QUALIFIED, logged not posted (SHADOW_PROPS)",
+                     (r.get("player") or "")[:22], (ptype or "")[:18],
+                     r.get("line"), conf, r.get("projection") or 0.0, _lean_dir(r))
+            continue
         if ok:
             picks.append(r)
             by_type_qual[ptype] = by_type_qual.get(ptype, 0) + 1

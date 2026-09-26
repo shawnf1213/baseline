@@ -278,6 +278,12 @@ class ResultLogRequest(BaseModel):
     # Ranks are the only honest basis, and we already compute them per pick.
     player_rank: int | None = None
     opponent_rank: int | None = None
+    # ── SHADOW PICKS (2026-09-26) ────────────────────────────────────────────
+    # 1 = graded like any other pick but never counted in the published record.
+    # Declared here for the reason stated above: without it pydantic drops the
+    # field and a shadow pick lands in the record as a normal one, which is the
+    # precise failure this whole comment block exists to prevent.
+    excluded_from_record: int = 0
     both_challenger_level: int = 0
 
 

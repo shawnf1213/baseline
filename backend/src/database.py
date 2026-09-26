@@ -626,6 +626,14 @@ def log_pick(rec: dict) -> dict:
                 player_rank=_i_or_none(rec.get("player_rank")),
                 opponent_rank=_i_or_none(rec.get("opponent_rank")),
                 both_challenger_level=_i_or_none(rec.get("both_challenger_level")),
+                # Settable AT INSERT so a shadow pick can never touch the
+                # published record. Previously this was only reachable through
+                # /api/results/exclude, i.e. a pick had to be counted first and
+                # flagged out afterwards — a window in which a recap or a record
+                # read would include it. Shadow props (Aces, Double Faults) are
+                # logged with this set, graded by the normal resolver, and
+                # excluded from record_summary throughout.
+                excluded_from_record=(1 if rec.get("excluded_from_record") else 0),
             )
             s.add(row)
             s.flush()
