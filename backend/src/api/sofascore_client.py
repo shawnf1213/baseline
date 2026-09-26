@@ -2577,6 +2577,39 @@ def search_players(query: str, tour: str = "ATP", fast: bool = False) -> list:
     # when 50 fresh IPs are available to retry. Search retries through blocks
     # itself (fast=False below), rotating ports on each 403.
 
+    # ── AUTOCOMPLETE ANSWERS FROM THE RANKED INDEX FIRST ─────────────────────
+    # Discord gives an autocomplete callback ~3s and the bot allows 2.6s. A cold
+    # /search/all costs 1.4-2.2s per tour (4.5s for a common first name like
+    # "jessica"), and autocomplete asks BOTH tours, so the budget was being spent
+    # almost entirely on a network round trip and any jitter blew it — measured
+    # as "search failed q='wong' ... read timeout=2.6" and seen by subscribers as
+    # an empty option list on every uncached name.
+    #
+    # The ranked index is already in memory (1000 ranked ATP+WTA players, 7-day
+    # durable cache) and _rank_index_lookup is fuzzy on prefixes and first names,
+    # which is exactly the shape of an autocomplete query. Answering from it is
+    # sub-millisecond and covers the overwhelming majority of names anyone types
+    # off a PrizePicks board.
+    #
+    # fast ONLY. The submit path keeps going to Sofascore, because there a wrong
+    # or missing resolution matters more than latency and the index is limited to
+    # the ranked field. A miss here falls straight through to the live search.
+    if fast:
+        _idx = _rank_index_lookup(query, tour, limit=5)
+        if _idx:
+            # _rank_index_lookup already emits this endpoint's row shape; only
+            # gender is unset there, and the lookup filters by tour, so it comes
+            # from the requested tour rather than being re-derived per row.
+            _g = "F" if tour.upper() == "WTA" else "M"
+            _out = [{**r, "gender": r.get("gender") or _g}
+                    for r in _idx if r.get("id")]
+            if _out:
+                logger.info("SEARCH_RANK_INDEX | query=%r tour=%s -> %s (no network)",
+                            query, tour, [x["name"] for x in _out])
+                _search_cache_put(tour, _q_norm, _out)
+                record_cache_hit()
+                return _out
+
     # New search = new sticky proxy session + fresh Decodo session ID
     _new_session(force_port=True)
 
@@ -2697,11 +2730,35 @@ def search_players(query: str, tour: str = "ATP", fast: bool = False) -> list:
 
     out = []
     seen_final: set = set()
+    seen_names: set = set()
     for e in entities:
         eid = e.get("id")
         if eid in seen_final:
             continue
+        # ── ONE ROW PER PERSON, NOT ONE PER SOFASCORE RECORD ─────────────────
+        # Sofascore carries duplicate entities for the same player: Coleman Wong
+        # exists as 289106 (rank 108, full history) and 406729 (no rank, 404 on
+        # /events). Both are type-1 tennis players named "Coleman Wong", so an
+        # id-keyed dedupe kept both and the autocomplete showed the same name
+        # twice with nothing to tell them apart. Picking the wrong one produced
+        # an empty history and a "data source temporarily unavailable" error.
+        #
+        # entities is already sorted by _score, whose rank_penalty puts a ranked
+        # record ahead of an unranked one (108 -> 0.108 vs no rank -> 0.5), so
+        # the FIRST time a name appears is the record worth keeping. Dropping
+        # later same-name entities therefore keeps the real player and discards
+        # the shell. Accent-stripped and case-folded so "Molčan"/"Molcan" are
+        # recognised as the same person.
+        _nkey = " ".join(_strip_accents((e.get("name") or "").lower()).split())
+        if _nkey and _nkey in seen_names:
+            logger.info("SEARCH_DEDUPE | query=%r dropping duplicate %r id=%s "
+                        "(rank=%s) — already have a higher-ranked record",
+                        query, e.get("name"), eid,
+                        e.get("ranking") or e.get("teamRank"))
+            continue
         seen_final.add(eid)
+        if _nkey:
+            seen_names.add(_nkey)
         if len(out) >= 5:
             break
         c = e.get("country") or {}
