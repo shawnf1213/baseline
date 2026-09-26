@@ -493,6 +493,22 @@ def get_slate(date_str: str = "") -> dict:
     if not groups:   # today's window had nothing upcoming — look at tomorrow
         groups = _collect((datetime.now(et) + timedelta(days=1)).strftime("%Y-%m-%d"))
     if not groups:
+        # WAS `available: True, count: 0` UNCONDITIONALLY, which renders as
+        # "No live or upcoming matches found" — indistinguishable from a day
+        # nobody is playing. On 2026-09-26 the 00:00 slate said exactly that
+        # about a full Saturday card, because the Sofascore category fetches
+        # were 403ing under the burst throttle. Ask whether we were refused.
+        try:
+            from src.api.sofascore_client import scheduled_fetch_blocked
+            _tom = (datetime.now(et) + timedelta(days=1)).strftime("%Y-%m-%d")
+            if scheduled_fetch_blocked(today) or scheduled_fetch_blocked(_tom):
+                logger.warning("get_slate: schedule fetch was BLOCKED for %s — "
+                               "reporting unavailable rather than an empty slate",
+                               today)
+                return {"available": False, "atp": [], "wta": [], "count": 0,
+                        "date": today, "is_today": True}
+        except Exception:  # noqa: BLE001 — never let the check break the slate
+            pass
         return {"available": True, "atp": [], "wta": [], "count": 0,
                 "date": today, "is_today": True}
 

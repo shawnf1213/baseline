@@ -256,7 +256,35 @@ def fetch_underdog_lines() -> dict:
                    if str(p.get("sport_id", "")).upper() == "NFL"}
         apps = {a.get("id"): a for a in (board.get("appearances") or [])
                 if a.get("player_id") in players}
-        out, skipped_mult, unmapped = {}, 0, {}
+
+        # UNDERDOG'S team_id IS A UUID, NOT AN ABBREVIATION.
+        # It was being written straight into the row's "team", where the board
+        # then asked normalize_team("01bfe9d5-f671-57ed-aa60-249fcca9267c") to
+        # find a fixture. It never could, so _game_for returned {} for every
+        # line and all of them were discarded as "not on this slate" — on
+        # 2026-09-19 that was 333 of 333, which is why the Underdog NFL board
+        # has been posting nothing while PrizePicks priced 168.
+        # The payload carries the translation itself: each game has the two
+        # team UUIDs and an abbreviated_title of the form "AWAY @ HOME".
+        team_abbr = {}
+        for g in (board.get("games") or []):
+            if str(g.get("sport_id", "")).upper() != "NFL":
+                continue
+            title = (g.get("abbreviated_title") or "")
+            if " @ " not in title:
+                continue
+            away, home = (x.strip() for x in title.split(" @ ", 1))
+            if g.get("away_team_id") and away:
+                team_abbr[g["away_team_id"]] = away
+            if g.get("home_team_id") and home:
+                team_abbr[g["home_team_id"]] = home
+        if not team_abbr:
+            log.warning("nfl underdog: could not build a team_id -> abbr map "
+                        "from %d game(s) — rows will carry no team and the "
+                        "board will drop them as off-slate",
+                        len(board.get("games") or []))
+
+        out, skipped_mult, unmapped, no_team = {}, 0, {}, 0
         for ln in (board.get("over_under_lines") or []):
             st = (ln.get("over_under") or {}).get("appearance_stat") or {}
             app = apps.get(st.get("appearance_id"))
@@ -288,12 +316,18 @@ def fetch_underdog_lines() -> dict:
                     over_px = o.get("american_price")
                 elif o.get("choice") == "lower":
                     under_px = o.get("american_price")
+            abbr = team_abbr.get(pl.get("team_id"))
+            if not abbr:
+                no_team += 1
             out[(_norm(name), prop)] = {
                 "player": name, "line": line, "prop": prop,
-                "team": (pl.get("team_id") or None),
+                "team": abbr,
                 "position": (pl.get("position_id") or None),
                 "over_price": over_px, "under_price": under_px,
                 "book": "underdog"}
+        if no_team:
+            log.warning("nfl underdog: %d line(s) have no resolvable team — "
+                        "the board will treat them as off-slate", no_team)
         if skipped_mult:
             log.info("nfl underdog: skipped %d multiplier/one-sided line(s)",
                      skipped_mult)

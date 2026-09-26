@@ -1,0 +1,6 @@
+# OAuth client secret and the refresh token it produces. Never committed —
+# a leaked refresh token is standing write access to the YouTube channel.
+secrets/
+out/
+frames/
+node_modules/

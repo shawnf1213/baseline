@@ -373,12 +373,34 @@ def scan_board(book: str = "prizepicks", season: int = None,
                 continue
             p = _win_prob(r)
             sd = r.get("sd") or 0.0
-            edge = (r.get("projection") or 0.0) - float(ln["line"])
+            # ── EDGE IS MEASURED FROM THE FAIR LINE, NOT THE MEAN (2026-09-24) ──
+            # This was (projection - line), and `projection` is an expected value
+            # while `lean` comes from P(over), which is median-based. For a
+            # right-skewed prop those disagree: a receiver at mu=50 against a
+            # line of 45 gave edge +5.0 (reads OVER) while the lean said UNDER,
+            # because the median outcome is ~40.9. edge_sd orders this board and
+            # gates it via MIN_EDGE_SD, so the ranking was measuring distance
+            # from the wrong reference point on every skill-position row.
+            #
+            # fair_line is the coin-flip line (mu x median ratio), so edge now
+            # always carries the same sign as the lean. Falls back to the mean
+            # when the empirical table does not cover a prop/volume (the gamma
+            # path), which is the old behaviour rather than a silent zero.
+            _fair = r.get("fair_line")
+            _ref = (_fair if isinstance(_fair, (int, float))
+                    else (r.get("projection") or 0.0))
+            edge = _ref - float(ln["line"])
             r.update({
                 "book": book,
                 "line": ln["line"],
                 "edge": round(edge, 2),
                 "edge_sd": round(abs(edge) / sd, 3) if sd else None,
+                # Published so a row can say which reference its edge used —
+                # None means the empirical table did not cover this prop/volume
+                # and the edge fell back to the mean.
+                "fair_line": r.get("fair_line"),
+                "edge_basis": ("fair line" if isinstance(r.get("fair_line"), (int, float))
+                               else "mean (no empirical table)"),
                 "team": ln.get("team"),
                 "board_position": ln.get("position"),
                 "matchup": game.get("matchup"),

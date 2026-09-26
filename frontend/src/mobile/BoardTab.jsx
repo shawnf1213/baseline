@@ -15,13 +15,14 @@ import { TeamMark } from './nflviz'
 const DEFAULT_FILTERS = { prop: 'All', tour: 'All', surface: 'All', sort: 'start' }
 const PROJECT_CAP = 120  // auto-project the whole current view (throttled in project.js)
 
+
 // Lazily project a set of rows (cached + concurrency-limited in project.js).
 function useBoardProjections(rows) {
   const [map, setMap] = useState({})
   useEffect(() => {
     let alive = true
     rows.slice(0, PROJECT_CAP).forEach(row => {
-      const cached = cachedProjection(row.key)
+      const cached = cachedProjection(row)
       if (cached !== undefined) {
         setMap(m => (row.key in m ? m : { ...m, [row.key]: cached || { failed: true } }))
         return
@@ -39,7 +40,7 @@ const BOOKS = [
   { key: 'underdog', label: 'Underdog' },
 ]
 
-export default function BoardTab({ boards, book, setBook, loading, error, onOpenPlayer }) {
+export default function BoardTab({ boards, book, setBook, loading, error, onOpenPlayer, onProject }) {
   // SPORT LIVES HERE, NOT IN THE NAV. Seven bottom-tabs is already a crowded
   // rail, and "which sport" is a filter on the board rather than a different
   // place in the app — the same shape as the PrizePicks/Underdog switch that
@@ -85,10 +86,10 @@ export default function BoardTab({ boards, book, setBook, loading, error, onOpen
     return merged
   }, [filtered, proj, filters.sort])
 
-  // Displayed confidence is CALIBRATED across the visible board — see
-  // data.calibratedConfidence. The raw score gates; it does not describe.
-  // Displayed confidence is CALIBRATED across the visible board — see
-  // data.calibratedConfidence. The raw score gates; it does not describe.
+  // ONE NUMBER NOW — the raw model score, the same one that chose the play and
+  // the same one Discord prints. calibratedConfidence returns it directly; the
+  // name is kept so every caller does not have to change. See data.js for what
+  // switching off the edge-derived figure trades away.
   const calib = useMemo(() => calibratedConfidence(rows), [rows])
 
   // ONE CARD PER PLAYER, built on the CALIBRATED confidence so a group's
@@ -96,10 +97,34 @@ export default function BoardTab({ boards, book, setBook, loading, error, onOpen
   // reason — and pages must come after this, not before it: the previous
   // ordering read `groups` above its own declaration, which is a temporal dead
   // zone error and crashed the whole app on load.
-  const groups = useMemo(
-    () => groupByPlayer(rows.map(
-      r => ({ ...r, confidence: calib.get(r.key) ?? r.confidence }))),
+  //
+  // EVERY PLAYER ON THE BOARD APPEARS, AND THEIR PROPS PRICE IN PLACE.
+  // A 60% floor was added here on 2026-09-21 and removed the same day. It could
+  // only be evaluated once a row had been priced, so either the board filled
+  // with the whole market and then deleted rows one at a time as prices landed,
+  // or it showed nothing until a price arrived. Both are wrong: the board's job
+  // is to show the market and fill in the numbers, and a reader watching rows
+  // vanish has no way to read that as anything but broken.
+  //
+  // The floor was never asked for either — the request was to shrink the plays
+  // POSTED, which is MAX_RANKED_PLAYS on the Discord board. This list is the
+  // market, not the card.
+  const shown = useMemo(
+    () => rows.map(r => ({ ...r, gate: r.confidence,
+                           confidence: calib.get(r.key) ?? r.confidence })),
     [rows, calib])
+
+  const groups = useMemo(() => groupByPlayer(shown), [shown])
+
+  // `gate` and `confidence` are now the SAME raw score. The split existed
+  // because the displayed figure was clamped to 50-70 while tier() wants 72 for
+  // STRONG and 80 for ELITE, so a calibrated number could never earn a badge.
+  // With one number that tension is gone; `gate` is kept because TopPlays and
+  // the NFL rows both read it, and collapsing it would touch more than it is
+  // worth.
+  // `shown` already carries both numbers: a play the board will not list has no
+  // business being promoted to the top of it either.
+  const topRows = shown
 
   // ONE PAGE IS WHAT RENDERS. Slicing here rather than in the JSX keeps the
   // page maths in one place and out of the render path.
@@ -114,6 +139,41 @@ export default function BoardTab({ boards, book, setBook, loading, error, onOpen
     <GlassTabs value={sport} onChange={setSport} style={{ marginBottom: 0 }}
                options={[{ key: 'tennis', label: '🎾 Tennis' },
                          { key: 'nfl', label: '🏈 NFL' }]} />
+  )
+
+  // BOTH SPORTS GET THE BOOK SWITCH. It used to live inline in the tennis
+  // branch only, and NflBoard was handed no book at all — so the NFL board read
+  // /api/nfl/board with no `book` and rendered PrizePicks AND Underdog rows in
+  // one list. Every player then appeared twice: identically where the two books
+  // agreed on a line (Mark Andrews rec yards 46.5) and as two different bets
+  // where they did not (Cooper Rush pass yards 179.5 and 183.5). 185 + 138 is
+  // the "323 lines" the header was reporting.
+  const BookSwitch = (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8,
+                  marginTop: T.s2, marginBottom: T.s5 }}>
+      <span style={{ fontFamily: T.cond, fontWeight: 700, fontSize: 9.5,
+                     letterSpacing: 1.2, textTransform: 'uppercase',
+                     color: T.muted2 }}>Book</span>
+      <div style={{ display: 'flex', gap: 4, padding: 3, borderRadius: 999,
+                    background: 'rgba(255,255,255,0.025)',
+                    border: `1px solid ${T.glassLine}` }}>
+        {BOOKS.map(b => {
+          const on = b.key === book
+          return (
+            <button key={b.key} onClick={() => setBook(b.key)} style={{
+              minHeight: 30, padding: '0 13px', borderRadius: 999,
+              cursor: 'pointer',
+              border: on ? `1px solid ${T.green}55` : '1px solid transparent',
+              background: on ? `${T.green}1C` : 'transparent',
+              color: on ? T.green : T.muted2,
+              fontFamily: T.cond, fontWeight: 800, fontSize: 12,
+              letterSpacing: 1, textTransform: 'uppercase',
+              WebkitTapHighlightColor: 'transparent',
+            }}>{b.label}</button>
+          )
+        })}
+      </div>
+    </div>
   )
 
   // The NFL board is a DIFFERENT KIND OF VIEW, not the tennis board with other
@@ -133,8 +193,9 @@ export default function BoardTab({ boards, book, setBook, loading, error, onOpen
             <span style={{ color: T.muted2 }}>{nflMeta.label}</span>
           ) : null}
         </>}>Board</PageTitle>
-        <div style={{ marginBottom: T.s5 }}>{SportSwitch}</div>
-        <NflBoard onMeta={setNflMeta} />
+        {SportSwitch}
+        {BookSwitch}
+        <NflBoard book={book} onMeta={setNflMeta} onProject={onProject} />
       </div>
     )
   }
@@ -176,31 +237,7 @@ export default function BoardTab({ boards, book, setBook, loading, error, onOpen
       {SportSwitch}
 
       {/* The book, as a quiet secondary choice rather than a second slab. */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8,
-                    marginTop: T.s2, marginBottom: T.s5 }}>
-        <span style={{ fontFamily: T.cond, fontWeight: 700, fontSize: 9.5,
-                       letterSpacing: 1.2, textTransform: 'uppercase',
-                       color: T.muted2 }}>Book</span>
-        <div style={{ display: 'flex', gap: 4, padding: 3, borderRadius: 999,
-                      background: 'rgba(255,255,255,0.025)',
-                      border: `1px solid ${T.glassLine}` }}>
-          {BOOKS.map(b => {
-            const on = b.key === book
-            return (
-              <button key={b.key} onClick={() => setBook(b.key)} style={{
-                minHeight: 30, padding: '0 13px', borderRadius: 999,
-                cursor: 'pointer',
-                border: on ? `1px solid ${T.green}55` : '1px solid transparent',
-                background: on ? `${T.green}1C` : 'transparent',
-                color: on ? T.green : T.muted2,
-                fontFamily: T.cond, fontWeight: 800, fontSize: 12,
-                letterSpacing: 1, textTransform: 'uppercase',
-                WebkitTapHighlightColor: 'transparent',
-              }}>{b.label}</button>
-            )
-          })}
-        </div>
-      </div>
+      {BookSwitch}
 
       {loading && <div style={{ display: 'flex', justifyContent: 'center', padding: 48 }}><Spinner size={28} /></div>}
 
@@ -211,7 +248,7 @@ export default function BoardTab({ boards, book, setBook, loading, error, onOpen
       {!loading && !error && !!rows.length && (
         <>
           <BoardSummary rows={rows} projecting={projecting} />
-          <TopPlays rows={rows} onOpen={r => onOpenPlayer({ name: r.player, tour: r.tour })}
+          <TopPlays rows={topRows} onOpen={r => onOpenPlayer({ name: r.player, tour: r.tour })}
                     saved={r => has(propBookmarkId(r))}
                     onSave={(r, e) => { e.stopPropagation()
                       toggle({ id: propBookmarkId(r), kind: 'prop', ...r }) }} />
@@ -241,8 +278,12 @@ export default function BoardTab({ boards, book, setBook, loading, error, onOpen
             saved={has(propBookmarkId(g.rows[0]))}
             onSave={() => toggle({ id: propBookmarkId(g.rows[0]),
                                    kind: 'prop', ...g.rows[0] })}
-            onOpen={() => onOpenPlayer({ name: g.player,
-                                         tour: g.rows[0].tour })} />
+            onOpen={(r) => onOpenPlayer({ name: g.player,
+                                          tour: (r || g.rows[0]).tour,
+                                          // which prop was tapped, so the
+                                          // dashboard can lead with it
+                                          prop: r?.propType,
+                                          line: r?.line })} />
         ))}
       </div>
 
@@ -343,12 +384,49 @@ export function BoardSummary({ rows, projecting }) {
 // edge would put a wild number on a thin projection at the top of the page,
 // which is exactly the play a reader should be least led towards.
 export function TopPlays({ rows, onOpen, saved, onSave }) {
-  const top = rows
+  // `gate` is the RAW model score and drives ranking, tiering and whether this
+  // section appears at all; `confidence` is the calibrated number the card
+  // prints, so it matches the board below, the projection screen and Discord.
+  // NFL rows carry no gate and fall back to their own confidence.
+  const gate = (r) => (r.gate != null ? r.gate : r.confidence)
+
+  // ── ONE PLAY PER MATCH (2026-09-24) ──────────────────────────────────────
+  // This used to slice the top 3 rows outright, with no dedupe of any kind, so
+  // a thin slate could fill the whole section from ONE fixture — and did:
+  // Volynets Fantasy Score, Birrell Games Won and Volynets Total Games shown as
+  // three independent "top plays" off a single scoreline.
+  //
+  // They are not independent, and worse than that they can CONTRADICT. Fantasy
+  // Score is almost entirely the scoreline (FS = 10 + games margin + 3*set
+  // margin + 0.5*aces - 0.5*DFs), so "Volynets over 19 fantasy" and "Birrell
+  // over 9.5 games won" are the same match read in opposite directions — the
+  // first needs Birrell held to ~5-8 games, the second needs her past 9.5. A
+  // subscriber stacking the section is betting against themselves.
+  //
+  // The Discord board has enforced one-per-match since 2026-08-05; this section
+  // never did. Same rule, same reason.
+  //
+  // KEY ON THE SORTED PAIR. `player|opponent` is not symmetric, so
+  // Volynets|Birrell and Birrell|Volynets hash differently and the two sides of
+  // one match survive as separate entries — which is exactly how this got
+  // through. Sorting the pair makes the key the MATCH rather than the player.
+  const seen = new Set()
+  const top = []
+  for (const r of rows
     .filter(r => r._state === 'done' && r.edge != null)
-    .sort((a, b) => (tier(b.confidence).weight - tier(a.confidence).weight)
-                 || (Math.abs(b.edge) - Math.abs(a.edge)))
-    .slice(0, 3)
-  if (top.length < 2 || !tier(top[0].confidence).weight) return null
+    .sort((a, b) => (tier(gate(b)).weight - tier(gate(a)).weight)
+                 || (Math.abs(b.edge) - Math.abs(a.edge)))) {
+    const pair = [r.player || '', r.opponent || ''].map(s => String(s).toLowerCase())
+    // No opponent -> fall back to the player alone, so a row with a missing
+    // opponent is never silently merged with somebody else's match.
+    const k = (pair[1] ? pair.slice().sort() : [pair[0]])
+      .concat(r.slate_date || '').join('|')
+    if (seen.has(k)) continue
+    seen.add(k)
+    top.push(r)
+    if (top.length >= 3) break
+  }
+  if (top.length < 2 || !tier(gate(top[0])).weight) return null
 
   return (
     <>
@@ -356,7 +434,7 @@ export function TopPlays({ rows, onOpen, saved, onSave }) {
       <div style={{ display: 'grid', gap: T.s2, marginBottom: T.s5 }}>
         {top.map((r, i) => {
           const { side, tone, rgb } = sideTone(r.edge)
-          const w = tier(r.confidence).weight
+          const w = tier(gate(r)).weight
           const isNfl = r.tour === 'NFL'
           const hero = i === 0
           return (
@@ -611,13 +689,21 @@ export function PlayerGroup({ g, saved, onSave, onOpen, index = 0,
               </span>
             </div>
 
+            {/* EACH PROP ROW OPENS ITS OWN PROP. These were inert divs, so with
+                several props on a player the only way in was the Player button
+                below — which passed no prop at all and always landed on the
+                first one. Tapping a row now carries THAT prop into the player
+                page, which leads with it; the jump from there to the full
+                projection lives on the player page's own prop cards. */}
             {g.rows.map((r, i) => {
               const st = sideTone(r._state === 'done' ? r.edge : null)
               return (
-                <div key={r.key} style={{
-                  paddingTop: 10, marginTop: i ? 10 : 0,
-                  borderTop: `1px solid ${T.glassLine}`,
-                }}>
+                <Tap plain key={r.key}
+                     onClick={(e) => { e.stopPropagation(); onOpen?.(r) }}
+                     style={{
+                       paddingTop: 10, marginTop: i ? 10 : 0,
+                       borderTop: `1px solid ${T.glassLine}`,
+                     }}>
                   <div style={{ display: 'flex', alignItems: 'baseline',
                                 gap: 8 }}>
                     <span style={{ fontFamily: T.cond, fontWeight: 800,
@@ -674,7 +760,7 @@ export function PlayerGroup({ g, saved, onSave, onOpen, index = 0,
                     <div style={{ color: T.muted2, fontSize: 10.5,
                                   marginTop: 4 }}>{footNoteFor(r)}</div>
                   ) : null}
-                </div>
+                </Tap>
               )
             })}
 

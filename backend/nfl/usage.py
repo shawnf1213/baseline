@@ -48,6 +48,30 @@ PRIOR_GAMES = 4.0
 # as last week's.
 RECENCY_HALFLIFE = 6.0
 
+# ── THE SEASON BOUNDARY IS NOT JUST SIX MORE GAMES ───────────────────────────
+# Recency weighting above is SEASON-BLIND: it asks how many games back a row is
+# and never which year it came from. Two weeks into a season that is close to
+# ignoring the new year entirely. Measured on the 2026-09-20 board:
+#
+#     Mark Andrews        1 game in 2026, 17 in 2025  ->  12% of the weight 2026
+#     Justin Jefferson    1 / 17                      ->  12%
+#     Chris Olave         1 / 16                      ->  13%
+#
+# One current game carries weight 1.0 against a prior-season tail summing to
+# ~6.5, so the projection the board posts in September is mostly last season.
+# That is the real source of the +25% week-1 error the evidence gate was put in
+# to paper over: a trade, a new depth chart or a coordinator change makes last
+# year's role actively wrong, not merely stale.
+#
+# This multiplier discounts a prior-season game ON TOP OF recency, so the model
+# uses both years with the current one weighing more. It self-corrects: by the
+# time the current season has six games it dominates at any setting.
+#
+# DEFAULT 1.0 IS EXACTLY TODAY'S BEHAVIOUR. Nothing changes until this is set,
+# which is deliberate — the value belongs to the backtest, not to taste.
+PRIOR_SEASON_WEIGHT = float(
+    os.getenv("NFL_PRIOR_SEASON_WEIGHT", "1.0") or 1.0)
+
 # ── SNAP-SHARE ROLE ADJUSTMENT ───────────────────────────────────────────────
 # A season target share lags a role change: when the man ahead of a receiver
 # goes down, his snaps jump this week and his target share only catches up in
@@ -504,9 +528,13 @@ def player_usage(player: str, season: int = None, position: str = None,
             prior["target_share"] = _tier
 
         # Recency weights: most recent game weight 1, halving every
-        # RECENCY_HALFLIFE games back.
+        # RECENCY_HALFLIFE games back, then a prior-season game discounted
+        # again by PRIOR_SEASON_WEIGHT — see the note on that constant.
         order = list(range(n - 1, -1, -1))          # 0 = most recent
-        w = [0.5 ** (i / RECENCY_HALFLIFE) for i in order]
+        _src = hist["_src"].tolist()
+        w = [0.5 ** (i / RECENCY_HALFLIFE)
+             * (1.0 if s == "current" else PRIOR_SEASON_WEIGHT)
+             for i, s in zip(order, _src)]
 
         def wsum(col):
             if col not in hist:

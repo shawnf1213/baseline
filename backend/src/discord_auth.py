@@ -131,11 +131,18 @@ def read_session(token: str) -> Optional[dict]:
 
 
 # ── OAuth ────────────────────────────────────────────────────────────────────
-def login_url(state: str = "") -> str:
+def login_url(state: str = "", force_consent: bool = False) -> str:
     """Discord authorize URL. `identify` and `guilds.members.read` only — we ask
     for the minimum needed to know who you are and whether you hold the role,
-    and never for message or email scopes we have no use for."""
-    return f"{_API}/oauth2/authorize?" + urlencode({
+    and never for message or email scopes we have no use for.
+
+    force_consent: send `prompt=consent`, which makes Discord show the
+    authorise screen EVEN THOUGH this user already approved the app. That
+    screen is the only place Discord offers "not you? / switch account", so it
+    is the one way back for somebody bound to the wrong Discord account.
+    Off by default — a returning user should not re-consent on every sign-in.
+    """
+    params = {
         "client_id": CLIENT_ID,
         "redirect_uri": REDIRECT_URI,
         "response_type": "code",
@@ -146,7 +153,20 @@ def login_url(state: str = "") -> str:
         # and an outright failure for every first-time one — Discord errors
         # instead of showing the authorise button, so nobody could ever complete
         # a first login. Omitted, so Discord shows consent when it needs to.
-    })
+        #
+        # THE SILENT REUSE THAT OMITTING IT CAUSES IS ITS OWN TRAP, THOUGH, and
+        # it is why force_consent exists. For a user who has already authorised,
+        # Discord skips the consent screen — and with it the account picker. So
+        # somebody who first connected the wrong Discord account (an alt, a work
+        # account, a second login on a shared machine) lands on the same account
+        # every single time. Signing out does not help: that clears OUR session,
+        # not Discord's authorisation, so "Connect Discord" silently re-binds
+        # the same id. Reported by a subscriber who held the premium role on
+        # another account and had no way to reach it (2026-09-24).
+    }
+    if force_consent:
+        params["prompt"] = "consent"
+    return f"{_API}/oauth2/authorize?" + urlencode(params)
 
 
 def exchange_code(code: str) -> Optional[dict]:

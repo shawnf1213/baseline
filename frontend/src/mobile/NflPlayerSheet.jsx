@@ -5,6 +5,7 @@ import { Card, SectionLabel, Empty, Spinner, sideTone, tier, TierBadge,
 import { team, TeamMark, PlayerHead, DefenseMeter } from './nflviz'
 import { GameLogChart, HitRing, FormStrip, StatPill, ShareBars } from './viz'
 import { fetchNflPlayer } from '../utils/api'
+import { MATCHUP_LABEL, toughness } from './data'
 
 // ── NFL PLAYER SHEET ─────────────────────────────────────────────────────────
 // What opens when an NFL card is tapped, and the NFL counterpart of
@@ -53,20 +54,8 @@ const ordinal = (n) => {
 
 // What the defensive rating for each prop family is actually measuring, in
 // words a reader does not have to decode.
-const MATCHUP_LABEL = {
-  pass_yards: 'vs the pass',
-  receiving_yards: 'vs the pass',
-  rush_yards: 'vs the run',
-  receptions: 'vs the catch',
-}
-
-// RANK 1 ALLOWS LEAST — see nfl/ratings.py::defense_table. Saying "32nd" without
-// saying which end is which is how a reader adjusts a number the wrong way.
-const toughness = (rank, of) => {
-  const q = rank / (of || 32)
-  return q <= 0.25 ? 'tough' : q <= 0.5 ? 'above avg'
-       : q <= 0.75 ? 'below avg' : 'soft'
-}
+// MATCHUP_LABEL and toughness now live in ./data so this sheet and the
+// projection card cannot describe the same defence differently.
 
 // ── THE DEFENCE HE IS FACING ─────────────────────────────────────────────────
 // The card could only ever answer "how has he done against this team before",
@@ -137,7 +126,7 @@ function MatchupBlock({ m, prop, over, opponent }) {
 // All the game-log maths is computed on the client rather than fetched: the log
 // is already here, and a hit rate is only meaningful against the specific line
 // being offered, which the server does not know.
-function PropDetail({ r, posted, form, matchups, index = 0 }) {
+function PropDetail({ r, posted, form, matchups, index = 0, onProject }) {
   const matchup = (matchups && matchups[r.prop_type]) || null
   const lean = String(r.lean || '').toUpperCase()
   const over = lean === 'OVER'
@@ -165,8 +154,16 @@ function PropDetail({ r, posted, form, matchups, index = 0 }) {
 
   const res = posted && posted.result
 
+  // STRAIGHT TO THE FULL PROJECTION, the same tap the tennis player page
+  // offers. The board row opens this sheet; this card is where the reader
+  // decides they want the whole breakdown.
+  const goProject = onProject ? () => onProject({
+    sport: 'nfl', player: r.player, team: r.team,
+    prop: r.prop_type, line: r.line,
+  }) : undefined
+
   return (
-    <Card index={index} style={{
+    <Card index={index} onClick={goProject} style={{
       padding: '13px 14px 14px 17px', marginBottom: 10,
       position: 'relative', overflow: 'hidden',
       ...tierCardStyle(conf, rgb),
@@ -602,7 +599,8 @@ function ProfileBlock({ prof, props, teamAbbr }) {
 }
 
 
-export default function NflPlayerSheet({ player, rows, posted, onClose }) {
+export default function NflPlayerSheet({ player, rows, posted, focusProp,
+                                         onClose, onProject }) {
   const [prof, setProf] = useState(null)
   const [loadingProf, setLoadingProf] = useState(true)
 
@@ -633,11 +631,23 @@ export default function NflPlayerSheet({ player, rows, posted, onClose }) {
   // Everything priced on this player for the slate that was tapped — the
   // question "what else is on him" is the first one a reader has, and the
   // board itself cannot answer it because one-prop-per-player hides the rest.
+  // THE TAPPED PROP LEADS. Sorting purely by confidence meant that opening a
+  // specific prop from the board could show a different one at the top, and the
+  // stat block below keys off mine[0] — so you asked for receptions and got the
+  // rushing card. The focused prop sorts first; everything else keeps the
+  // confidence order behind it.
   const mine = useMemo(
     () => (rows || []).filter(r => r.player === player?.player
                                 && r.slate_date === player?.slate_date)
-      .sort((a, b) => (b.confidence || 0) - (a.confidence || 0)),
-    [rows, player])
+      .sort((a, b) => {
+        if (focusProp) {
+          const fa = a.prop_type === focusProp ? 1 : 0
+          const fb = b.prop_type === focusProp ? 1 : 0
+          if (fa !== fb) return fb - fa
+        }
+        return (b.confidence || 0) - (a.confidence || 0)
+      }),
+    [rows, player, focusProp])
 
   // Which prop families are actually priced on this card. The stat block keys
   // off this rather than off the position, so a back with only a rushing prop
@@ -777,7 +787,8 @@ export default function NflPlayerSheet({ player, rows, posted, onClose }) {
                           posted={postedFor.get(`${r.slate_date}|${r.prop_type}`)}
                           form={prof && prof.form}
                           matchups={((prof && prof.profile
-                                      && prof.profile.matchup) || {}).by_prop} />
+                                      && prof.profile.matchup) || {}).by_prop}
+                          onProject={onProject} />
             ))
           : <Empty icon="🏈" title="No priced props"
                    hint="Nothing on this player for that slate." />}

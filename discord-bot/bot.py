@@ -78,7 +78,18 @@ FOOTER_PROJECTION = "Baseline · Model projections, not betting advice"
 # actually spams Sofascore — so we give the first call room to finish once.
 SEARCH_TIMEOUT = 8     # autocomplete uses a much shorter deadline (see below)
 RESOLVE_TIMEOUT = 10   # submit-time name resolution
-PROP_TIMEOUT = 45      # multi-source fetch
+# RAISED 45 -> 150 (2026-09-26). A COLD projection genuinely takes ~105s:
+# it walks both players' event history page by page and then fetches per-match
+# statistics, which is hundreds of Sofascore requests. At 45s the bot gave up
+# on work the backend was still doing correctly and told subscribers "Unable to
+# reach Baseline servers" — which is false and reads like an outage. Measured
+# 2026-09-26: cold 105s, and 200s when Sofascore was throttling.
+#
+# Safe to raise: the command defers the interaction first, so Discord allows up
+# to 15 minutes, and MAX_CONCURRENT_BACKEND_CALLS still caps how many cold
+# fetches are ever in flight. A REPEAT of the same prop is now ~0.2s off the
+# backend projection cache, so this only ever applies to a genuinely cold one.
+PROP_TIMEOUT = int(os.getenv("PROP_TIMEOUT", "150") or 150)
 GENERIC_TIMEOUT = 30   # h2h / player-stats
 
 # Cap concurrent backend calls so a traffic spike can't overwhelm Railway or
@@ -140,42 +151,187 @@ def _leave_queue():
     _in_flight -= 1
 API_SEMAPHORE = asyncio.Semaphore(MAX_CONCURRENT_BACKEND_CALLS)
 
-# ── Court lists per surface (display name → backend COURT_CPR key) ──────────────
-# The backend owns the CPI values; the bot only sends a recognised court name and
-# reads back court_pace_index. Names map 1:1 except the three noted exceptions.
-COURTS_BY_SURFACE = {
-    "Clay": [
-        "Roland Garros", "Monte Carlo", "Madrid", "Barcelona", "Rome",
-        "Hamburg", "Geneva", "Munich", "Lyon", "Gstaad", "Bastad", "Umag",
-        "Kitzbuhel", "Estoril",
-    ],
-    "Hard": [
-        "Australian Open", "US Open", "Indian Wells", "Miami", "Cincinnati",
-        "Canadian Open", "Washington DC Open", "Los Cabos", "Winston-Salem",
-        "Athens Open", "Paris Bercy", "Vienna", "Basel", "Rotterdam",
-        "Doha", "Dubai", "Shanghai", "ATP Finals",
-    ],
-    "Grass": [
-        "Wimbledon", "Queens Club", "Halle", "Stuttgart", "s-Hertogenbosch",
-        "Birmingham", "Nottingham", "Mallorca", "Eastbourne", "Berlin",
-        "Bad Homburg",
-    ],
+# ── Court lists, split by tour and surface ─────────────────────────────
+# THE BACKEND OWNS THIS LIST. It used to be maintained here by hand and it went
+# stale: the bot offered 43 tournaments while the web app offered 118, so a
+# court a user could pick on the site was not offered in Discord at all and that
+# projection silently fell back to generic surface pace. Same matchup, two
+# numbers. It is fetched once at startup from /api/courts and cached; the
+# snapshot below is only the fallback for a cold or unreachable backend.
+#
+# Autocomplete NEVER touches the network — Discord gives it about three seconds
+# and player_autocomplete already spends that budget on a search. This is read
+# from the cache, in memory, always.
+_COURTS_FALLBACK = {
+    "ATP": {
+        "Hard": [
+            "Australian Open", "US Open", "Indian Wells Masters",
+            "Miami Open", "Cincinnati Masters", "Canadian Open",
+            "Vienna Open", "Swiss Indoors Basel", "Rotterdam Open",
+            "Qatar Open Doha", "Dubai Duty Free Championships",
+            "ATP Finals Turin", "Paris Masters", "Dallas Open",
+            "Delray Beach Open", "Adelaide International", "Auckland Open",
+            "Acapulco Open", "Washington DC Open", "Los Cabos Open",
+            "Winston-Salem Open", "Athens Open", "Tokyo Japan Open",
+            "Shanghai Masters", "Stockholm Open", "Antwerp European Open",
+            "Challenger Hard (Generic)",
+        ],
+        "Clay": [
+            "Roland Garros", "Monte Carlo Masters", "Madrid Open",
+            "Barcelona Open", "Italian Open Rome", "Hamburg Open",
+            "Munich Open", "Geneva Open", "Lyon Open", "Buenos Aires Open",
+            "Rio Open", "Santiago Open", "Houston Clay", "Estoril Open",
+            "Marrakech Open", "Bastad Open", "Umag Open", "Gstaad Open",
+            "Kitzbuhel Open", "Challenger Clay Europe (Generic)",
+            "Challenger Clay South America (Generic)", "Bordeaux Challenger",
+            "Braunschweig Challenger", "Valencia Challenger",
+            "Monza Challenger", "Aix-en-Provence Challenger",
+            "Sanremo Challenger", "Geneva Challenger",
+        ],
+        "Grass": [
+            "Wimbledon", "Stuttgart", "Halle", "Queens Club Championships",
+            "s-Hertogenbosch", "Mallorca", "Eastbourne International",
+            "Birmingham", "Nottingham",
+        ],
+    },
+    "WTA": {
+        "Hard": [
+            "Australian Open WTA", "US Open WTA", "Indian Wells WTA",
+            "Miami Open WTA", "Cincinnati WTA", "Canadian Open WTA",
+            "Wuhan Open", "China Open Beijing", "WTA Finals", "Dubai WTA",
+            "Doha WTA", "Adelaide WTA", "Auckland WTA", "Acapulco WTA",
+            "San Jose WTA", "Washington WTA", "Tokyo Pan Pacific",
+            "Osaka WTA", "Linz WTA", "Guadalajara WTA", "Monterrey WTA",
+            "Cleveland WTA", "Athens Open WTA", "WTA 125 Hard (Generic)",
+            "Austin WTA 125", "Jiangxi Open WTA 125",
+        ],
+        "Clay": [
+            "Roland Garros WTA", "Madrid Open WTA", "Italian Open WTA Rome",
+            "Stuttgart WTA", "Hamburg WTA", "Prague Open WTA", "Rabat WTA",
+            "Strasbourg WTA", "Warsaw WTA", "Budapest WTA", "Bastad WTA",
+            "Palermo WTA", "San Jose Clay WTA", "Bogota WTA",
+            "Trophee Clarins Paris WTA 125", "Catalonia Open WTA 125",
+            "Huzhou Open WTA 125 Clay", "Emilia-Romagna WTA 125 Clay",
+            "WTA 125 Clay (Generic)",
+        ],
+        "Grass": [
+            "Wimbledon WTA", "Queens Club WTA", "Bad Homburg WTA",
+            "s-Hertogenbosch WTA", "Mallorca WTA", "Eastbourne WTA",
+            "Birmingham WTA", "Nottingham WTA", "Berlin WTA",
+        ],
+    },
 }
-# Display names whose backend COURT_CPR key differs from the display name.
+
+TOURNAMENTS_BY_TOUR = _COURTS_FALLBACK
+COURT_CPI: dict = {}
+
+
+def _derive_by_surface(by_tour: dict) -> dict:
+    """Surface → every tournament on it, both tours, first-seen order."""
+    out = {}
+    for surf in ("Clay", "Hard", "Grass"):
+        seen = []
+        for tour in by_tour.values():
+            for name in tour.get(surf, []):
+                if name not in seen:
+                    seen.append(name)
+        out[surf] = seen
+    return out
+
+
+COURTS_BY_SURFACE = _derive_by_surface(TOURNAMENTS_BY_TOUR)
+
+
+def refresh_courts(payload: dict) -> int:
+    """Adopt the backend's court list. Returns the number of tournaments."""
+    global TOURNAMENTS_BY_TOUR, COURTS_BY_SURFACE, COURT_CPI
+    tours = (payload or {}).get("tours") or {}
+    by_tour, cpi = {}, {}
+    for tour, surfaces in tours.items():
+        if not isinstance(surfaces, dict):
+            continue
+        by_tour[tour] = {}
+        for surf, entries in surfaces.items():
+            names = []
+            for e in entries or []:
+                name = (e or {}).get("name") if isinstance(e, dict) else e
+                if not name:
+                    continue
+                names.append(name)
+                if isinstance(e, dict) and e.get("cpr") is not None:
+                    cpi[name] = e["cpr"]
+            by_tour[tour][surf] = names
+    total = sum(len(v) for d in by_tour.values() for v in d.values())
+    if total < len(_flatten(_COURTS_FALLBACK)) // 2:
+        # A truncated answer is worse than the snapshot we shipped with.
+        log.warning("courts refresh returned only %d entries — keeping snapshot", total)
+        return 0
+    TOURNAMENTS_BY_TOUR = by_tour
+    COURTS_BY_SURFACE = _derive_by_surface(by_tour)
+    COURT_CPI = cpi
+    return total
+
+
+def _flatten(by_tour: dict) -> list:
+    return [n for d in by_tour.values() for v in d.values() for n in v]
+
+
+# Names the bot used to offer, mapped to the canonical COURT_CPR key. Kept
+# because the court field accepts free text — a user who types "Basel", or whose
+# client replays a stale choice, still gets Swiss Indoors Basel's pace instead of
+# an "isn't a recognised tournament" error. Not offered in autocomplete.
 COURT_KEY_OVERRIDES = {
+    "Monte Carlo": "Monte Carlo Masters",
+    "Madrid": "Madrid Open",
+    "Barcelona": "Barcelona Open",
+    "Rome": "Italian Open Rome",
+    "Hamburg": "Hamburg Open",
+    "Geneva": "Geneva Open",
+    "Munich": "Munich Open",
+    "Lyon": "Lyon Open",
+    "Gstaad": "Gstaad Open",
+    "Bastad": "Bastad Open",
+    "Umag": "Umag Open",
+    "Kitzbuhel": "Kitzbuhel Open",
+    "Estoril": "Estoril Open",
+    "Indian Wells": "Indian Wells Masters",
+    "Miami": "Miami Open",
+    "Cincinnati": "Cincinnati Masters",
+    "Los Cabos": "Los Cabos Open",
+    "Winston-Salem": "Winston-Salem Open",
+    "Paris Bercy": "Paris Masters",
+    "Vienna": "Vienna Open",
+    "Basel": "Swiss Indoors Basel",
+    "Rotterdam": "Rotterdam Open",
+    "Doha": "Qatar Open Doha",
+    "Dubai": "Dubai Duty Free Championships",
     "Shanghai": "Shanghai Masters",
+    "ATP Finals": "ATP Finals Turin",
+    "Queens Club": "Queens Club Championships",
+    "Eastbourne": "Eastbourne International",
     "Berlin": "Berlin WTA",
     "Bad Homburg": "Bad Homburg WTA",
 }
 
 
 def backend_court_key(display: str) -> str:
+    """Canonical COURT_CPR key for a court the user picked or typed."""
+    if display in _flatten(TOURNAMENTS_BY_TOUR):
+        return display
     return COURT_KEY_OVERRIDES.get(display, display)
 
 
+def courts_for(surface: str, tour: str = None) -> list:
+    """The tournaments to offer. Tour-filtered when we know it, union when not."""
+    if tour and tour in TOURNAMENTS_BY_TOUR:
+        return TOURNAMENTS_BY_TOUR[tour].get(surface, [])
+    return COURTS_BY_SURFACE.get(surface, [])
+
+
 def surface_for_court(display: str):
+    key = backend_court_key(display)
     for surf, courts in COURTS_BY_SURFACE.items():
-        if display in courts:
+        if key in courts:
             return surf
     return None
 
@@ -220,14 +376,22 @@ async def search_players(query: str, tour: str, timeout: int = SEARCH_TIMEOUT,
     guard=True routes through the concurrency semaphore (used at command submit
     time). Autocomplete passes guard=False so frequent keystroke searches never
     block command traffic — they're already bounded by a short deadline.
+
+    THAT SHORT DEADLINE ALSO PICKS THE BACKEND'S FETCH STRATEGY. Autocomplete
+    (guard=False) asks for fast=1, which fails out of a blocked Sofascore fetch
+    instead of rotating proxy ports for ~19 seconds — an answer that arrives
+    after Discord's 3s limit is not an answer. Command submit (guard=True) has
+    no such limit and keeps the thorough path, because there it is worth waiting
+    to actually resolve the player.
     """
+    _params = {"query": query, "tour": tour}
+    if not guard:
+        _params["fast"] = 1
     try:
         if guard:
-            data = await backend_get("/api/search", {"query": query, "tour": tour}, timeout)
+            data = await backend_get("/api/search", _params, timeout)
         else:
-            data = await asyncio.to_thread(
-                _get, "/api/search", {"query": query, "tour": tour}, timeout
-            )
+            data = await asyncio.to_thread(_get, "/api/search", _params, timeout)
     except Exception as exc:  # noqa: BLE001 — autocomplete must never raise
         log.warning("search failed q=%r tour=%s: %s", query, tour, exc)
         return []
@@ -928,16 +1092,24 @@ async def court_autocomplete(interaction: discord.Interaction, current: str):
         current = (current or "").lower().strip()
         surface = getattr(interaction.namespace, "surface", None)
 
+        # THE TOUR, FOR FREE. The player field's autocomplete value is the
+        # encoded "id|tour|name", so by the time someone reaches the court field
+        # we already know whether this is an ATP or a WTA matchup — no network
+        # call, no guess. A WTA user was being offered Vienna and the ATP Finals;
+        # the web app filtered these out long ago and this brings Discord level.
+        # Free text in the player field decodes to None, and then we show both.
+        tour = decode_player(getattr(interaction.namespace, "player", "") or "")[1]
+
         if surface and surface in COURTS_BY_SURFACE:
-            pool = [("None", None)] + [(c, surface) for c in COURTS_BY_SURFACE[surface]]
+            pool = [("None", None)] + [(c, surface) for c in courts_for(surface, tour)]
         else:
             # Surface not chosen — INTERLEAVE across surfaces so the 25-item cap
             # doesn't truncate whole surfaces (grass is last and was getting cut
             # to just Wimbledon). Round-robin one court per surface at a time.
             from itertools import zip_longest
             pool = [("None", None)]
-            per_surface = [[(c, surf) for c in courts]
-                           for surf, courts in COURTS_BY_SURFACE.items()]
+            per_surface = [[(c, surf) for c in courts_for(surf, tour)]
+                           for surf in COURTS_BY_SURFACE]
             for group in zip_longest(*per_surface):
                 for item in group:
                     if item:
@@ -1656,14 +1828,16 @@ POD_MINUTE = int(os.getenv("POD_MINUTE", "50") or "50")
 # finishes (~10 min later). Independent of the recap, which posts earlier.
 PICKS_GEN_HOUR = int(os.getenv("PICKS_GEN_HOUR", "22") or "22")     # 10:00 PM POTD (2026-07-29 user: 8 PM -> 10 PM)
 PICKS_GEN_MINUTE = int(os.getenv("PICKS_GEN_MINUTE", "0") or "0")
-# Second-wave "additional plays" — a NEXT-MORNING scan at 8:00 AM ET that posts up to
-# SECOND_WAVE_MAX plays NOT already on the prior 8 PM board (excluded by player+prop_type).
-# Moved from 11 PM to 8 AM (2026-07-27, user): at 11 PM the board is just the tail of the
-# finished slate, but PrizePicks posts the next day's lines overnight — so an 8 AM re-rank
-# draws from a full, fresh board. Posted WITH @everyone (a real second daily drop).
-SECOND_WAVE_HOUR   = int(os.getenv("SECOND_WAVE_HOUR", "8") or "8")     # 8:00 AM ET
-SECOND_WAVE_MINUTE = int(os.getenv("SECOND_WAVE_MINUTE", "0") or "0")   # (2026-07-29 user: back to 8:00 AM)
-SECOND_WAVE_MAX    = int(os.getenv("SECOND_WAVE_MAX", "6") or "6")      # cap on additional plays
+# THE SEPARATE "SECOND WAVE" SCAN IS GONE (2026-09-21, user: "not needed any
+# more with the new schedule"). It began as an 11 PM run, moved to 8 AM, then to
+# midnight — each time to catch a board the previous drop was too early to see.
+# The 4 PM board plus the 8 PM rescan cover that between them now, so a third
+# scan only re-ranked the same card a third time.
+#
+# SECOND_WAVE_MAX SURVIVES because it is not really about that loop: it is the
+# default cap on any "additional plays" post, and both the Underdog board and
+# _post_second_wave still read it.
+SECOND_WAVE_MAX    = int(os.getenv("SECOND_WAVE_MAX", "2") or "2")      # cap on additional plays
 # Ranked plays are delivered in pages of this many, each its own @everyone message
 # (top-12 → two messages: 1-6 then 7-12).
 # NOTE: RANKED_PAGE_SIZE (6-plays-per-message paging) was retired when the ⭐ got
@@ -1744,10 +1918,12 @@ CALIBRATION_BASELINE_UTC = os.getenv("CALIBRATION_BASELINE_UTC", "2026-07-16T00:
 # recap (resolution-date scoped, 6 AM→6 AM window). Env vars still override — if
 # RESULTS_POST_HOUR/MINUTE are set in Railway they win, so keep them unset (or set
 # to 8 / 45) for this 8:45 AM schedule to take effect.
-# The 45-minute offset from the 8:00 AM second wave (SECOND_WAVE_HOUR/MINUTE) is
-# DELIBERATE: at 8:00 they collided — two @everyone posts in the same minute, and
-# both run heavy backend work (the recap resolves every pending pick, the wave
-# scans the whole board for ~6-10 min). Keep them apart when retiming either one.
+# KEEP THIS OFF THE HOUR of any posting loop. It used to sit 45 minutes after an
+# 8:00 AM second wave because at 8:00 sharp the two collided — two @everyone
+# posts in the same minute, both doing heavy backend work (the recap resolves
+# every pending pick, a scan walks the whole board for ~6-10 min). That scan is
+# gone, but the rule it taught is not: when retiming anything, do not land it on
+# the same minute as another drop.
 RESULTS_POST_HOUR = int(os.getenv("RESULTS_POST_HOUR", "8") or "8")
 RESULTS_POST_MINUTE = int(os.getenv("RESULTS_POST_MINUTE", "45") or "45")
 
@@ -1794,6 +1970,26 @@ PREWARM_HOUR   = int(os.getenv("PREWARM_HOUR", "21") or "21")     # 9:30 PM — 
 PREWARM_MINUTE = int(os.getenv("PREWARM_MINUTE", "30") or "30")   # before the 10 PM POTD
 
 
+def _sched_times(oneoff_hm: tuple, hour: int, minute: int) -> list:
+    """The times a slot-guarded loop should actually wake at.
+
+    THE ONE-OFF TIME IS ONLY REGISTERED WHEN AN OVERRIDE DATE IS SET. It used to
+    be on every one of these loops unconditionally and then rejected at run time
+    by _slot_is_live, so the bot woke at 23:00 and 23:30 every night to decide it
+    had nothing to do — a scheduled job for a date long past, showing up in the
+    logs as SLOT_SKIP (operator, 2026-09-20: "the 1130 pm one off needs to be
+    shut off").
+
+    The mechanism is intact rather than deleted: set ONEOFF_SCHED_DATE and the
+    one-off slot is registered again exactly as before.
+    """
+    times = [datetime.time(hour=hour, minute=minute, tzinfo=POD_TZINFO)]
+    if ONEOFF_SCHED_DATE:
+        times.insert(0, datetime.time(hour=oneoff_hm[0], minute=oneoff_hm[1],
+                                      tzinfo=POD_TZINFO))
+    return times
+
+
 def _slot_is_live(oneoff_hm: tuple) -> bool:
     """Should THIS firing run? True for the one-off slot on the override date, and
     for the normal slot on every other date.
@@ -1832,9 +2028,12 @@ MSG_NO_PICK = (
     "No Pick of the Day right now — nothing on the board cleared the "
     "confidence threshold (or the board is unavailable). Try again later."
 )
+# The floor is READ, not typed. It said "65%" while the constant moved to 70,
+# and a public message quoting a bar the board no longer uses is a wrong claim.
 MSG_NO_PICK_DAILY = (
-    "No qualifying plays today — nothing on the board cleared our 65% board "
-    "floor. We'd rather sit out than force a weak play. Check back tomorrow. 🎾"
+    f"No qualifying plays today — nothing on the board cleared our "
+    f"{pick_of_day.BOARD_MIN_CONF}% board floor. We'd rather sit out than force "
+    f"a weak play. Check back tomorrow. 🎾"
 )
 # v2 no-POTD fallback: the board HAS plays, but none cleared the 80% Pick-of-the-
 # Day bar. The ranked board still posts; this rides in place of the ⭐ embed.
@@ -1978,11 +2177,36 @@ def _pick_to_record(p: dict, group: str = "potd") -> dict:
         "original_line": p.get("original_line", p.get("line")),
         "tournament": p.get("tournament") or "", "surface": p.get("surface") or "",
         "pick_group": group,
+        # THE STAR, RECORDED. pick_group says only "this came off the board";
+        # every board pick carries it, so the record could never answer "how has
+        # the Pick of the Day done" — the question the ⭐ actually makes.
+        "is_potd": 1 if p.get("is_potd") else 0,
         "confidence_breakdown": _breakdown_json(p),
         # standard vs demon — so the results tracker / recaps / hit rates segment.
         "odds_type": (p.get("odds_type") or "standard"),
         # What the model actually used. See _model_inputs_json.
         "model_inputs": _model_inputs_json(p),
+        # ── THE CONFIDENCE/EDGE SPLIT, IN SHADOW (2026-09-24) ────────────────
+        # Recorded so the split can be GRADED on picks that were actually
+        # posted, rather than reconstructed later against code that has moved.
+        # Neither of these selects anything yet — `confidence` above is still
+        # the number every gate reads.
+        #   edge_sigma            |projection − line| / σ — the value signal,
+        #                         and the one that survived a temporal holdout.
+        #   confidence_data_only  evidence with no line-derived ceiling, i.e.
+        #                         confidence as it is meant to read on the board.
+        "edge_sigma": p.get("edge_sigma"),
+        "confidence_data_only": p.get("confidence_data_only"),
+        # ── TOUR LEVEL (2026-09-24) ──────────────────────────────────────────
+        # The tournament string cannot answer this. Sofascore returns a bare
+        # city, so 'Tolentino, Italy' (ITF) and 'Cincinnati, USA' (Masters) look
+        # identical — searching the record for 'challenger'/'itf' matches ZERO
+        # rows and reads as "we never post lower-tier matches", which is wrong.
+        # The bot has carried these three all along; they were just never
+        # persisted, so the question could not be asked of the record.
+        "player_rank": p.get("player_rank"),
+        "opponent_rank": p.get("opponent_rank"),
+        "both_challenger_level": (1 if p.get("both_challenger_level") else 0),
     }
 
 
@@ -1991,7 +2215,16 @@ def _pick_to_record(p: dict, group: str = "potd") -> dict:
 # changed silently at the A2 rebuild and nothing marked the boundary: a
 # retrospective error metric that mixes the two is comparing a mean against a
 # median and will report noise as a broken model.
-_FAIR_LINE_PROPS = {"Break Points Won"}
+#
+# FANTASY SCORE ADDED 2026-09-24. It has published a fair line all along —
+# props.py sets `projection = fs_fair_line(...)`, because for a bimodal prop
+# "the mean lands in the empty valley between the win and loss bands, a score
+# that almost never occurs". This set said otherwise, so every FS pick was
+# stamped projection_kind="mean" and any analysis trusting that field was
+# comparing actual counts against a median while believing it had a mean —
+# the precise error this field exists to prevent. Mirrors FAIR_LINE_PROPS in
+# backend/src/database.py, which excludes both from bias correction.
+_FAIR_LINE_PROPS = {"Break Points Won", "Fantasy Score"}
 
 
 def _model_inputs_json(p: dict) -> str:
@@ -2037,6 +2270,44 @@ def _model_inputs_json(p: dict) -> str:
             "bp_mixture_mean": d.get("bp_mixture_mean"),
             "bp_fair_line": d.get("bp_fair_line"),
             "bp_p_over": d.get("bp_p_over"),
+            # ── THE C-CHAIN, COMPONENT BY COMPONENT ──────────────────────────
+            # base = C1 × C2 × (C3/100) × C4 × C5 × C6. Storing only the
+            # sub-total meant a projection that moved could not be attributed:
+            # on 9/18 a base went 6.49 -> 4.33 on an unchanged matchup and a
+            # quarter of the move sat in C2/C4/C5/C6, which nothing recorded.
+            # These cost a few bytes and they are not recoverable later — the
+            # stats move, the model changes, and the opponent plays again.
+            "c1_opp_faced": d.get("bp_c1_opp_faced"),
+            "c1_tour_avg_used": d.get("bp_c1_tour_avg_used"),
+            "c1_opp_surf_sample": d.get("bp_opp_surf_sample"),
+            "c2_returner_mult": d.get("bp_c2_returner_mult"),
+            "c3_conv_pct": d.get("bp_c3_conv_pct"),
+            "c4_serve_quality": d.get("bp_c4_serve_quality"),
+            "c5_surface_adj": d.get("bp_c5_surface_adj"),
+            "c6_cpr_mod": d.get("bp_c6_cpr_mod"),
+            # C7 is ADDITIVE and has been pinned at its cap on every play we
+            # looked at, so whether the cap bound is the thing to record.
+            "c7_momentum": d.get("bp_momentum_bonus"),
+            "c7_momentum_raw": d.get("bp_momentum_raw"),
+            "c7_momentum_capped": d.get("bp_momentum_capped"),
+            # What the bias correction moved the published number by.
+            "bias_correction": d.get("bias_correction"),
+            # Sample depth behind the opponent's numbers. `data_quality` counts
+            # events AVAILABLE, not statistics FETCHED, so it reads "rich" on a
+            # five-match stat sample — record the count, not the adjective.
+            "opp_ss_matches": d.get("opponent_ss_matches"),
+            "opp_rank": d.get("opponent_rank"),
+            "cpi": d.get("court_pace_index"),
+            # INDOOR, RECORDED BEFORE IT MATTERS. Across 517 graded picks there
+            # is not one indoor-hard result — the record starts in June and the
+            # indoor swing is October/November — so the aces +6.5% and break
+            # points -4% adjustments have never been tested against an outcome,
+            # and there is nothing to calibrate the other four props from.
+            # Storing the flag now is what makes that answerable in December
+            # rather than another argument.
+            "indoor": d.get("indoor_venue"),
+            "indoor_applied": d.get("indoor_court"),
+            "indoor_source": d.get("indoor_source"),
             # Total Games market blend.
             "tg_book_line": d.get("tg_book_line"),
             "tg_model_proj": d.get("tg_model_proj"),
@@ -2044,7 +2315,15 @@ def _model_inputs_json(p: dict) -> str:
             "match_format": d.get("match_format_label"),
         }
         out = {k: v for k, v in out.items() if v is not None}
-        return json.dumps(out, separators=(",", ":"))[:2000]
+        # TRUNCATE BY DROPPING FIELDS, NOT BY SLICING THE STRING. A raw [:2000]
+        # can cut mid-token and store JSON that will not parse — which is worse
+        # than storing less, because the row looks present and fails silently
+        # the day someone reads it. Now the payload stays valid at every size.
+        blob = json.dumps(out, separators=(",", ":"))
+        while len(blob) > 2000 and out:
+            out.pop(next(reversed(out)))
+            blob = json.dumps(out, separators=(",", ":"))
+        return blob
     except Exception:  # noqa: BLE001
         return ""
 
@@ -2394,18 +2673,35 @@ def _play_headline(pick: dict, rank: int = None) -> str:
 
 
 def _shown_conf(pick: dict):
-    """The confidence a SUBSCRIBER sees — calibrated, never the raw score.
+    """The confidence a subscriber sees — THE RAW MODEL SCORE.
 
-    The raw number gates eligibility (BOARD_MIN_CONF) and is not a probability:
-    measured on 640 graded picks it overstated its own hit rate at every band by
-    12-31 points and did not even order outcomes. The calibrated value is fitted
-    to what actually happened and lives in the honest 51-68 band.
+    ONE NUMBER, THE ONE THAT ACTUALLY CHOSE THE PLAY (operator, 2026-09-21:
+    "we should just show raw data if that's how the optimizer calculated it").
+    Until now the board selected on the raw score and printed a calibrated one
+    derived only from relative edge, and the two disagreed about which play was
+    best. On the 9/21 board the ⭐ printed 58.8 and ranked FIFTH of nine by the
+    number on screen, and Vekić and Kenin printed an identical 58.8 off the same
+    line and projection despite raw scores of 78 and 75 — because the displayed
+    figure is a function of (projection, line) alone and discards everything
+    else the model knows.
 
-    Falls back to raw only when a pick predates the calibration, so an old row
-    still renders rather than showing a blank.
+    WHAT THIS COSTS, recorded honestly because it is real and measured on 702
+    graded picks. The raw score does not order outcomes:
+
+        65-70  52.8%    75-80  47.2%    85+  41.3%
+        70-75  59.0%    80-85  59.5%
+
+    The most confident band is the worst one, so a printed 85 describes a play
+    that has won 41% of the time. The calibrated figure it replaces was at least
+    rising at the top (66-71 -> 61.6%). This is a deliberate trade of that
+    against internal consistency, and the right resolution is to re-fit the
+    calibration on the number that drives selection rather than to keep two.
+
+    `confidence_calibrated` is still attached to every pick and still written to
+    the record, so nothing is lost and the comparison stays measurable.
     """
-    c = pick.get("confidence_calibrated")
-    return c if isinstance(c, (int, float)) else pick.get("confidence")
+    c = pick.get("confidence")
+    return c if isinstance(c, (int, float)) else pick.get("confidence_calibrated")
 
 
 def _play_statline(pick: dict) -> str:
@@ -2543,6 +2839,29 @@ def potd_embed(pick: dict) -> discord.Embed:
         ctx.append(f"Exp sets **{esets:.1f}**")
     if ctx:
         stats = ((stats + "\n") if stats else "") + " · ".join(ctx)
+
+    # ── FRESHNESS (2026-09-24, operator) ─────────────────────────────────────
+    # Court load, not injury history: how much tennis this player has already
+    # played and how hard. A finalist arriving on one day's rest off back-to-back
+    # three-setters is a different player from a first-round entrant, and the
+    # card never said so.
+    #
+    # Shown ONLY when it is actually saying something (below 90, i.e. a real
+    # grind) or when the opponent is materially more tired — otherwise it is a
+    # line reading "100" on every card, which trains people to ignore it.
+    # None means we could not judge, and prints nothing rather than "fresh".
+    _h, _ho = data.get("health_score"), data.get("opponent_health_score")
+    _hb = data.get("health_basis")
+    if isinstance(_h, (int, float)):
+        _gap = (_h - _ho) if isinstance(_ho, (int, float)) else 0
+        if _h < 90 or abs(_gap) >= 15:
+            _icon = "🟢" if _h >= 85 else ("🟡" if _h >= 65 else "🔴")
+            _line = f"{_icon} Freshness **{_h}**"
+            if isinstance(_ho, (int, float)):
+                _line += f" · opp {_ho}"
+            if _hb:
+                _line += f"\n_{_hb}_"
+            stats = ((stats + "\n") if stats else "") + _line
     if stats:
         e.add_field(name="Key Stats", value=stats[:1024], inline=False)
 
@@ -2771,6 +3090,12 @@ async def _post_daily_picks(channel, track: bool = True) -> str:
     # raises, we never reach this line and nothing is logged — which is correct:
     # an unposted play is not a play.
     if track:
+        # _promote_star put the ⭐ play at ranked[0] when the board has one.
+        # Mark it before logging: the record is written once and cannot be
+        # reconstructed afterwards, because which play carried the star depends
+        # on the whole board as it stood at post time.
+        if has_star and ranked:
+            ranked[0]["is_potd"] = True
         await _log_picks_pending(ranked, group="potd")
 
     # Baseline 3x — a SEPARATE post right after the ranked list.
@@ -2923,6 +3248,8 @@ async def _post_underdog_board(channel, track: bool = True,
     # unposted play is not a play. pick_group "underdog" keeps this book's record
     # entirely separate from PrizePicks (see database.pick_source).
     if track:
+        if has_star and ranked:
+            ranked[0]["is_potd"] = True
         await _log_picks_pending(ranked, group="underdog")
     return "posted %d underdog %s%s" % (
         len(ranked), "additional plays" if additional else "plays",
@@ -3058,25 +3385,6 @@ async def mlb_daily_boards():
 
 @mlb_daily_boards.before_loop
 async def _before_mlb_boards():
-    await client.wait_until_ready()
-
-
-@tasks.loop(time=[datetime.time(hour=MLB_BOARD2_HOUR, minute=MLB_BOARD2_MINUTE,
-                                tzinfo=POD_TZINFO)])
-async def mlb_second_boards():
-    """Additional Plays — 9:00 AM ET, same card as the 11:30 PM board.
-
-    A TOP-UP, not a second board: at most MLB_SECOND_MAX (6) plays, no Pick of
-    the Day, titled "Additional Plays". Exactly the tennis second wave. It posts
-    only what the night scan could not reach — starters announced overnight and
-    lines the books had not yet put up — and posts nothing at all on a day the
-    night board already covered everything.
-    """
-    await _mlb_run_boards("additional", additional=True)
-
-
-@mlb_second_boards.before_loop
-async def _before_mlb_second_boards():
     await client.wait_until_ready()
 
 
@@ -3583,8 +3891,76 @@ async def _mlb_one_shot_test():
 # games are played — no switch to flip.
 NFL_TASKS_ENABLED = os.getenv("NFL_TASKS_ENABLED", "true").strip().lower() in (
     "1", "true", "yes", "on")
-NFL_BOARD_HOUR = int(os.getenv("NFL_BOARD_HOUR", "11") or "11")
+NFL_BOARD_HOUR = int(os.getenv("NFL_BOARD_HOUR", "22") or "22")
 NFL_BOARD_MINUTE = int(os.getenv("NFL_BOARD_MINUTE", "0") or "0")
+
+# ── THE NFL BOARD POSTS THE WAY THE TENNIS BOARD POSTS ─────────────
+# (user, 2026-09-19, before the board went public.) Four things were different,
+# and all four were visible to a reader:
+#
+#   1. TWO @everyone pings per drop — the ⭐ and the board went out as separate
+#      messages, each mentioning everyone. Tennis carries both embeds in ONE
+#      message so a drop is one notification.
+#   2. NO BAR ON THE ⭐. rows[0] was badged Pick of the Day whatever it scored,
+#      including a play sitting on the 0.52 board floor. Tennis stars nothing
+#      below POTD_THRESHOLD and says so when no play clears it.
+#   3. NINE PLAYS (⭐ + 8) against tennis's five.
+#   4. NO MASTER SWITCH. AUTOPOST_ENABLED silenced tennis and the recap but not
+#      this, so turning posting off left the NFL board talking.
+NFL_MAX_PLAYS = int(os.getenv("NFL_MAX_PLAYS", "5") or "5")
+# The same 80 tennis uses, on the same 0-100 scale. Reachable: the 9/19
+# prizepicks scan had nine rows at or above it, topping out at 0.872.
+NFL_POTD_MIN_PROB = float(os.getenv("NFL_POTD_MIN_PROB", "0.80") or "0.80")
+
+
+def _nfl_win_prob(row: dict):
+    """The model's probability for the side we lean, or None.
+
+    `win_prob` is what nfl.board filters on; p_over/p_under are what the embeds
+    read. Both are present on a scanned row — prefer the first and fall back, so
+    a row shaped by an older scan still gets gated rather than waved through.
+    """
+    v = row.get("win_prob")
+    if not isinstance(v, (int, float)):
+        lean = (row.get("lean") or "").upper()
+        v = row.get("p_over") if lean == "OVER" else row.get("p_under")
+    return v if isinstance(v, (int, float)) else None
+
+# ── THE NIGHT BEFORE, NOT THE MORNING OF ───────────────────────────
+# Each board posts at NFL_BOARD_HOUR ET on the EVE of its slate (operator,
+# 2026-09-18), so the card is up the night before people need it:
+#
+#     Wednesday 22:00 ET  ->  Thursday's game    titled "9/25 TNF"
+#     Saturday  22:00 ET  ->  Sunday's slate     titled "9/28 Sunday Slate"
+#     Sunday    22:00 ET  ->  Monday's game      titled "9/29 MNF"
+#
+# The map is POSTING weekday -> the tag its target carries; the target date is
+# always the following day, so nothing has to name a slate or count a gap.
+# Mon=0 ... Sun=6.
+_NFL_EVE_SCHEDULE = {
+    2: "TNF",             # Wednesday night -> Thursday
+    5: "Sunday Slate",    # Saturday night  -> Sunday
+    6: "MNF",             # Sunday night    -> Monday
+}
+
+
+def _nfl_eve_schedule() -> dict:
+    """{posting weekday: title tag}. NFL_BOARD_EVES overrides, as "2:TNF,6:MNF"."""
+    raw = (os.getenv("NFL_BOARD_EVES", "") or "").strip()
+    if not raw:
+        return dict(_NFL_EVE_SCHEDULE)
+    out = {}
+    for part in raw.split(","):
+        if ":" not in part:
+            continue
+        d, _, tag = part.partition(":")
+        d, tag = d.strip(), tag.strip()
+        if d.isdigit() and 0 <= int(d) <= 6 and tag:
+            out[int(d)] = tag
+    return out or dict(_NFL_EVE_SCHEDULE)
+
+
+NFL_BOARD_EVES = _nfl_eve_schedule()
 NFL_LINE_CHECK_MINUTES = int(os.getenv("NFL_LINE_CHECK_MINUTES", "30") or "30")
 # One-shot intro post to the projections channel. Off by default so a redeploy
 # never re-pings the channel; set NFL_POST_INTRO=1 for the single announcement,
@@ -3624,7 +4000,7 @@ def _nfl_import(module_name: str):
 
 
 async def _nfl_post_board(book: str, day=None, window_days: int = None,
-                          label: str = "") -> None:
+                          label: str = "", title_tag: str = "") -> None:
     """Scan one book for a SLATE and post it. Never raises.
 
     `day` is the ET game date this board is about, which is not the day it is
@@ -3632,6 +4008,13 @@ async def _nfl_post_board(book: str, day=None, window_days: int = None,
     about Monday. Passing it explicitly is what keeps those straight — and what
     lets the repeat guard know a Sunday play was already shown on Friday.
     """
+    if not AUTOPOST_ENABLED:
+        # MASTER SWITCH backstop, the same one _post_daily_picks carries. It
+        # used to cover tennis and the recap but not this, so flipping posting
+        # off left the NFL board announcing itself to the server.
+        log.info("NFL board (%s): automated posting DISABLED "
+                 "(AUTOPOST_ENABLED off) — not scanning or posting", book)
+        return
     try:
         nb = _nfl_import("nfl.board")
         npost = _nfl_import("nfl.post")
@@ -3654,39 +4037,76 @@ async def _nfl_post_board(book: str, day=None, window_days: int = None,
             log.error("NFL board (%s): channel %s not visible to the bot", book, cid)
             return
         # ⭐ POTD first, board from #2 — see nfl.post.build_potd_embed.
-        potd = npost.build_potd_embed(rows[0]) if rows else None
-        embed = npost.build_board_embed(rows[1:], book, shadow=shadow,
-                                        start_rank=2)
-        if potd is None and embed is None:
+        # TITLED BY THE GAMES, NOT BY THE CLOCK. Both embeds defaulted to
+        # datetime.now(), which was harmless while boards posted on the morning
+        # of — and wrong the moment they moved to the night before, when "now"
+        # is the previous day. `day` is the slate this board is about, and
+        # title_tag says which kind of game it is (MNF / TNF / the Sunday card).
+        _dl = f"{day.month}/{day.day}" + (f" {title_tag}" if title_tag else "")
+
+        # THE BOARD IS FIVE PLAYS, NOT NINE. rows arrives ranked; everything
+        # past NFL_MAX_PLAYS is simply not this board's business.
+        shown = rows[:NFL_MAX_PLAYS]
+
+        # ⭐ ONLY IF IT IS EARNED. The top row was badged Pick of the Day no
+        # matter what it scored — on a board whose floor is 0.52 that is a
+        # headline claim the number does not support. When nothing clears the
+        # bar the board still posts, in full, from #1, with a line saying why
+        # the slot is empty. The slot never silently vanishes; see the tennis
+        # twin in _post_daily_picks.
+        _p0 = _nfl_win_prob(shown[0]) if shown else None
+        has_star = isinstance(_p0, (int, float)) and _p0 >= NFL_POTD_MIN_PROB
+        _no_potd_line = None
+        if has_star:
+            potd = npost.build_potd_embed(shown[0], when=day, date_label=_dl)
+            embed = npost.build_board_embed(shown[1:], book, shadow=shadow,
+                                            start_rank=2, when=day,
+                                            date_label=_dl,
+                                            max_plays=NFL_MAX_PLAYS)
+        else:
+            potd = None
+            embed = npost.build_board_embed(shown, book, shadow=shadow,
+                                            start_rank=1, when=day,
+                                            date_label=_dl,
+                                            max_plays=NFL_MAX_PLAYS)
+            _no_potd_line = MSG_NO_POTD_HAS_BOARD
+            log.warning("NFL_NO_POTD | %s | %s | best play %.3f < %.2f bar | "
+                        "board still posted (%d plays)", day, book,
+                        _p0 if isinstance(_p0, (int, float)) else float("nan"),
+                        NFL_POTD_MIN_PROB, len(shown))
+        embeds = [e for e in (potd, embed) if e is not None]
+        if not embeds:
             return
-        if potd is not None:
-            await ch.send(content="@everyone", embed=potd,
-                          allowed_mentions=discord.AllowedMentions(everyone=True))
-        if embed is None:
-            log.warning("NFL board (%s): POTD only — no further plays", book)
-            _NFL_WATCH[book] = rows
-            return
-        # @everyone on the board (user, 2026-09-08). The tennis board pings the
-        # same way, and a board nobody is told about is a board nobody reads.
-        # LINE ALERTS ARE THE EXCEPTION and stay silent — they fire repeatedly
-        # through the day, and a ping per line move trains people to mute the
-        # server.
-        await ch.send(content="@everyone", embed=embed,
+
+        # ONE PING FOR ONE DROP. The ⭐ and the board used to go out as two
+        # messages, each mentioning everyone — two notifications for one board,
+        # which is how a server gets muted. Tennis sends both embeds in a single
+        # @everyone message and these now read as one drop.
+        # LINE ALERTS ARE THE EXCEPTION and stay silent: they fire repeatedly
+        # through the day, and a ping per line move trains people to mute.
+        _content = "@everyone" + (f"\n{_no_potd_line}" if _no_potd_line else "")
+        await ch.send(content=_content, embeds=embeds,
                       allowed_mentions=discord.AllowedMentions(everyone=True))
-        log.warning("NFL %sboard (%s) posted %d play(s) for %s to %s "
-                    "(shadow=%s)", label, book, len(rows), day, cid, shadow)
-        # Hand the posted rows to the line watch so alerts track what we showed,
-        # and remember them so tomorrow's scan does not repeat the same cluster.
-        _NFL_WATCH[book] = rows
-        await asyncio.to_thread(nb.record_posted, rows, str(day))
+        log.warning("NFL %sboard (%s) posted %d of %d play(s) for %s to %s "
+                    "(star=%s, shadow=%s)", label, book, len(shown), len(rows),
+                    day, cid, has_star, shadow)
+        # Hand the POSTED rows to the line watch so alerts track what readers
+        # were actually shown, and record those — recording all 168 scanned rows
+        # would blacklist the whole slate from any later scan.
+        _NFL_WATCH[book] = shown
+        await asyncio.to_thread(nb.record_posted, shown, str(day))
         # Persist for the recap. NOT posted anywhere — the recap is built but
         # deliberately not wired to the track-record channel yet (user).
         try:
             nstore = _nfl_import("nfl.store")
             nrecap = _nfl_import("nfl.recap")
+            # WHAT WAS PUBLISHED, not what was scanned — the same rule the
+            # tennis ledger follows. Logging all 168 priced rows would score a
+            # record against plays no subscriber was ever shown. The POTD name
+            # is None when no play earned the ⭐.
             await asyncio.to_thread(
-                nstore.log_board, rows, book, str(day),
-                rows[0]["player"] if rows else None, shadow)
+                nstore.log_board, shown, book, str(day),
+                shown[0]["player"] if has_star else None, shadow)
         except Exception:  # noqa: BLE001 — never cost the post
             log.exception("NFL store logging failed (board already posted)")
     except Exception:  # noqa: BLE001 — Rule 2, and tennis must never be reached
@@ -3696,11 +4116,42 @@ async def _nfl_post_board(book: str, day=None, window_days: int = None,
 @tasks.loop(time=[datetime.time(hour=NFL_BOARD_HOUR, minute=NFL_BOARD_MINUTE,
                                 tzinfo=POD_TZINFO)])
 async def nfl_daily_boards():
-    """Both books' NFL boards. One book failing must not stop the other."""
+    """Both books' NFL boards, posted the NIGHT BEFORE each slate.
+
+    Wednesday, Saturday and Sunday at NFL_BOARD_HOUR ET (operator, 2026-09-18),
+    each board covering the FOLLOWING day's games and titled for them:
+
+        Wed 22:00 -> Thursday  "9/25 TNF"
+        Sat 22:00 -> Sunday    "9/28 Sunday Slate"
+        Sun 22:00 -> Monday    "9/29 MNF"
+
+    The target is always tomorrow, so unlike the boards this replaced nothing
+    has to name a slate or count a gap of one day against two.
+
+    The loop still fires daily because discord.py has no weekday filter, so the
+    guard is here. One book failing must not stop the other.
+    """
     if not NFL_TASKS_ENABLED:
         return
+    try:
+        import datetime as _dt
+        nb = _nfl_import("nfl.board")
+        today = nb.slate_date()
+    except Exception:  # noqa: BLE001 — Rule 2; without a date there is no board
+        log.exception("NFL board: could not resolve the slate date")
+        return
+    tag = NFL_BOARD_EVES.get(today.weekday())
+    if tag is None:
+        log.info("NFL board: %s is not an eve night (posting on %s) — skipping",
+                 today, sorted(NFL_BOARD_EVES))
+        return
+    slate = today + _dt.timedelta(days=1)
+    log.warning("NFL board: posting tonight for the %s slate (%s)", slate, tag)
     for book in ("prizepicks", "underdog"):
-        await _nfl_post_board(book)
+        # window_days=0 pins the board to that ONE slate. Without it the scan
+        # takes a default window and rakes in games belonging to another card.
+        await _nfl_post_board(book, day=slate, window_days=0,
+                              label=f"{tag} ", title_tag=tag)
 
 
 @nfl_daily_boards.before_loop
@@ -3708,96 +4159,27 @@ async def _before_nfl_boards():
     await client.wait_until_ready()
 
 
-# ── THE NFL WEEK, NOT A DAILY BOARD ──────────────────────────────────────────
+# ── THE NFL WEEK, NOT A DAILY BOARD ───────────────────────────────
 # A daily board is the wrong shape for this sport. Football plays on three days
-# and nothing happens on the other four, so a board that fires every morning is
-# empty most of the week and — worse — hits Sunday morning, hours after the
-# lines people actually want have been up for two days.
+# and nothing happens on the other four, so a board that fired every morning was
+# empty most of the week.
 #
-# So the schedule follows the NFL week (operator, 2026-09-11):
+# The schedule now posts on the MORNING OF EACH GAME DAY (operator, 2026-09-18):
 #
-#     Friday   NFL_WEEK_BOARD_HOUR ET   ->  the SUNDAY slate
-#     Sunday   21:00 ET                 ->  the MONDAY night slate
+#     Monday    NFL_BOARD_HOUR ET  ->  that night's Monday game
+#     Thursday  NFL_BOARD_HOUR ET  ->  that night's Thursday game
+#     Sunday    NFL_BOARD_HOUR ET  ->  that day's Sunday slate
 #
-# Each names its target slate EXPLICITLY rather than taking "tomorrow", because
-# the gap differs — Friday is two days ahead of Sunday, Sunday night is one day
-# ahead of Monday — and a board that guessed would silently post the wrong
-# games the first time a Thursday fixture moved.
+# ONE LOOP DOES ALL THREE (see nfl_daily_boards, which guards on the weekday and
+# pins the board to that day). It replaced three loops: a daily board plus a
+# Friday board that looked ahead to Sunday and a Sunday-night board that looked
+# ahead to Monday. Those existed to get lines up early, but they also meant the
+# channel saw seven posts a week for three days of football, and the two
+# look-ahead boards had to name their target slate explicitly because the gap
+# differed. Posting the morning of removes the gap, so nothing has to guess.
 #
-# The existing daily board still runs and still covers Thursday night. It cannot
-# double-post the Sunday slate, because the repeat guard is keyed on the SLATE:
-# once Friday has shown those players for Sunday, Sunday morning's run skips
-# them and shows what Friday could not fit.
-NFL_WEEK_BOARD_HOUR = int(os.getenv("NFL_WEEK_BOARD_HOUR", "11") or "11")
-NFL_WEEK_BOARD_MINUTE = int(os.getenv("NFL_WEEK_BOARD_MINUTE", "0") or "0")
-NFL_MNF_BOARD_HOUR = int(os.getenv("NFL_MNF_BOARD_HOUR", "21") or "21")
-NFL_MNF_BOARD_MINUTE = int(os.getenv("NFL_MNF_BOARD_MINUTE", "0") or "0")
-
-
-def _nfl_next_weekday(target: int, base=None):
-    """The next ET date falling on `target` (Mon=0 … Sun=6), today included."""
-    import datetime
-    nb = _nfl_import("nfl.board")
-    d = base or nb.slate_date()
-    return d + datetime.timedelta(days=(target - d.weekday()) % 7)
-
-
-@tasks.loop(time=[datetime.time(hour=NFL_WEEK_BOARD_HOUR,
-                                minute=NFL_WEEK_BOARD_MINUTE,
-                                tzinfo=POD_TZINFO)])
-async def nfl_sunday_board():
-    """FRIDAY: post the coming SUNDAY slate.
-
-    The loop fires daily — discord.py has no weekday filter — so the weekday
-    check is here. Guarded rather than assumed: a task that ran every day and
-    posted Sunday's games would flood the channel six times a week.
-    """
-    if not NFL_TASKS_ENABLED:
-        return
-    try:
-        nb = _nfl_import("nfl.board")
-        today = nb.slate_date()
-        if today.weekday() != 4:              # 4 = Friday
-            return
-        sunday = _nfl_next_weekday(6, today)  # 6 = Sunday
-        log.warning("NFL Friday board: targeting the %s slate", sunday)
-        for book in ("prizepicks", "underdog"):
-            await _nfl_post_board(book, day=sunday, window_days=0,
-                                  label="Sunday-slate ")
-    except Exception:  # noqa: BLE001 — Rule 2
-        log.exception("NFL Friday board failed (tennis unaffected)")
-
-
-@nfl_sunday_board.before_loop
-async def _before_nfl_sunday_board():
-    await client.wait_until_ready()
-
-
-@tasks.loop(time=[datetime.time(hour=NFL_MNF_BOARD_HOUR,
-                                minute=NFL_MNF_BOARD_MINUTE,
-                                tzinfo=POD_TZINFO)])
-async def nfl_mnf_board():
-    """SUNDAY 9PM ET: post the MONDAY night slate."""
-    if not NFL_TASKS_ENABLED:
-        return
-    try:
-        nb = _nfl_import("nfl.board")
-        today = nb.slate_date()
-        if today.weekday() != 6:              # 6 = Sunday
-            return
-        import datetime as _dt
-        monday = today + _dt.timedelta(days=1)
-        log.warning("NFL Sunday-night board: targeting the %s slate", monday)
-        for book in ("prizepicks", "underdog"):
-            await _nfl_post_board(book, day=monday, window_days=0,
-                                  label="MNF ")
-    except Exception:  # noqa: BLE001 — Rule 2
-        log.exception("NFL MNF board failed (tennis unaffected)")
-
-
-@nfl_mnf_board.before_loop
-async def _before_nfl_mnf_board():
-    await client.wait_until_ready()
+# The repeat guard is keyed on the SLATE, so a board cannot double-post a game
+# day even if the loop is restarted or run manually.
 
 
 # ── WEBSITE BOARD REFRESH ────────────────────────────────────────────────────
@@ -4316,43 +4698,6 @@ async def _before_underdog_board():
     await client.wait_until_ready()
 
 
-@tasks.loop(time=[datetime.time(hour=UNDERDOG_AM_HOUR,
-                                minute=UNDERDOG_AM_MINUTE, tzinfo=POD_TZINFO)])
-async def underdog_morning_board():
-    """Second Underdog drop — 7:30 AM ET.
-
-    DELIBERATELY WITHOUT the once-per-card guard that daily_underdog_board
-    carries. That guard exists to stop the 10:30 PM trigger firing twice for the
-    same card; applying it here would make this task a no-op every single day,
-    because by morning the night board has already logged picks against exactly
-    this card.
-
-    Re-posting is prevented by a better mechanism that _post_underdog_board
-    already applies: it drops any play still open and ungraded, whichever book it
-    came from. So this reaches only props the night scan could not — lines
-    Underdog had not posted yet at 10:30 PM — and cannot repeat a live play.
-    """
-    if not (AUTOPOST_ENABLED and UNDERDOG_CHANNEL_ID):
-        return
-    try:
-        channel = client.get_channel(UNDERDOG_CHANNEL_ID)
-        if channel is None:
-            log.warning("underdog morning board: channel %s not found",
-                        UNDERDOG_CHANNEL_ID)
-            return
-        status = await _post_underdog_board(channel, track=True,
-                                            additional=True)
-        log.info("underdog morning board (%02d:%02d): %s",
-                 UNDERDOG_AM_HOUR, UNDERDOG_AM_MINUTE, status)
-    except Exception:  # noqa: BLE001
-        log.exception("underdog morning board failed")
-
-
-@underdog_morning_board.before_loop
-async def _before_underdog_morning_board():
-    await client.wait_until_ready()
-
-
 async def _pending_pick_keys() -> set:
     """(_norm(player), prop_type) for every pick still UNRESOLVED.
 
@@ -4377,10 +4722,25 @@ async def _pending_pick_keys() -> set:
     return keys
 
 
-async def _post_second_wave(channel, track: bool = True) -> str:
-    """Post up to SECOND_WAVE_MAX ADDITIONAL plays not already on the prior 8 PM board
-    (excluded by player+prop_type). Runs the next morning (8 AM ET) once fresh overnight
-    lines are up, and pings @everyone — it's a real second daily drop. Never raises."""
+async def _post_second_wave(channel, track: bool = True, max_plays: int = None,
+                            min_conf: int = 0,
+                            title: str = "🎾 Additional Plays",
+                            group: str = "second-wave", label: str = "second wave") -> str:
+    """Post ADDITIONAL plays not already on an earlier board (excluded by
+    player+prop_type), ping @everyone, and log them. Never raises.
+
+    PARAMETERISED BECAUSE THERE ARE NOW TWO OF THESE and they want different
+    shapes. The midnight scan is the wide one: whatever is left on the card,
+    capped at SECOND_WAVE_MAX. The 8 PM rescan is the narrow one — two or three
+    plays at 70+ confidence — and exists to add to the day without diluting it.
+
+    min_conf GATES, ROOM ORDERS. Within a set already held to a high confidence
+    bar, the play worth adding is the one with the most distance between our
+    number and the book's, so the shortlist is re-sorted by relative edge. That
+    is the opposite of how the main board ranks (confidence first, see
+    pick_of_day._rank_key) and deliberately so: the board is ordering plays that
+    only had to clear 65, while this is choosing among plays that already
+    cleared 70 and can afford to be picked on margin."""
     if not AUTOPOST_ENABLED:
         log.info("second wave: automated posting DISABLED (AUTOPOST_ENABLED off)")
         return "autopost disabled"
@@ -4396,11 +4756,19 @@ async def _post_second_wave(channel, track: bool = True) -> str:
     if not ordered:
         log.info("second wave: no qualifying board — nothing to add")
         return "no board"
-    adds = [p for p in ordered
-            if (pick_of_day._norm(p.get("player", "")), p.get("prop_type")) not in exclude
-            ][:SECOND_WAVE_MAX]
+    cands = [p for p in ordered
+             if (pick_of_day._norm(p.get("player", "")), p.get("prop_type")) not in exclude]
+    if min_conf:
+        _before = len(cands)
+        cands = [p for p in cands if (p.get("confidence") or 0) >= min_conf]
+        cands.sort(key=lambda p: -(pick_of_day._rel_edge(p) or 0))
+        log.info("%s: %d of %d candidate(s) clear %d%% confidence; ordered by room",
+                 label, len(cands), _before, min_conf)
+    adds = cands[:(max_plays or SECOND_WAVE_MAX)]
     if not adds:
-        log.info("second wave: no additional plays beyond the %d already posted", len(exclude))
+        log.info("%s: no additional plays beyond the %d already posted%s", label,
+                 len(exclude),
+                 (" that also clear %d%%" % min_conf) if min_conf else "")
         return "no additional plays"
 
     await _annotate_form_alerts(adds)
@@ -4408,14 +4776,14 @@ async def _post_second_wave(channel, track: bool = True) -> str:
     # (2026-07-27, user: far too much wording); the slate date rides the board footer.
     # Correlation caution suppressed here (kept on the main board).
     embeds = ranked_embeds(adds, start_rank=1, total=len(adds),
-                           title_override="🎾 Additional Plays",
+                           title_override=title,
                            suppress_correlation_note=True)
     # @everyone — a real second daily drop (2026-07-27, user), matching the 8 PM board's ping.
     _content = "@everyone" if track else None
     await channel.send(content=_content, embeds=embeds[:10], allowed_mentions=EVERYONE_MENTION)
 
     if track:
-        await _log_picks_pending(adds, group="second-wave")
+        await _log_picks_pending(adds, group=group)
         # _start_line_monitor REPLACES the running monitor, so re-arm over ALL of today's
         # pending picks (8 PM board + 3x + these adds) — never drop the 8 PM set.
         try:
@@ -4481,10 +4849,7 @@ async def _repost_todays_plays(channel) -> str:
             + (" + 3x" if slip and len(slip) >= 2 else ""))
 
 
-@tasks.loop(time=[
-    datetime.time(hour=ONEOFF_PREWARM_HM[0], minute=ONEOFF_PREWARM_HM[1], tzinfo=POD_TZINFO),
-    datetime.time(hour=PREWARM_HOUR, minute=PREWARM_MINUTE, tzinfo=POD_TZINFO),
-])
+@tasks.loop(time=_sched_times(ONEOFF_PREWARM_HM, PREWARM_HOUR, PREWARM_MINUTE))
 async def daily_cache_prewarm():
     """Walk the day's board 30 minutes before generation and THROW THE RESULTS
     AWAY. The only product is a warm cache — see the block comment on
@@ -4585,10 +4950,7 @@ async def _before_extension_pod_run():
     await client.wait_until_ready()
 
 
-@tasks.loop(time=[
-    datetime.time(hour=ONEOFF_POTD_HM[0], minute=ONEOFF_POTD_HM[1], tzinfo=POD_TZINFO),
-    datetime.time(hour=PICKS_GEN_HOUR, minute=PICKS_GEN_MINUTE, tzinfo=POD_TZINFO),
-])
+@tasks.loop(time=_sched_times(ONEOFF_POTD_HM, PICKS_GEN_HOUR, PICKS_GEN_MINUTE))
 async def daily_picks_generate():
     """THE POTD TRIGGER — evaluates the board and posts the ⭐ Pick of the Day +
     PrizePicks Board (@everyone) + the 3x when the run finishes (~6-10 min).
@@ -4652,35 +5014,6 @@ async def _before_picks_generate():
     await client.wait_until_ready()
 
 
-@tasks.loop(time=[
-    datetime.time(hour=SECOND_WAVE_HOUR, minute=SECOND_WAVE_MINUTE, tzinfo=POD_TZINFO),
-])
-async def daily_second_wave():
-    """8 AM ET morning scan: up to SECOND_WAVE_MAX plays not already on the prior 8 PM board."""
-    if not POD_CHANNEL_ID:
-        return
-    if not AUTOPOST_ENABLED:
-        log.info("second wave: DISABLED (AUTOPOST_ENABLED off)")
-        return
-    try:
-        channel = client.get_channel(POD_CHANNEL_ID)
-        if channel is None:
-            log.warning("second wave: channel %s not found", POD_CHANNEL_ID)
-            return
-        if POD_SKIP_DATE and datetime.datetime.now(POD_TZINFO).strftime("%Y-%m-%d") == POD_SKIP_DATE:
-            log.info("second wave: skip-date %s — not posting", POD_SKIP_DATE)
-            return
-        status = await _post_second_wave(channel, track=True)
-        log.info("second wave: %s", status)
-    except Exception:  # noqa: BLE001
-        log.exception("second wave failed")
-
-
-@daily_second_wave.before_loop
-async def _before_second_wave():
-    await client.wait_until_ready()
-
-
 @tasks.loop(time=datetime.time(hour=POD_EXTRA_RUN_HOUR, minute=POD_EXTRA_RUN_MINUTE,
                                tzinfo=POD_TZINFO))
 async def extra_pod_run():
@@ -4718,9 +5051,91 @@ async def _before_extra_pod_run():
     await client.wait_until_ready()
 
 
-# Pick of the Day is broadcast only via the scheduled daily auto-post — there is
-# no manual /postpicks command (removed by request).
+# ── THE 8 PM RESCAN, ONE DAY AT A TIME ──────────────────────────────────────
+# Brought back 2026-09-22 (operator: "add back in the 8pm rescan for today").
+#
+# DATE-GATED ON PURPOSE. "For today" is a one-day decision, and the way to keep
+# it one day is to make the code enforce that rather than rely on someone
+# remembering to take it out again. EVENING_RESCAN_DATE is a single ET date; on
+# any other day the loop wakes, sees the date does not match and returns. Empty
+# — the default — means it never runs at all, so a redeploy cannot silently
+# revive it. Same shape as POD_EXTRA_RUN_DATE.
+#
+# WHY IT WAS REMOVED, kept here because it is the reason to be careful about
+# leaving it on. Across 710 graded plays the additional-plays scans ran 100-97
+# (50.8%) against the board's 282-231 (55.0%), and dragged the published record
+# from 55.0% to 53.8%. The gap was not significant on its own (p=0.31) but it
+# never pointed the other way.
+EVENING_RESCAN_DATE = os.getenv("EVENING_RESCAN_DATE", "").strip()
+EVENING_RESCAN_HOUR = int(os.getenv("EVENING_RESCAN_HOUR", "20") or "20")
+EVENING_RESCAN_MINUTE = int(os.getenv("EVENING_RESCAN_MINUTE", "0") or "0")
+EVENING_RESCAN_MAX = int(os.getenv("EVENING_RESCAN_MAX", "3") or "3")
+EVENING_RESCAN_MIN_CONF = int(os.getenv("EVENING_RESCAN_MIN_CONF", "70") or "70")
 
+
+@tasks.loop(time=[
+    datetime.time(hour=EVENING_RESCAN_HOUR, minute=EVENING_RESCAN_MINUTE,
+                  tzinfo=POD_TZINFO),
+])
+async def evening_rescan():
+    """Up to EVENING_RESCAN_MAX plays at EVENING_RESCAN_MIN_CONF+, on ONE date.
+
+    min_conf gates and room orders — see _post_second_wave. No-op unless today
+    is EVENING_RESCAN_DATE.
+    """
+    if not POD_CHANNEL_ID or not EVENING_RESCAN_DATE:
+        return
+    _today = datetime.datetime.now(POD_TZINFO).strftime("%Y-%m-%d")
+    if _today != EVENING_RESCAN_DATE:
+        log.info("evening rescan: armed for %s, today is %s — not running",
+                 EVENING_RESCAN_DATE, _today)
+        return
+    if not AUTOPOST_ENABLED:
+        log.info("evening rescan: DISABLED (AUTOPOST_ENABLED off)")
+        return
+    try:
+        channel = client.get_channel(POD_CHANNEL_ID)
+        if channel is None:
+            log.warning("evening rescan: channel %s not found", POD_CHANNEL_ID)
+            return
+        if POD_SKIP_DATE and _today == POD_SKIP_DATE:
+            log.info("evening rescan: skip-date %s — not posting", POD_SKIP_DATE)
+            return
+        status = await _post_second_wave(
+            channel, track=True,
+            max_plays=EVENING_RESCAN_MAX,
+            min_conf=EVENING_RESCAN_MIN_CONF,
+            title="🎾 Late Value",
+            group="evening-rescan",
+            label="evening rescan")
+        log.info("evening rescan (%s): %s", EVENING_RESCAN_DATE, status)
+    except Exception:  # noqa: BLE001 — Rule 2, never take the bot down
+        log.exception("evening rescan failed")
+
+
+@evening_rescan.before_loop
+async def _before_evening_rescan():
+    await client.wait_until_ready()
+
+
+# ── ADDITIONAL-PLAYS SCANS ARE GONE, IN EVERY SPORT ─────────────────────────
+# Removed 2026-09-22 (operator). Tennis had two of them at different times, the
+# Underdog book had a 7:30 AM top-up and MLB a 9:00 AM one. They all did the
+# same thing: re-rank the same card hours after the board and post what was
+# left.
+#
+# Measured over 710 graded plays, that is what "what was left" was worth:
+#
+#     main board   282-231   55.0%   [50.6, 59.2]
+#     additional   100-97    50.8%   [44.3, 58.2]
+#
+# Barely above break-even, four points under the board, and enough volume to
+# pull the published record from 55.0% down to 53.8%. The gap is not
+# statistically significant on its own (p=0.31) — it is 197 picks — but it has
+# been in the same direction the whole time, and a top-up that cannot beat the
+# board it tops up is only adding volume.
+#
+# The board scans are untouched. This removes only the second bite.
 
 # ── Feature 4 — daily Slate auto-post (📋・slate channel) ─────────────────────────
 async def _post_slate(channel) -> str:
@@ -4880,14 +5295,16 @@ def daily_recap_embed(rec: dict, target_date: str = None,
     # spans a stretch where earlier plays were still being corrected — regraded,
     # voided, superseded — so it isn't a number to publish. A month-to-date
     # window covers only settled recent history and resets cleanly.
+    # THE BOARD'S MONTHLY LINE IS GONE; THE ⭐'s STAYS (operator, 2026-09-19).
+    # "September: 79/158 cashed (50%)" described every play the board posted,
+    # which is not what the product leads with and not what the record is asked
+    # about. The ⭐'s month is the number that means something, so that is the
+    # one the recap carries — and the pass over the pick log that computed the
+    # board figure is gone with it.
+    #
     # Counted on SLATE date, like the pick list, so a play belongs to the day it
-    # was played. Window is inclusive of the recap's own day.
-    # CALENDAR MONTH TO DATE, not a rolling 29 days (user, 2026-09-13). On the
-    # 13th of September a rolling window is mostly August, so a post headed
-    # "September" was reporting a month the reader was not looking at — and a
-    # good month could be dragged down by a bad one that had already ended.
-    # A month is also the unit people actually compare: "how did we do in
-    # September" has an answer, "how did we do in the last 29 days" does not.
+    # was played, and scoped to the CALENDAR MONTH so a post headed "September"
+    # reports September rather than a rolling window that is mostly August.
     try:
         _target_dt = datetime.datetime.strptime(target_date, "%Y-%m-%d")
         _win_start = _target_dt.replace(day=1).strftime("%Y-%m-%d")
@@ -4895,24 +5312,27 @@ def daily_recap_embed(rec: dict, target_date: str = None,
     except Exception:  # noqa: BLE001
         _win_start = None
         _win_label = "This month"
-    m_w = m_l = m_p = 0
+    s_w = s_l = s_p = 0
     if _win_start:
         for p in picks:
-            if p.get("excluded_from_record"):
+            if p.get("excluded_from_record") or not p.get("is_potd"):
                 continue
             _sd = _slate_date_of(p)
             if not _sd or not (_win_start <= _sd <= target_date):
                 continue
             _r = p.get("result")
             if _r == "W":
-                m_w += 1
+                s_w += 1
             elif _r == "L":
-                m_l += 1
+                s_l += 1
             elif _r == "PUSH":
-                m_p += 1               # VOID/DNP never played — excluded both sides
-    m_cash = m_w + m_p
-    m_total = m_w + m_l + m_p
-    m_rate = round(m_cash / m_total * 100) if m_total else 0
+                s_p += 1               # VOID/DNP never played — excluded both sides
+    s_cash = s_w + s_p
+    s_total = s_w + s_l + s_p
+    s_rate = round(s_cash / s_total * 100) if s_total else 0
+    # Today's star, if the card had one. Read off the same graded list the pick
+    # rows come from, so it can never disagree with them.
+    _star_today = next((p for p in graded if p.get("is_potd")), None)
 
     color = COLOR_UNDER if (t_total and t_rate < 50) else COLOR_OVER
     e = discord.Embed(title=f"📊 {header}", color=color)
@@ -4958,8 +5378,18 @@ def daily_recap_embed(rec: dict, target_date: str = None,
     if t_p:
         today_line += f"  ·  incl. {t_p} push{'es' if t_p != 1 else ''}"
     record_val = today_line
-    if m_total:
-        record_val += f"\n**{_win_label}:** {m_cash}/{m_total} cashed ({m_rate}%)"
+    # Today's ⭐, then the ⭐'s month. The board's own month line used to sit
+    # between them and has been removed: the running record people care about is
+    # the star's, and the board's would only invite comparison with a number
+    # that answers a different question.
+    if _star_today is not None:
+        _si = {"W": "✅", "L": "❌", "PUSH": "⚪", "VOID": "🚫"}
+        record_val += (f"\n⭐ **Pick of the Day:** "
+                       f"{_si.get(_star_today.get('result'), '⚪')} "
+                       f"{_star_today.get('player', '')}")
+    if s_total:
+        record_val += (f"\n⭐ **{_win_label} POTD:** {s_cash}/{s_total} "
+                       f"cashed ({s_rate}%)")
     # Rough-day note — included ONLY when the day's cashed rate is under 60% and at
     # least one play actually resolved. Deliberately conditional so it never reads
     # as canned: good days (>=60%) and empty days show nothing extra.
@@ -5089,11 +5519,45 @@ def results_embed(rec: dict) -> discord.Embed:
         if r in ("W", "PUSH"):
             streak += 1
     on_fire = streak >= 5
+    # THE HEADLINE IS THE ⭐, FOR THE MONTH. It used to be every play the board
+    # posted — five to eighteen a day — which is a BOARD record, not a Pick of
+    # the Day record. Those answer different questions, and the one the ⭐
+    # promises is how the play we LED with did.
+    pm = rec.get("potd_month") or {}
+    pm_w = pm.get("wins", 0) or 0
+    pm_l = pm.get("losses", 0) or 0
+    pm_rate = pm.get("win_rate")
+    pm_tracked = pm.get("tracked", 0) or 0
+    try:
+        _mn = datetime.datetime.strptime(str(pm.get("month") or ""), "%Y-%m").strftime("%B")
+    except Exception:  # noqa: BLE001
+        _mn = "This month"
+    if pm_rate is not None:
+        color = COLOR_OVER if pm_rate >= 50 else COLOR_UNDER
     e = discord.Embed(title="📊 Baseline Track Record", color=color)
+    if pm_tracked:
+        head = (f"**⭐ Pick of the Day — {_mn}:** {pm_w}-{pm_l}"
+                f"   ·   **Win rate:** {pm_rate:g}%\n"
+                f"Starred plays graded: {pm_tracked}"
+                + (f"  ·  Pending: {pm['pending']}" if pm.get("pending") else "")
+                + "\n")
+    else:
+        # THE BAR IS NOT ONE NUMBER. Break Points Won clears the ⭐ at
+        # STAR_BP_MIN_CONF (70) rather than the uniform POTD_THRESHOLD (80) —
+        # since the A2 rebuild its confidence is half a scenario-mixture P(side)
+        # and does not share a scale with the other props' data-quality
+        # composite. Saying "the 80 bar" here was simply wrong for the prop that
+        # carries almost every star, so this states the rule instead of a value.
+        head = (f"**⭐ Pick of the Day — {_mn}:** no graded star yet\n"
+                f"_The ⭐ only goes on a play that clears its prop's conviction "
+                f"bar, so some days carry none._\n")
     e.description = (
-        f"**Record:** {wins}-{losses}   ·   **Win rate:** {win_rate:g}%\n"
+        head
         + (f"🔥 **ON FIRE — {streak} in a row!**\n" if on_fire else "")
-        + f"Total graded: {wins + losses}  ·  Pending: {rec.get('pending', 0)}"
+        # The whole posted board, kept as context rather than as the headline —
+        # a small-sample number standing entirely alone is worse than both.
+        + f"_Full board, all time: {wins}-{losses} · {win_rate:g}%_"
+        + (f"  ·  Pending: {rec.get('pending', 0)}" if rec.get("pending") else "")
         + (f"  ·  incl. {pushes} push{'es' if pushes != 1 else ''}" if pushes else "")
         + (f"  ·  Needs review: {rec.get('needs_review', 0)}" if rec.get("needs_review") else "")
     )
@@ -5105,7 +5569,7 @@ def results_embed(rec: dict) -> discord.Embed:
                 f"{p.get('line','')}{'' if p.get('line') is None else ''} {p['prop_type']}"
                 + (" — DNP" if p['result'] == "VOID" else "")
                 for p in last]
-        _add_lines_field(e, "Last 10 (Pick of the Day)", rows)
+        _add_lines_field(e, "Last 10 posted", rows)
 
     # 3x slip — tracked independently: the paired slip record (both legs must
     # hit) plus the individual-leg record for transparency.
@@ -5502,6 +5966,198 @@ async def _post_recap_for(channel, date_str: str, why: str,
     return True
 
 
+# ── THE NFL RECAP ────────────────────────────────────────────────────────────
+# NFL picks were never graded at all: 407 rows sat PENDING across seven slates
+# because nothing in the bot ever called nfl.recap.resolve. The recap module was
+# written and then deliberately left unwired, and it stayed that way.
+#
+# WHAT WAS POSTED IS READ BACK OUT OF DISCORD, not out of the results table.
+# That table holds every row the scanner priced — 131 for 2026-09-20 against the
+# 8 that went out — and nfl.board.record_posted writes to a file on the bot's own
+# container that does not survive a redeploy. The message in the channel is the
+# only durable record of what subscribers were actually shown, so a recap that
+# claims to describe the board has to read the board.
+NFL_RECAP_LOOKBACK_DAYS = int(os.getenv("NFL_RECAP_LOOKBACK_DAYS", "3") or "3")
+
+# "🔴 **UNDER 48.5 RUSH YARDS** · Proj 25.9 · 87%" and the bolded name above it.
+_NFL_NAME_RE = re.compile(r"\*\*(?:\d+\.\s*)?([A-Za-z.'\- ]+?)\*\*")
+_NFL_SIDE_RE = re.compile(r"\*\*(OVER|UNDER)\s+([\d.]+)")
+
+
+def _nfl_plays_in_embed(embed) -> list:
+    """[(player, lean, line)] from one posted board embed."""
+    out, name = [], None
+    chunks = [embed.description or ""] + [f.value or "" for f in (embed.fields or [])]
+    for chunk in chunks:
+        for line in chunk.split("\n"):
+            side = _NFL_SIDE_RE.search(line)
+            if side and name:
+                out.append((name, side.group(1), float(side.group(2))))
+                name = None
+                continue
+            m = _NFL_NAME_RE.search(line)
+            if m and not side:
+                nm = m.group(1).strip()
+                if len(nm) > 3:
+                    name = nm
+    return out
+
+
+async def _nfl_posted_plays(slate: str) -> dict:
+    """{book: [(player, lean, line)]} for the board posted for this slate."""
+    from datetime import date as _date
+    try:
+        y, m, d = (int(x) for x in slate.split("-"))
+        tag = f"{_date(y, m, d).month}/{_date(y, m, d).day}"
+    except Exception:  # noqa: BLE001
+        return {}
+    out = {}
+    npost = _nfl_import("nfl.post")
+    for book in ("prizepicks", "underdog"):
+        cid = npost.channel_for("board", book)
+        ch = client.get_channel(cid) if cid else None
+        if ch is None:
+            continue
+        plays = []
+        async for msg in ch.history(limit=40):
+            if msg.author.id != client.user.id or not msg.embeds:
+                continue
+            if tag not in (msg.embeds[0].title or ""):
+                continue
+            for e in msg.embeds:
+                plays += [p for p in _nfl_plays_in_embed(e) if p not in plays]
+            if plays:
+                break
+        if plays:
+            out[book] = plays
+    return out
+
+
+def _nfl_match_rows(plays: list, picks: list, book: str) -> list:
+    """The stored row for each posted play, matched on the NEAREST line.
+
+    Not the exact line: what the embed shows is the line AT POST TIME, and the
+    stored row can carry a later one because the results table dedupes on
+    (book, slate, player, prop) and a subsequent write updates it. On 2026-09-20
+    Garrett Wilson went out at receptions UNDER 6.0 and is stored at 5.5, and
+    Chris Olave at OVER 5.5 stored at 6.0 — both moved inside the half hour
+    between the scan and the post, and exact matching reported 3-1 instead of
+    5-1. The lean must still agree, and the nearest line is what separates
+    Jefferson's receptions 6.5 from his receiving yards 74.5.
+    """
+    rows = []
+    for name, lean, line in plays:
+        cands = [p for p in picks
+                 if p.get("book") == book and p.get("player") == name
+                 and (p.get("lean") or "").upper() == lean]
+        if cands:
+            rows.append(min(cands,
+                            key=lambda p: abs(float(p.get("line") or 0) - line)))
+    return rows
+
+
+NFL_BOOK_LABEL = {"prizepicks": "PrizePicks", "underdog": "Underdog"}
+
+
+def nfl_recap_embed(slate: str, book: str, rows: list, w: int, lo: int):
+    """ONE BOOK, ONE RECAP — the NFL twin of daily_recap_embed.
+
+    Separate per book exactly as tennis is (see _post_recap_for, which takes a
+    `source` and posts once for each). The two books price different lines off
+    different menus, so a combined record describes a card nobody was shown —
+    on 2026-09-20 PrizePicks went 5-1 and Underdog 3-2, and "8-3" is not a thing
+    either subscriber saw. Keeping them apart also means a late game on one book
+    cannot hold the other book's recap back.
+    """
+    dec = w + lo
+    pct = f"{w / dec * 100:.0f}%" if dec else "—"
+    label = NFL_BOOK_LABEL.get(book, book.title())
+    e = discord.Embed(
+        title=f"🏈 NFL {label} Recap — {slate}",
+        colour=(COLOR_OVER if w > lo else
+                COLOR_UNDER if lo > w else COLOR_NEUTRAL),
+        description=f"**{w}-{lo}**  ·  {pct}  ·  {len(rows)} play(s)")
+    lines = []
+    for p in rows:
+        res = p.get("result") or "PENDING"
+        mark = {"W": "✅", "L": "❌", "PUSH": "➖", "VOID": "⚪"}.get(res, "•")
+        av = p.get("result_value")
+        prop = (p.get("prop_type") or "").replace("_", " ").title()
+        lines.append(
+            f"{mark} **{p.get('player')}** {p.get('lean')} {p.get('line'):g} "
+            f"{prop}" + (f" — {av:g}" if isinstance(av, (int, float)) else ""))
+    if lines:
+        e.add_field(name="Plays", value="\n".join(lines)[:1024], inline=False)
+    e.set_footer(text=FOOTER_GENERIC)
+    return e
+
+
+async def _maybe_post_nfl_recap():
+    """Post an NFL recap for any recent slate whose POSTED plays have all settled.
+
+    Same rule the tennis recap follows: one pick still pending holds the whole
+    day back, because an incomplete recap is worse than a late one.
+    """
+    if not TRACK_RECORD_CHANNEL_ID or not AUTOPOST_ENABLED or not NFL_TASKS_ENABLED:
+        return
+    channel = client.get_channel(TRACK_RECORD_CHANNEL_ID)
+    if channel is None:
+        return
+    nrecap = _nfl_import("nfl.recap")
+    today = datetime.datetime.now(POD_TZINFO).date()
+    for back in range(1, NFL_RECAP_LOOKBACK_DAYS + 1):
+        slate = str(today - datetime.timedelta(days=back - 1))
+        try:
+            # Grade first — nothing else in the bot ever calls this.
+            await asyncio.to_thread(nrecap.resolve, slate, None, None, None, True)
+            plays = await _nfl_posted_plays(slate)
+            if not plays:
+                continue
+            rec = await asyncio.to_thread(nrecap.record, slate)
+            picks = (rec or {}).get("picks") or []
+            # EACH BOOK STANDS ALONE, decided and posted on its own — a late
+            # game on one must not hold the other's recap.
+            for book, pl in plays.items():
+                rows = _nfl_match_rows(pl, picks, book)
+                if not rows:
+                    continue
+                pending = sum(1 for p in rows
+                              if (p.get("result") or "PENDING") == "PENDING")
+                if pending:
+                    log.info("NFL recap %s %s: %d of %d posted play(s) still "
+                             "pending — holding", slate, book, pending, len(rows))
+                    continue
+                if await _nfl_recap_already_posted(channel, slate, book):
+                    continue
+                w = sum(1 for p in rows if p.get("result") == "W")
+                lo = sum(1 for p in rows if p.get("result") == "L")
+                await channel.send(
+                    content="@everyone",
+                    embed=nfl_recap_embed(slate, book, rows, w, lo),
+                    allowed_mentions=EVERYONE_MENTION)
+                log.warning("NFL recap posted for %s %s (%d-%d) -> track-record",
+                            slate, book, w, lo)
+        except Exception:  # noqa: BLE001 — one slate must not stop the others
+            log.exception("NFL recap failed for %s", slate)
+
+
+async def _nfl_recap_already_posted(channel, slate: str, book: str) -> bool:
+    """True when THIS BOOK's recap for this day is already in the channel.
+
+    Keyed on book as well as date: the two books post separately, so one being
+    up must not suppress the other.
+    """
+    want = f"🏈 NFL {NFL_BOOK_LABEL.get(book, book.title())} Recap — {slate}"
+    try:
+        async for msg in channel.history(limit=60):
+            for e in (msg.embeds or []):
+                if (e.title or "").strip() == want:
+                    return True
+    except Exception:  # noqa: BLE001 — never block a post on a history read
+        log.exception("NFL recap dedupe check failed")
+    return False
+
+
 async def _maybe_post_ready_recap():
     """After a resolve pass: post the recap for any slate day that is DONE.
 
@@ -5578,14 +6234,20 @@ async def _maybe_post_ready_recap():
             # settled" is the real test of a finished day, and waiting for the
             # calendar to roll over just delays a finished recap by hours.
             #
-            # One guard: a book can still ADD picks to today's card. PrizePicks'
-            # second wave lands at 8 AM, so posting before then could publish a
-            # recap the wave would immediately orphan. After that window today's
-            # card is fixed. Underdog has no second wave, so nothing to wait for.
-            if day == today and _src == "prizepicks" and now.hour < 9:
-                log.info("recap: %s %s complete but the 8 AM wave may still add "
-                         "picks — holding until 9 AM", _src, day)
-                continue
+            # THE 8 AM WAIT IS GONE WITH THE WAVE THAT CAUSED IT.
+            # This used to hold a finished PrizePicks card until 9 AM, because a
+            # second wave landed at 8 AM and posting before it could publish a
+            # recap the wave would immediately orphan. The additional-plays
+            # scans were removed on 2026-09-22, so nothing can add to today's
+            # card any more — and the guard outlived its reason, sitting on a
+            # complete 9/23 card for hours after the last match settled at
+            # ~4:30 AM. A recap that waits for a scan that cannot run is just a
+            # late recap.
+            #
+            # If an additional-plays scan is ever brought back on a schedule
+            # (not the one-off EVENING_RESCAN_DATE, which lands at 8 PM and so
+            # cannot orphan a morning recap), this wait has to come back with
+            # it — keyed to that scan's hour, not hardcoded to 9.
             day_picks = [p for p in _src_picks if _slate_date_of(p) == day]
             if not day_picks:
                 continue
@@ -5612,6 +6274,10 @@ async def daily_resolve_results():
         await _maybe_post_ready_recap()
     except Exception:  # noqa: BLE001
         log.exception("event-driven recap check failed")
+    try:
+        await _maybe_post_nfl_recap()
+    except Exception:  # noqa: BLE001 — Rule 2, NFL must never reach tennis
+        log.exception("NFL recap check failed (tennis unaffected)")
 
 
 @daily_resolve_results.before_loop
@@ -5620,10 +6286,7 @@ async def _before_resolve():
 
 
 # ── Feature 1 — daily win/loss record auto-post (replaces the /results command) ──
-@tasks.loop(time=[
-    datetime.time(hour=ONEOFF_RECAP_HM[0], minute=ONEOFF_RECAP_HM[1], tzinfo=POD_TZINFO),
-    datetime.time(hour=RESULTS_POST_HOUR, minute=RESULTS_POST_MINUTE, tzinfo=POD_TZINFO),
-])
+@tasks.loop(time=_sched_times(ONEOFF_RECAP_HM, RESULTS_POST_HOUR, RESULTS_POST_MINUTE))
 async def daily_results_post():
     """The daily recap. Registered at BOTH the one-off slot (3:00 AM on
     ONEOFF_SCHED_DATE, dormant) and the recurring slot (5:00 PM ET); _slot_is_live
@@ -5827,6 +6490,31 @@ SUB_SYNC_ROLE_ID = int(
     (os.getenv("DISCORD_PREMIUM_ROLE_IDS", "").split(",")[0] or "0").strip() or 0)
 BILLING_SYNC_TOKEN = os.getenv("BILLING_SYNC_TOKEN", "").strip()
 
+# ── COMPS BEAT STRIPE (2026-09-24, operator) ─────────────────────────────────
+# The revoke list is already narrow — database.subscription_role_sets only ever
+# returns people with a LAPSED Stripe record, so someone comped who never paid
+# is invisible to it and safe. THE GAP is the person who paid ONCE and was
+# comped LATER: they carry a lapsed record, so the sync revokes a role the
+# operator granted by hand, every 3 minutes, forever.
+#
+# That is what happened here. The only way to stop it was to drop the bot below
+# the premium role in the hierarchy, which breaks the sync for EVERYONE — real
+# lapsed subscribers keep their role too, and the log fills with 403s.
+#
+# Two independent ways to mark a comp, because they suit different moments:
+#
+#   SUB_SYNC_COMP_ROLE_ID — a second Discord role meaning "comped". The better
+#     one: granted in the same UI where the premium role is granted, visible to
+#     anyone looking at the member, and adding a comp needs no deploy.
+#   SUB_SYNC_COMP_IDS — a comma-separated id allowlist, for when a role does not
+#     exist yet or a one-off is faster than server admin.
+#
+# Both only ever SKIP a revoke. Neither can grant anything, so a mistake here
+# cannot hand out access — it can only decline to take it away.
+SUB_SYNC_COMP_ROLE_ID = int(os.getenv("SUB_SYNC_COMP_ROLE_ID", "0") or 0)
+SUB_SYNC_COMP_IDS = {s.strip() for s in
+                     os.getenv("SUB_SYNC_COMP_IDS", "").split(",") if s.strip()}
+
 
 @tasks.loop(minutes=SUB_SYNC_MINUTES)
 async def subscription_role_sync():
@@ -5869,19 +6557,46 @@ async def subscription_role_sync():
                 added += 1
             except Exception:
                 log.exception("sub role sync: add failed for %s", did)
+    comp_role = guild.get_role(SUB_SYNC_COMP_ROLE_ID) if SUB_SYNC_COMP_ROLE_ID else None
+    if SUB_SYNC_COMP_ROLE_ID and comp_role is None:
+        log.warning("sub role sync: comp role %s not found — comps by role are "
+                    "NOT protected this cycle", SUB_SYNC_COMP_ROLE_ID)
+    skipped = 0
     for did in revoke:
         try:
             m = guild.get_member(int(did)) or await guild.fetch_member(int(did))
         except Exception:
             continue
-        if m and role in m.roles:
-            try:
-                await m.remove_roles(role, reason="Baseline: subscription lapsed")
-                removed += 1
-            except Exception:
-                log.exception("sub role sync: remove failed for %s", did)
-    if added or removed:
-        log.info("sub role sync: +%d role(s), -%d role(s)", added, removed)
+        if not (m and role in m.roles):
+            continue
+        # A COMP OVERRIDES A LAPSED STRIPE RECORD. Checked before the removal,
+        # never after — see the SUB_SYNC_COMP_* block. This is the only thing
+        # standing between a hand-granted role and a sync that would strip it
+        # every 3 minutes.
+        if str(did) in SUB_SYNC_COMP_IDS:
+            skipped += 1
+            log.info("sub role sync: %s is on the comp id list — keeping the role", did)
+            continue
+        if comp_role is not None and comp_role in m.roles:
+            skipped += 1
+            log.info("sub role sync: %s holds %s — comped, keeping the role",
+                     did, comp_role.name)
+            continue
+        try:
+            await m.remove_roles(role, reason="Baseline: subscription lapsed")
+            removed += 1
+        except discord.Forbidden:
+            # The bot sits at or below the premium role in the hierarchy, so it
+            # cannot edit it. Logged as a one-line WARNING rather than a full
+            # traceback: it repeats every cycle and the stack says nothing the
+            # message does not. Fix is a Discord hierarchy change, not code.
+            log.warning("sub role sync: cannot remove %s from %s — bot role is "
+                        "not above %s in the hierarchy", role.name, did, role.name)
+        except Exception:
+            log.exception("sub role sync: remove failed for %s", did)
+    if added or removed or skipped:
+        log.info("sub role sync: +%d role(s), -%d role(s), %d comp(s) kept",
+                 added, removed, skipped)
 
 
 @subscription_role_sync.before_loop
@@ -5892,6 +6607,19 @@ async def _before_subscription_role_sync():
 @client.event
 async def on_ready():
     global _guild_synced
+
+    # Adopt the backend's court list before any autocomplete can run. Best
+    # effort: a failure leaves the shipped snapshot in place, which is the same
+    # list, just frozen at deploy time. Never fatal — the bot must come up.
+    try:
+        _payload = await backend_get("/api/courts", {}, 10)
+        _n = refresh_courts(_payload)
+        if _n:
+            log.info("courts refreshed from backend: %d tournaments", _n)
+    except Exception as exc:  # noqa: BLE001 — Rule 2
+        log.warning("courts refresh failed (%s) — using shipped snapshot of %d",
+                    exc, len(_flatten(TOURNAMENTS_BY_TOUR)))
+
     # Register commands to every guild the bot is in — guild commands propagate
     # INSTANTLY (global commands lag up to an hour and cause "This command is
     # outdated"). A guild command overrides the same-named global command, so no
@@ -5926,15 +6654,29 @@ async def on_ready():
                      POD_CHANNEL_ID)
         except Exception:
             log.exception("failed to start daily picks generation loop")
-    # Second-wave morning scan — up to SECOND_WAVE_MAX extra plays at 8 AM ET, excluding
-    # the prior 8 PM board. Started separately so a failure here can't affect the main POTD post.
-    if POD_CHANNEL_ID and not daily_second_wave.is_running():
+    # The 8 PM rescan — ARMED FOR ONE DATE ONLY (EVENING_RESCAN_DATE). Its own
+    # error boundary so a failure here cannot touch the 5 PM board.
+    # DIAGNOSTIC (2026-09-24): this guard evaluated False on three consecutive
+    # restarts while every term looked true from outside the container —
+    # EVENING_RESCAN_DATE was set and agreed between the CLI and the container,
+    # POD_CHANNEL_ID appears in the POTD trigger log one block above, and
+    # start() never raised (no "failed to start" line, no traceback). The 8 PM
+    # rescan silently never armed and the operator's rescan did not go out.
+    # Printing the three terms is the only way left to see which one is lying;
+    # it costs one line per restart.
+    log.warning("evening rescan gate | POD_CHANNEL_ID=%s | EVENING_RESCAN_DATE=%r "
+                "| is_running=%s", POD_CHANNEL_ID, EVENING_RESCAN_DATE,
+                evening_rescan.is_running())
+    if POD_CHANNEL_ID and EVENING_RESCAN_DATE and not evening_rescan.is_running():
         try:
-            daily_second_wave.start()
-            log.info("Second-wave scheduled at %02d:%02d %s (max %d) -> channel %s",
-                     SECOND_WAVE_HOUR, SECOND_WAVE_MINUTE, POD_TZINFO, SECOND_WAVE_MAX, POD_CHANNEL_ID)
-        except Exception:
-            log.exception("failed to start second-wave loop")
+            evening_rescan.start()
+            log.warning("Evening rescan ARMED for %s at %02d:%02d %s "
+                        "(max %d, >=%d%% confidence, ordered by room) -> channel %s",
+                        EVENING_RESCAN_DATE, EVENING_RESCAN_HOUR,
+                        EVENING_RESCAN_MINUTE, POD_TZINFO, EVENING_RESCAN_MAX,
+                        EVENING_RESCAN_MIN_CONF, POD_CHANNEL_ID)
+        except Exception:  # noqa: BLE001
+            log.exception("failed to start evening rescan loop")
     # Underdog board — a SECOND book on its own 10:30 PM schedule, scored
     # separately. Started independently so a failure here can never affect the
     # PrizePicks board or its record.
@@ -5946,16 +6688,6 @@ async def on_ready():
                      UNDERDOG_CHANNEL_ID)
         except Exception:
             log.exception("failed to start underdog board loop")
-    # Second Underdog drop at 7:30 AM. Its own boundary: a failure here must not
-    # stop the 10:30 PM board, which is the primary one.
-    if UNDERDOG_CHANNEL_ID and not underdog_morning_board.is_running():
-        try:
-            underdog_morning_board.start()
-            log.info("Underdog MORNING board scheduled at %02d:%02d %s -> channel %s",
-                     UNDERDOG_AM_HOUR, UNDERDOG_AM_MINUTE, POD_TZINFO,
-                     UNDERDOG_CHANNEL_ID)
-        except Exception:
-            log.exception("failed to start underdog morning board loop")
     # Underdog pre-warm — 15 min before the Underdog board. Started separately
     # from the board itself so a pre-warm failure can never stop the board.
     if POD_CHANNEL_ID and not underdog_cache_prewarm.is_running():
@@ -5994,13 +6726,6 @@ async def on_ready():
                             MLB_BOARD_HOUR, MLB_BOARD_MINUTE, POD_TZINFO)
         except Exception:
             log.exception("failed to start MLB board loop (tennis unaffected)")
-        try:
-            if not mlb_second_boards.is_running():
-                mlb_second_boards.start()
-                log.warning("MLB second board scheduled at %02d:%02d %s",
-                            MLB_BOARD2_HOUR, MLB_BOARD2_MINUTE, POD_TZINFO)
-        except Exception:
-            log.exception("failed to start MLB second board loop (tennis unaffected)")
         try:
             if not mlb_line_watch.is_running():
                 mlb_line_watch.start()
@@ -6089,25 +6814,19 @@ async def on_ready():
     try:
         if NFL_TASKS_ENABLED and not nfl_daily_boards.is_running():
             nfl_daily_boards.start()
-            log.warning("NFL boards scheduled at %02d:%02d %s -> pp=%s ud=%s",
-                        NFL_BOARD_HOUR, NFL_BOARD_MINUTE, POD_TZINFO,
+            _N = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+            _days = ", ".join(f"{_N[d]}->{_N[(d + 1) % 7]} {tag}"
+                              for d, tag in sorted(NFL_BOARD_EVES.items()))
+            log.warning("NFL boards scheduled %s at %02d:%02d %s -> pp=%s ud=%s",
+                        _days, NFL_BOARD_HOUR, NFL_BOARD_MINUTE, POD_TZINFO,
                         os.getenv("NFL_PP_CHANNEL_ID", "1546942099268706417"),
                         os.getenv("NFL_UD_CHANNEL_ID", "1546942176259346482"))
         elif not NFL_TASKS_ENABLED:
             log.warning("NFL tasks OFF (set NFL_TASKS_ENABLED=true)")
     except Exception:  # noqa: BLE001
         log.exception("failed to start NFL board loop (tennis unaffected)")
-    try:
-        if NFL_TASKS_ENABLED and not nfl_sunday_board.is_running():
-            nfl_sunday_board.start()
-            log.warning("NFL Sunday-slate board scheduled Fridays %02d:%02d %s",
-                        NFL_WEEK_BOARD_HOUR, NFL_WEEK_BOARD_MINUTE, POD_TZINFO)
-        if NFL_TASKS_ENABLED and not nfl_mnf_board.is_running():
-            nfl_mnf_board.start()
-            log.warning("NFL MNF board scheduled Sundays %02d:%02d %s",
-                        NFL_MNF_BOARD_HOUR, NFL_MNF_BOARD_MINUTE, POD_TZINFO)
-    except Exception:  # noqa: BLE001
-        log.exception("failed to start NFL weekly boards (tennis unaffected)")
+    # The Friday->Sunday and Sunday-night->Monday loops were removed on
+    # 2026-09-18: nfl_daily_boards now covers all three game days itself.
     try:
         if NFL_TASKS_ENABLED and not nfl_board_refresh.is_running():
             nfl_board_refresh.start()

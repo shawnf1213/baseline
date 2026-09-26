@@ -108,18 +108,58 @@ def resolve(slate_date: str = None, book: str = None, season: int = None,
             return out
         col = ("player_display_name" if "player_display_name" in df.columns
                else "player_name")
+        # Which column carries the team, for the inactive-vs-unpublished test
+        # below. nflverse has used more than one name for it across seasons.
+        _TEAM_COL = next((x for x in ("team", "recent_team", "team_abbr")
+                          if x in df.columns), None)
         for p in rows:
             stat = RESULT_COL.get(p.get("prop_type"))
             if not stat or stat not in df.columns:
                 out["pending"] += 1
                 continue
+            _wk = p.get("week") or wk
             m = df[(df[col].astype(str) == p.get("player"))
-                   & (df["week"] == (p.get("week") or wk))]
+                   & (df["week"] == _wk)]
             if not len(m):
-                # No box-score row: either inactive, or the game has not been
-                # published yet. Those are different, and only the first is a
-                # void — so leave it PENDING and let a later run settle it.
-                out["pending"] += 1
+                # NO BOX-SCORE ROW MEANS ONE OF TWO THINGS, and they are not the
+                # same: the player was inactive, or his game has not been
+                # published yet. nflverse emits no row at all for an inactive,
+                # so waiting for one is waiting for something that will never
+                # arrive — and a single such pick holds the whole day's recap,
+                # which only posts when nothing is pending. Cade Stover was
+                # inactive in week 2 and by himself blocked the 2026-09-20
+                # PrizePicks recap indefinitely.
+                #
+                # HIS TEAM IS THE TEST. If Houston has week-2 rows and Stover is
+                # not among them, the game is published and he did not play —
+                # that is a VOID, the same answer _played() gives for a row of
+                # zeroes. If the team has no rows either, the game genuinely is
+                # not in yet and PENDING is still right.
+                # NORMALISE BOTH SIDES. The books and nflverse do not spell
+                # teams the same way — our rows say LAR, WSH, JAC; nflverse says
+                # LA, WAS, JAX. Comparing the raw strings made the test answer
+                # "this team has not been published yet" for every Rams player,
+                # so Puka Nacua (inactive, week 2) held the whole 2026-09-21
+                # PrizePicks recap open instead of being voided. normalize_team
+                # already knows every one of these aliases.
+                from .client import normalize_team as _nt
+                _team = _nt(str(p.get("team") or "").strip())
+                if not _team and _TEAM_COL and _TEAM_COL in df.columns:
+                    _prior = df[df[col].astype(str) == p.get("player")]
+                    _team = _nt(str(_prior.iloc[-1][_TEAM_COL])) if len(_prior) else ""
+                _published = False
+                if _team and _TEAM_COL and _TEAM_COL in df.columns:
+                    _wkrows = df[df["week"] == _wk]
+                    _published = bool(len(
+                        _wkrows[_wkrows[_TEAM_COL].astype(str).map(_nt) == _team]))
+                if _published:
+                    log.info("nfl recap: %s has no week-%s row but %s does — "
+                             "inactive, voiding", p.get("player"), _wk, _team)
+                    if commit:
+                        _store.update_result(p["id"], "VOID", None)
+                    out["void"] += 1
+                else:
+                    out["pending"] += 1
                 continue
             r = m.iloc[0]
             if not _played(r):

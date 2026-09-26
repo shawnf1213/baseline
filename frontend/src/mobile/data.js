@@ -71,18 +71,26 @@ export function inferTour(tournament) {
 // Build name → {start-timestamp, tour, surface} maps from the slate (best-effort
 // join). The slate's atp[]/wta[] arrays are a REAL tour + surface signal — the
 // PrizePicks board carries neither, so this enriches rows where names match.
+// TOURNAMENT IS CARRIED TOO, and it is not decoration. /api/prop/calculate takes
+// it as `court` and resolves it to that court's ST Pace Index; with no court it
+// falls back to a generic surface value. The bot has always sent it and the
+// website never did, which is why the same prop carried two projections —
+// measured on Dolehide vs Zarazua at Guadalajara, pace 36 (generic) vs 37 (real)
+// flipped the serve profile from Average to Strong Server and moved the
+// projection 5.5 -> 6.8.
 function mapsFromSlate(slate) {
-  const startMap = {}, tourMap = {}, surfaceMap = {}
-  const add = (name, ts, tour, surf) => {
+  const startMap = {}, tourMap = {}, surfaceMap = {}, tourneyMap = {}
+  const add = (name, ts, tour, surf, tn) => {
     if (!name) return
     const n = normName(name), ln = lastName(name)
     if (ts) { startMap[n] = ts; if (ln && !(ln in startMap)) startMap[ln] = ts }
     if (tour) { tourMap[n] = tour; if (ln && !(ln in tourMap)) tourMap[ln] = tour }
     if (surf) { surfaceMap[n] = surf; if (ln && !(ln in surfaceMap)) surfaceMap[ln] = surf }
+    if (tn) { tourneyMap[n] = tn; if (ln && !(ln in tourneyMap)) tourneyMap[ln] = tn }
   }
-  for (const r of (slate?.atp || [])) { add(r.p1, r.start_timestamp, 'ATP', r.surface); add(r.p2, r.start_timestamp, 'ATP', r.surface) }
-  for (const r of (slate?.wta || [])) { add(r.p1, r.start_timestamp, 'WTA', r.surface); add(r.p2, r.start_timestamp, 'WTA', r.surface) }
-  return { startMap, tourMap, surfaceMap }
+  for (const r of (slate?.atp || [])) { add(r.p1, r.start_timestamp, 'ATP', r.surface, r.tournament); add(r.p2, r.start_timestamp, 'ATP', r.surface, r.tournament) }
+  for (const r of (slate?.wta || [])) { add(r.p1, r.start_timestamp, 'WTA', r.surface, r.tournament); add(r.p2, r.start_timestamp, 'WTA', r.surface, r.tournament) }
+  return { startMap, tourMap, surfaceMap, tourneyMap }
 }
 
 // PrizePicks stat_type (lowercased) → Baseline prop type (mirrors the bot's PROP_MAP).
@@ -105,7 +113,7 @@ export function parsePrizePicksBoard(json, slate) {
   if (!json || typeof json !== 'object') return empty
   const inc = {}
   for (const i of (json.included || [])) inc[`${i.type}:${i.id}`] = i
-  const { startMap, tourMap, surfaceMap } = mapsFromSlate(slate)
+  const { startMap, tourMap, surfaceMap, tourneyMap } = mapsFromSlate(slate)
   const seen = new Set()
   const rows = []
   for (const proj of (json.data || [])) {
@@ -131,8 +139,9 @@ export function parsePrizePicksBoard(json, slate) {
       key, player, opponent, propType, line,
       projection: null, edge: null, confidence: null,   // computed lazily via /api/prop/calculate
       surface: lookup(surfaceMap, player) || '',
+      // the real court, for the pace index the projection keys off
+      tournament: lookup(tourneyMap, player) || '',
       tour: lookup(tourMap, player) || '',               // may be '' until projection resolves it
-      tournament: '',
       oddsType: 'standard',
       startTs: lookup(startMap, player),
     })
@@ -182,7 +191,7 @@ export function parseUnderdogBoard(json, slate) {
   const solo = {}
   for (const g of (json.solo_games || [])) solo[g.id] = g
 
-  const { startMap, tourMap, surfaceMap } = mapsFromSlate(slate)
+  const { startMap, tourMap, surfaceMap, tourneyMap } = mapsFromSlate(slate)
   const seen = new Set()
   const rows = []
   for (const ln of (json.over_under_lines || [])) {
@@ -217,8 +226,9 @@ export function parseUnderdogBoard(json, slate) {
       key, player, opponent, propType, line,
       projection: null, edge: null, confidence: null,
       surface: lookup(surfaceMap, player) || '',
+      // the real court, for the pace index the projection keys off
+      tournament: lookup(tourneyMap, player) || '',
       tour: lookup(tourMap, player) || '',
-      tournament: '',
       oddsType: 'standard',
       startTs: lookup(startMap, player),
       overPrice: overPx, underPrice: underPx,
@@ -459,6 +469,34 @@ export function mergedBoardRows(boards) {
   return [...byKey.values()]
 }
 
+// ── HOW A DEFENCE READS ──────────────────────────────────────────────────────
+// Shared so the player sheet and the projection card cannot describe the same
+// defence differently. RANK 1 ALLOWS LEAST — see nfl/ratings.py::defense_table.
+// Saying "32nd" without saying which end is which is how a reader adjusts a
+// number the wrong way.
+export const MATCHUP_LABEL = {
+  pass_yards: 'vs the pass',
+  receiving_yards: 'vs the pass',
+  rush_yards: 'vs the run',
+  receptions: 'vs the catch',
+}
+
+export const matchupLabel = (prop) => MATCHUP_LABEL[prop] || 'vs this prop'
+
+export const toughness = (rank, of) => {
+  const q = rank / (of || 32)
+  return q <= 0.25 ? 'tough' : q <= 0.5 ? 'above avg'
+       : q <= 0.75 ? 'below avg' : 'soft'
+}
+
+export const ordinal = (n) => {
+  const v = Number(n)
+  if (!Number.isFinite(v)) return String(n)
+  const t = v % 100
+  if (t >= 11 && t <= 13) return `${v}th`
+  return `${v}${({ 1: 'st', 2: 'nd', 3: 'rd' })[v % 10] || 'th'}`
+}
+
 export function boardPlayers(rows) {
   const m = new Map()
   for (const r of rows) {
@@ -535,11 +573,25 @@ export const fmtSigned = (v, d = 1) => {
 //     pct 0.50 -> 59.7%     observed middle third   61.1%
 //     pct 1.00 -> 67.7%     observed top third      65.7%
 //
-// PERCENTILE WITHIN THE VISIBLE BOARD, which is why this lives on the client:
-// the value depends on the pool a play is being compared against, and the
-// per-prop endpoint prices one line with no pool to rank it in.
+// PERCENTILE AGAINST A FIXED REFERENCE DISTRIBUTION, NOT AGAINST THE CALLER'S
+// POOL. It used to be the percentile within the visible board, and the bot used
+// the percentile within its own evaluated candidates — the same formula over two
+// different populations, so one play carried two different "confidence" numbers
+// depending on where you read it, and the website's moved whenever a filter
+// changed the visible set. A percentile only needs SOME distribution to measure
+// against; it does not have to be the caller's. REL_EDGE_Q is the relative-edge
+// distribution of the graded record (707 picks, every 5th percentile), so the
+// number is now a property of the play: anything holding a projection and a line
+// computes the identical value, with no shared state and no round trip.
+//
+// MUST STAY IN SYNC with pick_of_day.REL_EDGE_Q — that is the whole point.
 export const CALIB_B0 = 0.0425
 export const CALIB_B1 = 0.6977
+export const REL_EDGE_Q = [
+  0.0, 0.073171, 0.102326, 0.120837, 0.135273, 0.145644, 0.158852, 0.171429,
+  0.186295, 0.2, 0.222222, 0.24, 0.260279, 0.288106, 0.315429, 0.368421,
+  0.424242, 0.457582, 0.529412, 0.691282, 2.8,
+]
 
 export const relEdge = (r) => {
   const line = Number(r?.line)
@@ -548,18 +600,57 @@ export const relEdge = (r) => {
   return Math.abs(proj - line) / Math.abs(line)
 }
 
-// Returns a Map keyed by row.key -> calibrated confidence (51-68).
+// Where this relative edge sits in the graded record, 0-1, linearly interpolated
+// between breakpoints.
+export const relEdgePct = (rel) => {
+  if (!Number.isFinite(rel)) return null
+  const q = REL_EDGE_Q, last = q.length - 1
+  if (rel <= q[0]) return 0
+  if (rel >= q[last]) return 1
+  for (let i = 0; i < last; i++) {
+    if (rel >= q[i] && rel <= q[i + 1]) {
+      const span = q[i + 1] - q[i]
+      return (i + (span ? (rel - q[i]) / span : 0)) / last
+    }
+  }
+  return 1
+}
+
+// THE one displayed-confidence function. Every surface calls this so they cannot
+// disagree: the board, the projections tab, and the bot.
+export const confidenceFrom = (projection, line) => {
+  const ln = Number(line), proj = Number(projection)
+  if (!ln || !Number.isFinite(proj)) return null
+  const pct = relEdgePct(Math.abs(proj - ln) / Math.abs(ln))
+  if (pct == null) return null
+  const p = 1 / (1 + Math.exp(-(CALIB_B0 + CALIB_B1 * pct))) * 100
+  return Math.round(Math.min(70, Math.max(50, p)) * 10) / 10
+}
+
+// ── ONE NUMBER, AND IT IS THE ONE THAT CHOSE THE PLAY ───────────────────────
+// Returns row.key -> the RAW model confidence (operator, 2026-09-21: "we should
+// just show raw data if that's how the optimizer calculated it").
+//
+// It used to return confidenceFrom(projection, line) — a figure derived from
+// relative edge alone. That made the site disagree with its own board: the
+// 9/21 ⭐ printed 58.8 and sat fifth of nine by the number on screen, and two
+// plays off the same line and projection printed the same value despite raw
+// scores of 78 and 75, because everything the model knows beyond edge was
+// dropped on the way to the page.
+//
+// The cost is real and measured on 702 graded picks — the raw score does not
+// order outcomes (75-80 -> 47.2%, 85+ -> 41.3%), so a printed 85 describes a
+// play that wins 41% of the time. Kept deliberately: one number the whole
+// product agrees on, with the calibration to be re-fitted on it rather than
+// carried alongside it.
+//
+// confidenceFrom is still exported and still used where a probability estimate
+// is wanted, so nothing is deleted and the comparison remains available.
 export function calibratedConfidence(rows) {
   const out = new Map()
-  const scored = (rows || [])
-    .map(r => ({ key: r.key, rel: relEdge(r) }))
-    .filter(x => x.rel !== null)
-    .sort((a, b) => a.rel - b.rel)
-  const n = scored.length
-  scored.forEach((x, i) => {
-    const pct = n > 1 ? i / (n - 1) : 1
-    const p = 1 / (1 + Math.exp(-(CALIB_B0 + CALIB_B1 * pct))) * 100
-    out.set(x.key, Math.round(Math.min(70, Math.max(50, p)) * 10) / 10)
-  })
+  for (const r of rows || []) {
+    const c = r?.confidence
+    if (c != null && Number.isFinite(Number(c))) out.set(r.key, Number(c))
+  }
   return out
 }

@@ -54,6 +54,11 @@ export const fetchH2H       = (body) => api.post('/api/h2h', body).then(r => r.d
 // All GETs against existing backend routes — no new server code required.
 export const fetchSlate     = (signal) =>
   api.get('/api/slate/today', { signal }).then(r => r.data)
+// The tournament picker, tour-split, with each venue's ST Pace Index. Served
+// rather than hardcoded so the bot and this app cannot drift apart again — see
+// useTournamentConfig().
+export const fetchCourts    = (signal) =>
+  api.get('/api/courts', { signal }).then(r => r.data)
 export const fetchForm      = (player_id, tour, signal) =>
   api.get('/api/player/form', { params: { player_id, tour }, signal }).then(r => r.data)
 export const fetchHistory   = (player_id, tour, prop, surface, line = 0, signal) =>

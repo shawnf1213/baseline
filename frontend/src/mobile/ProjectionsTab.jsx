@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from 'react'
+import { useState, useMemo, useEffect, useRef } from 'react'
 import { T } from './theme'
 import { Card, Chip, Spinner, Empty, SectionLabel, PageTitle,
          GlassTabs } from './bits'
@@ -6,11 +6,27 @@ import PlayerPhoto from './PlayerPhoto'
 import { Reveal, Num, GrowBar, Ring, EdgeScale } from './motion'
 import { TeamMark } from './nflviz'
 import { usePlayerSearch } from '../hooks/usePlayerSearch'
-import { PROP_TYPES, SURFACES, shortProp, hitStrip, fmt } from './data'
+import { PROP_TYPES, SURFACES, shortProp, hitStrip, fmt,
+         matchupLabel, toughness, ordinal } from './data'
 import { calcProp, fetchHistory, searchNflPlayers,
-         fetchNflPropTypes, projectNfl } from '../utils/api'
-import { TOURNAMENT_CONFIG } from '../utils/constants'
+         fetchNflPropTypes, projectNfl, fetchNextMatch } from '../utils/api'
+import { useTournamentConfig } from '../utils/tournaments'
 
+
+// The slate names a tournament the way a broadcast does ("Guadalajara, Mexico");
+// the court picker speaks COURT_CPR keys ("Guadalajara WTA"). Map one to the
+// other so the picker can actually show what the match is being played at, and
+// so this screen sends the same court the board sends.
+function resolveCourtName(tournament, cfg, tour, surface) {
+  const list = cfg?.[tour]?.[surface] || []
+  if (!tournament) return ''
+  const exact = list.find(c => c.name === tournament)
+  if (exact) return exact.name
+  const city = tournament.split(',')[0].trim().toLowerCase()
+  if (!city) return ''
+  const hit = list.find(c => c.name.toLowerCase().startsWith(city))
+  return hit ? hit.name : ''
+}
 
 // ── SERVE / RETURN STAT BLOCK ────────────────────────────────────────────────
 // The gap this closes: Discord's /prop card carries a per-player stat table —
@@ -88,7 +104,38 @@ function statRows(prop, res, surface) {
            ['Break Rate vs Opp', pct(res.player_break_rate)]]
       o = [['Hold Rate', pct(res.opp_hold_rate_g)], ['Win Rate', pct(os.win_rate)]]
       break
-    default:   // Total Games, and Fantasy Score which the bot also routes here
+    case 'Fantasy Score':
+      // FANTASY SCORE IS A COMPOSITE, so it has to show what composes it. It
+      // used to fall through to the generic serve rows below, which told a
+      // reader nothing about where the number came from — while the BOT has
+      // always printed "Projected · N aces · N double faults · N sets" on its
+      // card. Same engine, same payload, two different amounts of evidence.
+      //
+      // fs_ace_proj and fs_df_proj are the per-match projections the score is
+      // literally built from (each ace and double fault moves FS by ±0.5), and
+      // they were already in the response — just never rendered here. The
+      // per-match rates sit underneath them so the projection can be read
+      // against the player's own baseline rather than taken on faith.
+      //
+      // The layout differs from the bot's (a table here, a drivers line there)
+      // but the EVIDENCE is now the same, which is what the mirror is for.
+      p = [['Proj. Aces', num(res.fs_ace_proj)],
+           ['Proj. Double Faults', num(res.fs_df_proj)],
+           [`Aces/Match${sfx}`, num(ps.aces)],
+           ['DFs/Match', num(ps.double_faults)],
+           ['1st Serve %', pct(ps.first_serve_pct)],
+           ['1st Srv Won', pct(ps.first_serve_pts_won)],
+           ['2nd Srv Won', pct(ps.second_serve_pts_won)],
+           ['Win Rate', pct(ps.win_rate)]]
+      o = [[`Aces Conceded/Match${sfx}`, num(res.opponent_ace_against)],
+           ['DFs/Match', num(os.double_faults)],
+           ['Return 1st Won', pct(os.return_first_serve_pts_won)],
+           ['Return 2nd Won', pct(os.return_second_serve_pts_won)],
+           ['1st Srv Won', pct(os.first_serve_pts_won)],
+           ['2nd Srv Won', pct(os.second_serve_pts_won)],
+           ['Win Rate', pct(os.win_rate)]]
+      break
+    default:   // Total Games
       p = [['1st Srv Won', pct(ps.first_serve_pts_won)],
            ['2nd Srv Won', pct(ps.second_serve_pts_won)], ['Win Rate', pct(ps.win_rate)]]
       o = [['1st Srv Won', pct(os.first_serve_pts_won)],
@@ -699,8 +746,9 @@ function MatchVerdict({ res, player, opponent, surface, court }) {
 // ONE PLAYER, NOT TWO. A football prop is priced against the defence the
 // schedule says he faces, so the opponent is looked up rather than chosen —
 // picking one would let a reader ask for a game that is not being played.
-function NflProjections() {
+function NflProjections({ prefill }) {
   const [avail, setAvail] = useState(null)      // null = still asking
+  const [autoRun, setAutoRun] = useState(false)
   const [props, setProps] = useState([])
   const [prop, setProp] = useState('rush_yards')
   const [player, setPlayer] = useState(null)
@@ -719,6 +767,19 @@ function NflProjections() {
     return () => { alive = false }
   }, [])
 
+  // Same handoff as tennis. The NFL board row carries the player, the prop and
+  // the line, and the projection endpoint resolves the game itself — so nothing
+  // has to be typed.
+  useEffect(() => {
+    if (!prefill || prefill.sport !== 'nfl') return
+    if (prefill.prop) setProp(prefill.prop)
+    if (prefill.line != null) setLine(String(prefill.line))
+    setPlayer(prefill.player
+      ? { name: prefill.player, team: prefill.team } : null)
+    setRes(null); setErr(null)
+    setAutoRun(Boolean(prefill.player))
+  }, [prefill?._at])   // eslint-disable-line react-hooks/exhaustive-deps
+
   const ready = !!player && !!prop && line !== '' && !isNaN(Number(line))
   const missing = !player ? 'Add a player'
     : !line ? 'Enter the book line' : 'Run projection'
@@ -735,6 +796,16 @@ function NflProjections() {
       setErr(e?.response?.data?.detail || e?.message || 'Projection failed')
     } finally { setBusy(false) }
   }
+
+
+  // AFTER run(), NOT BEFORE IT. `run` is a const arrow function, so referencing
+  // it from an effect declared above it sits in the temporal dead zone — the
+  // same shape as the 'w' before initialization crash, which is why
+  // no-use-before-define is enabled. It happens to work because effects run
+  // after render, and that is exactly the kind of accident that breaks later.
+  useEffect(() => {
+    if (autoRun && ready && !busy) { setAutoRun(false); run() }
+  }, [autoRun, ready])   // eslint-disable-line react-hooks/exhaustive-deps
 
   // A deploy without the package says so, rather than showing a form whose
   // button can only ever fail.
@@ -996,9 +1067,15 @@ function NflDrivers({ res }) {
         <div style={{ color: T.muted2, fontSize: 11, marginTop: 11, paddingTop: 9,
                       borderTop: `1px solid ${T.glassLine}`, lineHeight: 1.5 }}>
           {res.opponent
-            ? <>Opponent <b style={{ color: T.white }}>{res.opponent}</b> applied
-                to the RATE at ×{res.opponent_factor} — never to volume, which
-                the spread already reflects.</>
+            ? <>Opponent <b style={{ color: T.white }}>{res.opponent}</b>
+                {res.opponent_rank?.rank
+                  ? <> — <b style={{ color: T.white }}>
+                        {ordinal(res.opponent_rank.rank)} of {res.opponent_rank.of}
+                      </b> {matchupLabel(res.prop)} ({toughness(res.opponent_rank.rank,
+                        res.opponent_rank.of)}), allowing {res.opponent_rank.raw}
+                      {' '}{res.opponent_rank.raw_label}</>
+                  : null} — applied to the RATE at ×{res.opponent_factor}, never
+                to volume, which the spread already reflects.</>
             : res.opponent_basis}
           {res.window ? <> · usage window: {res.window}.</> : null}
           {v.market_known === false
@@ -1067,7 +1144,7 @@ function NflSearchPanel({ onPick, onCancel }) {
   )
 }
 
-export default function ProjectionsTab() {
+export default function ProjectionsTab({ prefill }) {
   const [tour, setTour] = useState('ATP')
   const [player, setPlayer] = useState(null)
   const [opponent, setOpponent] = useState(null)
@@ -1079,24 +1156,28 @@ export default function ProjectionsTab() {
   // carries a clay venue on a hard-court projection.
   const [court, setCourt] = useState('')
 
+  const tournamentConfig = useTournamentConfig()
   // Courts are TOUR-specific as well as surface-specific. COURTS_BY_SURFACE —
   // which this used — is labelled "legacy flat list (backward compat)" in
   // constants.js and has no tour dimension, so selecting WTA still offered
   // Vienna, Basel and ATP Finals Turin: men's events a woman cannot play.
-  // TOURNAMENT_CONFIG is the real map, split ATP/WTA, and every one of its 54
-  // WTA names already exists in the backend's COURT_CPR, so these resolve
-  // rather than silently falling back to generic.
+  // The tour-split map is the real one, and every name in it exists in the
+  // backend's COURT_CPR, so these resolve rather than silently falling back to
+  // generic. It is FETCHED (see useTournamentConfig) so this picker and the
+  // bot's cannot drift apart again.
   const courtOptions = useMemo(() => {
-    const list = TOURNAMENT_CONFIG?.[tour]?.[surface] || []
+    const list = tournamentConfig?.[tour]?.[surface] || []
     return [{ value: '', label: 'Generic (no venue)' }]
       .concat(list.map(c => ({ value: c.name, label: c.name })))
-  }, [tour, surface])
+  }, [tournamentConfig, tour, surface])
   const [line, setLine] = useState('')
   // Which tile the one shared search panel is filling.
   const [picking, setPicking] = useState(null)
   const [sport, setSport] = useState('tennis')
   const [mode, setMode] = useState('prop')   // prop | spread | match
   const [spread, setSpread] = useState('')
+  // set when a board tap has populated the form; cleared once it runs
+  const [autoRun, setAutoRun] = useState(false)
   // Names the ONE thing still missing, in the order a reader fills them.
   const missingLabel = !player ? 'Add a player'
     : !opponent ? 'Add an opponent'
@@ -1133,6 +1214,71 @@ export default function ProjectionsTab() {
   // gating that screen on a number it never uses would be asking for input to
   // throw away.
   const num = (v) => v !== '' && !isNaN(Number(v))
+  // ── ARRIVED FROM A BOARD TAP ─────────────────────────────────────────────
+  // The board already knows the matchup, the surface, the prop and the line —
+  // and, because it priced the row, the resolved player ids. Re-typing all of
+  // that is the step people abandon, so it is filled in and run for them.
+  // Keyed on prefill._at so tapping the SAME prop twice re-runs.
+  useEffect(() => {
+    if (prefill?.sport === 'nfl') { setSport('nfl'); return }
+    if (!prefill || prefill.sport !== 'tennis') return
+    setSport('tennis')
+    setMode('prop')
+    if (prefill.tour) setTour(prefill.tour)
+    if (prefill.surface) setSurface(prefill.surface)
+    setCourt(prefill.court || '')
+    if (prefill.prop) setProp(prefill.prop)
+    if (prefill.line != null) setLine(String(prefill.line))
+    setPlayer(prefill.playerId
+      ? { id: prefill.playerId, name: prefill.player, tour: prefill.tour }
+      : null)
+    setOpponent(prefill.opponentId
+      ? { id: prefill.opponentId, name: prefill.opponent, tour: prefill.tour }
+      : null)
+    setRes(null); setErr(null); setHist(null)
+    // Only auto-run when the ids came through. Without them the form still
+    // arrives filled, the reader picks the players, and nothing fires a
+    // projection against someone we guessed at.
+    setAutoRun(Boolean(prefill.playerId && prefill.opponentId))
+  }, [prefill?._at])   // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── THE SURFACE COMES FROM THE MATCH, NOT FROM THE PICKER ────────────────
+  // This screen let the surface chip be whatever it was last set to, and then
+  // projected on it. Pick Samsonova vs Kostyuk while the chip still says Clay
+  // and you get 2.3 UNDER on a match that is actually being played on hard in
+  // Guadalajara, where the model says 6.4 OVER. Same prop, same line, two
+  // opposite calls — and the board was right, because the board has always
+  // taken the surface from the scheduled match rather than from a control.
+  //
+  // So take it from the same place. The chips stay, because asking "what would
+  // this be on clay" is a real question, but they start at reality instead of
+  // at whatever the last question happened to be. Runs once per matchup, so a
+  // deliberate change afterwards sticks.
+  const [scheduled, setScheduled] = useState(null)
+  const alignedFor = useRef(null)
+  useEffect(() => {
+    if (sport !== 'tennis' || !player?.id || !opponent?.id) { setScheduled(null); return undefined }
+    const pairKey = `${player.id}|${opponent.id}`
+    if (alignedFor.current === pairKey) return undefined
+    let alive = true
+    fetchNextMatch(String(player.id), player.tour || tour)
+      .then((nm) => {
+        // Only trust it when it is THIS matchup — the endpoint answers with the
+        // player's next match, which after a withdrawal may be someone else.
+        if (!alive || !nm || String(nm.opponent_id || '') !== String(opponent.id)) return
+        alignedFor.current = pairKey
+        setScheduled({ surface: nm.surface || '', tournament: nm.tournament || '' })
+        if (nm.surface && nm.surface !== surface) {
+          setSurface(nm.surface)
+          clearResult()   // whatever is on screen was computed on the wrong court
+        }
+        setCourt(resolveCourtName(nm.tournament, tournamentConfig,
+                                  player.tour || tour, nm.surface || surface))
+      })
+      .catch(() => { /* leave the picker as the reader left it */ })
+    return () => { alive = false }
+  }, [player?.id, opponent?.id, sport])   // eslint-disable-line react-hooks/exhaustive-deps
+
   const ready = !!player && !!opponent && (
     mode === 'prop' ? (!!prop && num(line))
     : mode === 'spread' ? num(spread)
@@ -1184,6 +1330,16 @@ export default function ProjectionsTab() {
   // scenario-mixture props (Fantasy Score, Games Won, Break Points) take their
   // lean from P(over), not from mean-vs-line, and that answer wins.
   const lean = (res?.lean || (edge == null ? null : edge > 0 ? 'OVER' : edge < 0 ? 'UNDER' : null))
+
+  // AFTER run(), NOT BEFORE IT. `run` is a const arrow function, so referencing
+  // it from an effect declared above it sits in the temporal dead zone — the
+  // same shape as the 'w' before initialization crash, which is why
+  // no-use-before-define is enabled. It happens to work because effects run
+  // after render, and that is exactly the kind of accident that breaks later.
+  useEffect(() => {
+    if (autoRun && ready && !busy) { setAutoRun(false); run() }
+  }, [autoRun, ready])   // eslint-disable-line react-hooks/exhaustive-deps
+
   const leanTone = lean === 'OVER' ? T.green : lean === 'UNDER' ? T.red : T.muted2
   const leanRgb = lean === 'OVER' ? '0,230,118'
                 : lean === 'UNDER' ? '255,68,68' : '107,107,107'
@@ -1203,7 +1359,7 @@ export default function ProjectionsTab() {
                  options={[{ key: 'tennis', label: '🎾 Tennis' },
                            { key: 'nfl', label: '🏈 NFL' }]} />
 
-      {sport === 'nfl' ? <NflProjections /> : (
+      {sport === 'nfl' ? <NflProjections prefill={prefill} /> : (
       <>
       <GlassTabs value={mode} onChange={setMode} style={{ marginBottom: T.s3 }}
                  options={[{ key: 'prop', label: 'Prop' },
@@ -1303,6 +1459,20 @@ export default function ProjectionsTab() {
           </div>
           <Select value={court} onChange={setCourt} inline bare
                   options={courtOptions} />
+          {/* SAY WHAT THE MATCH ACTUALLY IS. The surface drives the projection
+              harder than anything else on this screen, and a chip that silently
+              disagrees with the scheduled court produces a confident number for
+              a match that is not being played. */}
+          {scheduled?.surface && (
+            <div style={{ marginTop: 6, fontSize: 11.5, lineHeight: 1.45,
+                          color: scheduled.surface === surface ? T.muted2 : T.amber }}>
+              {scheduled.surface === surface
+                ? <>Scheduled: {scheduled.surface}{scheduled.tournament ? ` · ${scheduled.tournament}` : ''}</>
+                : <>⚠ This match is scheduled on <strong>{scheduled.surface}</strong>
+                    {scheduled.tournament ? ` · ${scheduled.tournament}` : ''} — you are
+                    projecting it on {surface}.</>}
+            </div>
+          )}
         </div>
 
         <button onClick={run} disabled={!ready || busy} style={{
@@ -1422,6 +1592,10 @@ export default function ProjectionsTab() {
                     </div>
                   </div>
 
+                  {/* THE SAME NUMBER THE BOARD AND THE BOT SHOW — now the RAW
+                      model score on all three, so the projection screen, the
+                      board and Discord cannot disagree about the same prop.
+                      See data.calibratedConfidence for what that trades. */}
                   {res.confidence != null && (
                     <Ring pct={res.confidence} size={92} stroke={8}
                           tone={leanTone} delay={0.15}>

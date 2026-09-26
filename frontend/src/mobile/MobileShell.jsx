@@ -19,6 +19,10 @@ export default function MobileShell() {
   const [tab, setTab] = useState('board')
   const [book, setBook] = useState('prizepicks')
   const [openPlayer, setOpenPlayer] = useState(null)
+  // A prop tapped on the board, handed to the Projections tab to run straight
+  // away. The board is where someone decides they care about a prop; making
+  // them re-enter the same matchup by hand is where they give up.
+  const [projectPrefill, setProjectPrefill] = useState(null)
   const [boards, setBoards] = useState({ prizepicks: EMPTY_BOARD, underdog: EMPTY_BOARD })
   const [record, setRecord] = useState(null)
   const [slate, setSlate] = useState(null)
@@ -72,6 +76,16 @@ export default function MobileShell() {
 
   const onOpenPlayer = useCallback((p) => {
     setOpenPlayer(p)
+    window.scrollTo(0, 0)
+  }, [])
+
+  // Board prop -> full projection, in one tap.
+  const onProject = useCallback((payload) => {
+    setOpenPlayer(null)
+    // stamped so re-tapping the SAME prop re-runs rather than being ignored as
+    // an unchanged prop
+    setProjectPrefill({ ...payload, _at: Date.now() })
+    setTab('project')
     window.scrollTo(0, 0)
   }, [])
 
@@ -130,8 +144,8 @@ export default function MobileShell() {
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
           >
-            {tab === 'board' && <BoardTab boards={boards} book={book} setBook={setBook} loading={loading} error={error} reload={load} onOpenPlayer={onOpenPlayer} />}
-            {tab === 'project' && <ProjectionsTab />}
+            {tab === 'board' && <BoardTab boards={boards} book={book} setBook={setBook} loading={loading} error={error} reload={load} onOpenPlayer={onOpenPlayer} onProject={onProject} />}
+            {tab === 'project' && <ProjectionsTab prefill={projectPrefill} />}
             {tab === 'picks' && <PicksTab record={record} slate={slate} loading={loading} error={recordError} onOpenPlayer={onOpenPlayer} />}
             {tab === 'players' && <PlayersTab boards={boards} loading={loading} onOpenPlayer={onOpenPlayer} />}
             {tab === 'search' && <SearchTab onOpenPlayer={onOpenPlayer} />}
@@ -150,6 +164,7 @@ export default function MobileShell() {
           boards={boards}
           onClose={() => setOpenPlayer(null)}
           onOpenPlayer={onOpenPlayer}
+          onProject={onProject}
         />
       )}
     </div>

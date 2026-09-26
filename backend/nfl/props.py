@@ -169,6 +169,27 @@ COVERAGE_W = 1.0
 RESILIENCE_W = 0.0
 
 
+def _opp_rank(opponent: str, prop: str) -> dict:
+    """{rank, of, factor, raw, raw_label} for this defence, or None.
+
+    Rank 1 ALLOWS LEAST — the toughest. Read from ratings.defense_table, the
+    same table the board and the player sheet use, so a reader cannot be shown
+    two different opinions of the same defence. Never raises: a missing rating
+    returns None and the caller simply omits the block.
+    """
+    from . import ratings as _r
+    if not opponent:
+        return None
+    try:
+        tbl = _r.defense_table(prop) or {}
+        from .client import normalize_team
+        return tbl.get(normalize_team(opponent)) or None
+    except Exception:  # noqa: BLE001 — Rule 2, decoration must never cost a price
+        log.exception("nfl: defense rank lookup failed for %s / %s",
+                      opponent, prop)
+        return None
+
+
 def matchup_factor(player: str, prop: str, opponent: str, season: int = None,
                    before_week: int = None) -> dict:
     """Player-vs-this-opponent rate multiplier. Always returns a factor.
@@ -425,6 +446,13 @@ def project(player: str, prop: str, line: float = None, game: dict = None,
             "opponent": opponent,
             "opponent_factor": round(of, 4),
             "opponent_basis": opp.get("basis"),
+            # THE RATING WITH ITS RANK, not a bare multiplier. "x1.0043" tells a
+            # reader nothing on its own — it needs to say which defence that is
+            # among the thirty-two and what it actually allows. The player sheet
+            # already renders exactly this (NflPlayerSheet::MatchupBlock); the
+            # projection card could not, because the response never carried it.
+            # Same defense_table the board uses, so the two cannot disagree.
+            "opponent_rank": _opp_rank(opponent, prop),
             # Stated, never implied: a projection built without a spread has no
             # script mixture behind it and is a weaker claim.
             "script_applied": vol["market_known"],
@@ -447,10 +475,41 @@ def project(player: str, prop: str, line: float = None, game: dict = None,
                 from . import distributions as _dist
                 e = _dist.p_over(prop, mu, float(line), _vol_driver)
                 if e:
+                    # ── FAIR LINE: THE 50/50 POINT, NOT THE MEAN (2026-09-24) ──
+                    # `projection` (mu) is an EXPECTED VALUE. Skill-position
+                    # yardage is heavily right-skewed, so the typical game lands
+                    # well below it — measured medians of actual/mean:
+                    #   receiving_yards 3-6 targets  0.817
+                    #   rush_yards      6-11 carries 0.842
+                    #   pass_yards      any          ~1.005  (QBs are symmetric)
+                    #
+                    # The lean already comes from P(over), which is median-based,
+                    # so mu and the lean DISAGREE for any line between the median
+                    # and the mean — an 18%-wide band on low-volume receivers.
+                    # That is what produces "proj 50, UNDER 45" on a card, and it
+                    # is not a display quirk: board.py computed edge as
+                    # (mu - line), so edge could point OVER while the lean said
+                    # UNDER, and edge_sd is what orders the board and gates it
+                    # through MIN_EDGE_SD.
+                    #
+                    # fair_line is the line at which this prop is a coin flip.
+                    # Deriving edge from it makes edge, lean and P(over) agree by
+                    # construction. Same pattern Break Points Won already uses in
+                    # tennis (_FAIR_LINE_PROPS), which is why BPW never shows this.
+                    #
+                    # `projection` is deliberately LEFT AS THE MEAN: it is what
+                    # the resolver and any bias analysis must compare actuals
+                    # against. Storing a median there would recreate exactly the
+                    # mean-vs-median error that makes prop_bias invalid for BPW.
+                    _mr = e.get("median_ratio")
+                    _fair = (round(mu * float(_mr), 2)
+                             if isinstance(_mr, (int, float)) and _mr > 0 else None)
                     out.update({"line": line,
                                 "p_over": round(e["p_over"], 4),
                                 "p_under": round(e["p_under"], 4),
                                 "lean": e["lean"],
+                                "median_ratio": _mr,
+                                "fair_line": _fair,
                                 "dist_basis": e["basis"]})
                 else:
                     pg = _gamma_sf(float(line), mu, cv)

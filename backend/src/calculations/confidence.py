@@ -525,6 +525,33 @@ def calculate_confidence(
     # the same bimodality argument applies — a mean-vs-line/σ grade is the wrong
     # instrument. BP confidence maps from the scenario-mixture P(over) in main.py.
     _sigma = std_dev if (std_dev is not None and std_dev > 0) else None
+
+    # ── EDGE IN SIGMA — published as its OWN number (2026-09-24) ──────────────
+    # |projection − line| / σ, computed for EVERY prop, deliberately independent
+    # of whether the EVR CEILING below is applied (that skips the three mixture
+    # props; this does not). It answers a different question from confidence:
+    # confidence is "how well does the data support this projection", edge_sigma
+    # is "how far is that projection from the book, in units of this player's own
+    # spread". The second one cannot live inside the first without making
+    # confidence a statement about the line — which is the entanglement this
+    # field exists to undo. Nothing below reads it; it is selection input for
+    # callers, returned alongside confidence rather than folded into it.
+    #
+    # Why σ and not |proj − line| / line: a 34% relative edge is ~1.5 double
+    # faults on a 4.5 line (inside the noise) and ~4.3 games on a 12.5 line (a
+    # real gap). Measured on 722 graded picks, relative edge sorts winners by
+    # +3.0pp across quintiles and oscillates; edge in σ sorts them by +11.2pp
+    # near-monotonically, and held up on a Jun-Aug -> Sep holdout (+12.8pp).
+    edge_sigma = None
+    if (_sigma is not None and isinstance(projection, (int, float))
+            and isinstance(prop_line, (int, float)) and prop_line):
+        edge_sigma = abs(projection - prop_line) / _sigma
+
+    # The data-quality ceiling BEFORE the edge/variance grade is allowed to lower
+    # it — i.e. the highest a LINE-INDEPENDENT confidence may reach. Captured for
+    # the shadow confidence_data_only below; the live path is unchanged.
+    _dq_ceiling = data_ceiling
+
     if (prop_type not in ("Player Total Games Won", "Fantasy Score", "Break Points Won")
             and _sigma is not None
             and isinstance(projection, (int, float)) and isinstance(prop_line, (int, float))):
@@ -550,6 +577,10 @@ def calculate_confidence(
     # for these two props; surfaced as "variance-capped" in the breakdown.
     if prop_type in ("Aces", "Double Faults") and data_ceiling > 80:
         data_ceiling, _cap_reason, _cap_tag = 80, "Aces/DF high-variance prop", "variance-capped"
+    # The variance ceiling is a property of the PROP, not of the line, so a
+    # line-independent confidence is still subject to it.
+    if prop_type in ("Aces", "Double Faults") and _dq_ceiling > 80:
+        _dq_ceiling = 80
 
     if data_ceiling < 95:
         breakdown["data_cap"] = {
@@ -576,5 +607,21 @@ def calculate_confidence(
         prop_type, total, penalty_sum, "bonus_cap" in breakdown, data_ceiling,
         high_variance, confidence, {k: v.get("score") for k, v in breakdown.items()},
     )
+    # SHADOW (2026-09-24) — confidence with NO line-derived ceiling: data quality
+    # and the prop's own variance ceiling only. This is confidence as it is meant
+    # to read on the board ("how strongly does the data support this projection")
+    # and it is what the live number should eventually become. It is returned but
+    # NOT selected on: every gate in the system (board 65, slip 70, POTD 80, the
+    # star bar) is calibrated against the blended number, so flipping the meaning
+    # without recalibrating them would quietly change what posts. Measure first.
+    #
+    # Evidence it is the better number AT ITS OWN JOB: scored against projection
+    # error (|actual − projection| / σ) over 544 settled picks, the raw pre-cap
+    # evidence total is monotone and correct by quartile (1.707 → 1.624 → 1.554
+    # → 1.478 σ), while the shipped blended confidence runs backwards and
+    # non-monotone (1.363 → 1.773 → 1.069 → 2.041 σ).
+    confidence_data_only = finalize_confidence(raw_total, prop_type, _dq_ceiling)
     return {"confidence": confidence, "raw_total": raw_total,
-            "data_ceiling": data_ceiling, "cap_tag": _cap_tag, "breakdown": breakdown}
+            "data_ceiling": data_ceiling, "cap_tag": _cap_tag, "breakdown": breakdown,
+            "edge_sigma": edge_sigma, "confidence_data_only": confidence_data_only,
+            "dq_ceiling": _dq_ceiling}

@@ -140,7 +140,53 @@ def proxies_for(sport: str, session_id: str = None):
 # gets a 403 while Vercel's edge and Railway both get a clean 200. Sending it
 # through the proxy costs a full rotation of failures before the direct fallback
 # succeeds anyway, so it is asked to skip straight there.
-DIRECT_ONLY = ("api.underdogfantasy.com",)
+DIRECT_ONLY = ("api.underdogfantasy.com", "partner-api.prizepicks.com")
+# PrizePicks joined 2026-09-25, same reasoning as Underdog and measured the same
+# way. Through the proxy it is 403 on every port tried — rotating gateway 10000
+# and sticky 10001/10007/10020 alike — while a direct request answers 200. The
+# board proved it in production before this was added: the 17:00 pre-warm still
+# walked 40 candidates, which it could only have done via the direct fallback at
+# the end of the rotation. Skipping straight there saves a full rotation of
+# guaranteed failures per fetch.
+#
+# NOTE, so the next person does not over-read this: the pool is NOT burned. In
+# the same probe Sofascore and ESPN returned 200 on ALL of those ports. What
+# broke Sofascore was the Chrome TLS fingerprint (see the profile list in
+# sofascore_client), not the exit IPs. PrizePicks is the only target here that
+# actually refuses the proxy.
+
+
+# The browser profile this module presents. Kept in step with the tennis
+# client's rotation — see sofascore_client._CHROME_PROFILE_CANDIDATES.
+CORE_PROXY_PROFILE = os.getenv("CORE_PROXY_PROFILE", "safari17_0").strip()
+
+
+def _impersonating_get():
+    """A `get(url, **kw)` that presents a real browser's TLS fingerprint.
+
+    THIS MODULE USED PLAIN `requests`, AND THAT WAS THE WHOLE ESPN FAILURE.
+    On 2026-09-25 ESPN 403'd every proxy port here while a curl_cffi request
+    with `impersonate=safari17_0` returned 200 through those same ports — the
+    identical fault that had just taken Sofascore down, in a different module.
+    Plain `requests` announces itself as python-requests at the TLS layer, and
+    that is what is being refused; the exit IP was never the problem.
+
+    Falls back to plain `requests` if curl_cffi is unavailable, so a dev box
+    without it degrades rather than breaking. The signature matches
+    requests.get for `proxies=`, `timeout=` and the response object, which is
+    why the call sites did not have to change.
+    """
+    try:
+        from curl_cffi import requests as cf
+
+        def _cf_get(url, **kw):
+            return cf.get(url, impersonate=CORE_PROXY_PROFILE, **kw)
+        return _cf_get
+    except Exception:  # noqa: BLE001
+        import requests
+        log.warning("curl_cffi unavailable — falling back to plain requests, "
+                    "which some targets (ESPN) refuse at the TLS layer")
+        return requests.get
 
 
 def get(url, sport: str, session_id: str = None, retries: int = 2, **kw):
@@ -152,10 +198,10 @@ def get(url, sport: str, session_id: str = None, retries: int = 2, **kw):
 
     Returns a Response, or None when every attempt failed. Never raises.
     """
-    import requests
+    _get = _impersonating_get()
     if any(h in str(url) for h in DIRECT_ONLY):
         try:
-            return requests.get(url, **kw)
+            return _get(url, **kw)
         except Exception as exc:  # noqa: BLE001 — Rule 2
             log.warning("direct-only fetch failed for %s: %s",
                         str(url)[:60], str(exc)[:120])
@@ -166,7 +212,7 @@ def get(url, sport: str, session_id: str = None, retries: int = 2, **kw):
         if not px:
             break
         try:
-            r = requests.get(url, proxies=px, **kw)
+            r = _get(url, proxies=px, **kw)
             if r.status_code in (403, 407, 429):
                 log.warning("proxy port %s got %s for %s — rotating",
                             port, r.status_code, url[:80])
@@ -179,7 +225,7 @@ def get(url, sport: str, session_id: str = None, retries: int = 2, **kw):
                         str(exc)[:120])
             mark_bad(port)
     try:
-        return requests.get(url, **kw)
+        return _get(url, **kw)
     except Exception as exc:  # noqa: BLE001
         log.warning("direct request failed for %s: %s", url[:80], str(exc)[:120])
         return last

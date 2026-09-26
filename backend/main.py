@@ -147,6 +147,32 @@ from src.constants import (
 )
 from src.api.string_tension import lookup_pace_index
 
+# ── Per-prop bias correction (see the block in the calculate path) ───────────
+# ON by default; set PROP_BIAS_CORRECTION=0 to disable without a deploy. The
+# window is re-read every _BIAS_TTL seconds rather than per request — it moves
+# once a day at most and reading the whole pick log on every projection would be
+# absurd.
+_BIAS_CORRECTION_ON = (os.getenv("PROP_BIAS_CORRECTION", "1") or "1") not in ("0", "false", "False")
+_BIAS_TTL = int(os.getenv("PROP_BIAS_TTL", "1800") or 1800)
+_BIAS_DAYS = int(os.getenv("PROP_BIAS_DAYS", "90") or 90)
+_bias_cache: dict = {"at": 0.0, "val": {}}
+
+
+def _prop_bias_cached() -> dict:
+    """The rolling per-prop bias, memoised. Never raises."""
+    import time as _t
+    if (_t.time() - _bias_cache["at"]) < _BIAS_TTL and _bias_cache["val"]:
+        return _bias_cache["val"]
+    try:
+        from src import database
+        _bias_cache["val"] = database.prop_bias(days=_BIAS_DAYS) or {}
+        _bias_cache["at"] = _t.time()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("prop bias unavailable: %s", exc)
+        _bias_cache["val"] = {}
+    return _bias_cache["val"]
+
+
 # ---------------------------------------------------------------------------
 # App
 # ---------------------------------------------------------------------------
@@ -217,12 +243,42 @@ class ResultLogRequest(BaseModel):
     tournament: str = ""
     surface: str = ""
     pick_group: str = "potd"             # "potd" or "3x"
+    # THE ⭐, AND IT HAS TO BE DECLARED HERE OR IT IS SILENTLY THROWN AWAY.
+    # The bot has always sent it (bot._pick_to_record) and the column has always
+    # existed (database.Pick.is_potd), but this model did not list it — and
+    # results_log does `rec = req.dict()`, so pydantic dropped the field on the
+    # way through without a word. Every board wrote is_potd=0, the Pick of the
+    # Day record could never grow, and the only stars in the table were the 13
+    # that potd_backfill recovered by hand from Discord history. Silent, because
+    # an undeclared extra on a pydantic model is not an error.
+    #
+    # pick_group cannot answer this: every play on the board carries "potd", so
+    # it says "this came off the board", not "this was THE pick".
+    is_potd: int = 0                     # 1 = this play carried the ⭐
     confidence_breakdown: str = ""       # JSON snapshot of the confidence components
     odds_type: str = "standard"          # "standard" or "demon"
     board_policy_version: str = "v2"     # board qualification policy in force
     # JSON snapshot of WHAT THE MODEL ACTUALLY USED at pick time. Not diagnostics
     # — this is what makes a pick measurable after the fact. See the column.
     model_inputs: str = ""
+    # ── THE CONFIDENCE/EDGE SPLIT, IN SHADOW (2026-09-24) ────────────────────
+    # DECLARE THEM OR PYDANTIC EATS THEM. results_log does `rec = req.dict()`,
+    # and an undeclared extra on a pydantic model is silently dropped, not an
+    # error — exactly how is_potd above wrote 0 on every board for months.
+    #   edge_sigma            |projection − line| / σ, the value signal
+    #   confidence_data_only  evidence with no line-derived ceiling
+    edge_sigma: float | None = None
+    confidence_data_only: float | None = None
+    # ── TOUR LEVEL (2026-09-24) ──────────────────────────────────────────────
+    # Stored because the tournament string CANNOT answer "was this a challenger
+    # match". Sofascore gives a bare city — 'Tolentino, Italy' is an ITF event
+    # and 'Cincinnati, USA' is a Masters, and nothing in either string says so.
+    # A string match for 'challenger'/'itf' finds NOTHING and produces the false
+    # conclusion that the board has no lower-tier matches on it.
+    # Ranks are the only honest basis, and we already compute them per pick.
+    player_rank: int | None = None
+    opponent_rank: int | None = None
+    both_challenger_level: int = 0
 
 
 class ResultUpdateRequest(BaseModel):
@@ -303,6 +359,40 @@ async def nfl_players_push(req: Request, payload: dict = Body(...)):
     return {"ok": database.is_ready(), "written": n, "submitted": len(rows)}
 
 
+@app.get("/api/results/bias")
+async def results_bias(days: int = 90):
+    """Per-prop projection bias — mean(actual − projection) over a window.
+
+    Public and read-only: it is a property of our own published record, which is
+    already public, and both the app and the bot may want to show it.
+    """
+    from src import database
+    return {"days": days, "bias": database.prop_bias(days=days)}
+
+
+@app.get("/api/courts")
+async def courts_get():
+    """The tournament picker, split by tour and surface, with pace indexes.
+
+    THE reason this is an endpoint rather than a constant in each client: the
+    bot and the web app each maintained their own list and drifted apart — 43
+    tournaments against 118 — so a court the site could price was simply not
+    offered in Discord and that projection fell back to generic surface pace.
+    Both now read this, so there is one list to update and it sits next to the
+    COURT_CPR values it has to agree with.
+
+    Clients cache the response; it changes only when a tournament is added.
+    """
+    try:
+        from src.constants import tournaments_payload
+        return {"tours": tournaments_payload()}
+    except Exception as exc:  # noqa: BLE001 — Rule 2: never raise at the edge.
+        # The clients all ship a fallback copy, so an empty answer degrades to
+        # "use your snapshot" rather than an empty picker.
+        logger.warning("courts payload unavailable: %s", exc)
+        return {"tours": {}, "error": "unavailable"}
+
+
 @app.get("/api/nfl/players")
 async def nfl_players_get(slate_date: str = None, player: str = None):
     """Published NFL player profiles. Public, read-only."""
@@ -313,9 +403,30 @@ async def nfl_players_get(slate_date: str = None, player: str = None):
 
 @app.get("/api/nfl/board")
 async def nfl_board_get(book: str = None, slate_date: str = None):
-    """The current scanned NFL board. Public, read-only."""
+    """The current scanned NFL board. Public, read-only.
+
+    WITH NO SLATE ASKED FOR, FINISHED SLATES ARE NOT RETURNED. The stored table
+    keeps every slate ever scanned (nfl_board_replace only replaces the one it
+    is handed), so an unfiltered read served Friday's and Sunday's completed
+    games ahead of tonight's — the website calls this with no arguments, so that
+    is exactly what the NFL tab showed.
+
+    The cutoff is nfl.board.slate_date(), the SAME function the scanner uses to
+    decide which slate it is writing, so the read and the write cannot drift
+    apart. If the NFL package is not on this deploy the filter is skipped rather
+    than guessed at — a wrong date here would hide a live board.
+    """
     from src import database
-    return {"rows": database.nfl_board(book=book, slate_date=slate_date),
+    not_before = None
+    _nfl = _nfl_mod()
+    if _nfl is not None:
+        try:
+            from nfl import board as _b
+            not_before = str(_b.slate_date())
+        except Exception as exc:  # noqa: BLE001 — Rule 2
+            logger.warning("nfl board slate cutoff unavailable: %s", exc)
+    return {"rows": database.nfl_board(book=book, slate_date=slate_date,
+                                       not_before=not_before),
             "ready": database.is_ready()}
 
 
@@ -755,6 +866,12 @@ class PropRequest(BaseModel):
     # ATP Grand Slam qualifying rounds are best-of-3 (main draw is best-of-5).
     # Only meaningful for ATP Grand Slam courts; ignored otherwise.
     qualifying: bool = False
+    # Explicit indoor override. None = work it out from the court name, which is
+    # all there was before and which cannot answer for a competition with no
+    # venue in its name. Davis Cup is the case in point: the tie's surface and
+    # whether it is roofed come from the tie feed, not from "Davis Cup Single
+    # Matches". True/False here wins over the name lookup.
+    indoor: Optional[bool] = None
     # Optional GAME SPREAD (games handicap) from the selected player's perspective:
     # -4.5 = laying 4.5 games, +4.5 = receiving. When set, the response carries
     # spread_p_cover / spread_margin_proj / spread_scenarios, computed off the same
@@ -1046,7 +1163,10 @@ async def search_probe(q: str = "alcaraz"):
 
 
 @app.get("/api/search")
-async def search_get(query: str = "", tour: str = "ATP"):
+async def search_get(query: str = "", tour: str = "ATP", fast: bool = False):
+    """`fast=1` is the Discord-autocomplete path — see search_players. It fails
+    out of a blocked fetch immediately instead of rotating ports for ~19s, which
+    is the only way to answer inside Discord's 3-second autocomplete budget."""
     q = query.strip()
     if len(q) < 3:
         return []
@@ -1056,7 +1176,7 @@ async def search_get(query: str = "", tour: str = "ATP"):
         # search_players calls blocking requests.get() — must run in executor
         # so it never blocks the event loop and starves other endpoints.
         result = await asyncio.wait_for(
-            loop.run_in_executor(None, search_players, q, tour),
+            loop.run_in_executor(None, search_players, q, tour, fast),
             timeout=60.0,
         )
         elapsed = time.time() - t0
@@ -1590,6 +1710,128 @@ def _retirement_risk(matches):
     return flag, (-10 if flag else 0), pct
 
 
+# ── FRESHNESS / COURT LOAD (2026-09-24, operator) ────────────────────────────
+# How much tennis has this player actually played lately, and how hard was it.
+#
+# GAMES, NOT MATCHES, is the unit. A 6-1 6-2 win is 17 games and about an hour;
+# a 7-6 6-7 7-6 is 39 games and three hours. Counting both as "one match" throws
+# away most of the signal, and the deep-run case — the one that matters — is
+# exactly where the difference compounds round on round.
+#
+# THREE THINGS COST FRESHNESS, and they are separate:
+#   1. REST     — hours since the last match. Back-to-back days is the big one.
+#   2. THIS EVENT — games already played in the SAME tournament. A finalist has
+#                 spent ~100 games getting there; a first-round player has spent
+#                 none. This is the operator's "within a given tournament".
+#   3. ROLLING  — games over the last 7 days regardless of event, which catches
+#                 a player who went deep last week and flew straight into this one.
+#
+# Every constant here is a STARTING POINT, not a fitted value — there is no
+# backtest behind the magnitudes yet, which is why this returns a score and a
+# breakdown rather than quietly multiplying a projection. See the caller.
+FRESH_REST_PENALTY = {0: 18.0, 1: 10.0, 2: 4.0}     # days rest -> points off
+FRESH_EVENT_FREE_GAMES = 20.0     # one match is free; the grind starts after
+FRESH_EVENT_PER_GAME = 0.25
+FRESH_EVENT_CAP = 20.0
+FRESH_ROLL_FREE_GAMES = 40.0      # ~two matches in a week is normal
+FRESH_ROLL_PER_GAME = 0.20
+FRESH_ROLL_CAP = 15.0
+FRESH_GRIND_BONUS_PENALTY = 5.0   # a 3-setter on short rest compounds
+
+
+def _court_load(matches, tournament: str = "", now_ts: float = None) -> dict:
+    """Court-load freshness, 0-100. 100 = rested. Never raises.
+
+    NAMED `_court_load`, NOT `_freshness`, and that is not cosmetic: there is
+    already a local variable called `_freshness` inside prop_calculate (the
+    older days-since-last-match advisory). A module-level function sharing that
+    name makes Python treat the name as LOCAL for the whole function, so every
+    call before the assignment raised UnboundLocalError and the endpoint 500'd
+    on every prop. Do not rename this back.
+
+    `matches` is the player's match log, newest first, each carrying
+    `timestamp`, `total_match_games`, `sets_played` and `tournament`.
+
+    Returns {"score", "days_rest", "event_games", "event_matches",
+             "games_7d", "matches_7d", "last_match_sets", "basis"} — or
+    {"score": None, ...} when there is nothing recent enough to judge, which
+    the caller must treat as "unknown", NOT as "fresh".
+    """
+    import time as _t
+    out = {"score": None, "days_rest": None, "event_games": 0,
+           "event_matches": 0, "games_7d": 0, "matches_7d": 0,
+           "last_match_sets": None, "basis": "no recent matches"}
+    try:
+        now = float(now_ts if now_ts is not None else _t.time())
+        ms = [m for m in (matches or [])
+              if isinstance(m.get("timestamp"), (int, float)) and m["timestamp"] > 0]
+        if not ms:
+            return out
+        ms = sorted(ms, key=lambda m: -float(m["timestamp"]))
+        # Only matches in the PAST — a fixture list can carry scheduled events.
+        ms = [m for m in ms if float(m["timestamp"]) <= now]
+        if not ms:
+            return out
+
+        def _games(m):
+            g = m.get("total_match_games")
+            if isinstance(g, (int, float)) and g > 0:
+                return float(g)
+            # Fall back to a typical set length when the score would not parse,
+            # so a match still COSTS something rather than being free.
+            s = m.get("sets_played")
+            return 10.0 * float(s) if isinstance(s, (int, float)) and s else 20.0
+
+        last = ms[0]
+        days_rest = (now - float(last["timestamp"])) / 86400.0
+        out["days_rest"] = round(days_rest, 2)
+        out["last_match_sets"] = last.get("sets_played")
+
+        _tn = (tournament or "").strip().lower()
+        for m in ms:
+            age = (now - float(m["timestamp"])) / 86400.0
+            if age <= 7.0:
+                out["games_7d"] += _games(m)
+                out["matches_7d"] += 1
+            # Same EVENT: name match, and within a fortnight so last year's
+            # edition of the same tournament cannot count as this week's grind.
+            if _tn and age <= 14.0 and _tn in (m.get("tournament") or "").strip().lower():
+                out["event_games"] += _games(m)
+                out["event_matches"] += 1
+
+        rest_pen = FRESH_REST_PENALTY.get(int(days_rest), 0.0) if days_rest < 3 else 0.0
+        event_pen = min(FRESH_EVENT_CAP,
+                        max(0.0, (out["event_games"] - FRESH_EVENT_FREE_GAMES)
+                            * FRESH_EVENT_PER_GAME))
+        roll_pen = min(FRESH_ROLL_CAP,
+                       max(0.0, (out["games_7d"] - FRESH_ROLL_FREE_GAMES)
+                           * FRESH_ROLL_PER_GAME))
+        grind_pen = (FRESH_GRIND_BONUS_PENALTY
+                     if (days_rest < 2.0
+                         and isinstance(last.get("sets_played"), (int, float))
+                         and float(last["sets_played"]) >= 3) else 0.0)
+
+        score = 100.0 - rest_pen - event_pen - roll_pen - grind_pen
+        out["score"] = int(round(max(0.0, min(100.0, score))))
+        out["games_7d"] = round(out["games_7d"])
+        out["event_games"] = round(out["event_games"])
+        # Reads on a card, not in a log: "3 matches / 49 games this event" beats
+        # "3 match(es) / 49 games this event", and the 7-day figure says what it
+        # is instead of leaving a bare "3 / 49" to be guessed at.
+        _em, _m7 = out["event_matches"], out["matches_7d"]
+        out["basis"] = (
+            f"{out['days_rest']:.1f}d rest · "
+            f"{_em} {'match' if _em == 1 else 'matches'} / {out['event_games']} games "
+            f"this event · {_m7} {'match' if _m7 == 1 else 'matches'} / "
+            f"{out['games_7d']} games in 7d")
+        out["penalties"] = {"rest": round(rest_pen, 1), "event": round(event_pen, 1),
+                            "rolling": round(roll_pen, 1), "grind": round(grind_pen, 1)}
+        return out
+    except Exception:  # noqa: BLE001 — a display signal must never cost a pick
+        logger.exception("freshness failed")
+        return out
+
+
 def _tiebreak_rate(surf_log):
     """Surface tiebreak rate (NEW SIGNAL 3) — % of sets across the player's
     matches on this surface that reached a tiebreak. A high rate (>30%) means
@@ -1747,7 +1989,7 @@ def auth_config():
 
 
 @app.get("/api/auth/login")
-def auth_login(redirect: str = "", link_session: str = ""):
+def auth_login(redirect: str = "", link_session: str = "", force: int = 0):
     """Begin Discord sign-in. Returns the URL for the client to open.
 
     `state` is a signed, short-lived value the callback verifies. Without it the
@@ -1772,7 +2014,12 @@ def auth_login(redirect: str = "", link_session: str = ""):
             link_email = str(data.get("sub") or "")
     state = discord_auth.make_session(
         "state", json.dumps({"r": redirect or "", "e": link_email}))
-    return {"url": discord_auth.login_url(state=state)}
+    # force=1 -> prompt=consent, which is the ONLY way to reach Discord's
+    # account picker once this user has already authorised the app. Without it
+    # Discord silently reuses the existing authorisation, so somebody who
+    # connected the wrong account can never reach the right one. Driven by the
+    # "use a different Discord account" control on the paywall.
+    return {"url": discord_auth.login_url(state=state, force_consent=bool(force))}
 
 
 @app.get("/api/auth/callback")
@@ -1842,6 +2089,37 @@ def auth_me(req: Request):
     if (data.get("k") or "discord") == "email":
         out = discord_auth.access_for_email(str(data["sub"]))
     else:
+        out = discord_auth.access_for(str(data["sub"]), data.get("u", ""))
+    out["authenticated"] = True
+    return out
+
+
+@app.post("/api/auth/recheck")
+def auth_recheck(req: Request):
+    """Drop this user's cached Discord roles and check again, live.
+
+    Roles are cached for 5 minutes, which is right for steady state and wrong at
+    the one moment it matters: somebody has JUST been given premium in Discord,
+    opens the site, and is told they do not have it. Waiting out a cache with no
+    way to hurry it reads as "the product is broken", so this is the hurry-up.
+
+    THE IDENTITY COMES FROM THE SIGNED SESSION, NEVER FROM THE BODY. Accepting a
+    caller-supplied discord id here would let anyone flush anyone else's cache —
+    minor on its own, but it is the same forgeable-id mistake that would make
+    the owner check bypassable, and it is not going to be made in this file.
+
+    Email sessions have no Discord roles to flush, so they fall straight through
+    to the normal entitlement check.
+    """
+    from src import discord_auth
+    tok = req.headers.get("authorization", "").replace("Bearer ", "").strip()
+    data = discord_auth.read_session(tok)
+    if not data or data.get("sub") in (None, "", "state"):
+        return {"authenticated": False, "active": False}
+    if (data.get("k") or "discord") == "email":
+        out = discord_auth.access_for_email(str(data["sub"]))
+    else:
+        discord_auth.invalidate(str(data["sub"]))
         out = discord_auth.access_for(str(data["sub"]), data.get("u", ""))
     out["authenticated"] = True
     return out
@@ -1968,6 +2246,26 @@ def _client_ip(req: Request) -> str:
     return ip[:64]
 
 
+def _device_key(req: Request) -> str:
+    """Hashed, salted key for a BROWSER, not just an address.
+
+    Address + user-agent. Neither is a real fingerprint and this is not trying to
+    be one — the job is narrower: tell two devices behind one household router
+    apart, which is the case email and IP both get wrong. Email is free to make,
+    and a shared IP would refuse the trial to a genuine second person in the same
+    house; the user-agent breaks that tie often enough to be worth reading.
+
+    Salted with the app secret and hashed for the same reason _visitor_key is:
+    this needs to RECOGNISE a returning browser, never to identify one, and the
+    table should not be reversible into a list of who visited.
+    """
+    import hashlib
+    secret = os.getenv("APP_SESSION_SECRET", "") or "baseline"
+    ua = (req.headers.get("user-agent") or "")[:300]
+    return hashlib.sha256(
+        f"{secret}|dev|{_client_ip(req)}|{ua}".encode()).hexdigest()
+
+
 def _visitor_key(req: Request) -> str:
     """Hashed, salted visitor key for the anonymous preview clock.
 
@@ -2059,11 +2357,32 @@ async def billing_checkout(req: Request):
         discord_id=str(body.get("discord_id") or ""),
         email=str(body.get("email") or ""),
         signup_ip=ip,
+        device=_device_key(req),
     )
     if out.get("error"):
         raise HTTPException(status_code=400, detail=out["error"])
-    logger.info("CHECKOUT_START | plan=%s ip=%s", plan, ip or "-")
+    logger.info("CHECKOUT_START | plan=%s ip=%s via=%s", plan, ip or "-",
+                out.get("via") or "session")
     return out
+
+
+@app.get("/api/billing/trial-check")
+async def billing_trial_check(req: Request, email: str = ""):
+    """Would THIS visitor be offered the free trial? Read-only, creates nothing.
+
+    Exists so the answer can be verified without starting a checkout — the
+    alternative is clicking through to Stripe to find out, which is a poor way
+    to test an anti-abuse rule. It reports the DECISION and which signal matched,
+    never the stored values: echoing back the addresses or device hashes it
+    matched on would turn an abuse check into a lookup service.
+    """
+    from src import billing
+    res = billing.trial_available(email=email, ip=_client_ip(req),
+                                  device=_device_key(req))
+    return {"trial_offered": bool(res.get("allowed")),
+            "reason": res.get("reason"),
+            "matched_on": res.get("matched_on") or [],
+            "trials_enabled": billing.TRIALS_ENABLED}
 
 
 @app.post("/api/billing/webhook")
@@ -2331,8 +2650,67 @@ def _display_wp(result: dict):
     return round(float(v), 1) if isinstance(v, (int, float)) else None
 
 
+# ── PRICED-PROJECTION CACHE (2026-09-25, operator) ───────────────────────────
+# "Every time the website is fully loaded, concurrent sessions should just load
+# automatically unless lines on PrizePicks or Underdog have moved."
+#
+# The app prices every prop on the board on each load, one request per prop, so
+# a second tab — or the same person on their phone — pays the full cost again
+# for numbers that cannot have changed. The expensive part is the Sofascore
+# fetches behind each projection, and those depend only on the inputs.
+#
+# THE LINE IS PART OF THE KEY, which is what makes this safe and is exactly the
+# behaviour asked for: if PrizePicks or Underdog move a line, the request that
+# arrives carries the new prop_line, the key changes, nothing matches, and the
+# prop re-prices from scratch. No invalidation logic to get wrong — a moved line
+# cannot be served from cache because it was never stored under that key.
+#
+# Everything that can change a projection is in the key. `indoor` matters
+# because the same court priced indoor and outdoor is a different number.
+# TTL is short enough that form and stats still refresh within a session.
+_PROJ_CACHE: dict = {}
+_PROJ_CACHE_TTL = int(os.getenv("PROJ_CACHE_TTL", "1800") or 1800)
+_PROJ_CACHE_MAX = int(os.getenv("PROJ_CACHE_MAX", "4000") or 4000)
+
+
+def _proj_cache_key(req) -> tuple:
+    return (str(req.player_id), str(req.opponent_id), req.prop_type,
+            float(req.prop_line or 0), (req.tour or "").upper(),
+            (req.surface or ""), (req.court or ""), bool(req.qualifying),
+            req.indoor if isinstance(req.indoor, bool) else None)
+
+
+def _proj_cache_get(req):
+    try:
+        hit = _PROJ_CACHE.get(_proj_cache_key(req))
+        if not hit:
+            return None
+        at, val = hit
+        if (time.time() - at) > _PROJ_CACHE_TTL:
+            _PROJ_CACHE.pop(_proj_cache_key(req), None)
+            return None
+        return val
+    except Exception:  # noqa: BLE001 — a cache must never cost a projection
+        return None
+
+
+def _proj_cache_put(req, val) -> None:
+    try:
+        if len(_PROJ_CACHE) >= _PROJ_CACHE_MAX:
+            for k in sorted(_PROJ_CACHE, key=lambda k: _PROJ_CACHE[k][0])[:500]:
+                _PROJ_CACHE.pop(k, None)
+        _PROJ_CACHE[_proj_cache_key(req)] = (time.time(), val)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 @app.post("/api/prop/calculate")
 async def prop_calculate(req: PropRequest):
+    _cached = _proj_cache_get(req)
+    if _cached is not None:
+        logger.info("PROJ_CACHE_HIT | %s %s @%s", req.player_name,
+                    req.prop_type, req.prop_line)
+        return _cached
     try:
         # All Sofascore calls are blocking sync — run in executor so they
         # never freeze the event loop and block search / other endpoints.
@@ -2697,8 +3075,9 @@ async def prop_calculate(req: PropRequest):
         # them. All three log their evaluation for verification.
         # ════════════════════════════════════════════════════════════════════
         # Signal 1 — indoor hard plays faster (no wind, truer bounce) → servers.
-        is_indoor_hard = (req.surface == "Hard" and
-                          is_indoor_court(court_for_calc or req.court or ""))
+        # The caller's explicit flag wins; otherwise fall back to the name.
+        _indoor_known = req.indoor if isinstance(req.indoor, bool) else             is_indoor_court(court_for_calc or req.court or "")
+        is_indoor_hard = (req.surface == "Hard" and _indoor_known)
         logger.info("SIGNAL1_INDOOR | court=%r surface=%s -> indoor_hard=%s",
                     court_for_calc or req.court, req.surface, is_indoor_hard)
         # Altitude — thin air, faster serves → higher ace projection (aces only).
@@ -3181,6 +3560,7 @@ async def prop_calculate(req: PropRequest):
                             if isinstance(_fs_hp, (int, float)) and isinstance(_fs_ho, (int, float))
                             else None)
             _fs_games_margin = None
+            _fs_games_error = None      # games_won+games_lost − total; see below
             if all(isinstance(x, (int, float)) for x in (_fs_total, _fs_hp, _fs_ho, _fs_bp_won)) and _fs_total > 0:
                 _fs_S = _fs_total / 2.0                     # each player serves ~half the games
                 _fs_hp_f, _fs_ho_f = _fs_hp / 100.0, _fs_ho / 100.0
@@ -3199,9 +3579,39 @@ async def prop_calculate(req: PropRequest):
                 # rather than up ~4 as predicted -- degrading projection accuracy
                 # on a prop that wins 59.8%. Redo the measurement against the
                 # right field before attempting this again.
+                # ── GAMES-ACCOUNTING ERROR, MEASURED AND SURFACED (2026-09-24)
+                # games_won + games_lost MUST equal the match total — it is an
+                # identity, not a modelling choice. It does not hold here,
+                # because games_won takes its break term from the Break Points
+                # Won chain while games_lost takes its from opponent hold, and
+                # nothing reconciles the two. Substituting BP_won -> S*(1-ho)
+                # forces it, was tried on 2026-09-01, and was reverted.
+                #
+                # Re-measured 2026-09-24 against the RIGHT field (the full
+                # project_break_points chain, not bp_base_proj) over 14 live
+                # matchups: mean gap only -0.71 breaks, BUT sd 1.76 and a range
+                # of -2.63 to +3.30. So there is no large systematic bias to
+                # correct — the defect is VARIANCE, and any one match can be
+                # 2-3 games incoherent. Volynets/Birrell was +3.30, which is
+                # what let "Volynets over 19 fantasy" and "Birrell over 9.5
+                # games" onto the same board.
+                #
+                # Published rather than silently corrected: a number this
+                # unstable should not be patched by a constant, and the board
+                # now refuses to stack props from one match regardless.
+                _fs_games_error = (_fs_gw + _fs_gl) - _fs_total
                 logger.info("FS_GAMES_MARGIN | %s | total=%.1f hold=%.0f%%/%.0f%% BP_won=%.2f "
-                            "-> games %.1f-%.1f margin=%+.2f", req.player_name or "player",
-                            _fs_total, _fs_hp, _fs_ho, _fs_bp_won, _fs_gw, _fs_gl, _fs_games_margin)
+                            "-> games %.1f-%.1f margin=%+.2f | ACCOUNTING_ERROR=%+.2f",
+                            req.player_name or "player",
+                            _fs_total, _fs_hp, _fs_ho, _fs_bp_won, _fs_gw, _fs_gl,
+                            _fs_games_margin, _fs_games_error)
+                if abs(_fs_games_error) > 2.0:
+                    logger.warning(
+                        "FS_INCOHERENT | %s vs %s | games %.1f+%.1f=%.1f but total=%.1f "
+                        "(error %+.2f) — Fantasy Score is off the scoreline by ~%.1f pts",
+                        req.player_name or "player", req.opponent_name or "opp",
+                        _fs_gw, _fs_gl, _fs_gw + _fs_gl, _fs_total,
+                        _fs_games_error, abs(_fs_games_error))
             result = project_fantasy_score(
                 p_sel=max(0.02, min(0.98, _blended_wp)),
                 ace_proj=_ace_r.get("projection"),
@@ -3616,6 +4026,39 @@ async def prop_calculate(req: PropRequest):
                           h2h_psych_mult, proj_val,
                           "H2H psychological edge on the BP prop")
 
+        # ── PER-PROP BIAS CORRECTION ─────────────────────────────────────────
+        # The last thing applied to the number, because it corrects the number
+        # as a whole rather than modelling anything about this matchup. Measured
+        # against realised outcomes (see database.prop_bias), so it is fitted to
+        # what players actually did, NOT to the book's line.
+        #
+        # IT LIVES HERE, IN THE BACKEND, ON PURPOSE. The bot and the web app both
+        # read this endpoint; correcting in either client would reintroduce the
+        # divergence the court list already cost us once.
+        #
+        # SCOPE, stated plainly: this moves the projection, the edge and
+        # therefore the board's ranking. It does NOT move the lean on Break
+        # Points Won, Fantasy Score or PTGW, whose sides come from P(over)
+        # rather than from projection-vs-line — so on the props that dominate
+        # the board today this shifts the number, not the side.
+        bias_correction = 0.0
+        if _BIAS_CORRECTION_ON and isinstance(proj_val, (int, float)):
+            try:
+                _b = _prop_bias_cached().get(req.prop_type)
+                if isinstance(_b, (int, float)) and _b:
+                    bias_correction = float(_b)
+                    _pre = proj_val
+                    proj_val = round(proj_val + bias_correction, 1)
+                    logger.info("PROP_BIAS | %s | %.2f -> %.2f (%+.2f)",
+                                req.prop_type, _pre, proj_val, bias_correction)
+                    _trace_pv("post_bias_correction",
+                              {"in": _pre, "bias": bias_correction},
+                              1.0, proj_val,
+                              "per-prop bias measured on realised outcomes")
+            except Exception as exc:  # noqa: BLE001 — Rule 2: never fail the projection
+                logger.warning("bias correction skipped: %s", exc)
+                bias_correction = 0.0
+
         # Signal 3 — tiebreak note (all props) + tiebreak-supplemented opponent
         # serve tier (BP prop). p1 = selected player, p2 = opponent.
         # Break Points Saved is excluded: tiebreak rate reports that a set reached
@@ -3880,6 +4323,49 @@ async def prop_calculate(req: PropRequest):
             confidence += ret_pen
             logger.info("RETIREMENT | flag=True pen=%d (proj=%s line=%s)",
                         ret_pen, proj_val, req.prop_line)
+
+        # ── FRESHNESS / COURT LOAD (2026-09-24, operator) ────────────────────
+        # How much tennis this player has already played, and how hard — see
+        # _court_load. Computed for BOTH players because a tired opponent is a
+        # different match from a tired player, and the prop is about the pair.
+        #
+        # IT MOVES CONFIDENCE, NOT THE PROJECTION, and that is deliberate.
+        # There is precedent for the first (retirement risk above does exactly
+        # this) and none for the second: nobody has measured how many aces or
+        # games a player actually loses per 20 games of recent court time, so a
+        # multiplier on the projection would be a guess applied to every pick.
+        # The score, its inputs and its penalty are all published, so the effect
+        # can be measured on real boards and THEN wired into the number if it
+        # earns it. Shipping the guess first is how today's other mistakes
+        # happened.
+        #
+        # The penalty is capped small on purpose: this is a modifier, not a
+        # thesis. A fully-ground-down player (score ~50) loses 6 confidence.
+        _fresh = _court_load(p1_ss_all, tournament=req.court or "")
+        _fresh_opp = _court_load(p2_ss_all, tournament=req.court or "")
+        # DISPLAY ONLY — IT DOES NOT TOUCH CONFIDENCE (operator, 2026-09-25).
+        #
+        # It briefly did: every 8 points of lost freshness cost 1 confidence,
+        # capped at 8. The first real board showed why that was wrong. Board
+        # confidences cluster tightly in the 65-73 band, so a 1-3 point penalty
+        # is not a nudge — it is a gate. The 2026-09-24 19:31 probe went from 4
+        # plays to 2, and the 3x died because Tararudee fell 71 -> 69, under a
+        # slip floor that had nothing to do with fatigue. BOARD_MIN_CONF was
+        # calibrated against pre-freshness numbers, so the effective bar moved
+        # without anyone choosing that.
+        #
+        # There is also no evidence behind the magnitudes. Nobody has measured
+        # what a player actually loses per 20 games of recent court time, so
+        # every constant in _court_load is a starting point. A signal with no
+        # measured effect size should inform a reader, not silently re-rank a
+        # board. It is published on the card and recorded on the pick; if it
+        # turns out to predict anything, wiring it into the number is a change
+        # that can then be justified.
+        _fresh_pen = 0
+        if isinstance(_fresh.get("score"), (int, float)):
+            logger.info("FRESHNESS | %s | score=%d (display only) | %s",
+                        req.player_name or "player", _fresh["score"],
+                        _fresh.get("basis"))
 
         # Dominant matchup bonus (+8) — recognise overwhelming edges so the model
         # can express conviction instead of compressing everything into 60-80.
@@ -4193,6 +4679,55 @@ async def prop_calculate(req: PropRequest):
         p1_sack_weight = p1_blended.get("_sackmann_weight", 0.0)
         data_warning   = p1_blended.get("_data_warning")
 
+        # Fetch health for BOTH players, read from the Sofascore client.
+        _fetch_incomplete, _fetch_detail = False, ""
+        try:
+            from src.api.sofascore_client import _FETCH_HEALTH
+            _bits = []
+            for _who, _pid in (("player", req.player_id),
+                               ("opponent", req.opponent_id)):
+                _h = _FETCH_HEALTH.get(str(_pid)) or {}
+                _fp, _tr = _h.get("failed_pages") or [], _h.get("truncated")
+                if _fp or _tr:
+                    _fetch_incomplete = True
+                    _bits.append(
+                        f"{_who}: " +
+                        (f"{len(_fp)} page(s) unreadable" if _fp else "") +
+                        (" and " if _fp and _tr else "") +
+                        ("history truncated" if _tr else ""))
+            _fetch_detail = "; ".join(_bits)
+            if _fetch_incomplete:
+                logger.warning("FETCH_INCOMPLETE | %s vs %s | %s",
+                               req.player_name, req.opponent_name, _fetch_detail)
+        except Exception:  # noqa: BLE001 — never let a diagnostic break a pricing call
+            pass
+
+        # AN INCOMPLETE HISTORY STILL PRICES, BUT IT CANNOT LEAD THE CARD.
+        # The projection is still returned — a user running /prop wants a number,
+        # not an error — but a sample with a known hole in it has earned less
+        # trust than one without, and confidence is what every downstream gate
+        # reads. The cap sits just under the Break Points Won ⭐ bar (70) and far
+        # under the 80 every other prop needs, so such a play can still appear on
+        # the board and can never be the Pick of the Day.
+        if _fetch_incomplete and isinstance(confidence, (int, float)):
+            _cap = int(os.getenv("INCOMPLETE_FETCH_CONF_CAP", "69") or 69)
+            if confidence > _cap:
+                logger.warning("FETCH_INCOMPLETE_CAP | %s %s | conf %s -> %s (%s)",
+                               req.player_name, req.prop_type, confidence, _cap,
+                               _fetch_detail)
+                confidence = _cap
+                # WHAT THE SUBSCRIBER READS, NOT WHAT THE ENGINEER NEEDS.
+                # This used to interpolate _fetch_detail, so a card went out
+                # saying "History incomplete (player: 1 page(s) unreadable;
+                # opponent: 4 page(s) unreadable) — confidence capped at 69".
+                # "Pages" are an implementation detail of how we paginate
+                # Sofascore; to somebody reading a pick it just looks broken.
+                # The cap itself is right and stays — the full detail is already
+                # in the FETCH_INCOMPLETE_CAP log line above, which is where it
+                # belongs.
+                confidence_cap_reason = (
+                    f"Limited match history available — confidence capped at {_cap}")
+
         # ── Bar chart: last 5 matches overall (any surface) ─────────────────────
         # Shows the 5 most recent matches regardless of surface so the user can
         # see whether the prop line was met in recent form, not just on the
@@ -4332,8 +4867,11 @@ async def prop_calculate(req: PropRequest):
                             _spread_res["spread"], _spread_res["p_cover"],
                             _spread_res["margin_proj"])
 
-        return {
+        _payload = {
             "model_projection":     proj_val,
+            # What the bias correction moved this number by (0.0 when off or
+            # when the prop has too little graded history to estimate it).
+            "bias_correction":      round(bias_correction, 3),
             "model_projection_premull": round(proj_val_premodel, 1) if isinstance(proj_val_premodel, (int, float)) else None,
             # Game spread (None unless `spread` was supplied)
             "spread_p_cover":       (_spread_res or {}).get("p_cover"),
@@ -4346,6 +4884,12 @@ async def prop_calculate(req: PropRequest):
             "pct_completed":        pct_completed,
             # NEW SIGNALS — indoor flag (1) + surface tiebreak rates (3)
             "indoor_court":         is_indoor_hard,
+            # The raw answer, independent of the Hard gate: an indoor CLAY tie
+            # is still indoor, and the record should say so even though no
+            # adjustment currently applies to it.
+            "indoor_venue":         bool(_indoor_known),
+            "indoor_source":        ("request" if isinstance(req.indoor, bool)
+                                     else "court-name"),
             "altitude_court":        is_altitude,
             "altitude_pct":          alt_pct,
             "player_tiebreak_rate":   p1_tb_rate,
@@ -4353,6 +4897,40 @@ async def prop_calculate(req: PropRequest):
             "lean":                 lean,
             "confidence":           confidence,
             "confidence_cap_reason": confidence_cap_reason,
+            # ── EDGE AS ITS OWN NUMBER (2026-09-24) ──────────────────────────
+            # edge_sigma  — |projection − line| / σ. How far this projection sits
+            #               from the book in units of the player's own spread.
+            #               This is the "are we beating the book" number.
+            # edge_pct    — the same gap as a fraction of the line. Kept because
+            #               _edge_cap still uses it, but it is the WORSE ruler:
+            #               a 34% edge is ~1.5 double faults on a 4.5 line and
+            #               ~4.3 games on a 12.5 line.
+            # confidence_data_only — SHADOW. Confidence with no line-derived
+            #               ceiling: data quality + the prop's own variance
+            #               ceiling only. Nothing selects on it yet.
+            # ── FRESHNESS (2026-09-24) — court load, for display and measurement.
+            # health_score 0-100 (100 = rested). `_basis` is the human sentence;
+            # the component counts are published so the number can be argued
+            # with rather than taken on faith. None = not enough recent match
+            # history to judge, which is NOT the same as fresh.
+            "health_score":         _fresh.get("score"),
+            "health_basis":         _fresh.get("basis"),
+            "health_days_rest":     _fresh.get("days_rest"),
+            "health_event_games":   _fresh.get("event_games"),
+            "health_event_matches": _fresh.get("event_matches"),
+            "health_games_7d":      _fresh.get("games_7d"),
+            "health_penalties":     _fresh.get("penalties"),
+            "health_conf_penalty":  -_fresh_pen if _fresh_pen else 0,
+            "opponent_health_score": _fresh_opp.get("score"),
+            "opponent_health_basis": _fresh_opp.get("basis"),
+            "edge_sigma":           (round(conf_result["edge_sigma"], 3)
+                                     if isinstance(conf_result.get("edge_sigma"),
+                                                   (int, float)) else None),
+            "edge_pct":             (round(abs(proj_val - req.prop_line)
+                                           / req.prop_line * 100.0, 2)
+                                     if (isinstance(proj_val, (int, float))
+                                         and req.prop_line) else None),
+            "confidence_data_only": conf_result.get("confidence_data_only"),
             # A1 interim BP outcome-inversion guard (Break Points Won only; None
             # for other props). Projection/confidence are unchanged — the bot
             # excludes suspended BP picks from the board.
@@ -4495,6 +5073,20 @@ async def prop_calculate(req: PropRequest):
             "player_surface_n":        p1_surface_n,
             "opponent_surface_n":      p2_surface_n,
             # Stale-cache freshness (ISSUE 1 — served from a prior snapshot)
+            # ── WAS THE HISTORY ACTUALLY COMPLETE? ──────────────────────
+            # A page of a player's match history can fail to fetch (403, dead
+            # proxy port, timeout). That used to be indistinguishable from a page
+            # with no matches on it, so ~30 matches would vanish from the middle
+            # of the sample and the projection simply came out different from the
+            # last run with nothing reporting a problem — the cause of the same
+            # prop being priced twice with two different numbers.
+            #
+            # It is surfaced rather than raised: the card still shows a
+            # projection (a user running /prop wants an answer), but it says the
+            # history was partial and the confidence is capped, because a number
+            # built on a sample with a hole in it has genuinely earned less trust.
+            "fetch_incomplete":        _fetch_incomplete,
+            "fetch_incomplete_detail": _fetch_detail,
             "data_stale":              p1_stale or p2_stale,
             # Projection quality flags
             "sanity_failed":        result.get("sanity_failed", False),
@@ -4517,6 +5109,26 @@ async def prop_calculate(req: PropRequest):
             "bp_surf_momentum_mult": result.get("surface_momentum_mult"),
             "bp_bo5_momentum_mult":  result.get("bo5_momentum_mult"),
             "bp_base_proj":          result.get("base_proj"),
+            # ── THE MULTIPLIERS THEMSELVES ───────────────────────────────────
+            # base = C1 × C2 × (C3/100) × C4 × C5 × C6, and until now only C1
+            # and C3 left the backend: C2, C4, C5 and C6 were computed, returned
+            # by props.py and dropped here. That is why a base that moved 6.49 ->
+            # 4.33 on one matchup could not be attributed — a quarter of the
+            # move sat in factors nothing recorded. They are cheap to carry and
+            # they are the difference between "the projection changed" and
+            # "the projection changed BECAUSE".
+            "bp_c1_opp_faced":       result.get("opp_bp_faced"),
+            "bp_c1_tour_avg_used":   result.get("used_opp_tour_avg"),
+            "bp_c2_returner_mult":   result.get("returner_mult"),
+            "bp_c3_conv_pct":        result.get("conv_rate_pct"),
+            "bp_c4_serve_quality":   result.get("serve_quality_adj"),
+            "bp_c5_surface_adj":     result.get("player_surface_adj"),
+            "bp_c5_surf_delta_pp":   result.get("player_surf_delta_pp"),
+            "bp_c6_cpr_mod":         result.get("cpr_mod"),
+            "bp_hand_factor":        result.get("hand_bp_factor"),
+            # momentum cap / raw / capped already ship further down this dict —
+            # not repeated here, because a duplicate key in a literal silently
+            # wins and the loser is invisible.
             # Opponent serve-quality fields read directly (non-prefixed) by the
             # frontend BP stat comparison — these were previously not exposed,
             # leaving the Hold Rate and Serve Quality cells blank.
@@ -4664,6 +5276,11 @@ async def prop_calculate(req: PropRequest):
             "raw_result": result,
             "player_surface_matches": _safe_matches(p1_surf_matches[:5]),
         }
+        # Cached under the full input signature, LINE INCLUDED — a moved line
+        # arrives as a different key and re-prices, so the board a second tab
+        # loads is the same board unless the book actually changed.
+        _proj_cache_put(req, _payload)
+        return _payload
 
     except Exception as e:
         logger.error("prop/calculate error: %s", e, exc_info=True)

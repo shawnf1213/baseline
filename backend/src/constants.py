@@ -257,19 +257,107 @@ COURT_CPR = {
     "bett1open Berlin":                  35,    # alt name
 }
 
-COURTS_BY_SURFACE = {
-    "Hard":  ["Australian Open", "US Open", "Indian Wells Masters", "Miami Open",
-              "Cincinnati Masters", "Canadian Open", "Washington DC Open",
-              "Los Cabos Open", "Winston-Salem Open", "Athens Open", "Vienna Open",
-              "Swiss Indoors Basel", "Rotterdam Open", "Qatar Open Doha",
-              "Dubai Duty Free Championships", "ATP Finals Turin"],
-    "Clay":  ["Roland Garros", "Monte Carlo Masters", "Madrid Open", "Barcelona Open",
-              "Italian Open Rome", "Hamburg Open", "Lyon Open", "Gstaad Open",
-              "Bastad Open", "Umag Open", "Kitzbuhel Open", "Estoril Open"],
-    "Grass": ["Wimbledon", "Stuttgart", "Halle", "Queens Club Championships",
-              "s-Hertogenbosch", "Mallorca", "Eastbourne International",
-              "Birmingham", "Nottingham"],
+# ── Tournaments offered in the pickers, split by tour and surface ────────────
+# THE ONE LIST. The bot, the web app and the Streamlit picker each kept their own
+# copy of this and they drifted: the bot offered 43 tournaments while the web app
+# offered 118. A name the bot didn't offer couldn't be picked, so the same
+# matchup priced off a real court pace index on the site and off a generic
+# surface fallback in Discord — a pace of 36 against 37 is enough to flip a serve
+# profile tier and move a projection. Every name here is a literal COURT_CPR key,
+# so a pick from any client resolves to a real pace index rather than CPR_NEUTRAL.
+#
+# The tour split is not cosmetic. Indian Wells Masters and Indian Wells WTA are
+# separate keys with separate pace, and a WTA user should never be offered
+# Vienna. Clients that know the tour filter on it; clients that don't read
+# COURTS_BY_SURFACE below, where the names themselves disambiguate.
+TOURNAMENTS_BY_TOUR = {
+    "ATP": {
+        "Hard": [
+            "Australian Open", "US Open", "Indian Wells Masters",
+            "Miami Open", "Cincinnati Masters", "Canadian Open",
+            "Vienna Open", "Swiss Indoors Basel", "Rotterdam Open",
+            "Qatar Open Doha", "Dubai Duty Free Championships",
+            "ATP Finals Turin", "Paris Masters", "Dallas Open",
+            "Delray Beach Open", "Adelaide International", "Auckland Open",
+            "Acapulco Open", "Washington DC Open", "Los Cabos Open",
+            "Winston-Salem Open", "Athens Open", "Tokyo Japan Open",
+            "Shanghai Masters", "Stockholm Open", "Antwerp European Open",
+            "Challenger Hard (Generic)",
+        ],
+        "Clay": [
+            "Roland Garros", "Monte Carlo Masters", "Madrid Open",
+            "Barcelona Open", "Italian Open Rome", "Hamburg Open",
+            "Munich Open", "Geneva Open", "Lyon Open", "Buenos Aires Open",
+            "Rio Open", "Santiago Open", "Houston Clay", "Estoril Open",
+            "Marrakech Open", "Bastad Open", "Umag Open", "Gstaad Open",
+            "Kitzbuhel Open", "Challenger Clay Europe (Generic)",
+            "Challenger Clay South America (Generic)", "Bordeaux Challenger",
+            "Braunschweig Challenger", "Valencia Challenger",
+            "Monza Challenger", "Aix-en-Provence Challenger",
+            "Sanremo Challenger", "Geneva Challenger",
+        ],
+        "Grass": [
+            "Wimbledon", "Stuttgart", "Halle", "Queens Club Championships",
+            "s-Hertogenbosch", "Mallorca", "Eastbourne International",
+            "Birmingham", "Nottingham",
+        ],
+    },
+    "WTA": {
+        "Hard": [
+            "Australian Open WTA", "US Open WTA", "Indian Wells WTA",
+            "Miami Open WTA", "Cincinnati WTA", "Canadian Open WTA",
+            "Wuhan Open", "China Open Beijing", "WTA Finals", "Dubai WTA",
+            "Doha WTA", "Adelaide WTA", "Auckland WTA", "Acapulco WTA",
+            "San Jose WTA", "Washington WTA", "Tokyo Pan Pacific",
+            "Osaka WTA", "Linz WTA", "Guadalajara WTA", "Monterrey WTA",
+            "Cleveland WTA", "Athens Open WTA", "WTA 125 Hard (Generic)",
+            "Austin WTA 125", "Jiangxi Open WTA 125",
+        ],
+        "Clay": [
+            "Roland Garros WTA", "Madrid Open WTA", "Italian Open WTA Rome",
+            "Stuttgart WTA", "Hamburg WTA", "Prague Open WTA", "Rabat WTA",
+            "Strasbourg WTA", "Warsaw WTA", "Budapest WTA", "Bastad WTA",
+            "Palermo WTA", "San Jose Clay WTA", "Bogota WTA",
+            "Trophee Clarins Paris WTA 125", "Catalonia Open WTA 125",
+            "Huzhou Open WTA 125 Clay", "Emilia-Romagna WTA 125 Clay",
+            "WTA 125 Clay (Generic)",
+        ],
+        "Grass": [
+            "Wimbledon WTA", "Queens Club WTA", "Bad Homburg WTA",
+            "s-Hertogenbosch WTA", "Mallorca WTA", "Eastbourne WTA",
+            "Birmingham WTA", "Nottingham WTA", "Berlin WTA",
+        ],
+    },
 }
+
+# Surface → every tournament played on it, both tours, first-seen order. DERIVED
+# — never hand-edit this. It is what a caller that has no tour to filter on sees.
+COURTS_BY_SURFACE = {
+    surf: list(dict.fromkeys(
+        name
+        for tour in TOURNAMENTS_BY_TOUR.values()
+        for name in tour.get(surf, [])))
+    for surf in ("Hard", "Clay", "Grass")
+}
+
+
+def tournaments_payload():
+    """The tour/surface map with each tournament's court pace index attached.
+
+    Served to the bot and the web app so that neither has to keep a copy that
+    can go stale. A name missing from COURT_CPR is dropped rather than shipped
+    with a null: a client that is offered a tournament is entitled to assume the
+    backend can actually price it.
+    """
+    out = {}
+    for tour, surfaces in TOURNAMENTS_BY_TOUR.items():
+        out[tour] = {
+            surf: [{"name": n, "cpr": COURT_CPR[n]}
+                   for n in names if n in COURT_CPR]
+            for surf, names in surfaces.items()
+        }
+    return out
+
 
 CPR_NEUTRAL = 35
 
@@ -295,11 +383,35 @@ def _norm_court(s: str) -> str:
 INDOOR_TOURNAMENTS = (
     # NB: _norm_court strips the "atp"/"wta" tag, so "ATP Finals" normalises to
     # "finals" — match on "finals" (year-end finals are indoor) not "atp finals".
-    "australian open", "paris", "finals", "vienna", "basel", "rotterdam",
-    "dallas", "doha", "dubai", "antwerp", "sofia", "montpellier",
+    "paris", "finals", "vienna", "basel", "rotterdam",
+    "dallas", "antwerp", "sofia", "montpellier",
     # 2026 fall indoor-hard events (Stockholm was previously missing here):
     "stockholm", "almaty", "brussels",
+    # Singapore WTA — added 2026-09-21 (operator). Sofascore labels the event
+    # "Singapore WTA, hard (indoor)" and it was being priced as an OUTDOOR hard
+    # court, so the whole Asia-swing card ran without the indoor adjustment
+    # (aces +6.5%, break points -4%). Caught on the day the board was already
+    # posting Singapore plays.
+    "singapore",
 )
+# NOT ADDED, and deliberately: Seoul, Tokyo, Beijing. They are on the same swing
+# and it is tempting to sweep them in, but that is exactly how "australian open",
+# "doha" and "dubai" got here — assumed indoor, never checked, and applying an
+# unvalidated adjustment to open-air events for months. Each one needs its own
+# confirmation before it goes on this list.
+# REMOVED 2026-09-19: "australian open", "doha", "dubai". All three are OUTDOOR
+# hard events and were being given the indoor treatment — aces +6.5%, break
+# points -4% — on every match played at them. The Australian Open has
+# retractable roofs over three courts, closed for rain and extreme heat; that is
+# not an indoor tournament, and the roof is shut for a minority of matches on a
+# minority of courts. Doha and Dubai are open-air desert hard courts.
+#
+# Nothing in the graded record measured this either way: across 517 picks with a
+# recorded result there is not ONE indoor-hard pick, because the record starts in
+# June and the indoor swing is October-November. So these three were applying an
+# unvalidated adjustment to events that are not indoor, and the first real test
+# of the indoor numbers arrives with Antwerp, Stockholm, Vienna, Basel and Paris
+# in a few weeks.
 
 
 def is_indoor_court(court_name: str) -> bool:

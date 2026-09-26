@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Privacy Policy · Baseline</title>
+<meta name="description" content="What Baseline collects, why, and how to have it deleted.">
+<!-- A STATIC FILE, NOT A ROUTE. The app is a single page behind an auth gate;
+     a policy rendered inside it would be unreachable to anyone not signed in,
+     including Google's OAuth reviewers. This is served straight from disk. -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;600;700&family=Barlow+Condensed:wght@700;800;900&display=swap" rel="stylesheet">
+<style>
+:root{--g:#00E676;--ink:#070707;--card:#101412;--line:#1e2522;--txt:#dbe4df;--dim:#93a09a}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--ink);color:var(--txt);font-family:Barlow,system-ui,sans-serif;
+  font-size:16.5px;line-height:1.65;-webkit-font-smoothing:antialiased}
+.wrap{max-width:820px;margin:0 auto;padding:44px 22px 90px}
+header{display:flex;align-items:center;gap:14px;margin-bottom:34px}
+header img{width:150px}
+h1{font-family:"Barlow Condensed",sans-serif;font-weight:900;font-size:46px;
+  color:#fff;line-height:1.05;margin:26px 0 6px}
+h2{font-family:"Barlow Condensed",sans-serif;font-weight:800;font-size:27px;
+  color:#fff;margin:36px 0 10px;letter-spacing:.02em}
+h3{font-family:"Barlow Condensed",sans-serif;font-weight:800;font-size:20px;
+  color:var(--g);margin:22px 0 6px;letter-spacing:.06em;text-transform:uppercase}
+p,li{margin-bottom:11px}
+ul{padding-left:22px}
+a{color:var(--g)}
+.meta{color:var(--dim);font-size:14px;margin-bottom:8px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;
+  padding:18px 20px;margin:18px 0}
+table{width:100%;border-collapse:collapse;margin:14px 0;font-size:15px}
+th,td{text-align:left;padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:#fff;font-family:"Barlow Condensed",sans-serif;font-weight:800;
+  letter-spacing:.08em;text-transform:uppercase;font-size:13.5px}
+footer{margin-top:52px;padding-top:20px;border-top:1px solid var(--line);
+  color:var(--dim);font-size:14px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <a href="/"><img src="/baseline-logo.png" alt="Baseline"></a>
+  </header>
+
+  <h1>Privacy Policy</h1>
+  <p class="meta">Last updated 14 September 2026</p>
+
+  <p>Baseline (“we”, “us”) operates <a href="https://baselineev.com">baselineev.com</a>
+  and an associated Discord bot. This policy explains exactly what we hold about
+  you, why we hold it, and how to get rid of it.</p>
+
+  <div class="card">
+    <p><strong>The short version.</strong> We store the minimum needed to know
+    that you have a subscription and to keep it working. We do not run analytics
+    or advertising trackers of any kind, we never see your card details, and we
+    do not sell or share your data with anyone for marketing.</p>
+  </div>
+
+  <h2>1. What we collect</h2>
+
+  <h3>Account</h3>
+  <p>Depending on how you sign in, one or both of:</p>
+  <ul>
+    <li><strong>Email address</strong> — if you subscribe on the website or sign
+    in with an email link.</li>
+    <li><strong>Discord user ID and username</strong> — if you connect Discord.
+    We use this to check whether you hold the premium role in our server and to
+    grant it after a purchase.</li>
+  </ul>
+
+  <h3>Billing</h3>
+  <p>Payments are processed by <strong>Stripe</strong> on Stripe's own hosted
+  checkout. <strong>Card numbers never reach our servers and we cannot see
+  them.</strong> We store only what is needed to recognise your subscription:</p>
+  <ul>
+    <li>Stripe customer and subscription identifiers</li>
+    <li>Plan (weekly or monthly), status, and when the paid period ends</li>
+    <li>Whether the subscription is set to cancel at period end</li>
+  </ul>
+
+  <h3>The IP address a trial was started from</h3>
+  <p>When a subscription with a free trial is created we record the IP address
+  it was started from, and we keep it in readable form. Its only purpose is to
+  answer one question during an abuse review: <em>has this address already taken
+  a free trial under a different email?</em> A hashed value cannot be eyeballed
+  by a human doing that review, which is why this particular field is not
+  hashed. It is personal data, we are relying on our legitimate interest in
+  preventing trial fraud, and it is deleted with your account.</p>
+
+  <h3>The free preview clock</h3>
+  <p>Visitors who have not subscribed can browse the app for a short, fixed
+  period. That clock has to survive a refresh, a new tab and a private window,
+  so it cannot live in your browser. We store:</p>
+  <ul>
+    <li>A <strong>salted SHA-256 hash</strong> of your IP address — not the
+    address itself. This table is designed to <em>recognise</em> a repeat
+    visitor, never to identify one, and the hash cannot be turned back into an
+    address.</li>
+    <li>When the preview started, when it was last checked, and how many times.</li>
+  </ul>
+
+  <h2>2. What we do <em>not</em> do</h2>
+  <ul>
+    <li><strong>No analytics.</strong> No Google Analytics, Meta Pixel,
+    PostHog, Plausible, Segment, Hotjar or anything comparable. There is no
+    third-party tracking script on the site at all.</li>
+    <li><strong>No advertising cookies</strong> and no cross-site tracking.</li>
+    <li><strong>No selling or renting</strong> of personal data, ever.</li>
+    <li><strong>No card data.</strong> See Billing above.</li>
+  </ul>
+  <p>The site uses browser storage for one thing only: keeping you signed in,
+  and remembering small interface preferences on your own device. That data
+  stays in your browser.</p>
+
+  <h2>3. Who we share it with</h2>
+  <p>Only the providers that make the service run, and only what each one needs:</p>
+  <table>
+    <tr><th>Provider</th><th>What it handles</th></tr>
+    <tr><td>Stripe</td><td>Payments and subscription billing</td></tr>
+    <tr><td>Discord</td><td>Sign-in and premium role in our server</td></tr>
+    <tr><td>Resend</td><td>Sending sign-in links by email</td></tr>
+    <tr><td>Railway</td><td>Application hosting and database</td></tr>
+    <tr><td>Vercel</td><td>Website hosting</td></tr>
+  </table>
+  <p>Sports statistics come from third-party data sources. Those requests carry
+  no information about you.</p>
+
+  <h2>4. YouTube</h2>
+  <p>Baseline publishes short daily videos to a YouTube channel that we own,
+  using <strong>YouTube API Services</strong>. This access is limited to
+  uploading videos to our own channel. <strong>We do not request, access, store
+  or process any YouTube data belonging to you or to any viewer.</strong></p>
+  <p>Because we use YouTube API Services, we are required to tell you that by
+  using those features you are also subject to the
+  <a href="https://www.youtube.com/t/terms" target="_blank" rel="noreferrer">YouTube Terms of Service</a>
+  and the
+  <a href="https://policies.google.com/privacy" target="_blank" rel="noreferrer">Google Privacy Policy</a>.
+  You can review and revoke any access you have granted to third-party
+  applications at
+  <a href="https://myaccount.google.com/permissions" target="_blank" rel="noreferrer">Google's security settings page</a>.</p>
+
+  <h2>5. How long we keep it</h2>
+  <ul>
+    <li><strong>Account and billing records</strong> — for as long as you have an
+    account, and afterwards only where we are required to retain financial
+    records by law.</li>
+    <li><strong>Trial signup IP</strong> — deleted when the account is deleted.</li>
+    <li><strong>Preview hashes</strong> — retained only as long as the preview
+    rule needs them.</li>
+  </ul>
+
+  <h2>6. Your rights</h2>
+  <p>You can ask us for a copy of what we hold about you, ask us to correct it,
+  or ask us to erase it. If you are in the UK, EU or a similar jurisdiction you
+  also have the right to object to processing and to complain to your data
+  protection authority.</p>
+  <p><strong>Deleting your account:</strong> you can do this yourself from within
+  the app. It requires you to be signed in and to type a confirmation, and it
+  removes your account record along with the data described above. Cancelling a
+  subscription and deleting an account are separate actions — cancel first if
+  you do not want to be charged again.</p>
+
+  <h2>7. Children</h2>
+  <p>Baseline is not intended for anyone under 21, or under the minimum legal
+  age where they live if that age is higher. We do not knowingly collect data
+  from anyone below that age.</p>
+
+  <h2>8. Security</h2>
+  <p>Traffic is encrypted in transit. Sign-in sessions use signed tokens, and
+  an account can only be deleted by the person holding a valid session for it.
+  No system is perfectly secure, and we do not claim otherwise.</p>
+
+  <h2>9. Changes</h2>
+  <p>If this policy changes materially we will update the date at the top and,
+  where the change is significant, tell subscribers directly.</p>
+
+  <h2>10. Contact</h2>
+  <p>Questions, requests or complaints:
+  <a href="mailto:support@baselineev.com">support@baselineev.com</a>.</p>
+
+  <footer>
+    <p><a href="/">Baseline</a> · <a href="/terms">Terms of Service</a></p>
+    <p>Model projections, not betting advice.</p>
+  </footer>
+</div>
+</body>
+</html>

@@ -60,6 +60,52 @@ PAYMENT_LINKS = {
     "monthly": os.getenv("STRIPE_LINK_MONTHLY", "").strip(),
 }
 
+# ── THE FREE TRIAL IS FOR PEOPLE WHO HAVE NOT HAD ONE ────────────────────────
+# Operator, 2026-09-21: keep the trial, but once someone has taken it, a repeat
+# attempt from the same email, device or address goes to full payment.
+#
+# THE TRIAL DOES NOT LIVE IN THIS CODEBASE. It is configured on the WEEKLY
+# Stripe Payment Link — which is why the comment above says trial terms can be
+# changed "without a deploy", and why they could be abused without us seeing it.
+# Nothing here granted a trial, so nothing here could refuse one: a fresh email
+# through that link was a fresh trial, every time, and email is free to create.
+# The IP check (database.trials_from_ip) existed but was only ever a token-gated
+# support READ — /api/billing/checkout never consulted it.
+#
+# The gate is therefore WHICH URL WE HAND OUT. A first-time visitor gets the
+# Payment Link and its trial. Anyone we already have a subscription for gets a
+# Checkout Session we build from PRICE_*, which charges immediately and carries
+# no trial terms at all. Stripe cannot be talked out of that, because the
+# trial-bearing link is simply never shown to them.
+#
+# TRIALS_ENABLED is the master switch and still defaults OFF, so an unset
+# environment can never quietly re-open trials to everyone.
+TRIALS_ENABLED = os.getenv("TRIALS_ENABLED", "0").strip().lower() in (
+    "1", "true", "yes", "on")
+
+
+def trial_available(email: str = "", ip: str = "", device: str = "") -> dict:
+    """{"allowed": bool, "reason": str} — may this visitor have the trial?
+
+    Fails OPEN on any error. A database hiccup turning a genuine new customer
+    away from the trial is a worse outcome than one duplicate slipping through,
+    and the duplicate is still visible afterwards in the abuse history.
+    """
+    if not TRIALS_ENABLED:
+        return {"allowed": False, "reason": "trials disabled"}
+    try:
+        from . import database
+        prior = database.prior_trial(email=email, ip=ip, device=device)
+        if prior.get("used"):
+            on = sorted({w for m in prior["matched"] for w in m["on"]})
+            return {"allowed": False,
+                    "reason": "already subscribed (matched on %s)" % "+".join(on),
+                    "matched_on": on, "count": prior.get("count", 0)}
+        return {"allowed": True, "reason": "no prior subscription"}
+    except Exception:  # noqa: BLE001
+        logger.exception("trial_available check failed — allowing the trial")
+        return {"allowed": True, "reason": "check failed, failing open"}
+
 # Statuses that grant access. NO GRACE PERIOD, by explicit decision: the moment
 # Stripe reports a failed payment the subscription stops entitling anything.
 #
@@ -165,27 +211,46 @@ _PENDING_IPS: dict = {}
 _PENDING_MAX = 500
 
 
-def _remember_pending_ip(discord_id: str = "", email: str = "", ip: str = "") -> None:
-    if not ip:
+def _remember_pending_ip(discord_id: str = "", email: str = "", ip: str = "",
+                         device: str = "") -> None:
+    """Park (ip, device) against whatever identifier we have for this buyer.
+
+    The device rides along with the address because it is claimed at the same
+    moment and for the same reason: the webhook arrives from Stripe, so neither
+    the buyer's address nor their browser is recoverable from it.
+    """
+    if not (ip or device):
         return
     for key in (f"d:{discord_id}" if discord_id else "", f"e:{(email or '').lower()}" if email else ""):
         if key:
-            _PENDING_IPS[key] = ip
+            _PENDING_IPS[key] = {"ip": ip or "", "device": device or ""}
     if len(_PENDING_IPS) > _PENDING_MAX:
         for k in list(_PENDING_IPS)[:len(_PENDING_IPS) - _PENDING_MAX]:
             _PENDING_IPS.pop(k, None)
 
 
-def claim_pending_ip(discord_id: str = "", email: str = "") -> str:
-    """The address a checkout was started from, if we parked one."""
+def _claim_pending(discord_id: str = "", email: str = "") -> dict:
     for key in (f"d:{discord_id}" if discord_id else "", f"e:{(email or '').lower()}" if email else ""):
         if key and key in _PENDING_IPS:
-            return _PENDING_IPS.get(key) or ""
-    return ""
+            v = _PENDING_IPS.get(key) or {}
+            # Tolerate the old bare-string shape across a rolling deploy.
+            return v if isinstance(v, dict) else {"ip": v, "device": ""}
+    return {}
+
+
+def claim_pending_ip(discord_id: str = "", email: str = "") -> str:
+    """The address a checkout was started from, if we parked one."""
+    return _claim_pending(discord_id=discord_id, email=email).get("ip", "")
+
+
+def claim_pending_device(discord_id: str = "", email: str = "") -> str:
+    """The device key a checkout was started from, if we parked one."""
+    return _claim_pending(discord_id=discord_id, email=email).get("device", "")
 
 
 def create_checkout_session(plan: str, discord_id: str = "",
-                            email: str = "", signup_ip: str = "") -> dict:
+                            email: str = "", signup_ip: str = "",
+                            device: str = "") -> dict:
     """Create a Stripe-hosted Checkout Session. Returns {url} or {error}.
 
     discord_id rides along in metadata so the webhook can link the resulting
@@ -197,8 +262,14 @@ def create_checkout_session(plan: str, discord_id: str = "",
     plan_key = (plan or "").lower()
 
     # A configured Payment Link wins over building a session, because that is
-    # where the trial and promo terms live.
-    link = PAYMENT_LINKS.get(plan_key)
+    # where the trial and promo terms live — which is exactly why it is withheld
+    # from anyone who has already had one. See trial_available.
+    _trial = trial_available(email=email, ip=signup_ip, device=device)
+    link = PAYMENT_LINKS.get(plan_key) if _trial["allowed"] else ""
+    if PAYMENT_LINKS.get(plan_key) and not _trial["allowed"]:
+        logger.warning("TRIAL_DENIED | plan=%s email=%s ip=%s | %s — routing to "
+                       "full payment", plan_key,
+                       (email or "-")[:60], signup_ip or "-", _trial["reason"])
     if link:
         if discord_id:
             sep = "&" if "?" in link else "?"
@@ -214,7 +285,8 @@ def create_checkout_session(plan: str, discord_id: str = "",
         # HERE against the email/discord we have, and reconciled onto the
         # subscription when its webhook lands. Weaker than the session path, but
         # the trial link is a Payment Link and it is the one that gets abused.
-        _remember_pending_ip(discord_id=discord_id, email=email, ip=signup_ip)
+        _remember_pending_ip(discord_id=discord_id, email=email,
+                             ip=signup_ip, device=device)
         logger.info("payment link issued plan=%s discord=%s ip=%s", plan_key,
                     discord_id or "-", signup_ip or "-")
         return {"url": link, "via": "payment_link"}
@@ -242,10 +314,12 @@ def create_checkout_session(plan: str, discord_id: str = "",
             # on its own (a webhook arrives from STRIPE's address, never the
             # buyer's). Without this the trial-abuse check has nothing to read.
             metadata={"discord_id": discord_id or "", "plan": plan,
-                      "signup_ip": signup_ip or ""},
+                      "signup_ip": signup_ip or "",
+                      "signup_device": device or ""},
             subscription_data={"metadata": {"discord_id": discord_id or "",
                                             "plan": plan,
-                                            "signup_ip": signup_ip or ""}},
+                                            "signup_ip": signup_ip or "",
+                                            "signup_device": device or ""}},
             **({"customer_email": email} if email else {}),
         )
         logger.info("checkout session created plan=%s discord=%s", plan,
@@ -404,9 +478,22 @@ def apply_event(event) -> dict:
                 db.set_signup_ip(rec["stripe_sub_id"], _ip)
             except Exception:  # noqa: BLE001
                 logger.exception("could not stamp signup_ip")
-        logger.info("subscription %s -> %s (discord=%s plan=%s ip=%s)",
+        # The device key, the same way and for the same reason — it is the
+        # signal that tells two people behind one router apart, and without it
+        # the trial gate has only email and a shared household address to work
+        # with.
+        _dev = (md.get("signup_device") or "").strip()
+        if not _dev:
+            _dev = claim_pending_device(discord_id=rec["discord_id"])
+        if _dev:
+            try:
+                db.set_signup_device(rec["stripe_sub_id"], _dev)
+            except Exception:  # noqa: BLE001
+                logger.exception("could not stamp signup_device")
+        logger.info("subscription %s -> %s (discord=%s plan=%s ip=%s device=%s)",
                     rec["stripe_sub_id"], rec["status"],
-                    rec["discord_id"] or "-", rec["plan"] or "-", _ip or "-")
+                    rec["discord_id"] or "-", rec["plan"] or "-", _ip or "-",
+                    (_dev[:8] + "…") if _dev else "-")
         return {"ok": bool(saved), "handled": etype, "status": rec["status"]}
 
     return {"ok": True, "handled": None, "ignored": etype}

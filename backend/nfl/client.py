@@ -52,7 +52,8 @@ _HEADERS = {"User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
 # header sets are kept separate rather than shared.
 _ESPN_HEADERS = {"User-Agent": "Mozilla/5.0"}
 
-_mem = {}          # in-process frame cache, keyed by (dataset, season)
+_mem = {}          # in-process frame cache, keyed by (dataset, season, ext)
+_mem_at = {}       # when each _mem entry was stored — see the TTL note in load()
 # NEGATIVE cache — datasets that are genuinely absent upstream, keyed the same
 # way, valued with the time we last tried.
 #
@@ -170,8 +171,27 @@ def load(dataset: str, season: int = None, ext: str = "parquet"):
     import pandas as pd
     season = season or current_season()
     key = (dataset, season, ext)
-    if key in _mem:
-        return _mem[key]
+    # ── THE IN-PROCESS MEMO EXPIRES FOR THE CURRENT SEASON ───────────────────
+    # This returned _mem[key] unconditionally and _mem is never evicted, so a
+    # long-running process pinned whatever it happened to read FIRST. The bot
+    # runs for weeks: it loaded stats_player_week for the new season during week
+    # 1, when the file held only the clubs that had already played, and then
+    # served that same frozen frame for the rest of the season. Every board scan
+    # therefore found no current-season games for almost everyone and priced the
+    # whole market on "prior season only" usage — the window measured at +25%
+    # relative error (see board.REQUIRE_CURRENT_SEASON) — while a freshly
+    # restarted backend reading the same file from disk got the full frame and
+    # disagreed with the board about every player.
+    #
+    # A FINISHED season never changes, so it stays memoised forever. The current
+    # one gets the same TTL the disk cache already uses, so a process picks up
+    # each week's file without needing a restart.
+    cached = _mem.get(key)
+    if cached is not None:
+        if season < current_season():
+            return cached
+        if (time.time() - _mem_at.get(key, 0.0)) < TTL_CURRENT:
+            return cached
     # Known-absent and still inside the retry window — return empty without
     # touching the network. See _mem_neg.
     _missed = _mem_neg.get(key)
@@ -206,6 +226,7 @@ def load(dataset: str, season: int = None, ext: str = "parquet"):
         df = (pd.read_parquet(path) if ext == "parquet"
               else pd.read_csv(path, low_memory=False))
         _mem[key] = df
+        _mem_at[key] = time.time()
         _mem_neg.pop(key, None)     # it exists after all
         log.info("nfl load: %s %s -> %d rows", dataset, season, len(df))
         return df

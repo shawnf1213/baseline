@@ -125,7 +125,16 @@ def _ranked_line(row: dict, rank: int) -> str:
     width that forced a third wrapped line.
     """
     lean = _side(row)
-    proj = row.get("projection")
+    # SHOW THE FAIR LINE, NOT THE MEAN (2026-09-24). `projection` is an expected
+    # value; the lean comes from P(over), which is median-based. Skill-position
+    # yardage is right-skewed (median ~0.82 of the mean on low-volume receivers),
+    # so printing the mean next to the lean produced cards reading "Proj 50 ·
+    # UNDER 45" — correct underneath, nonsense on the page, and reported twice.
+    # fair_line is the coin-flip line, so the number and the side now agree.
+    # Falls back to the mean when the empirical table does not cover the prop.
+    proj = row.get("fair_line")
+    if not isinstance(proj, (int, float)):
+        proj = row.get("projection")
     conf = row.get("win_prob")
     l1 = f"**{rank}. {row.get('player')}**"
     play = (f"{lean} {row.get('line'):g} "
@@ -150,7 +159,7 @@ def _matchup_short(row: dict) -> str:
     return row.get("matchup") or ""
 
 
-def build_potd_embed(row: dict, when=None):
+def build_potd_embed(row: dict, when=None, date_label: str = None):
     """⭐ Pick of the Day — the NFL twin of the tennis POTD embed.
 
     Same structure as tennis: the matchup, the play in bold, the supporting
@@ -166,8 +175,10 @@ def build_potd_embed(row: dict, when=None):
     import discord
     if not row:
         return None
+    # The GAME date, and what kind of game it is — not the date this happens to
+    # be posted. Boards go out the night before, so `now()` is the wrong day.
     d = when or datetime.datetime.now()
-    label = f"{d.month}/{d.day}"
+    label = date_label or f"{d.month}/{d.day}"
     lean = _side(row)
     prob = _prob(row)
     edge = row.get("edge")

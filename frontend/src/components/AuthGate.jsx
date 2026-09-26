@@ -233,18 +233,49 @@ export default function AuthGate({ children }) {
     try { setState(await gateOrPreview('landing')) } finally { setBusy(false) }
   }
 
-  const connectDiscord = async () => {
+  // force = true asks the backend for prompt=consent, which is the ONLY way to
+  // reach Discord's account picker once this app has already been authorised.
+  // Discord otherwise reuses the existing authorisation silently, so someone
+  // who connected the wrong account lands back on it every time — and signing
+  // out does not help, because that clears OUR session, not Discord's grant.
+  const connectDiscord = async (force = false) => {
     setBusy(true)
     try {
       // Pass the current session when there is one. If it is an EMAIL session
       // the backend attaches the Discord id to that subscription, which is what
-      // turns a website purchase into a server role.
+      // turns a website purchase into a server role. (Harmless to send on a
+      // Discord session — the backend only reads it when it is an email one.)
       const existing = localStorage.getItem(SESSION_KEY) || ''
       const r = (await api.get('/api/auth/login', {
-        params: { redirect: window.location.origin, link_session: existing },
+        params: {
+          redirect: window.location.origin,
+          link_session: existing,
+          ...(force ? { force: 1 } : {}),
+        },
       })).data
       if (r?.url) window.location.href = r.url
     } catch { setBusy(false) }
+  }
+
+  // Roles cache for 5 minutes. That is right in steady state and wrong at the
+  // exact moment it matters — you have just been given premium in Discord and
+  // the site says you have not. This flushes it and asks again, live.
+  const [recheckMsg, setRecheckMsg] = useState('')
+  const recheckRole = async () => {
+    setBusy(true)
+    setRecheckMsg('')
+    try {
+      const tok = localStorage.getItem(SESSION_KEY) || ''
+      const me = (await api.post('/api/auth/recheck', {}, {
+        headers: { Authorization: `Bearer ${tok}` },
+      })).data || {}
+      if (me.active) { setState({ phase: 'in', me }); return }
+      setRecheckMsg('Still no premium role on this account.')
+      setState(s => ({ ...s, me }))
+    } catch {
+      setRecheckMsg('Could not reach Discord — try again in a moment.')
+    }
+    setBusy(false)
   }
 
   const [emailMode, setEmailMode] = useState(false)
@@ -455,10 +486,37 @@ export default function AuthGate({ children }) {
           borderRadius: 12, padding: '11px 13px', marginBottom: 16, color: '#FFB300',
           fontSize: 13, lineHeight: 1.45 }}>
           {inGuildNoRole
-            ? <>Signed in as <b>{me.username || 'you'}</b>. You’re in the Discord but don’t have the premium role yet — get premium there and it unlocks here automatically.</>
+            ? <>Signed in as <b>{me.username || 'this Discord account'}</b>. You’re in the Discord but don’t have the premium role yet — get premium there and it unlocks here automatically.</>
             : me.reason === 'not_in_guild' && invite
-            ? <>Signed in as <b>{me.username || 'you'}</b>. No subscription on this account — subscribe below, or <a href={invite} target="_blank" rel="noreferrer" style={{ color: '#FFB300', fontWeight: 700 }}>join the Discord</a> if you have premium there.</>
-            : <>Signed in as <b>{me.username || 'you'}</b>. No active subscription on this account.</>}
+            ? <>Signed in as <b>{me.username || 'this Discord account'}</b>. No subscription on this account — subscribe below, or <a href={invite} target="_blank" rel="noreferrer" style={{ color: '#FFB300', fontWeight: 700 }}>join the Discord</a> if you have premium there.</>
+            : <>Signed in as <b>{me.username || 'this Discord account'}</b>. No active subscription on this account.</>}
+
+          {/* THE WAY OUT OF A WRONG-ACCOUNT LOCKOUT.
+              Someone holding the premium role on a DIFFERENT Discord account
+              had no route to it: Discord reuses an existing authorisation
+              without showing the account picker, and signing out only clears
+              our session, not Discord's grant. These two cover both real
+              causes — the role is new and we cached "no", or the session is
+              bound to the wrong account entirely. */}
+          <div style={{ display: 'flex', gap: 14, marginTop: 10, flexWrap: 'wrap' }}>
+            <button onClick={recheckRole} disabled={busy} style={{
+              background: 'none', border: 'none', padding: 0, cursor: 'pointer',
+              color: '#FFB300', fontWeight: 700, fontSize: 12.5,
+              textDecoration: 'underline', opacity: busy ? 0.5 : 1 }}>
+              Re-check my role
+            </button>
+            <button onClick={() => connectDiscord(true)} disabled={busy} style={{
+              background: 'none', border: 'none', padding: 0, cursor: 'pointer',
+              color: '#FFB300', fontWeight: 700, fontSize: 12.5,
+              textDecoration: 'underline', opacity: busy ? 0.5 : 1 }}>
+              Use a different Discord account
+            </button>
+          </div>
+          {recheckMsg && (
+            <div style={{ marginTop: 8, fontSize: 12, color: '#c9a227' }}>
+              {recheckMsg}
+            </div>
+          )}
         </div>
       )}
 

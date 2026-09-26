@@ -662,7 +662,22 @@ def _search_index(season: int = None):
             out.sort(key=lambda t: -t[4])
     except Exception as exc:  # noqa: BLE001 — Rule 2
         log.exception("nfl search index failed: %s", exc)
-    _search_cache[key] = out
+    # ── AN EMPTY INDEX IS NOT AN ANSWER, SO IT IS NOT KEPT ───────────────────
+    # This memoised unconditionally, and `out` is empty whenever the weekly
+    # parquet has not landed yet — which is the NORMAL state for the first
+    # minutes of any deploy, because client.CACHE_DIR lives inside the container
+    # and dies with it. So the first search after a deploy froze an empty index
+    # for the life of that deployment, and NFL search and Discord autocomplete
+    # returned nothing for every name until someone happened to redeploy at a
+    # luckier moment.
+    #
+    # client.load already draws exactly this distinction — a permanent cache for
+    # a hit, a TIME-BOXED negative cache for a miss — and this was the one place
+    # that did not. Rebuilding on a miss costs nothing: load() answers from its
+    # own negative cache without touching the network, so the retry is two dict
+    # lookups until the file actually arrives.
+    if out:
+        _search_cache[key] = out
     return out
 
 

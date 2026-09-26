@@ -162,6 +162,13 @@ try:
         # "potd" (Pick of the Day) or "3x" (two-leg slip). Legacy rows are NULL
         # and treated as "potd" everywhere they're read.
         pick_group       = Column(String, default="potd")
+        # THE STARRED PLAY, not the group. pick_group says "this came off the
+        # board rather than the 3x slip" and every board pick carries it, so it
+        # cannot answer "how has the Pick of the Day done" — the question the
+        # record is actually asked. 1 = this row is the (single) starred pick
+        # the bot led that board with. 0 = a board pick. NULL = posted before
+        # this column existed, and therefore unknown rather than "no".
+        is_potd          = Column(Integer, default=0)
         # JSON snapshot of the confidence component breakdown at pick time, so a
         # faithful calibration recompute is possible later. NULL on legacy rows.
         confidence_breakdown = Column(String)
@@ -197,6 +204,32 @@ try:
         # show the final number next to each prop. NULL = not recorded (older rows
         # or manual grades from matches the resolver couldn't fetch).
         result_value = Column(Float, nullable=True)
+        # ── THE CONFIDENCE/EDGE SPLIT, IN SHADOW (2026-09-24) ────────────────
+        # The shipped `confidence` above is min(evidence, f(distance from the
+        # book line)) — three separate line-derived ceilings (main._edge_cap, the
+        # EVR grade, the ace big-edge cap) push it down, so it is not the "how
+        # well does the data support this projection" number it is presented as.
+        # These two columns record the split at pick time so it can be GRADED
+        # rather than argued about:
+        #   edge_sigma           |projection − line| / σ. The value signal.
+        #   confidence_data_only evidence with NO line-derived ceiling.
+        # Both NULL for every row written before this column existed — do not
+        # backfill them, a reconstructed value is not what the model said.
+        # Nothing selects on either yet; see the pick_of_day slip floors.
+        edge_sigma = Column(Float, nullable=True)
+        confidence_data_only = Column(Float, nullable=True)
+        # ── TOUR LEVEL (2026-09-24) ──────────────────────────────────────────
+        # The tournament column cannot answer "was this a challenger match":
+        # Sofascore supplies a bare city, so 'Tolentino, Italy' (an ITF event)
+        # and 'Cincinnati, USA' (a Masters) are indistinguishable by string. A
+        # search for 'challenger' or 'itf' across the whole record matches ZERO
+        # rows, which reads as "we never post lower-tier matches" and is false.
+        # World rank is the only basis that works, and it is already computed on
+        # every pick — it was simply never persisted, so the question could not
+        # be asked of the record at all. NULL on rows predating this column.
+        player_rank = Column(Integer, nullable=True)
+        opponent_rank = Column(Integer, nullable=True)
+        both_challenger_level = Column(Integer, nullable=True)
         # WHAT THE MODEL ACTUALLY USED, captured at pick time.
         #
         # Every retrospective analysis before this had to re-run today's code
@@ -232,6 +265,10 @@ try:
                 "tournament": self.tournament,
                 "surface": self.surface,
                 "pick_group": (self.pick_group or "potd"),
+                # NOT coerced to 0. NULL means "posted before the star was
+                # recorded", which is different from "was not the star", and
+                # potd_month_record has to be able to tell them apart.
+                "is_potd": (None if self.is_potd is None else int(self.is_potd)),
                 "confidence_breakdown": self.confidence_breakdown,
                 "pre_guard": int(self.pre_guard or 0),
                 "board_policy_version": (self.board_policy_version or "v1"),
@@ -240,6 +277,15 @@ try:
                 "model_version": (self.model_version or "pre-a2"),
                 "result_value": self.result_value,
                 "model_inputs": self.model_inputs,
+                # NULL on every row predating the split — never coerced to 0,
+                # because "not recorded" and "zero edge" are different facts.
+                "edge_sigma": self.edge_sigma,
+                "confidence_data_only": self.confidence_data_only,
+                "player_rank": self.player_rank,
+                "opponent_rank": self.opponent_rank,
+                # NULL, not 0 — "not recorded" and "was a tour match" are
+                # different facts and the calibration has to tell them apart.
+                "both_challenger_level": self.both_challenger_level,
             }
 
     class CacheEntry(Base):
@@ -303,6 +349,14 @@ try:
         # abuse review. Personal data under GDPR — it needs a line in the privacy
         # policy and should not outlive its purpose.
         signup_ip           = Column(String, default="", index=True)
+        # A SECOND SIGNAL THAT IS NOT AN EMAIL. A new address is free to make and
+        # a household IP is shared by everyone in it, so neither alone can
+        # separate "a repeat trialist" from "a different person on the same
+        # wifi". This is a salted hash of the address AND the browser's
+        # user-agent — weak as a fingerprint, but it distinguishes two devices
+        # behind one router, which is the case email and IP both get wrong.
+        # Hashed for the same reason signup_ip is, and personal data likewise.
+        signup_device       = Column(String, default="", index=True)
 
     class PreviewSession(Base):
         """One row per anonymous visitor's free look at the app.
@@ -372,6 +426,12 @@ def init_db() -> None:
                 # worse than an honest gap in the abuse history.
                 conn.execute(text(
                     "ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS signup_ip VARCHAR"))
+                # signup_device: added with the trial gate (2026-09-21). Existing
+                # rows stay blank for the same reason signup_ip's do — it was
+                # never captured for them, so they can only be matched on email
+                # and IP, which is an honest gap rather than a guess.
+                conn.execute(text(
+                    "ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS signup_device VARCHAR"))
                 # Existing rows stay NULL: the inputs were never captured for them
                 # and inventing values would be worse than an honest gap.
                 conn.execute(text(
@@ -414,6 +474,26 @@ def init_db() -> None:
                     "UPDATE picks SET odds_type = 'standard' WHERE odds_type IS NULL"))
                 conn.execute(text(
                     "ALTER TABLE picks ALTER COLUMN odds_type SET DEFAULT 'standard'"))
+                # is_potd: which board pick carried the star. Deliberately left
+                # NULL on existing rows — they were posted before the bot
+                # recorded it, and backfilling them to 0 would assert that none
+                # of them was the Pick of the Day, which is false. NULL reads as
+                # "unknown" and those rows are simply outside the POTD record.
+                conn.execute(text(
+                    "ALTER TABLE picks ADD COLUMN IF NOT EXISTS is_potd INTEGER"))
+                conn.execute(text(
+                    "ALTER TABLE picks ALTER COLUMN is_potd SET DEFAULT 0"))
+                # One-off: recover the stars that were posted before the column
+                # existed, from the bot's own channel history. See
+                # potd_backfill.py for why this is read back rather than
+                # recomputed. Idempotent, and never fatal.
+                try:
+                    from src.potd_backfill import apply as _apply_stars
+                    _n = _apply_stars(conn, text, logger, _slate_date_of)
+                    if _n:
+                        logger.info("potd backfill: flagged %d posted star(s)", _n)
+                except Exception as _exc:  # noqa: BLE001
+                    logger.warning("potd backfill skipped: %s", _exc)
                 # excluded_from_record: superseded / duplicate picks flagged out of
                 # the record + recaps but retained for audit. Existing rows -> 0.
                 conn.execute(text(
@@ -445,6 +525,24 @@ def init_db() -> None:
                 conn.execute(text(
                     "ALTER TABLE picks ADD COLUMN IF NOT EXISTS "
                     "result_value DOUBLE PRECISION"))
+                # edge_sigma / confidence_data_only: the confidence-vs-edge split,
+                # recorded from the board so it can be graded rather than argued
+                # about. DELIBERATELY NOT BACKFILLED — a value reconstructed from
+                # today's code is not what the model said on the day, and the whole
+                # point of these columns is to measure the new numbers on picks
+                # that were actually posted. NULL means "posted before the split".
+                conn.execute(text(
+                    "ALTER TABLE picks ADD COLUMN IF NOT EXISTS "
+                    "edge_sigma DOUBLE PRECISION"))
+                conn.execute(text(
+                    "ALTER TABLE picks ADD COLUMN IF NOT EXISTS "
+                    "confidence_data_only DOUBLE PRECISION"))
+                # Tour level. Not backfilled: ranks move, so a rank fetched
+                # today is not the rank the pick was priced against, and a
+                # reconstructed value would quietly become "evidence".
+                for _c in ("player_rank", "opponent_rank", "both_challenger_level"):
+                    conn.execute(text(
+                        "ALTER TABLE picks ADD COLUMN IF NOT EXISTS %s INTEGER" % _c))
         except Exception as mexc:  # noqa: BLE001 — non-fatal; column may already exist
             logger.warning("picks pick_group migration skipped: %s", mexc)
         _READY = True
@@ -472,6 +570,29 @@ def _session():
 
 
 # ── CRUD helpers (all degrade gracefully when the DB is disabled) ────────────
+def _f_or_none(v):
+    """float(v), or None for anything that is not a real number.
+
+    Guards the shadow columns: the bot sends whatever the API returned, and a
+    missing/garbage value must land as NULL rather than 0 or an insert error.
+    """
+    try:
+        return float(v) if isinstance(v, (int, float)) and v == v else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _i_or_none(v):
+    """int(v), or None for anything that is not a real number. Booleans count
+    (both_challenger_level arrives as one), so they are coerced deliberately."""
+    if isinstance(v, bool):
+        return int(v)
+    try:
+        return int(v) if isinstance(v, (int, float)) and v == v else None
+    except (TypeError, ValueError):
+        return None
+
+
 def log_pick(rec: dict) -> dict:
     """Insert one pick record. Returns the stored row as a dict, or {} on failure."""
     if not _READY:
@@ -496,6 +617,15 @@ def log_pick(rec: dict) -> dict:
                 odds_type=(rec.get("odds_type") or "standard"),
                 model_version=(rec.get("model_version") or MODEL_VERSION),
                 model_inputs=(rec.get("model_inputs") or None),
+                is_potd=(1 if rec.get("is_potd") else 0),
+                # Kept as None rather than 0 when absent: a pick with no recorded
+                # edge is not a pick with zero edge, and the calibration that
+                # reads these has to be able to tell the two apart.
+                edge_sigma=_f_or_none(rec.get("edge_sigma")),
+                confidence_data_only=_f_or_none(rec.get("confidence_data_only")),
+                player_rank=_i_or_none(rec.get("player_rank")),
+                opponent_rank=_i_or_none(rec.get("opponent_rank")),
+                both_challenger_level=_i_or_none(rec.get("both_challenger_level")),
             )
             s.add(row)
             s.flush()
@@ -694,10 +824,35 @@ def subscriptions_debug() -> dict:
     if not _READY or Subscription is None:
         return {"ready": bool(_READY), "model": Subscription is not None,
                 "note": "db disabled or model missing"}
-    out = {"ready": True, "rows": 0, "sample": []}
+    out = {"ready": True, "rows": 0, "sample": [], "by_status": {},
+           "lapsed": []}
     with _session() as s:
         rows = s.query(Subscription).all()
         out["rows"] = len(rows)
+        # STATUS HISTOGRAM + the lapsed rows, so "who still has access and why"
+        # is answerable without opening Stripe. Aggregate and Discord-id only:
+        # no email, no customer id, no full subscription id. This endpoint is
+        # already behind BILLING_SYNC_TOKEN and must stay as boring as possible.
+        from collections import Counter as _C
+        out["by_status"] = dict(_C((r.status or "").lower() or "(blank)"
+                                   for r in rows))
+        _now = datetime.now(timezone.utc)
+        for r in rows:
+            st = (r.status or "").lower()
+            end = r.current_period_end
+            if end is not None and end.tzinfo is None:
+                end = end.replace(tzinfo=timezone.utc)
+            expired = bool(end and end <= _now)
+            # Must match billing.ACTIVE_STATUSES — active | trialing, unexpired.
+            if st in ("active", "trialing") and not expired:
+                continue
+            out["lapsed"].append({
+                "discord_id": r.discord_id or "",
+                "status": st or "(blank)",
+                "period_end": str(end)[:19] if end else None,
+                "expired": expired,
+                "linked": bool(r.discord_id),
+            })
         for r in rows[:5]:
             out["sample"].append({
                 "sub": (r.stripe_sub_id or "")[-8:],
@@ -973,6 +1128,257 @@ def pick_source(p: dict) -> str:
     return "prizepicks"
 
 
+# ── PICK OF THE DAY, BY MONTH ───────────────────────────────────────────────
+# The headline record counted every play the board posted — five to eighteen a
+# day. That is a board record, not a Pick of the Day record, and the two answer
+# different questions: "how did everything you put out do" against "how did the
+# one you led with do". The second is what the ⭐ promises, so it is what the
+# track record now reports.
+#
+# SCOPED TO THE CALENDAR MONTH IN ET, because that is the window the app's
+# picks tab and the bot's recap already speak in, and an all-time POTD figure
+# would be a different number again.
+#
+# Rows posted before the is_potd column existed carry NULL, not 0: we do not
+# know which of them was starred, so they are outside this record rather than
+# counted as board picks. That makes the figure start at the column, which is
+# honest — and see the note in the Pick model.
+_ET_ZONE = "America/New_York"
+
+
+def _slate_date_of(p: dict) -> str:
+    """The ET date a pick's match is PLAYED, from when the board was built.
+
+    THE SAME NOON RULE THE BOT USES (bot._slate_date_of): a board generated from
+    noon ET onward is building TOMORROW's card, anything earlier is today's.
+
+    This is not a detail. Boards post around 22:00 ET, so generated_at is always
+    the EVENING BEFORE the slate — measured against the ⭐ posts recovered from
+    the channel, the raw ET date of generated_at matched the slate 0 times out
+    of 11, always landing a day early. Grouping months on it therefore pushed
+    the pick that PLAYED on September 1st into August.
+
+    resolved_at is closer but not reliable either: a late grade (Sloane
+    Stephens, 9/15 slate) resolves on the 16th, so it matched 9 of 11.
+    """
+    import datetime as _dt
+    raw = p.get("generated_at")
+    if not raw:
+        return ""
+    try:
+        if isinstance(raw, str):
+            raw = _dt.datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if raw.tzinfo is None:
+            raw = raw.replace(tzinfo=_dt.timezone.utc)
+        try:
+            from zoneinfo import ZoneInfo
+            raw = raw.astimezone(ZoneInfo(_ET_ZONE))
+        except Exception:  # noqa: BLE001 — UTC is close enough to keep this alive
+            pass
+        day = raw.date()
+        if raw.hour >= 12:
+            day += _dt.timedelta(days=1)
+        return day.isoformat()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _et_month_of(p: dict) -> str:
+    """The ET YYYY-MM a pick belongs to, by the date it PLAYS."""
+    return _slate_date_of(p)[:7]
+
+
+def et_month_now() -> str:
+    import datetime as _dt
+    now = _dt.datetime.now(_dt.timezone.utc)
+    try:
+        from zoneinfo import ZoneInfo
+        now = now.astimezone(ZoneInfo(_ET_ZONE))
+    except Exception:  # noqa: BLE001
+        pass
+    return now.strftime("%Y-%m")
+
+
+def potd_month_record(month: str = None, picks: list = None) -> dict:
+    """W/L for the STARRED pick only, within one ET calendar month.
+
+    ``tracked`` is how many starred picks the month has graded. It is published
+    alongside the rate on purpose: the star only goes on a play that clears the
+    80 bar, some days have none, and a rate over three picks should not be read
+    like a rate over sixty.
+    """
+    month = month or et_month_now()
+    rows = picks if picks is not None else all_picks()
+    try:
+        starred = [p for p in rows
+                   if p.get("is_potd")
+                   and not p.get("excluded_from_record")
+                   and pick_source(p) == "prizepicks"
+                   and _et_month_of(p) == month]
+        decided = [p for p in starred if p.get("result") in ("W", "L", "PUSH")]
+        # PUSH counts as a win — the same policy the rest of the record uses.
+        wins = sum(1 for p in decided if p.get("result") in ("W", "PUSH"))
+        losses = len(decided) - wins
+        return {"month": month, "wins": wins, "losses": losses,
+                "tracked": len(decided),
+                "pending": sum(1 for p in starred
+                               if p.get("result") not in ("W", "L", "PUSH", "VOID")),
+                "win_rate": round(wins / len(decided) * 100, 1) if decided else None}
+    except Exception as exc:  # noqa: BLE001 — the record must still render
+        logger.warning("potd_month_record failed: %s", exc)
+        return {"month": month, "wins": 0, "losses": 0, "tracked": 0,
+                "pending": 0, "win_rate": None}
+
+
+# ── PER-PROP PROJECTION BIAS ─────────────────────────────────────
+# Measured against WHAT ACTUALLY HAPPENED, not against the book's line. Fitting a
+# projection to the line would just be copying the market; fitting it to the
+# realised stat corrects an error. Over the graded history the props ran:
+#
+#     Aces -1.70 (projects HIGH)   Player Total Games Won +1.92 (projects LOW)
+#     Total Games +1.90            Double Faults +1.31
+#     Break Points Won -0.27       Fantasy Score -0.28
+#
+# Aces over-projecting by 1.7 on a mean line of 7.3 is why it was the worst prop
+# on the board before it was retired. Rolling rather than frozen so it tracks the
+# model instead of a snapshot, and clamped because a small window on a thin prop
+# can produce a correction larger than the thing being corrected.
+# CLAMP RAISED 1.5 -> 2.5 (2026-09-24). The clamp, not the window, was the
+# binding constraint: THREE of six props sat pinned against 1.5 (Aces -1.500,
+# PTGW +1.500, Double Faults +1.434), so the correction was being throttled
+# below what the realised errors were asking for.
+#
+# Walk-forward backtest, corrections computed only from picks already RESOLVED
+# at that moment (no lookahead), on the props whose LEAN comes from
+# sign(projection − line) — Aces / Total Games / Double Faults, n=237:
+#
+#   clamp 1.5 (old)   119-111   51.7%
+#   clamp 2.5         127-108   54.0%     <- and per prop:
+#   clamp 4.0         123-112   52.3%        Aces          42.9% -> 57.1%
+#                                            Double Faults 54.5% -> 57.4%
+#                                            Total Games   47.4% -> 49.5%
+#
+# Two reasons to trust it beyond the headline number. The WINDOW is nearly
+# irrelevant — 45d, 60d, 90d and 180d all return exactly 54.0% at clamp 2.5 —
+# so this is not a window fit. And clamp 4.0 is WORSE than 2.5, so it is not
+# "bigger is better" either; 2.5 is an interior optimum.
+#
+# SCOPE. The backtest can only cover the three props whose side comes from the
+# projection. Break Points Won, Fantasy Score and PTGW take their side from a
+# scenario-mixture P(over), so a larger correction moves their projection, edge
+# and board RANK but not their lean — untested there, which is the main risk in
+# this change. PROP_BIAS_CLAMP reverts it without a deploy.
+_BIAS_CLAMP_DEFAULT = float(os.getenv("PROP_BIAS_CLAMP", "2.5") or 2.5)
+
+
+# Props whose stored model_projection is a FAIR LINE — the 50/50 point of a
+# scenario mixture — rather than an expected value. Mirrors _FAIR_LINE_PROPS in
+# discord-bot/bot.py, which records the same boundary per pick.
+#
+# THESE MUST NOT GET A BIAS CORRECTION, and it is a definitional problem rather
+# than a tuning one. prop_bias measures mean(actual − projection). When the
+# projection is a MEDIAN, that quantity is not "how far the model is off" — it
+# is the model's error PLUS the mean-to-median gap of a skewed count
+# distribution, and the two cannot be separated after the fact. For a
+# right-skewed count the gap alone is positive even from a perfectly calibrated
+# model, so the number is uninterpretable and correcting by it shifts a median
+# by a mean-derived constant, which is not a defined operation.
+#
+# This is the exact error the _FAIR_LINE_PROPS comment in bot.py warns about:
+# "comparing a mean against a median and will report noise as a broken model."
+# It was being made here. BP's correction was small (-0.300, well inside both
+# clamps and untouched by the clamp change), so nothing in the record was made
+# worse by it — but it was never a meaningful number.
+#
+# Omitting the prop yields zero correction, which prop_bias already treats as
+# the honest default for "we cannot estimate this". Break Points Won's lean and
+# confidence come from the mixture P(over) and are computed BEFORE the
+# correction is applied, so dropping it moves the displayed projection and the
+# edge, never the side.
+#
+# To correct BP properly you would need the mixture MEAN (stored per pick as
+# bp_mixture_mean in model_inputs), not the fair line — and then a correction
+# applied to the mean, not to the fair line. That is a real piece of work, not
+# a constant, and it is deliberately not attempted here.
+FAIR_LINE_PROPS = {"Break Points Won", "Fantasy Score"}
+
+# Props whose projection is CONSTRAINED BY AN IDENTITY, so a per-player additive
+# constant is not a correction — it is a violation.
+#
+# Player Total Games Won renormalises onto the match total by construction:
+#     projection = own_mean * (games_combined / (own_mean + opp_mean))
+# which guarantees player + opponent == combined games. Adding the same bias to
+# BOTH players breaks that by TWICE the constant, and the two sides of one match
+# stop summing to the match.
+#
+# Measured live on Volynets/Birrell (2026-09-24), the case the operator caught:
+#     renormalised   10.55 + 8.55 = 19.10  == games_combined 19.1   identity OK
+#     +2.447 each    13.00 + 11.00 = 24.00 vs 19.1                  broken by 4.9
+# and it is the same constant that pushed Birrell to a projection ABOVE her line
+# while her lean (from the mixture P(over)) stayed UNDER. Removing it fixes the
+# summing violation and the projection/lean contradiction together.
+#
+# This was made WORSE by raising PROP_BIAS_CLAMP 1.5 -> 2.5 earlier the same day:
+# PTGW's correction went +1.500 -> +2.447, so the violation grew from 3.0 to 4.9.
+#
+# If PTGW genuinely runs low, the error is in the match LENGTH, not in the split —
+# and Total Games carries its own correction, which PTGW inherits coherently
+# through games_combined. Correcting the share instead of the total cannot be
+# right, because the share is not free to move.
+IDENTITY_CONSTRAINED_PROPS = {"Player Total Games Won"}
+
+# What remains correctable: Aces, Total Games, Double Faults — exactly the props
+# whose projection is an unconstrained MEAN and whose lean is sign(projection −
+# line). That is also exactly the set the clamp walk-forward backtest covered
+# (n=237), so the 2.5 clamp evidence now applies to precisely the props it is
+# applied to, rather than spilling onto three it could not test.
+NO_BIAS_PROPS = FAIR_LINE_PROPS | IDENTITY_CONSTRAINED_PROPS
+
+
+def prop_bias(days: int = 90, min_n: int = 25, clamp: float = None) -> dict:
+    """{prop_type: mean(actual - projection)} over a trailing window.
+
+    A prop with fewer than ``min_n`` graded rows in the window is OMITTED rather
+    than returned with a noisy estimate — callers treat a missing prop as zero
+    correction, which is the honest default. Fair-line props are omitted for a
+    stronger reason: the quantity is undefined for them. See FAIR_LINE_PROPS.
+    """
+    if clamp is None:
+        clamp = _BIAS_CLAMP_DEFAULT
+    import datetime as _dt
+    out = {}
+    try:
+        cut = (_dt.datetime.now(_dt.timezone.utc)
+               - _dt.timedelta(days=days)).isoformat()
+        buckets = {}
+        for p in all_picks():
+            if p.get("excluded_from_record"):
+                continue
+            if p.get("result") not in ("W", "L", "PUSH"):
+                continue
+            # A fair line is a median, so actual − median is not a bias; and an
+            # identity-constrained projection cannot take a per-player constant
+            # at all. Skipped at collection so the prop never reaches min_n and
+            # is therefore omitted entirely = zero correction.
+            if (p.get("prop_type") or "") in NO_BIAS_PROPS:
+                continue
+            proj, act = p.get("model_projection"), p.get("result_value")
+            if not isinstance(proj, (int, float)) or not isinstance(act, (int, float)):
+                continue
+            if str(p.get("resolved_at") or "") < cut:
+                continue
+            buckets.setdefault(p.get("prop_type") or "?", []).append(act - proj)
+        for prop, errs in buckets.items():
+            if len(errs) < min_n:
+                continue
+            b = sum(errs) / len(errs)
+            out[prop] = round(max(-clamp, min(clamp, b)), 3)
+    except Exception as exc:  # noqa: BLE001 — a projection must never fail on this
+        logger.warning("prop_bias failed: %s", exc)
+        return {}
+    return out
+
+
 def record_summary() -> dict:
     """Aggregate record, split by SOURCE then by pick group.
 
@@ -1020,6 +1426,8 @@ def record_summary() -> dict:
         "standard": _seg([p for p in pp if (p.get("odds_type") or "standard") == "standard"]),
         "demon":    _seg([p for p in pp if (p.get("odds_type") or "standard") == "demon"]),
     }
+    # The headline the bot and the site now lead with — see potd_month_record.
+    summary["potd_month"] = potd_month_record(picks=picks)
     return summary
 
 
@@ -1075,6 +1483,9 @@ def public_summary(days: int = 30) -> dict:
         return {"all_time": tally(graded), "live_props": tally(live),
                 "recent": tally(recent), "recent_days": days,
                 "days_active": days_active, "nfl": tally(nfl),
+                # The headline. See potd_month_record: the starred play only,
+                # for the current ET month.
+                "potd_month": potd_month_record(),
                 "retired_props": sorted(RETIRED_PROPS), "ready": True}
     except Exception as exc:  # noqa: BLE001 — a marketing page must still render
         logger.warning("public_summary failed: %s", exc)
@@ -1173,6 +1584,87 @@ def trials_from_ip(ip: str) -> list:
     except Exception:  # noqa: BLE001
         logger.exception("trials_from_ip failed")
         return []
+
+
+def prior_trial(email: str = "", ip: str = "", device: str = "") -> dict:
+    """Has this person already started a subscription here before?
+
+    {"used": bool, "matched": [...], "count": n} — never raises, and returns
+    used=False on any failure, because a database blip must not turn a genuine
+    new customer away from the trial.
+
+    ANY ONE SIGNAL IS ENOUGH, deliberately. Requiring email AND ip AND device to
+    all match would be trivial to walk around: change the email, which costs
+    nothing, and the other two never get consulted. Each of the three is weak on
+    its own for a different reason — a new address is free to make, a household
+    IP is shared by everyone in it, and a device hash changes with a browser
+    update — so the gate reads them as alternatives rather than as a conjunction.
+
+    BLANK VALUES NEVER MATCH. Rows that predate signup_ip/signup_device carry
+    empty strings, and an empty-matches-empty rule would treat every one of them
+    as the same person and refuse the trial to everybody.
+    """
+    if not _READY or Subscription is None:
+        return {"used": False, "matched": [], "count": 0}
+    em = (email or "").strip().lower()
+    ip = (ip or "").strip()
+    dv = (device or "").strip()
+    if not (em or ip or dv):
+        return {"used": False, "matched": [], "count": 0}
+    try:
+        from sqlalchemy import or_, func
+        terms = []
+        if em:
+            terms.append(func.lower(Subscription.app_email) == em)
+        if ip:
+            terms.append(Subscription.signup_ip == ip)
+        if dv:
+            terms.append(Subscription.signup_device == dv)
+        with _session() as s:
+            rows = (s.query(Subscription).filter(or_(*terms))
+                      .order_by(Subscription.created_at.desc()).limit(25).all())
+        matched = []
+        for r in rows:
+            why = []
+            if em and (r.app_email or "").strip().lower() == em:
+                why.append("email")
+            if ip and (r.signup_ip or "").strip() == ip:
+                why.append("ip")
+            if dv and (r.signup_device or "").strip() == dv:
+                why.append("device")
+            if not why:
+                continue
+            matched.append({"on": why, "status": r.status,
+                            "created_at": (r.created_at.isoformat()
+                                           if r.created_at else None)})
+        return {"used": bool(matched), "matched": matched, "count": len(matched)}
+    except Exception:  # noqa: BLE001 — never block a sale on a failed read
+        logger.exception("prior_trial lookup failed")
+        return {"used": False, "matched": [], "count": 0}
+
+
+def set_signup_device(stripe_sub_id: str, device: str) -> bool:
+    """Stamp the signup device key onto a subscription once it exists.
+
+    The device twin of set_signup_ip, and written once for the same reason: the
+    FIRST device is the one that answers "where was this trial started from".
+    Overwriting it on a later event would let someone launder a repeat trial by
+    finishing it from a different browser.
+    """
+    if not _READY or Subscription is None or not (stripe_sub_id and device):
+        return False
+    try:
+        with _session() as s:
+            row = (s.query(Subscription)
+                     .filter(Subscription.stripe_sub_id == stripe_sub_id).one_or_none())
+            if row is None:
+                return False
+            if not (row.signup_device or ""):
+                row.signup_device = device[:64]
+            return True
+    except Exception:  # noqa: BLE001
+        logger.exception("set_signup_device failed")
+        return False
 
 
 def set_signup_ip(stripe_sub_id: str, ip: str) -> bool:
@@ -1394,7 +1886,21 @@ def nfl_board_replace(rows: list, book: str, slate_date: str) -> int:
         return 0
 
 
-def nfl_board(book: str = None, slate_date: str = None) -> list:
+def nfl_board(book: str = None, slate_date: str = None,
+              not_before: str = None) -> list:
+    """The stored NFL board. `slate_date` pins one slate exactly; `not_before`
+    drops slates that have already been played.
+
+    WHY not_before EXISTS. nfl_board_replace only replaces the slate it is
+    given, so every slate ever scanned stays in this table forever, and the
+    default ordering is slate_date ASCENDING — so a caller that asked for "the
+    board" got every dead game first and tonight's actual slate last. On 9/14
+    that was 175 finished rows in front of 10 live ones, which is what the NFL
+    tab looked like: a board full of games that had already been played.
+
+    Slate dates are stored as ISO strings, where lexicographic order IS
+    chronological order, so the comparison needs no date parsing.
+    """
     if not is_ready():
         return []
     try:
@@ -1404,6 +1910,8 @@ def nfl_board(book: str = None, slate_date: str = None) -> list:
                 q = q.filter(NflBoardRow.book == book)
             if slate_date:
                 q = q.filter(NflBoardRow.slate_date == slate_date)
+            elif not_before:
+                q = q.filter(NflBoardRow.slate_date >= not_before)
             rows = q.order_by(NflBoardRow.slate_date, NflBoardRow.id).all()
             return [_nfl_dict(r) for r in rows]
     except Exception as exc:  # noqa: BLE001

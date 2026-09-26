@@ -19,10 +19,10 @@ export default function ResearchTab({ onOpenPlayer }) {
   useEffect(() => {
     let alive = true
     props.forEach(b => {
-      const c = cachedProjection(b.key)
+      const c = cachedProjection(b)
       if (c !== undefined) { setProj(m => (b.key in m ? m : { ...m, [b.key]: c || { failed: true } })); return }
       setProj(m => (m[b.key]?.loading ? m : { ...m, [b.key]: { loading: true } }))
-      projectRow(b, b.tour).then(res => { if (alive) setProj(m => ({ ...m, [b.key]: res || { failed: true } })) })
+      projectRow(b, b.tour, { priority: true }).then(res => { if (alive) setProj(m => ({ ...m, [b.key]: res || { failed: true } })) })
     })
     return () => { alive = false }
   }, [list.length])

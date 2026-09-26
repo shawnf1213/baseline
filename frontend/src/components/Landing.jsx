@@ -108,6 +108,18 @@ export default function Landing({ onConnectDiscord, onSubscribe, onPreview,
   }, [])
 
   const pct = (v) => (v == null ? '—' : `${v.toFixed(1)}%`)
+  // The starred play's record for the current ET month — the headline. Shaped
+  // by the backend (database.potd_month_record); defaulted here so the block
+  // renders on an older payload that predates the field.
+  const potd = rec?.potd_month || { tracked: 0, wins: 0, losses: 0, win_rate: null }
+  // Named from the month the RECORD is for, not from the reader's clock — a
+  // visitor in Auckland must not see "October" over September's figures.
+  const monthName = (() => {
+    const m = String(potd.month || '')
+    if (!/^\d{4}-\d{2}$/.test(m)) return 'This month'
+    return new Date(Date.UTC(+m.slice(0, 4), +m.slice(5, 7) - 1, 1))
+      .toLocaleDateString('en-US', { month: 'long', timeZone: 'UTC' })
+  })()
 
   return (
     <div style={{ background: BG, color: '#fff', fontFamily: FONT,
@@ -237,14 +249,27 @@ export default function Landing({ onConnectDiscord, onSubscribe, onPreview,
               <div style={{ display: 'grid', gap: 28,
                             gridTemplateColumns:
                               'repeat(auto-fit, minmax(158px, 1fr))' }}>
-                <Stat big tone={GREEN} value={pct(rec.live_props.win_rate)}
-                      label="Hit rate, props on the board"
+                {/* THE HEADLINE IS THE ⭐, FOR THE MONTH. It was every play the
+                    board posted, five to eighteen a day — a board record, not a
+                    Pick of the Day record. The ⭐ is what the product leads with
+                    daily, so it is what the record reports. The sample is stated
+                    next to it because the star only goes on a play that clears
+                    its prop's conviction bar — 80 for most, but 70 for Break
+                    Points Won, whose confidence is a scenario-mixture P(side)
+                    on a different scale — and some days carry none. */}
+                <Stat big tone={GREEN}
+                      value={potd.tracked ? pct(potd.win_rate) : '—'}
+                      label={`⭐ Pick of the Day · ${monthName}`}
+                      sub={potd.tracked
+                        ? `${potd.wins}-${potd.losses} · ${potd.tracked} graded`
+                        : 'no graded star yet this month'} />
+                {/* The full board stays on the page. Leading with a small-sample
+                    number and showing nothing else would be selecting a figure
+                    rather than reporting one. */}
+                <Stat value={pct(rec.live_props.win_rate)}
+                      label="Full board, all time"
                       sub={`${rec.live_props.wins}-${rec.live_props.losses}`
                            + ` · ${rec.live_props.total} graded`} />
-                <Stat value={pct(rec.recent.win_rate)}
-                      label={`Last ${rec.recent_days} days`}
-                      sub={`${rec.recent.wins}-${rec.recent.losses}`
-                           + ` · ${rec.recent.total} graded`} />
                 <Stat value={String(rec.all_time.total)} label="Picks graded"
                       sub={`across ${rec.days_active} days`} />
                 <Stat value={rec.nfl.total
@@ -253,13 +278,15 @@ export default function Landing({ onConnectDiscord, onSubscribe, onPreview,
                         ? `${rec.nfl.total} graded so far` : 'just launched'} />
               </div>
 
-              {/* THE ASTERISK, STATED RATHER THAN BURIED. The headline counts
-                  only the props still on the board; two were pulled for losing.
-                  Saying so is the difference between a filtered number and a
-                  dishonest one — and it is checkable against the in-app log. */}
+              {/* THE ASTERISK, STATED RATHER THAN BURIED. The full-board figure
+                  counts only the props still on the board; two were pulled for
+                  losing. Saying so is the difference between a filtered number
+                  and a dishonest one — and it is checkable against the in-app
+                  log. It reads "full board" rather than "headline" now because
+                  the headline is the ⭐, which is a different population. */}
               <p style={{ color: '#6f6f6f', fontSize: 12.5, lineHeight: 1.6,
                           marginTop: 26, maxWidth: 780 }}>
-                The headline covers the props currently posted.{' '}
+                The full-board figure covers the props currently posted.{' '}
                 {(rec.retired_props || []).join(' and ').toLowerCase()} were
                 dropped after measuring badly, and counting them the all-time
                 record is{' '}
@@ -407,6 +434,18 @@ export default function Landing({ onConnectDiscord, onSubscribe, onPreview,
             record over one stretch does not predict the next one. Bet only what
             you can afford to lose, and only where it is legal to do so. 21+.
           </p>
+          {/* Plain <a> rather than app navigation: these are static files served
+              OUTSIDE the auth gate on purpose, so they stay reachable to someone
+              with no account — and to the reviewers who have to read them. */}
+          <div style={{ marginTop: 16, display: 'flex', gap: 18,
+                        flexWrap: 'wrap', fontSize: 12.5 }}>
+            <a href="/privacy" style={{ color: '#8a8a8a', textDecoration: 'none' }}>
+              Privacy Policy</a>
+            <a href="/terms" style={{ color: '#8a8a8a', textDecoration: 'none' }}>
+              Terms of Service</a>
+            <a href="mailto:support@baselineev.com"
+               style={{ color: '#8a8a8a', textDecoration: 'none' }}>Contact</a>
+          </div>
         </div>
       </footer>
     </div>

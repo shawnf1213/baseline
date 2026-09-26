@@ -25,6 +25,14 @@ except Exception:  # pragma: no cover
 
 import requests
 
+# Venue clock for the card-date rule — see CARD_START_LOCAL_HOUR and the block
+# in _price_one. Never fatal: without it every card falls back to the ET cutoff,
+# which is the behaviour that shipped before it.
+try:
+    import venue_tz
+except Exception:  # noqa: BLE001 — Rule 2, a missing helper must not stop a board
+    venue_tz = None
+
 log = logging.getLogger("baseline-bot.pickoftheday")
 
 API_BASE = os.getenv(
@@ -56,7 +64,27 @@ MAX_CONCURRENT  = 4       # parallelise backend calcs so the full board (100+ pr
                           # evaluates inside the pre-gen window. CALC_RETRIES with
                           # backoff absorbs the occasional 502 under light concurrency.
 MATCH_THRESHOLD = 0.80    # fuzzy name-match threshold
-MAX_RANKED_PLAYS = 8      # post the top-8 ranked plays (2026-09-03, user: 12 -> 8).
+# CUT 8 -> 5 (2026-09-18, user: "way too many out everyday"). Env-overridable so
+# this can be tuned without a deploy. NOTE what the September numbers actually
+# say about the reason given — see BOARD_MIN_CONF below: volume is not what is
+# holding the hit rate down, so this cut buys a tighter card, not a better one.
+# Matches starting at or after this ET hour tonight belong to TOMORROW's card,
+# not today's. See the Asia-swing note in the slate filter below: a Singapore or
+# Tokyo day opens around 22:00-23:00 ET and runs through the following ET
+# morning. 21 is late enough that a US or European card is finished by then, so
+# this only ever picks up an Asia-swing opener.
+ASIA_SLATE_CUTOFF_HOUR = int(os.getenv("ASIA_SLATE_CUTOFF_HOUR", "21") or "21")
+
+# The hour, IN THE VENUE'S OWN TIME, before which the next card is still today's
+# and after which it is tomorrow's. A tennis card opens late morning local
+# everywhere on tour, so this is a fact about the sport rather than about a
+# region — unlike the ET cutoff above, it does not need revisiting when the tour
+# moves. See the card-date block in _price_one.
+CARD_START_LOCAL_HOUR = int(os.getenv("CARD_START_LOCAL_HOUR", "11") or "11")
+
+MAX_RANKED_PLAYS = int(os.getenv("MAX_RANKED_PLAYS", "5") or "5")
+                          # post the top-5 ranked plays (2026-09-03: 12 -> 8;
+                          # 2026-09-18: 8 -> 5).
                           # The bot pages at 6, so a full board is one page of 6
                           # plus a short second page. The 3x still draws its legs
                           # from the full evaluated pool.
@@ -185,7 +213,21 @@ THIN_SLATE_NOTE = "⚠️ Play lightly — slate not very full today."
 # What is deliberately UNCHANGED: all confidence computation, knife-edge checks,
 # the PTGW structural guards, depth ceilings (they gate via confidence.py exactly
 # as before), and the ranking rule (confidence DESC, edge magnitude tiebreaker).
-BOARD_MIN_CONF = 65   # uniform board + 3x-pool floor
+# BACK TO 65 (2026-09-18, same day). Raised to 70 that morning to cut volume;
+# put back within the day because it was the wrong lever and the board showed it
+# — that night only 3 of 9 candidates cleared 70, and at 75 the board was EMPTY.
+# It was dropping plays on a score that does not rank: measured over 677 graded
+# picks the confidence AUC is 0.489 and a flat prior beats it on Brier, with the
+# cashed rate by band running 65-69 44%, 70-74 59%, 75-79 44%, 80-84 54%. A
+# floor on a number that does not separate winners from losers only shrinks the
+# card; MAX_RANKED_PLAYS is the lever that actually controls volume, and it does
+# it without pretending the cut was about quality.
+# Qualifying-draw matches are excluded from the board — see the full evidence at
+# the skip site in _price_one. Env-tunable so it reverts without a deploy.
+SKIP_QUALIFYING = (os.getenv("SKIP_QUALIFYING", "1") or "1") not in ("0", "false", "False")
+
+BOARD_MIN_CONF = int(os.getenv("BOARD_MIN_CONF", "65") or "65")
+                      # uniform board + 3x-pool floor
 SLIP_MIN_CONF  = 70   # a 3x leg must clear this (above the board floor)
 POTD_THRESHOLD = 80   # uniform Pick-of-the-Day bar, every eligible prop
 # The ⭐ exclusions: Double Faults never leads the card, and neither does any DEMON
@@ -519,12 +561,92 @@ async def _evaluate(prop: dict, sem: asyncio.Semaphore):
                 log.info("POD skip (no scheduled start): %r vs %r", p_name, o_name)
                 return None
             _now_et = datetime.now(_ET)
-            _target_date = (_now_et + timedelta(days=1)).date() if _now_et.hour >= 12 else _now_et.date()
-            _start_et_date = datetime.fromtimestamp(start, timezone.utc).astimezone(_ET).date()
-            if _start_et_date != _target_date:
-                log.info("POD skip (match plays %s, target slate %s): %r vs %r",
-                         _start_et_date, _target_date, p_name, o_name)
+            _evening = _now_et.hour >= 12
+            _target_date = (_now_et + timedelta(days=1)).date() if _evening else _now_et.date()
+            _start_et = datetime.fromtimestamp(start, timezone.utc).astimezone(_ET)
+            _start_et_date = _start_et.date()
+
+            # ── THE ASIA SWING DOES NOT FIT IN AN ET CALENDAR DAY ────────────
+            # A tournament day in Singapore, Tokyo or Beijing OPENS late on one
+            # ET date and finishes on the next. Singapore WTA, 2026-09-20:
+            #
+            #     Kasatkina  v Sasnovich   23:00 ET  Sun 09-20
+            #     Mladenovic v Hibino      00:30 ET  Mon 09-21
+            #     Gibson     v Ferro       02:00 ET  Mon 09-21
+            #     Okamura    v Fernandez   06:30 ET  Mon 09-21
+            #     Hunter     v Garland     08:00 ET  Mon 09-21
+            #
+            # One card, one lineup, two ET dates. Sunday's evening board targets
+            # Monday and so collected every match from 00:30 on while silently
+            # dropping the 23:00 opener — a play that is on the board the reader
+            # is looking at, released the same day, and part of the same lineup.
+            # Strict date equality cannot express that.
+            #
+            # A CARD IS DATED IN ITS OWN TIME ZONE. The venue clock comes from
+            # the tournament name (venue_tz), so the board follows the tour
+            # wherever it goes without anything being retuned per swing:
+            #
+            #   Singapore  board 20:00 ET Sun = 08:00 Mon local, card = Mon
+            #              -> Kasatkina 23:00 ET Sun IS 11:00 Mon local. Kept.
+            #   Melbourne  board 20:00 ET Sun = 12:00 Mon local; Monday's card
+            #              opened at 11:00 and is under way, so card = Tue.
+            #   New York   board 20:00 ET Sun = 20:00 Sun local, card = Mon, so
+            #              tonight's 20:00 night session is NOT tomorrow's card.
+            #
+            # CARD_START_LOCAL_HOUR is the one judgement left, and it is a fact
+            # about tennis rather than about a region: a card opens late morning
+            # local, so before it the next card is today's and after it the next
+            # card is tomorrow's.
+            # Read straight off `nm`: the `tournament` local below is assigned
+            # after this block, and binding it here would shadow that.
+            _tz = (venue_tz.zone_for(nm.get("tournament") or "")
+                   if venue_tz else None)
+            if _tz is not None:
+                _local_now = _now_et.astimezone(_tz)
+                _started = _local_now.hour >= CARD_START_LOCAL_HOUR
+                _next_card = (_local_now.date() + timedelta(days=1) if _started
+                              else _local_now.date())
+                _this_card = (_local_now.date() if _started
+                              else _local_now.date() - timedelta(days=1))
+                _card_date = _start_et.astimezone(_tz).date()
+                _basis = str(_tz)
+            else:
+                # No venue clock (Davis Cup ties carry no city). Fall back to the
+                # ET cutoff, which is what shipped before this and is no worse
+                # than the behaviour it replaced. venue_tz logs the miss.
+                _next_card = _target_date
+                _this_card = _now_et.date()
+                _card_date = (_start_et_date + timedelta(days=1)
+                              if _start_et.hour >= ASIA_SLATE_CUTOFF_HOUR
+                              else _start_et_date)
+                _basis = "ET fallback"
+
+            # ── WHICH CARD THIS SCAN IS FOR ──────────────────────────────────
+            # The 8pm board is about the NEXT card — the one that has not begun.
+            #
+            # The additional scan is not. It runs at midnight ET, by which point
+            # an Asia card is halfway through its own afternoon, and its job is
+            # to catch what is STILL PLAYABLE — matches on the card already in
+            # flight as well as the one after it. Restricting it to the next
+            # card would have made it skip the rest of tonight's lineup, which
+            # is exactly the board the reader is looking at. In a US or European
+            # week this_card is already finished and the union collapses back to
+            # the next card on its own, so nothing needs to know which swing the
+            # tour is on.
+            _targets = ({_next_card} if _evening else {_this_card, _next_card})
+
+            # A match already under way is never a candidate for any board — it
+            # cannot be bet — so the start must also still be ahead of us.
+            if _card_date not in _targets or _start_et <= _now_et:
+                log.info("POD skip (plays %s %02d:%02d ET -> %s card [%s], "
+                         "targets %s): %r vs %r", _start_et_date, _start_et.hour,
+                         _start_et.minute, _card_date, _basis,
+                         sorted(str(x) for x in _targets), p_name, o_name)
                 return None
+            if _card_date != _start_et_date:
+                log.info("POD keep (%02d:%02d ET on %s is the %s card at %s): "
+                         "%r vs %r", _start_et.hour, _start_et.minute,
+                         _start_et_date, _card_date, _basis, p_name, o_name)
 
             surface = nm.get("surface") or _season_surface()
             tournament = nm.get("tournament") or None
@@ -534,6 +656,32 @@ async def _evaluate(prop: dict, sem: asyncio.Semaphore):
             # qualifying so a Grand Slam quallie stays best-of-3, not best-of-5.
             is_qualifying = bool(tournament) and "qualif" in tournament.lower()
 
+            # ── QUALIFYING DRAWS ARE OFF THE BOARD (operator, 2026-09-24) ────
+            # 30-43, 41.1% over 73 graded picks, against 55.0% on main draws
+            # (z = -2.26, p = 0.024). Projection error is 62% higher there —
+            # mean |actual − projection| of 2.405σ vs 1.488σ — which is the
+            # mechanism: qualifying fields are thin-data players whose recent
+            # form is mostly matches we have no statistics for.
+            #
+            # AND A HIGHER BAR MAKES IT WORSE, which is what rules out simply
+            # gating it harder:
+            #     conf >= 65  30-43  41%      conf >= 75  12-24  33%
+            #     conf >= 70  22-33  40%      conf >= 80   7-15  32%
+            # Confidence is inverted on this population, the same signature
+            # that retired Aces and Total Games from the 3x. There is no
+            # threshold that rescues it, so it comes off the board entirely.
+            #
+            # Costs ~10% of board volume (8.6 -> 7.7 graded picks per slate)
+            # and lifts the record 53.6% -> 55.0%. No Pick of the Day has ever
+            # come from a qualifying draw (0-0), so the star is untouched.
+            #
+            # Skipped HERE, before the projection call, so it also saves the
+            # API round-trip rather than pricing a play we will discard.
+            if is_qualifying and SKIP_QUALIFYING:
+                log.info("POD: skipping %s %s — qualifying draw (%s)",
+                         p_name, prop.get("prop_type"), tournament)
+                return None
+
             payload = {
                 "player_id": p_id, "opponent_id": o_id,
                 "player_name": p_name, "opponent_name": o_name,
@@ -541,6 +689,24 @@ async def _evaluate(prop: dict, sem: asyncio.Semaphore):
                 "court": tournament or "", "qualifying": is_qualifying,
                 "prop_type": prop["prop_type"], "prop_line": prop["line"],
             }
+            # INDOOR IS ADDITIVE ONLY — sent when Sofascore says TRUE, omitted
+            # otherwise so the backend falls back to INDOOR_TOURNAMENTS.
+            #
+            # The first version sent the boolean whichever way it came out, and
+            # the 2026-09-21 17:00 board caught the problem immediately: the
+            # Singapore WTA event reported groundType OUTDOOR, so an explicit
+            # False overrode the hand-verified list entry and the ⭐ (Vekić,
+            # Break Points Won) priced as an outdoor court again — the exact bug
+            # the derivation was written to fix, reintroduced by the fix.
+            #
+            # The two sources are not symmetric. A True from Sofascore is new
+            # information about a venue nobody has listed yet. A False is not
+            # evidence of anything: the event-level field is frequently a
+            # default, and the list is short, hand-checked and was right here.
+            # So True adds, False defers. A venue wrongly ON the list stays
+            # wrong, which is the status quo and visible in one place.
+            if nm.get("indoor") is True:
+                payload["indoor"] = True
             data = None
             for attempt in range(CALC_RETRIES):
                 try:
@@ -583,6 +749,17 @@ async def _evaluate(prop: dict, sem: asyncio.Semaphore):
             "start_timestamp": nm.get("start_timestamp"),
             "projection": proj, "edge": edge, "edge_mag": abs(edge),
             "confidence": conf, "lean": data.get("lean"),
+            # ── THE CONFIDENCE/EDGE SPLIT, IN SHADOW (2026-09-24) ────────────
+            # Carried so _pick_to_record can persist them. `confidence` above is
+            # still the only number any gate, rank or display reads.
+            #   edge_sigma            |projection − line| / σ — how far we are
+            #                         from the book in units of the player's own
+            #                         spread. The "are we beating the book"
+            #                         number, and the one that held on holdout.
+            #   confidence_data_only  evidence with no line-derived ceiling —
+            #                         confidence as it is meant to read.
+            "edge_sigma": data.get("edge_sigma"),
+            "confidence_data_only": data.get("confidence_data_only"),
             "p1_win_prob": data.get("p1_win_prob"), "p2_win_prob": data.get("p2_win_prob"),
             # Strength-of-field: both players' current ATP/WTA ranks and the
             # both-challenger-level flag — deprioritizes challenger-vs-challenger
@@ -854,6 +1031,44 @@ CALIB_B0 = 0.0425
 CALIB_B1 = 0.6977
 CALIB_MIN, CALIB_MAX = 50.0, 70.0
 
+# ── THE PERCENTILE IS MEASURED AGAINST A FIXED DISTRIBUTION ──────────────────
+# It used to be the percentile WITHIN THIS POOL, and the website used the
+# percentile within its own visible board — the same formula over two different
+# populations. So one play carried two different "confidence" numbers depending
+# on whether you read it in Discord or on the site, and the site's moved whenever
+# a filter changed what was visible. Reported by the operator on the Avanesyan
+# O4.5 Break Points Won card: 65 on the website, a different number in the bot.
+#
+# A percentile only needs SOME distribution to measure against; it does not have
+# to be the caller's own pool. This is the relative-edge distribution of the
+# graded record (707 picks, every 5th percentile), so the number is a property of
+# the PLAY — anything holding a projection and a line computes the same value.
+#
+# MUST STAY IN SYNC with data.js REL_EDGE_Q — that is the whole point.
+REL_EDGE_Q = [
+    0.0, 0.073171, 0.102326, 0.120837, 0.135273, 0.145644, 0.158852, 0.171429,
+    0.186295, 0.2, 0.222222, 0.24, 0.260279, 0.288106, 0.315429, 0.368421,
+    0.424242, 0.457582, 0.529412, 0.691282, 2.8,
+]
+
+
+def rel_edge_pct(rel: float) -> float:
+    """Where `rel` sits in the graded record, 0-1, linearly interpolated."""
+    try:
+        r = float(rel)
+    except (TypeError, ValueError):
+        return 0.0
+    q, last = REL_EDGE_Q, len(REL_EDGE_Q) - 1
+    if r <= q[0]:
+        return 0.0
+    if r >= q[last]:
+        return 1.0
+    for i in range(last):
+        if q[i] <= r <= q[i + 1]:
+            span = q[i + 1] - q[i]
+            return (i + ((r - q[i]) / span if span else 0.0)) / last
+    return 1.0
+
 
 def calibrated_confidence(pct: float) -> float:
     """Honest hit-rate estimate for a play at rel-edge percentile `pct` (0-1)."""
@@ -866,18 +1081,26 @@ def calibrated_confidence(pct: float) -> float:
         return 59.6      # the measured base rate — never a guess dressed as one
 
 
-def attach_calibrated_confidence(picks: list) -> None:
-    """Set `confidence_calibrated` on every pick, from its rel-edge percentile
-    WITHIN THIS POOL. Mutates in place; never raises."""
+def confidence_for(projection, line) -> float:
+    """The ONE displayed-confidence function, matching data.js confidenceFrom."""
     try:
-        rows = [p for p in (picks or []) if isinstance(p, dict)]
-        if not rows:
-            return
-        ranked = sorted(rows, key=_rel_edge)
-        n = len(ranked)
-        for i, p in enumerate(ranked):
-            p["confidence_calibrated"] = calibrated_confidence(
-                i / (n - 1) if n > 1 else 1.0)
+        ln, proj = float(line), float(projection)
+    except (TypeError, ValueError):
+        return None
+    if not ln:
+        return None
+    return calibrated_confidence(rel_edge_pct(abs(proj - ln) / abs(ln)))
+
+
+def attach_calibrated_confidence(picks: list) -> None:
+    """Set `confidence_calibrated` on every pick from its OWN relative edge.
+    Mutates in place; never raises."""
+    try:
+        for p in (picks or []):
+            if not isinstance(p, dict):
+                continue
+            c = confidence_for(p.get("projection"), p.get("line"))
+            p["confidence_calibrated"] = c if c is not None else 59.6
     except Exception:  # noqa: BLE001 — a display number must never cost the board
         log.exception("calibrated confidence failed")
 
@@ -887,13 +1110,23 @@ def _rank_key(pk: dict) -> tuple:
 
       0. tour_level  — tour matches (1) ALWAYS rank above challenger-vs-
                        challenger matchups (0). Deprioritize-only.
-      1. rel_edge    — |projection - line| / line, the PRIMARY term
-      2. confidence  — tiebreaker among plays of equal relative edge
+      1. confidence  — the PRIMARY term
+      2. rel_edge    — |projection - line| / line, tiebreaker among plays of
+                       equal confidence
 
-    CONFIDENCE GATES; EDGE ORDERS. It used to be the other way round, and the
-    old docstring said so explicitly: "a play with genuinely higher confidence
-    ALWAYS outranks a lower-confidence one no matter how large the latter's
-    projected edge." That is wrong, and measurably so.
+    REVERTED TO CONFIDENCE-FIRST 2026-09-20 (operator), after an edge-first
+    board went out reading as a list of low-confidence plays. The reasoning,
+    and it is the right reasoning: a large edge computed from thin evidence is
+    not a large edge. Confidence is the model's own statement about how much
+    data stands behind the projection, so ordering purely on edge surfaces
+    precisely the plays where the projection is least supported — the edge is
+    biggest exactly where the number is least trustworthy.
+
+    THE EVIDENCE FOR EDGE-FIRST IS KEPT BELOW, because it is real and it was
+    measured, and whoever revisits this should see both sides rather than
+    rediscover it. Note its own caveat: it is IN-SAMPLE. The rule was chosen by
+    testing on the picks it was then scored on, and a board ranked that way
+    looked wrong in production on the first slate it shipped.
 
     Measured on 640 graded picks, confidence does not order outcomes — it is
     NON-MONOTONIC:
@@ -931,8 +1164,8 @@ def _rank_key(pk: dict) -> tuple:
     expected to land below the backtest.
     """
     return (0 if pk.get("both_challenger_level") else 1,
-            _rel_edge(pk),
-            pk.get("confidence") or 0)
+            pk.get("confidence") or 0,
+            _rel_edge(pk))
 
 
 # ── Prop-reliability tiers for the per-player dedupe (7/23 audit, Fix C1) ─────
@@ -987,6 +1220,11 @@ def _passes_quality(pk: dict) -> bool:
     clears the same 65 floor as everything else. Demons use _demon_qualifies."""
     if pk.get("odds_type") == "demon":
         return _demon_qualifies(pk)
+    # BOARD_MIN_EDGE_SIGMA is 0 (off) by default, so this is a no-op unless the
+    # operator sets it — the record does not support a board-wide edge floor.
+    # See the bucket table at SLIP_MIN_EDGE_SIGMA: sub-0.3σ picks went 45-33.
+    if not _edge_sigma_ok(pk, BOARD_MIN_EDGE_SIGMA):
+        return False
     return (pk.get("confidence") or 0) >= BOARD_MIN_CONF
 
 
@@ -1365,6 +1603,167 @@ def _match_key(pk: dict) -> frozenset:
 # over a marginally higher-scoring same-prop leg (STEP 2).
 SLIP_DIVERSITY_WINDOW = 5
 
+# PER-PROP 3x FLOORS (operator, 2026-09-24). A prop listed here uses its own
+# confidence bar instead of the blanket SLIP_MIN_CONF; anything not listed keeps
+# the old behaviour (Tier 1/2 at SLIP_MIN_CONF, Tier 3 barred outright).
+#
+# Double Faults was previously banned from slips entirely as Tier 3 (7/23 audit,
+# highest variance). It is now allowed at a raised bar rather than blocked.
+# Total Games was already eligible at the blanket 70 and is now held to 80.
+#
+# WHAT THE RECORD SAYS ABOUT THESE TWO, so the next person to touch this does not
+# have to re-derive it (722 graded in-record picks, pulled 2026-09-24):
+#
+#   Double Faults   65-69  4-2  67%   70-74 16-11 59%   75-79 11-17 39%   80+  8-3  73%
+#   Total Games     65-69 23-23 50%   70-74  1-4  20%   75-79 14-13 52%   80+ 24-22 52%
+#
+# A two-leg 3x needs ~57.7% PER LEG to break even at 3x (3 * p^2 = 1), which is
+# the number these bars should be judged against — not 50%. On that test the
+# 75-79 band is a dead zone for BOTH (39% and 52%), and it is a dead zone for
+# every other prop too (BPW 55%, FS 43%, Aces 42%, PTGW 47%).
+#
+# DF was asked for at 75 and moved to 80 by the operator once the bands were on
+# the table: 75+ is 19-20 (48.7%) because it swallows that 11-17 band, while 80+
+# is the only DF slice clearing breakeven. n=11 there, so it is a small-sample
+# bet and worth re-checking after ~20 more graded DF picks.
+#
+# Total Games stays at 80 as asked. Being straight about it: 52% is still under
+# the 57.7% breakeven, and no TG band has ever cleared it, so this bar limits
+# the damage rather than making TG a good leg. Player Total Games Won is a
+# SEPARATE prop and deliberately not listed — it keeps the blanket 70.
+# Total Games briefly sat here at 80 (2026-09-24) before the band data showed it
+# does not clear breakeven at any bar; it moved to SLIP_PROP_EXCLUDED below.
+SLIP_PROP_MIN_CONF = {
+    "Double Faults": 80,
+}
+
+# NEVER a 3x leg, at any confidence (operator, 2026-09-24).
+#
+# A two-leg 3x needs ~57.7% PER LEG to break even at 3x (3 * p^2 = 1). These two
+# do not reach it at ANY confidence, and unlike the rest they get WORSE when a
+# quality filter is applied — so there is no bar that rescues them. They are not
+# mis-ranked, they are bad, and the 3x is the one post where a weak leg takes a
+# good leg down with it. Both still populate the board and can hold the star.
+#
+#   Aces         all 51-69 42.5% | conf>=70 48.4% | conf>=80 37.0% | +edge gate 46%
+#   Total Games  all 62-62 50.0% | conf>=70 50.0% | conf>=80 52.2% | +edge gate 44%
+#
+# Aces is the single biggest drag in the whole record and is bad in every month
+# at every confidence level. Total Games is intrinsically near-coin-flip — see
+# PROP_CONFIDENCE_CEILING in backend/src/calculations/confidence.py, where the
+# games_per_set fit found combined hold explains only R^2 0.09-0.16 of the
+# variance. That is also why books price it -120/-120 both ways.
+SLIP_PROP_EXCLUDED = {"Aces", "Total Games"}
+
+# ── EDGE FLOOR FOR 3x LEGS, IN σ (operator, 2026-09-24) ──────────────────────
+# "I don't want book-aligned plays." This is that rule — but applied ONLY to the
+# 3x, and measured in σ rather than in percent of the line.
+#
+# WHY σ AND NOT PERCENT: main._edge_cap gates on |proj − line| / line, which is
+# the wrong ruler. A 34% edge is ~1.5 double faults on a 4.5 line (inside the
+# noise) and ~4.3 games on a 12.5 line (a real gap). edge_sigma divides by the
+# player's own spread, so the two are comparable.
+#
+# WHY ONLY THE 3x, AND NOT THE BOARD. The record does not support a board-wide
+# floor. Per bucket, over 642 graded in-record picks with a recoverable σ:
+#
+#   0.00-0.20  n= 24  14-10  58.3%     0.60-0.80  n=106  62-44  58.5%
+#   0.20-0.30  n= 54  31-23  57.4%     0.80-1.00  n= 76  40-36  52.6%
+#   0.30-0.40  n= 75  26-49  34.7%     1.00-1.50  n= 71  42-29  59.2%
+#   0.40-0.50  n= 73  38-35  52.1%     1.50+      n= 89  55-34  61.8%
+#   0.50-0.60  n= 74  36-38  48.6%
+#
+# It is NOT monotone. The MOST book-aligned picks (< 0.3σ) went 45-33, 57.7% —
+# better than the 53.6% board average. A floor would cut a winning segment. The
+# cumulative version of this table looks clean only because a floor straddles
+# the 34.7% hole at 0.30-0.40, and carving out one band from nine retrospective
+# buckets is curve-fitting. So BOARD_MIN_EDGE_SIGMA defaults OFF.
+#
+# The 3x is different: it needs ~57.7% PER LEG to break even at 3x, and the
+# current slip-eligible pool sits at 55.8% (n=362) — under water. Applying this
+# floor lifts it to 58.0% (n=264) at a 27% volume cost. That is a gate paying
+# for itself, not a band carved to fit.
+#
+# HONEST CAVEAT, on the record: applied to the 2026-09-23 board it would have
+# cut Majchrzak (0.235σ), the ONLY winner on a 1-5-1 night. A gate on edge
+# cannot rescue a night when the projections are wrong — it concentrates the
+# damage, because high edge means high conviction in a wrong number.
+#
+# SCOPE CORRECTED SAME DAY: this floor applies ONLY to the projection-lean
+# props. It was briefly applied to everything, which was wrong — see
+# MIXTURE_PROPS below. After the Aces/Total Games exclusions above, the only
+# slip-eligible prop it still governs is Double Faults, which is the intended
+# footprint: DF is the one remaining slip-eligible prop whose side comes from
+# the projection rather than from a mixture probability.
+SLIP_MIN_EDGE_SIGMA = float(os.getenv("SLIP_MIN_EDGE_SIGMA", "0.6") or 0.6)
+
+# Board-wide edge floor. DEFAULT 0.0 = OFF, deliberately — see the bucket table
+# above. Set the env var to enable it if the operator decides to override the
+# record; nothing else needs to change.
+BOARD_MIN_EDGE_SIGMA = float(os.getenv("BOARD_MIN_EDGE_SIGMA", "0") or 0)
+
+
+# Props whose SIDE comes from a scenario-mixture P(over), NOT from
+# sign(projection − line). Mirrors `_prob_base` in main.py (which is what skips
+# _edge_cap for them) and the EVR skip list in confidence.py.
+#
+# THE EDGE FLOOR MUST NOT APPLY TO THESE, and the reason is measurable rather
+# than theoretical. For these props confidence ALREADY IS the probability edge:
+# across 76 BPW picks carrying a stored mixture probability, confidence tracks
+# 100 x P(chosen side) with a mean offset of +6.0. Confidence 72 means P(side)
+# ~ 0.66 — a 16-point edge over a coin-flip line.
+#
+# σ mismeasures exactly that. A Break Points Won projection of 2.0 against a 2.5
+# line is 0.30σ — which reads as "basically the book's number" — while the
+# probability mass sitting below 2.5 is large, because the stat is a low, skewed
+# integer count and the line is a half-integer. The σ ruler assumes a symmetric
+# spread around the mean; these distributions are bimodal by construction, which
+# is the same reason they were pulled out of EVR grading in the first place.
+#
+# So the two families get two rulers, and the confidence floor is the right gate
+# here: SLIP_MIN_CONF 70 already means P(side) ~ 0.64, which IS a beat-the-book
+# bar. The σ floor governs the projection-lean props, where confidence is the
+# blended min(evidence, f(relative edge)) number and cannot be trusted as edge.
+MIXTURE_PROPS = {"Break Points Won", "Fantasy Score", "Player Total Games Won"}
+
+
+def _edge_sigma_ok(pk: dict, floor: float) -> bool:
+    """True if this pick clears an edge floor measured in σ.
+
+    SKIPS the mixture props entirely — see MIXTURE_PROPS above; σ is the wrong
+    instrument for them and their confidence floor is already an edge gate.
+
+    FAILS OPEN otherwise. A pick with no recoverable σ (too few matches for a
+    variance read) returns True: an unmeasurable edge is not a small one, and
+    dropping those would silently bias the board toward players with long
+    histories — the opposite of finding value the book has not priced.
+    """
+    if floor <= 0:
+        return True
+    if (pk.get("prop_type") or "") in MIXTURE_PROPS:
+        return True
+    es = pk.get("edge_sigma")
+    if not isinstance(es, (int, float)) or es != es:
+        return True
+    return es >= floor
+
+
+def _slip_floor(ptype: str) -> float:
+    """The confidence a prop needs to be a 3x leg.
+
+    Excluded props are unreachable at any confidence. Otherwise an explicit
+    per-prop floor wins, Tier 1/2 use SLIP_MIN_CONF, and Tier 3 stays barred —
+    an unlisted high-variance prop is still not something to staple to another
+    leg just because it scored well once.
+    """
+    if ptype in SLIP_PROP_EXCLUDED:
+        return float("inf")
+    if ptype in SLIP_PROP_MIN_CONF:
+        return SLIP_PROP_MIN_CONF[ptype]
+    if _prop_tier(ptype) >= 3:
+        return float("inf")                  # unreachable -> not slip-eligible
+    return SLIP_MIN_CONF
+
 
 def _select_slip(ordered: list, potd: list) -> list:
     """Build the 3x — two independent legs packaged as one slip (STEP 1-3).
@@ -1376,11 +1775,12 @@ def _select_slip(ordered: list, potd: list) -> list:
             two legs must come from two DIFFERENT matches) and a prop-diversity
             preference (within SLIP_DIVERSITY_WINDOW confidence points, prefer
             two different prop types).
-    STEP 3: only return a slip if TWO candidates clear the 3x leg bar (v2:
-            SLIP_MIN_CONF = 70, one notch above the board floor — don't build
-            slips from floor picks) AND are Tier 1 or Tier 2 props. Double Faults
-            (Tier 3, highest variance) is never slip-eligible (7/23 audit). Fewer
-            than two qualifying Tier 1/2 legs → NO slip, never a Tier 3 filler.
+    STEP 3: only return a slip if TWO candidates clear their own 3x leg bar —
+            SLIP_PROP_MIN_CONF for the props with a specific one (Double Faults
+            80), otherwise SLIP_MIN_CONF = 70, one notch above the board floor so
+            slips are never built from floor picks. SLIP_PROP_EXCLUDED props (Aces,
+            Total Games) and any unlisted Tier 3 prop are barred at any confidence.
+            Fewer than two qualifying legs → NO slip, never a weaker filler.
     """
     if not ordered:
         return []
@@ -1391,17 +1791,24 @@ def _select_slip(ordered: list, potd: list) -> list:
     # matches — not just the exact (player, prop_type) already picked.
     potd_matches = {_match_key(p) for p in (potd or [])}
     # ``ordered`` already contains board-qualifying picks (>= 65). 3x legs must
-    # additionally clear the higher SLIP_MIN_CONF (70) bar AND be Tier 1/2 (DF is
-    # Tier 3 → excluded from slips entirely).
+    # additionally clear their own bar — see _slip_floor: SLIP_MIN_CONF (70) for
+    # most Tier 1/2 props, a per-prop floor for the ones in SLIP_PROP_MIN_CONF,
+    # and unreachable for any other Tier 3 prop.
     pool = [c for c in ordered
             if (_norm(c["player"]), c["prop_type"]) not in potd_keys
             and _match_key(c) not in potd_matches
-            and (c.get("confidence") or 0) >= SLIP_MIN_CONF
-            and _prop_tier(c.get("prop_type")) <= 2]
+            and (c.get("confidence") or 0) >= _slip_floor(c.get("prop_type"))
+            and _edge_sigma_ok(c, SLIP_MIN_EDGE_SIGMA)]
     if len(pool) < 2:
-        log.info("3x: fewer than 2 Tier 1/2 legs >= %d after POTD exclusion "
-                 "(%d qualifying; DF is not slip-eligible) — no slip today",
-                 SLIP_MIN_CONF, len(pool))
+        _conf_ok = [c for c in ordered
+                    if (_norm(c["player"]), c["prop_type"]) not in potd_keys
+                    and _match_key(c) not in potd_matches
+                    and (c.get("confidence") or 0) >= _slip_floor(c.get("prop_type"))]
+        log.info("3x: fewer than 2 legs qualify after POTD exclusion "
+                 "(%d clear confidence, %d also clear the %.2fσ edge floor; "
+                 "base conf %d, per-prop %s, excluded %s) — no slip today",
+                 len(_conf_ok), len(pool), SLIP_MIN_EDGE_SIGMA, SLIP_MIN_CONF,
+                 SLIP_PROP_MIN_CONF, sorted(SLIP_PROP_EXCLUDED))
         return []
 
     leg1 = pool[0]
@@ -1496,7 +1903,15 @@ STAR_PTGW_MIN_RATE_GAMES = 40    # service games behind the player's hold rate
 # This is a scale correction, not a lowered standard: a BP play at 70 carries the
 # same strength of claim as another prop at 80, measured on a different ruler.
 # BP also owns the tightest absolute projection error of any prop we run (1.56).
-STAR_BP_MIN_CONF = float(os.getenv("STAR_BP_MIN_CONF", "70") or "70")
+# 65, NOT 70, AND IT IS THE SAME 65 AS BOARD_MIN_CONF — operator's rule, stated
+# more than once: Break Points Won always clears the ⭐ gate provided its
+# confidence is 65 or better. Tying the two together is the point of it. If a BP
+# play is trustworthy enough to be ON the board it is trustworthy enough to LEAD
+# it, so there is no band where BP qualifies for the card but is quietly barred
+# from the headline. 70 created exactly that band, and it cost the 2026-09-20
+# board its Pick of the Day: Kasatkina BP at 69 was one point short, so a six-
+# play card went out with no ⭐ at all.
+STAR_BP_MIN_CONF = float(os.getenv("STAR_BP_MIN_CONF", "65") or "65")
 
 
 def _star_eligible(pk: dict) -> bool:

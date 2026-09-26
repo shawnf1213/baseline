@@ -13,7 +13,8 @@ import EnvironmentBanner from '../components/EnvironmentBanner'
 import ExpectedSetsBanner from '../components/ExpectedSetsBanner'
 import Last5Bars from '../components/Last5Bars'
 import { calcProp, fetchStats } from '../utils/api'
-import { TOURNAMENT_CONFIG, fmt, fmtPct, getSpeedTier, ST_YOY_THRESHOLD } from '../utils/constants'
+import { fmt, fmtPct, getSpeedTier, ST_YOY_THRESHOLD } from '../utils/constants'
+import { useTournamentConfig } from '../utils/tournaments'
 
 const PROP_TYPES = ['Aces', 'Double Faults', 'Total Games', 'Break Points Won', 'Player Total Games Won']
 const SURFACES   = ['Hard', 'Clay', 'Grass']
@@ -266,10 +267,11 @@ export default function PropProjection({ tour }) {
   }, [p1?.id, p2?.id, tour])
 
   const tourKey = tour === 'WTA' ? 'WTA' : 'ATP'
+  const tournamentConfig = useTournamentConfig()
   const courts = useMemo(() => {
-    const list = TOURNAMENT_CONFIG[tourKey]?.[surface] || []
+    const list = tournamentConfig[tourKey]?.[surface] || []
     return ['None', ...list.map(t => t.name)]
-  }, [tourKey, surface])
+  }, [tournamentConfig, tourKey, surface])
 
   useEffect(() => { setCourt('None') }, [tour])
 
@@ -419,7 +421,7 @@ export default function PropProjection({ tour }) {
             {courts.map(c => {
               // Find ST Pace Index for the option label
               const tourKey = tour === 'WTA' ? 'WTA' : 'ATP'
-              const allTourneys = Object.values(TOURNAMENT_CONFIG[tourKey] || {}).flat()
+              const allTourneys = Object.values(tournamentConfig[tourKey] || {}).flat()
               const entry = allTourneys.find(t => t.name === c)
               const cpr = entry?.cpr
               const tier = cpr != null ? getSpeedTier(cpr) : null
@@ -437,7 +439,7 @@ export default function PropProjection({ tour }) {
           {/* Surface Speed Tier chip — shows when a specific court is selected */}
           {court && court !== 'None' && (() => {
             const tourKey = tour === 'WTA' ? 'WTA' : 'ATP'
-            const allT = Object.values(TOURNAMENT_CONFIG[tourKey] || {}).flat()
+            const allT = Object.values(tournamentConfig[tourKey] || {}).flat()
             const entry = allT.find(t => t.name === court)
             if (!entry?.cpr) return null
             const tier = getSpeedTier(entry.cpr)

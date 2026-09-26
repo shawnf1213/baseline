@@ -96,7 +96,7 @@ function footNoteFor(p) {
   return star ? <span style={{ fontSize: 11 }}>{star}posted</span> : ''
 }
 
-export default function NflBoard({ onMeta }) {
+export default function NflBoard({ book = 'prizepicks', onMeta, onProject }) {
   const [picks, setPicks] = useState(null)
   const [err, setErr] = useState(null)
   const { has, toggle } = useBookmarks()
@@ -105,8 +105,13 @@ export default function NflBoard({ onMeta }) {
   // Tapping a card opens the player's other props and his posted record —
   // the tennis board does the same thing with PlayerDashboard.
   const [open, setOpen] = useState(null)
+  const [focusProp, setFocusProp] = useState(null)
   const [openKey, setOpenKey] = useState(null)
   const [page, setPage] = useState(0)
+
+  // Switching books changes how long the board is; a reader on page 4 of
+  // PrizePicks would otherwise land past the end of a shorter Underdog board.
+  useEffect(() => { setPage(0) }, [book])
 
   useEffect(() => {
     let alive = true
@@ -154,9 +159,14 @@ export default function NflBoard({ onMeta }) {
     return m
   }, [posted])
 
+  // ONE BOOK AT A TIME, like the tennis board. /api/nfl/board is fetched
+  // without a `book` so this component holds the whole market and the switch
+  // is instant — but rendering it unfiltered put both books' rows in one list
+  // and every player appeared once per book. A row with no book at all is kept
+  // rather than dropped, so an older published row cannot silently vanish.
   const rows = useMemo(
     () => (picks || [])
-      .filter(p => p.slate_date === active)
+      .filter(p => p.slate_date === active && (!p.book || p.book === book))
       .map(p => {
         const hit = byPosted.get(`${p.slate_date}|${p.player}|${p.prop_type}`)
         return hit ? { ...p, result: hit.result, result_value: hit.result_value,
@@ -164,7 +174,7 @@ export default function NflBoard({ onMeta }) {
       })
       .sort((a, b) => ((b.is_potd || 0) - (a.is_potd || 0))
         || ((b.confidence || 0) - (a.confidence || 0))),
-    [picks, active, byPosted])
+    [picks, active, byPosted, book])
 
   // The SAME row shape the tennis board uses, built once. The summary, the top
   // plays and the grid all read it, so none of them can describe a different
@@ -209,7 +219,8 @@ export default function NflBoard({ onMeta }) {
       <BoardSummary rows={viewRows} />
 
       <TopPlays rows={viewRows}
-                onOpen={r => setOpen(r._pick)}
+                onOpen={r => { setOpen(r._pick)
+                               setFocusProp(r._pick?.prop_type || null) }}
                 saved={r => has(r.key)}
                 onSave={(r, e) => { e.stopPropagation(); toggle(r.key) }} />
 
@@ -230,7 +241,12 @@ export default function NflBoard({ onMeta }) {
                        onToggle={() => setOpenKey(k => (k === g.key ? null : g.key))}
                        saved={has(g.rows[0].key)}
                        onSave={() => toggle(g.rows[0].key)}
-                       onOpen={() => setOpen(g.rows[0]._pick)}
+                       // The tapped row's prop, not always the group's first.
+                       // This hardcoded rows[0], so on a player with several
+                       // props every row opened the same one.
+                       onOpen={(r) => { const row = r || g.rows[0]
+                                        setOpen(row._pick)
+                                        setFocusProp(row._pick?.prop_type || null) }}
                        footNoteFor={r => footNoteFor(r._pick)} />
         ))}
       </div>
@@ -240,7 +256,8 @@ export default function NflBoard({ onMeta }) {
 
       {open && (
         <NflPlayerSheet player={open} rows={picks} posted={posted}
-                        onClose={() => setOpen(null)} />
+                        focusProp={focusProp} onProject={onProject}
+                        onClose={() => { setOpen(null); setFocusProp(null) }} />
       )}
 
       <div style={{ color: T.muted2, fontSize: 11.5, textAlign: 'center',

@@ -21,7 +21,7 @@ function mostPlayedSurface(stats) {
   return n > 0 ? best : null
 }
 
-export default function PlayerDashboard({ player, boards, onClose, onOpenPlayer }) {
+export default function PlayerDashboard({ player, boards, onClose, onOpenPlayer, onProject }) {
   // The tour is authoritative only once resolved (a board tap carries no tour).
   const [resolvedTour, setResolvedTour] = useState(player.tour || 'ATP')
   const [pid, setPid] = useState(player.id ? String(player.id) : null)
@@ -40,9 +40,17 @@ export default function PlayerDashboard({ player, boards, onClose, onOpenPlayer 
   // BOTH books. This took boards[book] — whichever the Boards tab happened to
   // be showing — so a player's Underdog props simply did not exist here unless
   // you had toggled that first.
-  const boardRows = useMemo(
-    () => mergedBoardRows(boards).filter(r => normName(r.player) === normName(player.name)),
-    [boards, player.name])
+  // THE PROP THAT WAS TAPPED LEADS. Opening this from a board row used to carry
+  // only the player, so a reader who picked one prop out of several landed on a
+  // list in board order and had to find it again. `player.prop` is set by the
+  // board row; everything else keeps its existing order behind it.
+  const boardRows = useMemo(() => {
+    const rows = mergedBoardRows(boards)
+      .filter(r => normName(r.player) === normName(player.name))
+    if (!player.prop) return rows
+    return [...rows].sort((a, b) =>
+      (b.propType === player.prop ? 1 : 0) - (a.propType === player.prop ? 1 : 0))
+  }, [boards, player.name, player.prop])
   const lineByProp = useMemo(() => {
     const m = {}
     for (const r of boardRows) if (r.line != null) m[r.propType] = r.line
@@ -108,10 +116,12 @@ export default function PlayerDashboard({ player, boards, onClose, onOpenPlayer 
   useEffect(() => {
     let alive = true
     boardRows.forEach(r => {
-      const c = cachedProjection(r.key)
+      const c = cachedProjection(r)
       if (c !== undefined) { setPropProj(m => (r.key in m ? m : { ...m, [r.key]: c || { failed: true } })); return }
       setPropProj(m => (m[r.key]?.loading ? m : { ...m, [r.key]: { loading: true } }))
-      projectRow(r, resolvedTour).then(res => { if (alive) setPropProj(m => ({ ...m, [r.key]: res || { failed: true } })) })
+      // priority: this is the page the reader is on, and the board
+      // underneath has up to 120 speculative projections queued.
+      projectRow(r, resolvedTour, { priority: true }).then(res => { if (alive) setPropProj(m => ({ ...m, [r.key]: res || { failed: true } })) })
     })
     return () => { alive = false }
   }, [boardRows, resolvedTour])
@@ -184,8 +194,28 @@ export default function PlayerDashboard({ player, boards, onClose, onOpenPlayer 
                   const p = propProj[r.key] || {}
                   const done = !p.loading && !p.failed && p.projection != null
                   const s = sideTone(done ? p.edge : null)
+                  // STRAIGHT TO THE FULL PROJECTION. This is the end of the
+                  // road otherwise: a reader who came from the board, found the
+                  // prop they cared about and wanted the breakdown had to go to
+                  // the Project tab and retype the matchup they were already
+                  // looking at. The ids are whatever this card already resolved
+                  // for its own number, so the projection opens pre-filled and
+                  // runs without a second search.
+                  const cached = cachedProjection(r) || {}
+                  const goProject = onProject ? () => onProject({
+                    sport: 'tennis',
+                    player: player.name,
+                    opponent: r.opponent,
+                    playerId: cached.playerId || pid,
+                    opponentId: cached.opponentId,
+                    tour: cached.tour || resolvedTour,
+                    surface: cached.surface || r.surface,
+                    court: r.tournament || '',
+                    prop: r.propType,
+                    line: r.line,
+                  }) : undefined
                   return (
-                    <Card key={r.key} index={i} style={{
+                    <Card key={r.key} index={i} onClick={goProject} style={{
                       padding: 0, marginBottom: 10,
                       position: 'relative', overflow: 'hidden',
                       ...tierCardStyle(done ? p.confidence : null, s.rgb),
@@ -245,10 +275,22 @@ export default function PlayerDashboard({ player, boards, onClose, onOpenPlayer 
                           )}
                         </div>
 
-                        {done && p.confidence != null && (
+                        {((done && p.confidence != null) || goProject) && (
                           <div style={{ display: 'flex', alignItems: 'center',
-                                        justifyContent: 'flex-end', marginTop: 10 }}>
-                            <ConfBar conf={p.confidence} tone={s.tone} max={150} />
+                                        justifyContent: 'space-between', gap: 10,
+                                        marginTop: 10 }}>
+                            {/* The card is tappable and nothing said so, which
+                                is the same as it not being tappable. */}
+                            {goProject ? (
+                              <span style={{ fontFamily: T.cond, fontWeight: 800,
+                                             fontSize: 10, letterSpacing: 1.1,
+                                             color: T.muted2, whiteSpace: 'nowrap' }}>
+                                FULL PROJECTION →
+                              </span>
+                            ) : <span />}
+                            {done && p.confidence != null
+                              ? <ConfBar conf={p.confidence} tone={s.tone} max={150} />
+                              : null}
                           </div>
                         )}
                       </div>
@@ -282,7 +324,13 @@ export default function PlayerDashboard({ player, boards, onClose, onOpenPlayer 
             {/* Per-prop hit strips */}
             <section style={{ marginBottom: 22 }}>
               <SectionLabel right={<span style={{ color: T.muted2, fontSize: 11 }}>{primarySurface} · L10</span>}>Prop Hit Rates</SectionLabel>
-              {HISTORY_PROPS.map(p => (
+              {/* Same ordering rule as the props list above: whichever prop was
+                  tapped on the board is the one the reader came here to read,
+                  so its strip goes first rather than sitting at a fixed index. */}
+              {(player.prop
+                ? [...HISTORY_PROPS].sort((a, b) =>
+                    (b.key === player.prop ? 1 : 0) - (a.key === player.prop ? 1 : 0))
+                : HISTORY_PROPS).map(p => (
                 <HitStrip key={p.key} prop={p} state={histories[p.key]}
                           refLine={lineByProp[p.key]}
                           lean={leanByProp[p.key]} surface={primarySurface} />

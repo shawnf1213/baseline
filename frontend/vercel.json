@@ -6,6 +6,8 @@
     { "source": "/api/:path*", "destination": "https://backend-production-84ab.up.railway.app/api/:path*" },
     { "source": "/pp/:path*", "destination": "https://partner-api.prizepicks.com/:path*" },
     { "source": "/ud/:path*", "destination": "https://api.underdogfantasy.com/:path*" },
+    { "source": "/privacy", "destination": "/privacy.html" },
+    { "source": "/terms", "destination": "/terms.html" },
     { "source": "/(.*)", "destination": "/index.html" }
   ]
 }
