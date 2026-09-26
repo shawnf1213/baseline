@@ -873,6 +873,12 @@ def subscriptions_debug() -> dict:
     return out
 
 
+# How long after a Stripe subscription ends the bot keeps trying to remove the
+# role. After this the row is left alone forever, so a later grant — by hand, or
+# by Whop's bot — sticks. 0 disables revocation entirely (grant-only sync).
+_REVOKE_GRACE_DAYS = int(os.getenv("SUB_REVOKE_GRACE_DAYS", "14") or 14)
+
+
 def subscription_role_sets() -> dict:
     """{"grant": [...], "revoke": [...]} of Discord ids for role syncing.
 
@@ -881,10 +887,18 @@ def subscription_role_sets() -> dict:
     never appears in either list.
 
     That distinction is the whole safety of this feature. The premium role is
-    also granted by Discord's own server subscriptions, by comps and by hand,
-    and a sync that revoked "everyone with the role who is not currently paying
-    us through Stripe" would strip the role from every one of those people the
-    first time it ran.
+    also granted by Discord's own server subscriptions, by Whop, by comps and by
+    hand, and a sync that revoked "everyone with the role who is not currently
+    paying us through Stripe" would strip the role from every one of those
+    people the first time it ran.
+
+    IT IS ALSO TIME-BOUNDED (2026-09-26). Narrow was not narrow enough: a row
+    that lapsed months ago stayed in the revoke list permanently, so a member
+    who had once paid through Stripe and now pays through Whop had the role
+    taken back every three minutes, and re-granting it by hand did nothing.
+    Revocation now only applies while the lapse is recent — see
+    _REVOKE_GRACE_DAYS. After that the row is inert and a human's grant is
+    final.
     """
     if not _READY or Subscription is None:
         return {"grant": [], "revoke": []}
@@ -903,7 +917,37 @@ def subscription_role_sets() -> dict:
                 # entitled: a failed payment removes the role on the next sync.
                 live = ((r.status or "") in ("active", "trialing")
                         and (end is None or end > now))
-                (grant if live else lapsed).add(did)
+                if live:
+                    grant.add(did)
+                    continue
+                # ── A LAPSE IS AN EVENT, NOT A PERMANENT STATE ───────────────
+                # Only revoke while the lapse is RECENT. A row whose period
+                # ended months ago keeps reappearing in every cycle forever,
+                # and the role it is fighting over is not ours alone: Stripe,
+                # Whop and hand-granted comps all apply the same Discord role,
+                # and the bot can only see Stripe. So an old dead row was
+                # stripping the role from people who are currently paying
+                # through Whop, and undoing hand-grants within three minutes —
+                # which is what "I keep giving him the role and the bot keeps
+                # taking it" was.
+                #
+                # Enforcing a lapse for a bounded window keeps the real job
+                # (a Stripe subscriber who stops paying loses access promptly)
+                # while making a human's decision final afterwards. It is also
+                # the conservative direction: the failure mode is someone
+                # keeping access slightly too long, not a paying customer being
+                # locked out.
+                #
+                # end is None means an open-ended row with a dead status; there
+                # is no lapse moment to measure, so it is not enforced here.
+                if end is None:
+                    continue
+                # 0 (or less) means never revoke — a grant-only sync.
+                if _REVOKE_GRACE_DAYS <= 0:
+                    continue
+                if (now - end).days > _REVOKE_GRACE_DAYS:
+                    continue
+                lapsed.add(did)
         # Someone who resubscribed has both an old dead row and a live one.
         # Active always wins, so they are never revoked on the strength of a
         # superseded record.
