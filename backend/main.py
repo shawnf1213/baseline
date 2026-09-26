@@ -689,10 +689,43 @@ async def results_update(req: ResultUpdateRequest):
     return {"ok": ok}
 
 
+def _require_admin(req: Request) -> None:
+    """Shared secret for the destructive admin routes.
+
+    Read from the X-Admin-Token HEADER, never a query parameter — query strings
+    land in server logs, browser history and Referer headers, and a secret that
+    leaks into any of those is a free key to the route.
+
+    FAILS CLOSED. With ADMIN_TOKEN unset the route is DISABLED rather than open,
+    the same rule /api/billing/subscribers already follows: an admin route whose
+    guard silently turns itself off when the env var is missing is exactly as
+    dangerous as having no guard, and a missing secret is far more likely than a
+    wrong one. Compared with compare_digest so a wrong token cannot be recovered
+    a byte at a time from response timing.
+    """
+    import hmac
+    expected = os.getenv("ADMIN_TOKEN", "").strip()
+    if not expected:
+        raise HTTPException(status_code=503,
+                            detail="admin routes disabled (ADMIN_TOKEN unset)")
+    supplied = req.headers.get("x-admin-token", "")
+    if not hmac.compare_digest(supplied, expected):
+        raise HTTPException(status_code=401, detail="admin token required")
+
+
 @app.delete("/api/results/{pick_id}")
-async def results_delete(pick_id: int):
-    """Delete a pick row (admin cleanup)."""
+async def results_delete(req: Request, pick_id: int):
+    """Delete a pick row (admin cleanup).
+
+    THIS WAS UNAUTHENTICATED. Anyone who knew the URL could permanently delete
+    graded picks one integer at a time — the rows the published record and the
+    recaps are computed from, with no undo and no audit trail of who did it.
+    Nothing calls it: not the bot, not the frontend (which only ever GETs
+    /api/results/record and /summary), so requiring a token breaks no caller.
+    """
+    _require_admin(req)
     from src import database
+    logger.warning("RESULTS_DELETE | pick_id=%s | authorised admin delete", pick_id)
     return {"ok": database.delete_pick(pick_id)}
 
 
@@ -702,10 +735,19 @@ class ExcludeRequest(BaseModel):
 
 
 @app.post("/api/results/exclude")
-async def results_exclude(req: ExcludeRequest):
+async def results_exclude(http_req: Request, req: ExcludeRequest):
     """Flag (or unflag) pick rows as excluded_from_record — superseded / duplicate
-    picks kept in the DB for audit but removed from the public record + recaps."""
+    picks kept in the DB for audit but removed from the public record + recaps.
+
+    Admin-gated for the same reason as the delete above: this rewrites the
+    PUBLISHED record by hiding rows from it, so leaving it open let anyone move
+    the advertised win rate. No caller uses it (the bot's grader only touches
+    /api/results/log, /update and /resolve), so the token breaks nothing.
+    """
+    _require_admin(http_req)
     from src import database
+    logger.warning("RESULTS_EXCLUDE | ids=%s excluded=%s | authorised admin edit",
+                   req.ids, req.excluded)
     return {"updated": database.set_excluded(req.ids, req.excluded)}
 
 
@@ -716,9 +758,16 @@ class SetLineRequest(BaseModel):
 
 
 @app.post("/api/results/setline")
-async def results_setline(req: SetLineRequest):
-    """Correct a pick's line / original_line when it moved between post and log."""
+async def results_setline(http_req: Request, req: SetLineRequest):
+    """Correct a pick's line / original_line when it moved between post and log.
+
+    Admin-gated: rewriting the line a pick was graded against silently changes
+    whether it won. Unused by the bot and the frontend, so nothing breaks.
+    """
+    _require_admin(http_req)
     from src import database
+    logger.warning("RESULTS_SETLINE | id=%s line=%s original=%s | authorised admin edit",
+                   req.id, req.line, req.original_line)
     return {"ok": database.set_line(req.id, req.line, req.original_line)}
 
 
