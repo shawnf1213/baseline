@@ -141,7 +141,17 @@ PROP_MIN_CONF = {
 # de-vigged moneyline, not the model's underdog-skewed win prob — the same footing
 # as FS. Set PTGW_ENABLED=false to return it to shadow (POD_PTGW_SHADOW logs the
 # projection without posting; /prop returns "under rebuild").
-PTGW_ENABLED = os.getenv("PTGW_ENABLED", "true").strip().lower() in (
+# BACK TO SHADOW (operator, 2026-09-26). The default was "true", and nothing set
+# it in the bot's environment, so PTGW has been posting to Discord this whole
+# time while the comment above and the POD_PTGW_SHADOW branch below both describe
+# it as held back for the rebuild. Measured on the board since the prop mix
+# settled (2026-09-12 -> 09-25) it ran 4-5 (44.4%) against a 57.74% breakeven,
+# and it is the one prop on the card whose model is still mid-rebuild.
+#
+# Defaulting to FALSE rather than only setting the env var: the env var is what
+# went missing in the first place, and a shadow policy that depends on remembering
+# to set something is not a policy. PTGW_ENABLED=true re-enables it explicitly.
+PTGW_ENABLED = os.getenv("PTGW_ENABLED", "false").strip().lower() in (
     "1", "true", "yes", "on")
 # Fantasy Score gate. ENABLED (2026-07-16) after the shadow review + fixes: market
 # win-prob anchor, median "fair line" display, derived claim, and the divergence

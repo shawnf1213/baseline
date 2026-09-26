@@ -1807,6 +1807,34 @@ POD_CHANNEL_ID = int(os.getenv("POD_CHANNEL_ID", "0") or "0")
 # code change.
 AUTOPOST_ENABLED = os.getenv("AUTOPOST_ENABLED", "true").strip().lower() in (
     "1", "true", "yes", "on")
+
+# ── SECOND SCANS ARE OFF (operator, 2026-09-26) ──────────────────────────────
+# One switch for every post that adds plays to a card already published: the
+# morning/extension second wave, the 8 PM evening rescan, the date-gated extra
+# run, and the Underdog top-up. They are the same idea posted at four times of
+# day, and measured together they lose.
+#
+# Since the board's prop mix settled (2026-09-12 -> 09-25), against a 57.74%
+# breakeven:
+#
+#     Discord board (potd)   44-32   57.9%   <- the board itself is fine
+#     second-wave             7-12   36.8%
+#     3x                      3-6    33.3%
+#     evening-rescan          2-4    33.3%
+#     underdog                2-3    40.0%
+#
+# Over the full record the same pattern held: second-wave 105-97 (52.0%) against
+# the board's 310-261. The board is not short of value — the additions around it
+# were cancelling the value it found. This is also what the evening_rescan
+# comment already said from the earlier removal (100-97, 50.8%, dragging the
+# published record from 55.0% to 53.8%); it came back on 2026-09-22 and the
+# result was the same.
+#
+# Gated in ONE place rather than by deleting four schedulers, so re-enabling is
+# SECOND_SCANS_ENABLED=true and the measurement above stays attached to the
+# decision.
+SECOND_SCANS_ENABLED = os.getenv("SECOND_SCANS_ENABLED", "false").strip().lower() in (
+    "1", "true", "yes", "on")
 # Daily auto-post local time. Defaults to midnight (00:00) US Eastern, which
 # auto-handles EST/EDT via the zoneinfo database (no manual DST adjustment).
 # Override POD_TZ (IANA name) and POD_HOUR/POD_MINUTE if needed.
@@ -3192,6 +3220,12 @@ async def _post_underdog_board(channel, track: bool = True,
     if not AUTOPOST_ENABLED:
         log.info("underdog board: automated posting DISABLED (AUTOPOST_ENABLED off)")
         return "autopost disabled"
+    # The top-up is the Underdog copy of the PrizePicks second wave, so it falls
+    # under the same switch. The FIRST Underdog board of the day is untouched —
+    # only the additional-plays pass is suppressed.
+    if additional and not SECOND_SCANS_ENABLED:
+        log.info("underdog top-up: DISABLED (SECOND_SCANS_ENABLED off)")
+        return "second scans disabled"
     props = await asyncio.to_thread(underdog.to_board_props)
     if not props:
         log.info("underdog board: no straight two-way props on the board")
@@ -4744,6 +4778,14 @@ async def _post_second_wave(channel, track: bool = True, max_plays: int = None,
     if not AUTOPOST_ENABLED:
         log.info("second wave: automated posting DISABLED (AUTOPOST_ENABLED off)")
         return "autopost disabled"
+    # Checked HERE as well as at the schedulers: every additional-plays post goes
+    # through this function, so one guard covers the evening rescan, the extension
+    # scan and any manual call, and no future caller can reintroduce them by
+    # accident.
+    if not SECOND_SCANS_ENABLED:
+        log.info("%s: DISABLED (SECOND_SCANS_ENABLED off) — the board stands on "
+                 "its own; additions measured 36.8%% since 2026-09-12", label)
+        return "second scans disabled"
     # Exclude BOTH: anything logged in the last 18h (the normal same-cycle repeat)
     # AND anything still awaiting a result, however old. The 18h window alone is
     # time-based, so a POSTPONED play ages out of it and gets posted again as new
@@ -6667,7 +6709,8 @@ async def on_ready():
     log.warning("evening rescan gate | POD_CHANNEL_ID=%s | EVENING_RESCAN_DATE=%r "
                 "| is_running=%s", POD_CHANNEL_ID, EVENING_RESCAN_DATE,
                 evening_rescan.is_running())
-    if POD_CHANNEL_ID and EVENING_RESCAN_DATE and not evening_rescan.is_running():
+    if (SECOND_SCANS_ENABLED and POD_CHANNEL_ID and EVENING_RESCAN_DATE
+            and not evening_rescan.is_running()):
         try:
             evening_rescan.start()
             log.warning("Evening rescan ARMED for %s at %02d:%02d %s "
@@ -6866,7 +6909,8 @@ async def on_ready():
         except Exception:
             log.exception("failed to start cache pre-warm loop")
     # One-off extra run (date-gated; no-op on other days).
-    if POD_CHANNEL_ID and POD_EXTRA_RUN_DATE and not extra_pod_run.is_running():
+    if (SECOND_SCANS_ENABLED and POD_CHANNEL_ID and POD_EXTRA_RUN_DATE
+            and not extra_pod_run.is_running()):
         try:
             extra_pod_run.start()
             log.info("One-off extra POTD run scheduled %02d:%02d %s on %s",
@@ -6876,7 +6920,7 @@ async def on_ready():
 
     # One-off extension scan: re-scan the board and post ONLY plays that were not
     # already posted today. Date-gated; no-op on other days.
-    if POD_CHANNEL_ID and not extension_pod_run.is_running():
+    if SECOND_SCANS_ENABLED and POD_CHANNEL_ID and not extension_pod_run.is_running():
         try:
             extension_pod_run.start()
             log.info("One-off extension scan scheduled %02d:%02d %s on %s",
