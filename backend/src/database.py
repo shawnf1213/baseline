@@ -83,6 +83,10 @@ try:
         generated_at       = Column(DateTime(timezone=True), server_default=func.now())
         resolved_at        = Column(DateTime(timezone=True), nullable=True)
         excluded_from_record = Column(Integer, default=0)
+        # JSON snapshot of the projector's own drivers — carries / carry_share /
+        # yards_per_carry, targets / catch_rate, pass attempts. See the migration
+        # note: without these the record cannot say WHY a projection missed.
+        drivers            = Column(String)
 
     class NflBoardRow(Base):
         """The CURRENT scanned NFL board — every priced line, not just the posted ones.
@@ -436,6 +440,20 @@ def init_db() -> None:
                 # and inventing values would be worse than an honest gap.
                 conn.execute(text(
                     "ALTER TABLE picks ADD COLUMN IF NOT EXISTS model_inputs VARCHAR"))
+                # nfl_picks.drivers — the model's INPUTS, not just its output.
+                # Measured 2026-09-27 on 142 graded NFL picks: rush_yards runs
+                # 38.5% and over-projects by 31% of the line, while receptions
+                # under-projects by 20% — opposite directions, which is what a
+                # mis-allocated volume term looks like rather than a calibration
+                # error. Deciding between the two needs the carries / carry_share
+                # / yards_per_carry (and targets / catch_rate) the projector
+                # already computes and hands to post.py for display, then throws
+                # away. Without them the record says a projection was wrong but
+                # never which half of "carries x yards per carry" was wrong.
+                # Rows written before this column exists keep NULL; nothing is
+                # invented for them.
+                conn.execute(text(
+                    "ALTER TABLE nfl_picks ADD COLUMN IF NOT EXISTS drivers VARCHAR"))
                 # pre_guard: every row that already exists when this column is
                 # first created predates the degraded-fetch cache guard, so it is
                 # backfilled to 1 exactly once. NULL is the "never seen" marker —

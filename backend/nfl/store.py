@@ -21,6 +21,7 @@ an empty result and the board still scans and still posts. A missing record must
 cost the recap, never the board.
 """
 
+import json as _json
 import logging
 import os
 
@@ -88,6 +89,17 @@ def log_board(rows: list, book: str, slate_date: str, potd_player=None,
             "prior_season_only": 1 if r.get("prior_season_only") else 0,
             "shadow": 1 if shadow else 0,
             "season": season, "week": week,
+            # THE MODEL'S INPUTS, KEPT. The projector already returns these
+            # (carries / carry_share / yards_per_carry, targets / catch_rate)
+            # and post.py reads them to render the card — then they were dropped
+            # on the floor. Measured 2026-09-27 over 142 graded picks,
+            # rush_yards over-projects by 31% of the line while receptions
+            # under-projects by 20%; those point in opposite directions, so the
+            # question is whether the volume term or the efficiency term is
+            # wrong, and only the drivers can answer it. json.dumps rather than a
+            # column each: the keys differ per prop and this is diagnostic data,
+            # not something queried in a hot path.
+            "drivers": _json.dumps(r.get("drivers") or {}, default=str)[:4000],
         } for r in rows if r.get("player")]
         d = _post("/api/nfl/results/log", {"picks": payload})
         n = int(d.get("written") or 0)
