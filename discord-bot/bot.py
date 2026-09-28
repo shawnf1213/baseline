@@ -3247,7 +3247,7 @@ async def _post_underdog_board(channel, track: bool = True,
     if not props:
         log.info("underdog board: no straight two-way props on the board")
         return "no underdog props"
-    ordered, thin = await pick_of_day._rank_board(props=props)
+    ordered, thin = await pick_of_day._rank_board(props=props, book="underdog")
     if not ordered:
         log.info("underdog board: nothing cleared the gating")
         return "no qualifying plays"
@@ -4694,7 +4694,7 @@ async def underdog_cache_prewarm():
         if not props:
             log.info("UD_PREWARM | no straight two-way props on the board — nothing to warm")
             return
-        ordered, _thin = await pick_of_day._rank_board(props=props)
+        ordered, _thin = await pick_of_day._rank_board(props=props, book="underdog")
         log.info("UD_PREWARM | board walked in %.1f min | %d props scanned, %d qualifying "
                  "(DISCARDED — this run exists only to warm the caches so the "
                  "%02d:%02d Underdog generation computes warm)",

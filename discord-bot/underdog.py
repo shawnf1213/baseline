@@ -74,7 +74,29 @@ PROP_MAP = {
 # separate constant because this is a separate parser, but the two must not
 # drift: a prop pulled from one board and left on the other is the same losing
 # prop still reaching subscribers.
-EXCLUDE_PROPS = {"Double Faults", "Aces", "Total Games"}
+# PER BOOK, NOT MIRRORED (2026-09-28). The instruction above — keep this in sync
+# with pick_of_day._POD_EXCLUDE_PROPS — was wrong, and it emptied this board.
+# Every exclusion above was measured on pick_group='potd', which is PrizePicks
+# ONLY, and then applied here. The same prop does not behave the same on both
+# books, because they are not the same lines:
+#
+#     prop            PrizePicks   Underdog (graded)
+#     Total Games        48.9%       58.1%  (n=129)
+#     Double Faults      57.1%       61.9%  (n=42)
+#     Break Points Saved   n/a       60.0%  (n=20)
+#     Aces               36.5%       37.5%  (n=24)
+#     Player TGW         44.4%       38.5%  (n=39)
+#
+# Total Games and Double Faults are the two BEST props on this book and were the
+# two largest sources of volume — 141 and 43 of 292 picks. Excluding them, then
+# shadowing Player Total Games Won on 2026-09-26, left only Break Points Won and
+# Break Points Saved, which is 13% of the historical market. The board has
+# published nothing since 09-24.
+#
+# Aces stays out: it is bad on both books, 37.5% here and 36.5% there.
+# Player Total Games Won is not listed because it is held back globally by
+# PTGW_ENABLED while its model is rebuilt — 38.5% here supports that.
+EXCLUDE_PROPS = {"Aces"}
 
 # Markets we deliberately do NOT carry: 1st Set Games Won/Played, Tiebreakers
 # Played, and the serve-point splits (First Serve Points Won, First Serves In,

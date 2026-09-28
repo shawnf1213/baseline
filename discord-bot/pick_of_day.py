@@ -415,9 +415,24 @@ _POD_EXCLUDE_PROPS = {"Total Games"}
 # as PTGW and FS, and what the project's north star asks for — new props ship in
 # shadow. While they sat in _POD_EXCLUDE_PROPS they produced no data at all, so
 # the question could never be settled.
+#
+# PER BOOK (2026-09-28). This set is PrizePicks evidence and must not be applied
+# to Underdog, whose lines are different and whose record disagrees: Double
+# Faults grades 61.9% over 42 picks there against 57.1% here, and it was one of
+# that board's two biggest sources of volume. Shadowing it on both books helped
+# take the Underdog board to zero posts. _rank_board takes a `book` and picks the
+# right set; the Underdog board carries no shadow props of its own, because the
+# props it would shadow are the ones it is good at.
 SHADOW_PROPS = {
     x.strip() for x in os.getenv("SHADOW_PROPS", "Aces,Double Faults").split(",")
     if x.strip()
+}
+SHADOW_PROPS_BY_BOOK = {
+    "prizepicks": SHADOW_PROPS,
+    "underdog": {
+        x.strip() for x in os.getenv("SHADOW_PROPS_UNDERDOG", "").split(",")
+        if x.strip()
+    },
 }
 # Populated by _rank_board on every run; the caller logs it under pick_group
 # "shadow". Module-level rather than an extra return value because _rank_board
@@ -1369,7 +1384,7 @@ def _recent_supports_lean(pk: dict, lookback: int = 5, min_n: int = 3) -> bool:
 
 
 # ── STEPS 4 + 7: select the best picks, fully isolated ──────────────────────
-async def _rank_board(props: list = None):
+async def _rank_board(props: list = None, book: str = "prizepicks"):
     """Evaluate the whole board ONCE and return the qualifying candidates,
     deduped to each player's single best play, sorted best-first.
 
@@ -1394,6 +1409,13 @@ async def _rank_board(props: list = None):
     # Reset per run — this list is read by the caller straight after, and a stale
     # entry would be logged twice on the next board.
     LAST_SHADOW_PICKS.clear()
+
+    # Shadow set is per BOOK — see SHADOW_PROPS_BY_BOOK. An unknown book falls
+    # back to the PrizePicks set, which is the conservative direction: it shadows
+    # more, never less.
+    _shadow_set = SHADOW_PROPS_BY_BOOK.get((book or "").lower(), SHADOW_PROPS)
+    if _shadow_set:
+        log.info("POD_SHADOW_SET | book=%s | %s", book, sorted(_shadow_set))
 
     # One evaluation per (player, prop, odds_type) — the projection is line-
     # independent, but a demon carries a DIFFERENT (boosted) line than the
@@ -1504,7 +1526,7 @@ async def _rank_board(props: list = None):
         # SHADOW: qualified, but diverted before it can reach the board, the star
         # or the 3x. Collected so the caller can log it as excluded_from_record —
         # the whole point is to accumulate graded out-of-sample picks.
-        if ok and ptype in SHADOW_PROPS:
+        if ok and ptype in _shadow_set:
             LAST_SHADOW_PICKS.append(r)
             log.info("POD_SHADOW | %-22s %-18s line=%-5s conf=%-3.0f proj=%-6.2f "
                      "lean=%-5s — QUALIFIED, logged not posted (SHADOW_PROPS)",
