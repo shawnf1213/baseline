@@ -2839,6 +2839,10 @@ BP_LOSS_MATCHUP_WEIGHT = 0.35
 # carries the returner's own chance creation. See the measurement at the
 # base_proj site. 0.0 = measured optimum, 1.0 = pre-2026-09-29 behaviour.
 BP_C2_STRENGTH = float(os.getenv("BP_C2_STRENGTH", "0.0") or 0.0)
+
+# The retired A1 lopsided guard — see the bp_lopsided site. 1 restores it.
+_BP_LOPSIDED_GUARD = (os.getenv("BP_LOPSIDED_GUARD", "0") or "0").strip().lower() in (
+    "1", "true", "yes", "on")
 _BP_SCALE_LO, _BP_SCALE_HI = 0.5, 2.0   # sanity clamp on the matchup scale
 
 
@@ -4771,7 +4775,37 @@ def project_break_points(
     # The projection VALUE is unchanged — main.py exposes bp_suspended and the bot
     # excludes suspended BP picks from the board (block, not cap).
     # ─────────────────────────────────────────────────────────────────────────
-    bp_lopsided = p_prob < 30.0 or p_prob > 70.0
+    # ── bp_lopsided RETIRED 2026-09-29 — A2 LANDED, THIS WAS ITS PLACEHOLDER ──
+    # The block above says it plainly: the guard existed because "the BP chain
+    # has NO outcome / scenario conditioning (A2 rebuilds that)", and it was to
+    # stand "until A2 lands". A2 landed on 2026-08-05. bp_scenario_mixture IS
+    # that conditioning — it weights four scenarios by the win probability, so a
+    # heavy favourite loads win-in-2 / win-in-3 (WTA means 4.73 / 5.90) and a
+    # heavy underdog loads lose-in-3 / lose-in-2 (1.66 / 0.64). The projection is
+    # already outcome-aware; suspending it for being outcome-lopsided now removes
+    # the picks the mixture handles best.
+    #
+    # NOTE: this copy is not the live one. main.py recomputes bp_suspended off
+    # the MARKET-ANCHORED blend and overwrites whatever is set here, so the
+    # retirement has to be applied in both places — it is.
+    #
+    # And the band is hostile to the prop by construction: 30-70% excludes every
+    # clear favourite and every clear underdog, when "the favourite breaks serve
+    # repeatedly" is the ordinary case for break points, not an anomaly.
+    #
+    # Measured on the live card the day it was removed: 25 BP lines, 4 suspended,
+    # 2 of them clearing the board floor — Daria Snigur (conf 83, proj 8.0 vs a
+    # 5.5 line, 85% favourite) and Katie Boulter (conf 66, proj 6.0 vs 5.0, 71%).
+    # Snigur is the whole argument: a dominant winner projected to break often is
+    # a coherent, outcome-conditioned read, and the guard dropped it for being
+    # exactly that.
+    #
+    # bp_contradiction STAYS. It is the genuine inversion test (>=4 breaks while
+    # losing), A2 should make it unreachable, and it costs nothing if so — a
+    # cheap net that catches a real regression rather than a healthy favourite.
+    # BP_LOPSIDED_GUARD=1 restores the old behaviour.
+    bp_lopsided = (_BP_LOPSIDED_GUARD
+                   and (p_prob < 30.0 or p_prob > 70.0))
     bp_contradiction = proj >= 4.0 and p_prob < 35.0
     bp_suspended = bool(bp_lopsided or bp_contradiction)
     bp_suspend_reason = None

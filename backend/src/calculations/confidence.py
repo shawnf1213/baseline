@@ -430,6 +430,20 @@ def calculate_confidence(
 
     _ADJUST_KEYS = {"bonus_cap", "penalty_cap", "confidence_cap", "data_cap"}
 
+    # HIT RATE + REWEIGHT REVERTED (operator, 2026-09-29). The hit-rate
+    # component filtered only by SURFACE, so it answered 'how often does this
+    # player clear this number on hard courts' rather than 'under the given
+    # conditions' — opponent quality, court pace and indoor/outdoor were all
+    # ignored. That is a different question and a much weaker one, and the
+    # board it produced was worse: 10 qualifying plays down to 6, with the
+    # reweight lowering every score by ~14% at the same time so the two
+    # effects could not be separated. The component weights go back with it,
+    # because cutting sample_size 60 -> 25 only made sense if hit rate was
+    # filling the gap.
+    #
+    # A conditions-aware version is still the right idea — it needs opponent
+    # and court matching, not a surface filter.
+
     # ── Fix A — bonus STACKING cap +15 ────────────────────────────────────────
     # Multiple small DISCRETIONARY bonuses (consistency, recency-alignment, venue,
     # ss last-5, source agreement) could stack to rescue a play into the high 80s.

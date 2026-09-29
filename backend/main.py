@@ -997,6 +997,11 @@ def _resolve_lean(proj: float, line: float, model_lean: str) -> str:
 _EDGE_CAP_ENABLED = (os.getenv("EDGE_CAP_ENABLED", "0") or "0").strip().lower() in (
     "1", "true", "yes", "on")
 
+# The retired A1 lopsided BP guard. Shares the name used in props.py so one
+# env var controls both copies. 1 restores it.
+_BP_LOPSIDED_GUARD_MAIN = (os.getenv("BP_LOPSIDED_GUARD", "0") or "0").strip().lower() in (
+    "1", "true", "yes", "on")
+
 
 def _edge_cap(confidence: int, proj: float, line: float) -> int:
     if line <= 0 or proj <= 0:
@@ -4103,7 +4108,38 @@ async def prop_calculate(req: PropRequest):
                     # suspension off the MARKET-ANCHORED win prob (props.py set it off
                     # the model prob). Non-anchored -> blended==model -> unchanged.
                     _bp_wp_pct = _bp_blended * 100.0
-                    _bp_lop = _bp_wp_pct < 30.0 or _bp_wp_pct > 70.0
+                    # LOPSIDED GUARD RETIRED (operator, 2026-09-29). THIS is the
+                    # live one — props.py sets bp_suspended first and this
+                    # overwrites it off the market-anchored probability, so
+                    # retiring it there alone changed nothing.
+                    #
+                    # The A1 guard existed because the pre-A2 chain had no
+                    # outcome conditioning and could project many breaks for a
+                    # player who would almost certainly lose. A2 IS that
+                    # conditioning: bp_scenario_mixture weights four scenarios by
+                    # win probability, so a favourite loads win-in-2/win-in-3
+                    # (WTA means 4.73/5.90) and an underdog loads lose-in-3/
+                    # lose-in-2 (1.66/0.64). Re-keying it to the market-anchored
+                    # blend (above) improved the INPUT but kept a rule whose
+                    # reason had already gone.
+                    #
+                    # The band is also hostile to the prop by construction:
+                    # 30-70% excludes every clear favourite and every clear
+                    # underdog, when "the favourite breaks serve repeatedly" is
+                    # the ordinary case for break points, not an anomaly.
+                    #
+                    # Measured on the live card: 25 BP lines, 4 suspended, 2 of
+                    # them clearing the board floor — Daria Snigur (conf 83,
+                    # proj 8.0 vs a 5.5 line, 85% favourite) and Katie Boulter
+                    # (conf 66, proj 6.0 vs 5.0, 71%). A dominant winner
+                    # projected to break often is a coherent outcome-conditioned
+                    # read, and the guard dropped it for being exactly that.
+                    #
+                    # The contradiction test stays: >=4 breaks while losing is a
+                    # genuine inversion, A2 should make it unreachable, and it
+                    # costs nothing if so. BP_LOPSIDED_GUARD=1 restores both.
+                    _bp_lop = _BP_LOPSIDED_GUARD_MAIN and (
+                        _bp_wp_pct < 30.0 or _bp_wp_pct > 70.0)
                     _bp_contra = _bp_fair >= 4.0 and _bp_wp_pct < 35.0
                     result["bp_suspended"] = bool(_bp_lop or _bp_contra)
                     result["bp_suspend_reason"] = (
