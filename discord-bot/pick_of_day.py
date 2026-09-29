@@ -231,7 +231,11 @@ PROP_BASE_RATE = {
     "Aces":                   0.367,   # n=109
 }
 # A prop must clear this to reach the board. 0 disables the gate.
-PROP_MIN_RATE = float(os.getenv("PROP_MIN_RATE", "0.5774") or 0.5774)
+# DEFAULT OFF (2026-09-29). The backtest above is real, but switching it on
+# blocked Aces — directly against an explicit instruction to let Aces, Double
+# Faults and PTGW populate the board. That was mine to raise, not to override.
+# Set PROP_MIN_RATE=0.5774 to enable it.
+PROP_MIN_RATE = float(os.getenv("PROP_MIN_RATE", "0") or 0)
 # Used for a prop with no measured record yet — neutral, so a genuinely new prop
 # is neither blocked nor waved through on an assumption.
 PROP_RATE_UNKNOWN = 0.55
@@ -389,8 +393,10 @@ def _min_conf_for(prop_type: str, thin: bool = False) -> int:
     on the calibrated scale a 60 floor keeps 45% of mixture picks, and those
     still grade 54.4%, under the 57.74% breakeven. The calibration did not
     cause that; it revealed it."""
-    if prop_type in MIXTURE_CONF_PROPS:
-        return int(round(50.0 + (BOARD_MIN_CONF - 50.0) * MIXTURE_PROB_SHRINK))
+    # REVERTED 2026-09-29: one uniform floor again. The split existed only to
+    # keep the calibrated mixture scale comparable with the evidence scale, and
+    # the calibration is off (MIXTURE_PROB_SHRINK=1.0), so a second floor would
+    # now gate the same scale twice at different heights.
     return BOARD_MIN_CONF
 
 

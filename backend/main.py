@@ -993,6 +993,11 @@ def _resolve_lean(proj: float, line: float, model_lean: str) -> str:
     return "UNDER"
 
 
+# Off by default — see the call site for the measurement. 1 restores it.
+_EDGE_CAP_ENABLED = (os.getenv("EDGE_CAP_ENABLED", "0") or "0").strip().lower() in (
+    "1", "true", "yes", "on")
+
+
 def _edge_cap(confidence: int, proj: float, line: float) -> int:
     if line <= 0 or proj <= 0:
         return confidence
@@ -1609,7 +1614,12 @@ BP_PROB_CONF_WEIGHT = 0.5
 # Costs ~9% of mixture picks at the current floor (52 of 579 fall under 60).
 # Refit when the sample doubles: the walk-forward k has been drifting down
 # (0.63 early, 0.33 latest), so a fixed constant will go stale.
-MIXTURE_PROB_SHRINK = float(os.getenv("MIXTURE_PROB_SHRINK", "0.40") or 0.40)
+# REVERTED TO OFF (operator, 2026-09-29). 1.0 = no shrink = the behaviour
+# before any of this. The measurements above stand, but they answered the wrong
+# question: the reported problem was VALUE BEING MISSED because good props are
+# under-rated by low confidence, and shrinking confidence toward 0.5 pushes it
+# further down — the opposite of what was asked for. Set to 0.40 to re-enable.
+MIXTURE_PROB_SHRINK = float(os.getenv("MIXTURE_PROB_SHRINK", "1.0") or 1.0)
 
 
 def _calibrate_side_prob(p: float) -> float:
@@ -4752,7 +4762,35 @@ async def prop_calculate(req: PropRequest):
         # the single finalize step below. SKIPPED for PTGW: |proj − line| / line is
         # the same bimodal-mean-vs-line fallacy the rebuild removed — a high-P(over)
         # PTGW pick can have a tiny mean edge, and edge_cap would wrongly gut it.
-        if not _prob_base:
+        # ── EDGE CAP REMOVED (operator, 2026-09-29) ──────────────────────────
+        # This was the heaviest clamp in the system and the direct cause of the
+        # reported problem — good props under-rated by low confidence.
+        #
+        #     cap = 50 if edge_pct < 5 else 65 if < 10 else 80 if < 15 else 95
+        #
+        # so a prop with a full evidence chain behind it and a 4% edge was
+        # published at 50, however strong the data. Measured across 956 picks
+        # carrying a stored breakdown, confidence_cap fired on 82% of them and
+        # removed 17.2 points on average (mean base 95.4 -> 78.2), with 418 of
+        # them landing on exactly 80.0. That is a lookup table, not a ceiling.
+        #
+        # It is also circular. Confidence is meant to answer "how strongly does
+        # the data support this projection"; this overwrote it with "how far is
+        # the projection from the book's line", so agreeing with the market
+        # scored low no matter how much evidence sat behind it.
+        #
+        # THE EDGE IS NOT LOST. It ships separately as edge_pct and edge_sigma,
+        # which exist precisely so the two ideas stop being multiplexed into one
+        # number. Ranking and gating can use either, on purpose, instead of
+        # inheriting a hidden blend of both.
+        #
+        # What the cap excluded was never measurable: a pick capped to 50 never
+        # cleared the board floor, so it was never logged. The record contains
+        # only picks that survived this, which is why no analysis of stored
+        # picks could ever have found it.
+        #
+        # EDGE_CAP_ENABLED=1 restores it.
+        if not _prob_base and _EDGE_CAP_ENABLED:
             confidence = _edge_cap(confidence, proj_val, req.prop_line)
 
         # ── ACES: a HUGE edge is a warning sign, not a green light (2026-07-30) ──

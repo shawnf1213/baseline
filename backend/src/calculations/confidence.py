@@ -1,5 +1,9 @@
 import logging
+import os
 import statistics
+
+# The single confidence ceiling. See finalize_confidence for why it moved 95->99.
+_CONF_CEILING = int(os.getenv("CONF_CEILING", "99") or 99)
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -114,12 +118,24 @@ def _extract_series(matches: list, stat_key: str) -> list:
     return [m[stat_key] for m in matches if stat_key in m and m[stat_key] is not None]
 
 
-def finalize_confidence(total, prop_type: str = "", data_ceiling: int = 95) -> int:
+def finalize_confidence(total, prop_type: str = "", data_ceiling: int = None) -> int:
     """The SINGLE confidence floor/cap. Floor 25, cap 95 (minus any per-prop
     ceiling for derived props, minus the ``data_ceiling`` imposed by data quality
     / variance — Fixes B/C and the ace-variance cap). This is the ONLY place
     confidence is clamped; applied once as the final step after every modifier."""
-    ceiling = min(95, data_ceiling if isinstance(data_ceiling, (int, float)) else 95)
+    # CEILING WIDENED 95 -> 99 (2026-09-29). With the edge cap removed the
+    # ceiling becomes the binding clamp: raw base totals run 31-108 (median 93)
+    # and 37% of picks sit above 95, so a 95 ceiling would pin better than a
+    # third of the board onto one number — trading the edge cap's lookup table
+    # for a flatter one. 99 cuts that to roughly a quarter.
+    #
+    # It is not a full fix. The component maxima sum to 116 (sample_size 60 +
+    # h2h 15 + opponent 10 + ta_career 8 + source_agreement 8 + recency 5 +
+    # ss_recent 5 + venue 5), so any well-evidenced pick still tops out. Real
+    # spread needs those weights rescaled to a 100 total, which changes every
+    # score and wants its own validation rather than riding along here.
+    ceiling = min(_CONF_CEILING,
+                  data_ceiling if isinstance(data_ceiling, (int, float)) else _CONF_CEILING)
     prop_ceiling = PROP_CONFIDENCE_CEILING.get(prop_type)
     if prop_ceiling is not None:
         ceiling = min(ceiling, prop_ceiling)
@@ -459,7 +475,10 @@ def calculate_confidence(
     #   Ace variance: a high-variance Aces / Double Faults prop caps at 80 — a big
     #          projected edge on a coin-flip stat is not "high confidence".
     p2_n = opp_ta_career_matches      # stat-rich (see the note on `n`)
-    data_ceiling = 95
+    # Starts at the global ceiling; the data-quality rules below only ever
+    # LOWER it. Hardcoding 95 here made it the binding clamp regardless of
+    # _CONF_CEILING, so widening the ceiling did nothing.
+    data_ceiling = _CONF_CEILING
     _cap_reason = ""
     _cap_tag = None          # short display tag: data-capped / sample-capped / variance-capped
     for _bl in (p1_blended, p2_blended):
