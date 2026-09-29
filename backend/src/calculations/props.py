@@ -264,26 +264,49 @@ def _tour_avg(tour: str, surface: str) -> dict:
 # ── Sanity bounds ─────────────────────────────────────────────────────────────
 # "ATP_GS" key is used when match_format == "best_of_5" (ATP Grand Slams).
 # BO5 max is higher because men can win more BPs across 5 sets.
+# WIDENED 2026-09-29 AGAINST THE GRADED RECORD. These bounds exist to catch a
+# BROKEN CALCULATION — a divide-by-zero, a unit slip — not to veto an unusual
+# but real match. They were doing the second thing, and a failure costs -25
+# confidence, which is enough on its own to keep a prop off the board.
+#
+# Checked against every graded outcome we hold:
+#
+#   prop                 n     observed    old bounds   outside
+#   Break Points Won    162    0.0 - 8.0   1.5 - 12.0   26 (16.0%)  all BELOW
+#   Double Faults        98    0.0 - 16.0  0.3 -  8.0   23 (23.5%)  21 ABOVE
+#   Aces                118    0.0 - 27.0  0.5 - 18.0    6 ( 5.1%)
+#   Total Games         238    4.0 - 50.0 14.0 - 39.0    9 ( 3.8%)
+#
+# Break Points was the worst: a floor of 1.5 called a SIXTH of reality
+# impossible. Zero breaks happens in 4.9% of matches and exactly one in 11.1%,
+# and the model's own fitted "lose in 2" scenario mean is 0.64 — so the floor
+# contradicted the distribution the same file fits. Any projection correctly
+# predicting a low-break match was penalised for it. That is what left 23 Break
+# Points lines on the card producing zero plays: the C2 fix lowered projections
+# toward reality and pushed them under a floor reality does not respect.
+#
+# New bounds sit OUTSIDE the observed range with margin, so only genuine
+# nonsense trips them.
 PROJECTION_SANITY_BOUNDS = {
     "Break Points Won": {
-        "ATP":    {"min": 1.5, "max": 12.0},
-        "ATP_GS": {"min": 2.0, "max": 18.0},  # best-of-5 Grand Slam
-        "WTA":    {"min": 1.5, "max": 14.0},
+        "ATP":    {"min": 0.2, "max": 14.0},
+        "ATP_GS": {"min": 0.3, "max": 20.0},  # best-of-5 Grand Slam
+        "WTA":    {"min": 0.2, "max": 16.0},
     },
     "Aces": {
-        "ATP":    {"min": 0.5, "max": 18.0},
-        "ATP_GS": {"min": 0.5, "max": 26.0},  # BO5 allows higher ace totals
-        "WTA":    {"min": 0.2, "max": 8.0},
+        "ATP":    {"min": 0.1, "max": 32.0},
+        "ATP_GS": {"min": 0.1, "max": 45.0},  # BO5 allows higher ace totals
+        "WTA":    {"min": 0.1, "max": 16.0},
     },
     "Double Faults": {
-        "ATP":    {"min": 0.3, "max": 8.0},
-        "ATP_GS": {"min": 0.3, "max": 12.0},
-        "WTA":    {"min": 0.3, "max": 10.0},
+        "ATP":    {"min": 0.1, "max": 20.0},
+        "ATP_GS": {"min": 0.1, "max": 28.0},
+        "WTA":    {"min": 0.1, "max": 22.0},
     },
     "Total Games": {
-        "ATP":    {"min": 14.0, "max": 39.0},
-        "ATP_GS": {"min": 20.0, "max": 55.0},  # BO5 range
-        "WTA":    {"min": 12.0, "max": 39.0},
+        "ATP":    {"min": 8.0,  "max": 52.0},
+        "ATP_GS": {"min": 12.0, "max": 70.0},  # BO5 range
+        "WTA":    {"min": 8.0,  "max": 52.0},
     },
 }
 
@@ -2321,6 +2344,78 @@ def _norm_sf(x, mu, sd):
 _SQRT2 = 2.0 ** 0.5
 
 
+def _count_sf(x, mu, sd):
+    """P(count > x) for a NON-NEGATIVE INTEGER count with this mean and sd.
+
+    WHY NOT _norm_sf. The docstring above is right that a X.5 line needs no
+    continuity correction, and wrong that this makes a Normal adequate. A Normal
+    is SYMMETRIC, so it asserts mean == median. A break count is right-skewed and
+    floored at zero, so its median sits BELOW its mean and P(X >= k) near the
+    mean is genuinely lower than the Normal says. It also spends probability on
+    impossible values — at the fitted ATP scenario shapes:
+
+        S1 win in 2   mu 2.76 sd 1.36    2.1% of mass below zero
+        S2 win in 3   mu 3.31 sd 1.71    2.6%
+        S3 lose in 3  mu 1.66 sd 1.42   12.1%
+        S4 lose in 2  mu 0.64 sd 0.97   25.5%
+
+    That mass belongs at 0 and 1. Leaving it below zero inflates P(over), and it
+    does so WORST in the losing scenarios — exactly the matchups where the model
+    should be leaning UNDER. Measured at a 1.5 line: S3 0.545 -> 0.474 (-7.1 pp),
+    S4 0.188 -> 0.151 (-3.7 pp), while the winning scenarios move +0.0 and
+    +0.5 pp. It only changes the answer where the Normal was wrong.
+
+    Matching the fitted (mu, sd) to a discrete law by dispersion keeps the LEVEL
+    untouched — the implied mean reproduces mu to within 1e-3 for every fitted
+    scenario — and fixes only the shape:
+
+        var > mu   negative binomial (overdispersed; the loss scenarios)
+        var ~ mu   Poisson
+        var < mu   binomial (underdispersed; the win scenarios)
+
+    Not applied to Fantasy Score, which is a genuinely continuous score and for
+    which the Normal is the right family. Player Total Games Won IS a count and
+    has the same defect, but it is in shadow mid-rebuild and its scenario means
+    are far from zero, so it is left for that rebuild rather than changed under
+    it.
+    """
+    try:
+        mu = max(1e-6, float(mu))
+        var = max(1e-9, float(sd) ** 2) if sd else mu
+        k = int(math.floor(x)) + 1            # X > 1.5  ->  X >= 2
+        if k <= 0:
+            return 1.0
+        if var > mu * 1.05:                   # negative binomial
+            r = mu * mu / (var - mu)
+            p = mu / var
+            pm = math.exp(r * math.log(p))
+            s = pm
+            for i in range(1, k):
+                pm *= (r + i - 1) / i * (1.0 - p)
+                s += pm
+            return max(0.0, min(1.0, 1.0 - s))
+        if var < mu * 0.95:                   # binomial
+            pp = 1.0 - var / mu
+            n = max(1, int(round(mu / pp)))
+            pp = min(0.999, mu / n)
+            pm = (1.0 - pp) ** n
+            s = pm
+            for i in range(1, k):
+                if i > n:
+                    break
+                pm *= (n - i + 1) / i * pp / (1.0 - pp)
+                s += pm
+            return max(0.0, min(1.0, 1.0 - s))
+        pm = math.exp(-mu)                    # Poisson
+        s = pm
+        for i in range(1, k):
+            pm *= mu / i
+            s += pm
+        return max(0.0, min(1.0, 1.0 - s))
+    except Exception:  # noqa: BLE001 — a projection must never fail on this
+        return _norm_sf(x, mu, sd)
+
+
 # Sanity clamp on the match-length scale.
 #
 # THE LOW BOUND WAS 0.70 AND IT WAS BINDING ON EVERY BLOWOUT. The shortest
@@ -2739,6 +2834,11 @@ _BP_BASE_POP_BO5 = 3.2
 # Initial 0.35; the backtest sweep picks the final value. The bp_scenario_mixture
 # `loss_weight` arg overrides it (the sweep passes 0.0 / 0.25 / 0.35 / 0.5 / 1.0).
 BP_LOSS_MATCHUP_WEIGHT = 0.35
+
+# How much of C2 (the returner-creation multiplier) still applies now that C1
+# carries the returner's own chance creation. See the measurement at the
+# base_proj site. 0.0 = measured optimum, 1.0 = pre-2026-09-29 behaviour.
+BP_C2_STRENGTH = float(os.getenv("BP_C2_STRENGTH", "0.0") or 0.0)
 _BP_SCALE_LO, _BP_SCALE_HI = 0.5, 2.0   # sanity clamp on the matchup scale
 
 
@@ -2781,7 +2881,11 @@ def bp_scenario_mixture(p_sel, prop_line, base_proj, tour="ATP",
         f = win_scale if s in ("S1", "S2") else loss_scale
         mu_s, sd_s = mu * f, sd * f
         scaled_mu[s] = round(mu_s, 2)
-        po_s = _norm_sf(prop_line, mu_s, sd_s)
+        # Break counts are non-negative integers and right-skewed — see
+        # _count_sf. The Normal this replaced overstated P(over) by 7.1 pp in
+        # "lose in 3" and 3.7 pp in "lose in 2", the scenarios where the model
+        # should be leaning UNDER, while leaving the win scenarios alone.
+        po_s = _count_sf(prop_line, mu_s, sd_s)
         contrib[s] = round(p[s] * po_s, 4)
         p_over += p[s] * po_s
         mix_mean += p[s] * mu_s
@@ -4293,9 +4397,44 @@ def project_break_points(
     #
     # base = C1 × C2 × (C3/100) × C4 × C5 × C6
     # ═════════════════════════════════════════════════════════════════════════
+    # ── C2 IS DAMPENED BECAUSE C1 NOW CONTAINS IT (2026-09-29) ───────────────
+    # C2 was fitted as a correction to a SERVER-SIDE C1: "C1 is the opponent's
+    # break points faced AGAINST AN AVERAGE RETURNER, so this is the missing
+    # half of the identity." That was true when it was written, and the 8,112
+    # observation fit behind it is sound for that C1.
+    #
+    # Part 2 then changed what C1 means:
+    #     c1 = (0.5 * opp_bp_faced + 0.5 * bp_generated_quality_adj) * fwd
+    # bp_generated_quality_adj IS this returner's chance creation. So C1 stopped
+    # being "against an average returner", and C2 — which exists to supply
+    # exactly that — began applying returner quality a SECOND time. Nothing
+    # flagged it, because each half is individually correct.
+    #
+    # Measured on 42 graded BP picks carrying their own stored inputs:
+    #     corr(C2, projection error) = -0.415   t = -2.89
+    #     C2 < 0.95  -> error +0.414 (n=14)   under-projected
+    #     C2 > 1.05  -> error -1.457 (n=23)   OVER-projected
+    # Fitting the strength lambda, where C2' = 1 + (C2 - 1) * lambda:
+    #     lambda 1.00 (as shipped)  bias -0.660  MAE 1.907
+    #     lambda 0.50               bias -0.505  MAE 1.762
+    #     lambda 0.00               bias -0.350  MAE 1.662   SSE -24%
+    # Temporal holdout, lambda fitted on the first half only (came out 0.00):
+    #     second half, as shipped   bias -0.867  MAE 1.876
+    #     second half, fitted       bias -0.365  MAE 1.782
+    #
+    # Zero is the measured optimum on both the fit and the holdout, which is
+    # what "already fully counted in C1" looks like. SMALL SAMPLE — 42 picks —
+    # so this is an env knob, not a deletion: BP_C2_STRENGTH=1.0 restores the
+    # old behaviour exactly, and the value should be refitted as the sample
+    # grows. C2's own computation is left intact so the diagnostic stays
+    # readable in model_inputs.
+    #
+    # This is a PROJECTION fix, so it reaches the website's projection tool and
+    # every player page, not only what the bot chooses to publish.
+    _c2_applied = 1.0 + (c2_returner_mult - 1.0) * BP_C2_STRENGTH
     base_proj = (
         c1_opp_bp_faced
-        * c2_returner_mult
+        * _c2_applied
         * (conv_rate_pct / 100.0)
         * c4_serve_qual
         * c5_surf_adj

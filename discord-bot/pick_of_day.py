@@ -151,6 +151,15 @@ PROP_MIN_CONF = {
 # Defaulting to FALSE rather than only setting the env var: the env var is what
 # went missing in the first place, and a shadow policy that depends on remembering
 # to set something is not a policy. PTGW_ENABLED=true re-enables it explicitly.
+# RE-ENABLED (operator, 2026-09-29). Being straight about the evidence, because
+# it is the weakest of the three brought back today: PTGW grades 60.0% over 65
+# PrizePicks picks but 38.5% over 39 Underdog ones, and its projection
+# correlates with the outcome at only 0.16 — the lowest of any prop, with the
+# book's line predicting better than ours (MAE 3.46 vs 4.71). A 60% win rate on
+# a model that barely tracks the outcome is not projection skill, so this is the
+# one most likely to need reverting. It is also identity-constrained and sits in
+# NO_BIAS_PROPS, so no bias correction can reach it. PTGW_ENABLED=false restores
+# the shadow.
 PTGW_ENABLED = os.getenv("PTGW_ENABLED", "false").strip().lower() in (
     "1", "true", "yes", "on")
 # Fantasy Score gate. ENABLED (2026-07-16) after the shadow review + fixes: market
@@ -177,6 +186,62 @@ FS_ENABLED = os.getenv("FS_ENABLED", "true").strip().lower() in (
 # at two would throw away the plays with the most edge to make room for props
 # that have less.
 BOARD_MAX_PER_PROP = 2
+
+# ── CALIBRATED CONFIDENCE: THE PROP'S MEASURED RATE (2026-09-29) ─────────────
+# Published confidence does not predict whether a pick wins. Measured over the
+# whole graded record: AUC 0.506 for non-mixture props, and correlation with the
+# outcome of +0.027 / -0.033. Relative edge is no better (AUC 0.508). So neither
+# number can rank a board, and "the 8 best" was 8 arbitrary plays that cleared a
+# floor.
+#
+# When a per-pick signal carries no information, the honest estimate of P(win)
+# for a pick is its PROP's measured rate. Over 843 graded picks across both
+# books:
+#
+#     Break Points Won        59.6%  (n=188)   PASS
+#     Double Faults           59.6%  (n= 89)   PASS
+#     Break Points Saved      60.0%  (n= 20)   PASS
+#     Fantasy Score           58.0%  (n=112)   PASS
+#     Total Games             54.3%  (n=221)   fail
+#     Player Total Games Won  51.9%  (n=104)   fail
+#     Aces                    36.7%  (n=109)   fail
+#
+# Gating on this, walk-forward with rates taken only from picks graded BEFORE
+# each board, is worth more than any re-ranking:
+#
+#     no gate     310-261 (n=571)  54.3%   z=-1.65
+#     >= 0.5774   147-107 (n=254)  57.9%   z=+0.04
+#     >= 0.60     112-87  (n=199)  56.3%   z=-0.41
+#
+# Breakeven is the optimum — tighter is worse, which is what a real threshold
+# looks like rather than the end of a sweep. It halves volume and turns a losing
+# board into a breakeven one.
+#
+# WHY A TABLE AND NOT A LIVE QUERY: the same reason PROP_MIN_CONF is a table.
+# These move slowly, a live fetch puts the results API in the path of every
+# board, and a hardcoded number with its sample size next to it is auditable.
+# REFIT when any prop's n has grown materially.
+PROP_BASE_RATE = {
+    "Break Points Won":       0.596,   # n=188
+    "Double Faults":          0.596,   # n=89
+    "Break Points Saved":     0.600,   # n=20  — thin, watch it
+    "Fantasy Score":          0.580,   # n=112
+    "Total Games":            0.543,   # n=221
+    "Player Total Games Won": 0.519,   # n=104
+    "Aces":                   0.367,   # n=109
+}
+# A prop must clear this to reach the board. 0 disables the gate.
+PROP_MIN_RATE = float(os.getenv("PROP_MIN_RATE", "0.5774") or 0.5774)
+# Used for a prop with no measured record yet — neutral, so a genuinely new prop
+# is neither blocked nor waved through on an assumption.
+PROP_RATE_UNKNOWN = 0.55
+
+
+def _prop_rate_ok(prop_type: str) -> bool:
+    """Has this prop historically cleared breakeven? See PROP_BASE_RATE."""
+    if PROP_MIN_RATE <= 0:
+        return True
+    return PROP_BASE_RATE.get(prop_type, PROP_RATE_UNKNOWN) >= PROP_MIN_RATE
 BOARD_PROP_CAP_EXEMPT = {"Break Points Won"}
 
 # (PTGW_MAX_PER_BOARD / TOTAL_GAMES_MAX_PER_BOARD / FS_MAX_PER_BOARD /
@@ -237,6 +302,13 @@ THIN_SLATE_NOTE = "⚠️ Play lightly — slate not very full today."
 SKIP_QUALIFYING = (os.getenv("SKIP_QUALIFYING", "1") or "1") not in ("0", "false", "False")
 
 BOARD_MIN_CONF = int(os.getenv("BOARD_MIN_CONF", "65") or "65")
+
+# The props whose confidence is a calibrated probability rather than an evidence
+# score — see _min_conf_for. MUST match backend/main.py's _prob_base set and the
+# MIXTURE_PROB_SHRINK default, or the board floor drifts off the scale the
+# backend is publishing on.
+MIXTURE_CONF_PROPS = {"Break Points Won", "Fantasy Score", "Player Total Games Won"}
+MIXTURE_PROB_SHRINK = float(os.getenv("MIXTURE_PROB_SHRINK", "0.40") or 0.40)
                       # uniform board + 3x-pool floor
 SLIP_MIN_CONF  = 70   # a 3x leg must clear this (above the board floor)
 POTD_THRESHOLD = 80   # uniform Pick-of-the-Day bar, every eligible prop
@@ -298,7 +370,27 @@ def _min_conf_for(prop_type: str, thin: bool = False) -> int:
     old per-prop bars and the thin-slate drop are gone — 65 is already below the
     old thin floor of 70, so a thin slate no longer needs its own (lower-would-be)
     bar. ``thin`` is accepted for signature stability but no longer changes the
-    floor. Confidence itself is untouched; this is purely which picks make the list."""
+    floor. Confidence itself is untouched; this is purely which picks make the list.
+
+    ── TWO SCALES, TWO FLOORS (2026-09-29) ──────────────────────────────────
+    The scenario-mixture props now publish a CALIBRATED probability (see
+    MIXTURE_PROB_SHRINK in backend/main.py): their raw P was overconfident by
+    12 points and inverted above ~62%, so it is shrunk toward 0.5. That changes
+    the SCALE those props are scored on — a raw 60 becomes a calibrated 54.
+
+    A single floor applied across both scales would therefore be a silent
+    policy change: it would cut more than half the mixture board while letting
+    MORE non-mixture picks through. Neither was asked for. So the mixture floor
+    is the calibrated equivalent of BOARD_MIN_CONF, which selects EXACTLY the
+    same picks as before while the published number finally means what it says.
+
+    To make the board stricter, raise BOARD_MIN_CONF — both floors move
+    together and the mixture one stays honest. Worth knowing before you do:
+    on the calibrated scale a 60 floor keeps 45% of mixture picks, and those
+    still grade 54.4%, under the 57.74% breakeven. The calibration did not
+    cause that; it revealed it."""
+    if prop_type in MIXTURE_CONF_PROPS:
+        return int(round(50.0 + (BOARD_MIN_CONF - 50.0) * MIXTURE_PROB_SHRINK))
     return BOARD_MIN_CONF
 
 
@@ -423,8 +515,20 @@ _POD_EXCLUDE_PROPS = {"Total Games"}
 # take the Underdog board to zero posts. _rank_board takes a `book` and picks the
 # right set; the Underdog board carries no shadow props of its own, because the
 # props it would shadow are the ones it is good at.
+#
+# BACK ON THE BOARD (operator, 2026-09-29). Shadow default cleared after three
+# days. The evidence behind the original shadow was the small out-of-sample half
+# (Aces 11-14, DF 12-14); the evidence for posting them is the walk-forward
+# re-grade under the 2.5 bias clamp — Aces 59.3%, Double Faults 61.2%, both at
+# or above the 57.74% breakeven, and clamp 5.0 measuring WORSE than 2.5, so the
+# correction sits near an optimum rather than at the end of a sweep.
+#
+# They now also carry the umbrella instrumentation (volume / rate / sample /
+# proj_premull), so posting them produces the component data shadow was waiting
+# for, on live boards, instead of in a holding pattern. Set
+# SHADOW_PROPS="Aces,Double Faults" to put them back.
 SHADOW_PROPS = {
-    x.strip() for x in os.getenv("SHADOW_PROPS", "Aces,Double Faults").split(",")
+    x.strip() for x in os.getenv("SHADOW_PROPS", "").split(",")
     if x.strip()
 }
 SHADOW_PROPS_BY_BOOK = {
@@ -1526,6 +1630,16 @@ async def _rank_board(props: list = None, book: str = "prizepicks"):
         # SHADOW: qualified, but diverted before it can reach the board, the star
         # or the 3x. Collected so the caller can log it as excluded_from_record —
         # the whole point is to accumulate graded out-of-sample picks.
+        # CALIBRATED-RATE GATE. Checked before the shadow diversion so a prop
+        # that has never cleared breakeven cannot reach the board on a high
+        # confidence number that has been measured not to predict anything.
+        if ok and not _prop_rate_ok(ptype):
+            log.info("POD_RATE_GATE | %-22s %-18s conf=%-3.0f — BLOCKED, %s has "
+                     "graded %.1f%% against a %.1f%% breakeven",
+                     (r.get("player") or "")[:22], (ptype or "")[:18], conf,
+                     ptype, 100 * PROP_BASE_RATE.get(ptype, PROP_RATE_UNKNOWN),
+                     100 * PROP_MIN_RATE)
+            continue
         if ok and ptype in _shadow_set:
             LAST_SHADOW_PICKS.append(r)
             log.info("POD_SHADOW | %-22s %-18s line=%-5s conf=%-3.0f proj=%-6.2f "

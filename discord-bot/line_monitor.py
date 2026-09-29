@@ -84,7 +84,8 @@ def _recompute_lean(projection, line):
 # actually changes — as a full-width note, like the flip warning.
 
 
-async def monitor(picks: list, get_lines, post_alert, interval: int = INTERVAL_SECONDS):
+async def monitor(picks: list, get_lines, post_alert, interval: int = INTERVAL_SECONDS,
+                  record_line=None):
     """Watch ``picks`` for line movement until each match starts.
 
     picks: dicts with pp_player, prop_type, original_line, projection, lean,
@@ -166,6 +167,19 @@ async def monitor(picks: list, get_lines, post_alert, interval: int = INTERVAL_S
                 # compare, and never alert. This is the bug that had Swiatek's
                 # already-played match compared against tomorrow's Fantasy Score
                 # line and reported as holding.
+                # CLOSING LINE VALUE. Record every observation while the match
+                # is still upcoming; the monitor stops at match start, so the
+                # last value written is the closing line. Done BEFORE the
+                # same-match check below only in the sense that `cur` is known
+                # here — the check still gates it, because a different opponent
+                # means this is the NEXT match's line and recording it would
+                # corrupt the closed one.
+                if record_line is not None and _same_match(a["opponent"], board_opp):
+                    try:
+                        await record_line(a["pick"].get("player"),
+                                          a["pick"].get("prop_type"), cur)
+                    except Exception as exc:  # noqa: BLE001 — never break the monitor
+                        log.debug("closing-line record failed: %s", exc)
                 if not _same_match(a["opponent"], board_opp):
                     log.info("Line monitor: dropping %s %s — board now shows a "
                              "different opponent (%s, pick was %s); that match is "

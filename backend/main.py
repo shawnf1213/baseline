@@ -665,6 +665,27 @@ async def results_pending():
     return {"pending": database.pending_picks()}
 
 
+class ObserveLineRequest(BaseModel):
+    player: str
+    prop_type: str
+    line: float
+
+
+@app.post("/api/results/observe-line")
+async def results_observe_line(req: ObserveLineRequest):
+    """Record the line currently showing for a pending pick (closing line value).
+
+    Not admin-gated: it writes ONE float onto a PENDING row and cannot change a
+    result, a record, or anything a subscriber sees. The line monitor calls it
+    every 30 minutes for every open pick, so a token would be one more secret in
+    the bot for no protection — the worst an attacker achieves is a wrong CLV
+    number in our own diagnostics.
+    """
+    from src import database
+    n = database.observe_closing_line(req.player, req.prop_type, req.line)
+    return {"ok": True, "updated": n}
+
+
 @app.get("/api/results/audit")
 async def results_audit():
     """Read-only record-integrity forensic: EVERY pick row INCLUDING those
@@ -1555,6 +1576,53 @@ UNDERDOG_UNDER_PENALTY_MAX   = 12
 # composite (pre-A2 behaviour), 1.0 = pure probability (what A2 shipped, which
 # crowded BP off the board). See the blend site for the measured reasoning.
 BP_PROB_CONF_WEIGHT = 0.5
+
+# ── MIXTURE PROBABILITY CALIBRATION (2026-09-29) ──────────────────────────────
+# The scenario-mixture props publish confidence built from P(side), and that P
+# is badly overconfident. Measured across 579 graded picks:
+#
+#     stated P    picks   actual
+#     56-62%       111    56.8%   ( -2.9 pp)
+#     62-68%       184    58.7%   ( -5.5 pp)
+#     68-75%       208    52.9%   (-19.0 pp)
+#     75%+          74    56.8%   (-24.2 pp)
+#     overall  stated 68.2%  ->  actual 56.0%
+#
+#     Break Points Won   70.2% -> 57.1%
+#     Fantasy Score      67.1% -> 59.0%
+#     Player TGW         65.8% -> 50.0%
+#
+# Not just overstated — INVERTED above ~62%: the most confident picks perform
+# worse than the moderate ones, which is why a near coin flip reaches the board
+# wearing "fair confidence".
+#
+# Shrinking P toward 0.5 is the honest correction. Fitted WALK-FORWARD (k from
+# picks graded before each pick, no lookahead) it converges to 0.33-0.40 and
+# takes the mean stated-vs-actual error from 12.4 pp to 1.8 pp.
+#
+# WHAT THIS DOES NOT DO, stated plainly so nobody expects it: shrinking toward
+# 0.5 CANNOT flip a side (measured: 0 lean changes in 549 picks), so it does not
+# fix a wrong lean, and the win rate of the surviving picks is unchanged (56.0%).
+# It makes the number mean what it says. That is a prerequisite for gating and
+# ranking on it, not an edge by itself.
+#
+# Costs ~9% of mixture picks at the current floor (52 of 579 fall under 60).
+# Refit when the sample doubles: the walk-forward k has been drifting down
+# (0.63 early, 0.33 latest), so a fixed constant will go stale.
+MIXTURE_PROB_SHRINK = float(os.getenv("MIXTURE_PROB_SHRINK", "0.40") or 0.40)
+
+
+def _calibrate_side_prob(p: float) -> float:
+    """Shrink a mixture prop's P(side) toward 0.5. Side is preserved."""
+    try:
+        if not isinstance(p, (int, float)):
+            return p
+        k = MIXTURE_PROB_SHRINK
+        if k >= 1.0:
+            return p                      # 1.0 disables the correction
+        return 0.5 + (float(p) - 0.5) * k
+    except Exception:  # noqa: BLE001 — a projection must never fail on this
+        return p
 
 # Outcome reliance — how far a play's probability may lean on the player WINNING
 # the match before confidence is docked for it. MIN_GAP 0.10 leaves normal plays
@@ -4411,6 +4479,26 @@ async def prop_calculate(req: PropRequest):
                         _bp_knife_edge, result.get("bp_anchored"), _bp_implied_claim)
         # A single flag for the mean-edge skips below (all prob-base props).
         _prob_base = _ptgw_prob_base or _fs_prob_base or _bp_prob_base
+
+        # ── CALIBRATE THE PUBLISHED PROBABILITY ──────────────────────────────
+        # Applied HERE, to the final number, because that is the quantity the
+        # calibration was fitted against. Doing it to the probability component
+        # instead would under-correct Break Points Won, whose confidence is a
+        # 50/50 blend of P(side) with the evidence composite — half the shrink
+        # would land on half the value.
+        #
+        # The lean was decided above, from the RAW p_over, and is untouched.
+        # Shrinking toward 0.5 cannot change a side (0 flips in 549 graded
+        # picks); this only stops a near coin flip being published as a
+        # confident play. See MIXTURE_PROB_SHRINK for the measurements.
+        if _prob_base and isinstance(confidence, (int, float)):
+            _conf_raw = float(confidence)
+            _p_pub = _conf_raw / 100.0
+            confidence = 100.0 * _calibrate_side_prob(_p_pub)
+            if abs(_conf_raw - confidence) >= 0.05:
+                logger.info("MIX_CONF_CALIBRATED | %s | %s | %.1f -> %.1f (k=%.2f)",
+                            req.player_name or "?", req.prop_type,
+                            _conf_raw, confidence, MIXTURE_PROB_SHRINK)
         # Consistency tier for display comes straight from the confidence
         # breakdown — consistency is now scored ONCE, in confidence.py. There is
         # no separate main.py consistency penalty.

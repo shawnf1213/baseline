@@ -161,6 +161,24 @@ try:
         generated_at     = Column(DateTime(timezone=True), server_default=func.now())
         resolved_at      = Column(DateTime(timezone=True), nullable=True)
         original_line    = Column(Float)
+        # ── CLOSING LINE (2026-09-29) ────────────────────────────────────────
+        # The last line observed before the match started. With original_line
+        # this gives CLOSING LINE VALUE: did the market move toward our side
+        # after we picked it, or away from it?
+        #
+        # WHY THIS MATTERS MORE THAN ANOTHER WIN-RATE COLUMN. Win/loss is one
+        # bit per pick, so separating a 57% edge from a 54% coin flip takes
+        # hundreds of graded picks — the POTD sits at 15-7 (68.2%) with a
+        # confidence interval running from 49% to 88%, which answers nothing,
+        # and proving it would need roughly 180 more. CLV is a continuous
+        # measurement on every pick, moves the moment the market does, and does
+        # not wait for a result. It is how the question "do we actually have
+        # edge" gets answered in weeks instead of half a year.
+        #
+        # It also measures the one thing our own record cannot: whether we are
+        # right BEFORE the outcome adds its noise.
+        closing_line     = Column(Float)
+        closing_line_at  = Column(DateTime(timezone=True), nullable=True)
         tournament       = Column(String, default="")
         surface          = Column(String, default="")
         # "potd" (Pick of the Day) or "3x" (two-leg slip). Legacy rows are NULL
@@ -454,6 +472,14 @@ def init_db() -> None:
                 # invented for them.
                 conn.execute(text(
                     "ALTER TABLE nfl_picks ADD COLUMN IF NOT EXISTS drivers VARCHAR"))
+                # Closing line value — see the column note on Pick. Existing
+                # rows stay NULL; nothing is back-filled, because the closing
+                # line for a match already played cannot be recovered.
+                conn.execute(text(
+                    "ALTER TABLE picks ADD COLUMN IF NOT EXISTS closing_line FLOAT"))
+                conn.execute(text(
+                    "ALTER TABLE picks ADD COLUMN IF NOT EXISTS "
+                    "closing_line_at TIMESTAMPTZ"))
                 # pre_guard: every row that already exists when this column is
                 # first created predates the degraded-fetch cache guard, so it is
                 # backfilled to 1 exactly once. NULL is the "never seen" marker —
@@ -702,6 +728,41 @@ def set_excluded(ids: list, excluded: bool = True) -> int:
         return n
     except Exception as exc:  # noqa: BLE001
         logger.exception("set_excluded failed: %s", exc)
+        return 0
+
+
+def observe_closing_line(player: str, prop_type: str, line: float) -> int:
+    """Record the line currently showing for a PENDING pick. Returns rows touched.
+
+    Called repeatedly by the line monitor while a match is still upcoming, so
+    the value left behind when the match starts IS the closing line. Overwriting
+    on every pass is deliberate — the monitor stops at match start, so the last
+    write is the last observation before the market closed.
+
+    MATCHED ON PLAYER + PROP, NOT ID. The monitor identifies a pick the same way
+    the board does (player + prop type); the pick id is not threaded through its
+    three call sites. Restricted to PENDING rows so a settled pick can never be
+    rewritten, and to the newest match when a player somehow has two open, which
+    is the one the monitor is watching.
+    """
+    if not _READY or not player or not prop_type or line is None:
+        return 0
+    try:
+        with _session() as s:
+            row = (s.query(Pick)
+                   .filter(Pick.player == player,
+                           Pick.prop_type == prop_type,
+                           Pick.result == "PENDING")
+                   .order_by(Pick.generated_at.desc()).first())
+            if row is None:
+                return 0
+            row.closing_line = float(line)
+            row.closing_line_at = datetime.now(timezone.utc)
+            s.commit()
+            return 1
+    except Exception as exc:  # noqa: BLE001 — never break the monitor
+        logger.warning("observe_closing_line(%s, %s) failed: %s",
+                       player, prop_type, str(exc)[:120])
         return 0
 
 

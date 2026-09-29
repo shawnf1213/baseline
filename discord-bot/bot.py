@@ -2274,9 +2274,65 @@ def _model_inputs_json(p: dict) -> str:
         if not d:
             return ""
         prop = p.get("prop_type") or ""
+        # ── THE UMBRELLA: EVERY PROP RECORDS VOLUME, RATE AND SAMPLE ─────────
+        # Every count prop this app projects is the same shape — a VOLUME times
+        # a per-unit RATE:
+        #
+        #   Aces / Double Faults     sets or service games  x  per-set rate
+        #   Break Points Won         opponent's BP-faced pool x conversion %
+        #   Break Points Saved       BP faced                x  save %
+        #   Player Total Games Won   games played           x  win share
+        #   Total Games              volume alone
+        #
+        # Until now only Break Points Won recorded its own components. Aces,
+        # Double Faults and Total Games stored nothing but expected_sets, which
+        # is why the C2 double-count in BP could be found and proven while Aces
+        # — the prop with a -27.9% bias and 79% OVER leans — could not be
+        # diagnosed at all. A prop that does not record its inputs cannot be
+        # debugged, only guessed at.
+        #
+        # These keys are deliberately GENERIC and identical across props, so one
+        # diagnostic runs over all of them. The prop-specific fields below stay
+        # exactly as they were; nothing is replaced. All of it already exists in
+        # the calculate response — it was simply never persisted.
+        # Key names verified against live responses, not guessed: Aces exposes
+        # aces_per_set, Double Faults df_per_set, Break Points Saved
+        # bps_save_rate. Total Games exposes none, correctly — it IS the volume
+        # term, so rate stays null for it rather than being invented.
+        _rate_key, _rate = None, None
+        for _k in ("aces_per_set", "df_per_set", "bps_save_rate",
+                   "bp_conversion_pct"):
+            if isinstance(d.get(_k), (int, float)):
+                _rate_key, _rate = _k, d.get(_k)
+                break
         out = {
             # THE FIELD THAT MATTERS MOST: what kind of number model_projection is.
             "projection_kind": "fair_line" if prop in _FAIR_LINE_PROPS else "mean",
+            # Volume / rate / sample, the same three keys for every prop.
+            "vol": d.get("expected_sets"),
+            "vol_hist": d.get("avg_historical_sets"),
+            "rate": _rate,
+            "rate_key": _rate_key,
+            # BASE vs MULTIPLIERS, the split that localises a bias. Double
+            # Faults goes 1.7 -> 3.1 between these two on a live request: an 82%
+            # lift from multipliers alone, on the prop carrying a +32.7% bias.
+            # Without both numbers there is no way to tell a wrong base rate
+            # from a wrong multiplier, which is the same distinction that took
+            # two days to establish for Break Points Won.
+            "proj_premull": d.get("model_projection_premull"),
+            "per_set_scale": d.get("per_set_scale"),
+            # (bias_correction is already recorded below — it is what the bias
+            #  clamp moved, and a fit that ignores it double-counts the clamp)
+            # Sample behind the rate — the input needed to answer "would more
+            # data help", which nothing stored could answer before.
+            "player_n": d.get("player_surface_n"),
+            "opp_n": d.get("opponent_surface_n"),
+            "player_fallback": d.get("player_surface_fallback"),
+            "opp_fallback": d.get("opponent_surface_fallback"),
+            # Court/context multipliers that scale the rate.
+            # (court_pace_index is already recorded below as "cpi")
+            "altitude_pct": d.get("altitude_pct"),
+            "opp_ace_against": d.get("opponent_ace_against"),
             # The outcome anchor — which drives every scenario mixture.
             "p_sel": (d.get("bp_blended_wp") or d.get("fs_blended_wp")
                       or d.get("ptgw_blended_wp")),
@@ -2472,8 +2528,22 @@ def _start_line_monitor(channel, picks: list):
                     return
             await _alert_channel.send(payload, allowed_mentions=none)
 
+        async def _record_closing_line(player, prop_type, line):
+            """Persist the line currently showing, for closing-line value.
+
+            Fire-and-forget by design: CLV is diagnostic, and a failed write
+            must never interrupt the alerting the monitor exists to do."""
+            try:
+                await asyncio.to_thread(
+                    requests.post, f"{API_BASE}/api/results/observe-line",
+                    json={"player": player, "prop_type": prop_type,
+                          "line": float(line)}, timeout=8)
+            except Exception:  # noqa: BLE001
+                pass
+
         _line_monitor_task = asyncio.create_task(
-            line_monitor.monitor(picks, pick_of_day.current_board_lines, _post_alert))
+            line_monitor.monitor(picks, pick_of_day.current_board_lines, _post_alert,
+                                 record_line=_record_closing_line))
         log.info("POD: line monitor started for %d picks", len(picks))
     except Exception:  # noqa: BLE001
         log.exception("failed to start line monitor")
