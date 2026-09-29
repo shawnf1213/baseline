@@ -109,3 +109,18 @@ export const fetchRecord    = (signal) =>
 export const fetchPublicRecord = (signal) =>
   api.get('/api/results/summary', { signal }).then(r => r.data)
 
+
+// ── BILLING PORTAL ───────────────────────────────────────────────────────────
+// Cancellation lives on STRIPE, not here. The portal handles cancel, card
+// changes, invoices and their proration/grace rules, so we never build a cancel
+// flow that has to stay in step with all of that — and no card data ever
+// touches this app.
+//
+// The customer is derived server-side FROM THE SESSION. Nothing about who is
+// being managed is sent from the browser; passing a customer id from here would
+// mean anyone who guessed one could open someone else's billing page.
+export const openBillingPortal = (token) =>
+  api.post('/api/billing/portal',
+           { return_url: window.location.origin },
+           { headers: { Authorization: `Bearer ${token}` } })
+     .then(r => r.data)

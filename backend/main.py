@@ -2677,13 +2677,59 @@ def billing_subscribers(token: str = ""):
 
 @app.post("/api/billing/portal")
 async def billing_portal(req: Request):
-    """Stripe-hosted portal so a subscriber can change their card or cancel."""
-    from src import billing
-    body = await req.json()
-    out = billing.billing_portal_url(str(body.get("customer_id") or ""),
-                                     str(body.get("return_url") or ""))
+    """Stripe-hosted portal so a subscriber can change their card or cancel.
+
+    THE CUSTOMER COMES FROM THE SIGNED SESSION, NEVER FROM THE BODY. This used
+    to take customer_id straight off the request, which meant anyone holding or
+    guessing a Stripe customer id could open that person's billing portal —
+    read their card, change it, cancel their subscription. Same rule the account
+    deletion endpoint states in this file, and it has to hold here for the same
+    reason: an endpoint that accepts a caller-supplied identity has no identity
+    check at all.
+
+    Cancellation itself stays on Stripe. We never build a cancel flow, never
+    hold card data, and never have to keep a cancel UI in step with their
+    dunning, proration and grace-period rules.
+    """
+    from src import billing, database, discord_auth
+    tok = req.headers.get("authorization", "").replace("Bearer ", "").strip()
+    data = discord_auth.read_session(tok)
+    if not data or data.get("sub") in (None, "", "state"):
+        raise HTTPException(status_code=401, detail="sign in first")
+
+    # Sessions issued before `k` existed have no kind and carry a Discord id.
+    sub = (database.find_subscription(email=str(data["sub"]))
+           if (data.get("k") or "discord") == "email"
+           else database.find_subscription(discord_id=str(data["sub"])))
+    customer = (sub or {}).get("stripe_customer_id") or ""
+    if not customer:
+        # Someone entitled through Discord/Whop/a comp has no Stripe customer,
+        # so there is nothing for Stripe to manage. Say that plainly rather than
+        # 500ing or opening an empty portal.
+        raise HTTPException(status_code=404,
+                            detail="no Stripe subscription on this account")
+
+    # An OPEN REDIRECT here would be handed out by Stripe itself: the portal
+    # sends the user to return_url when they finish, so an attacker-supplied
+    # value lands them on a page of someone else's choosing straight after a
+    # billing action. Only our own origins are accepted; anything else falls
+    # back to the configured default.
+    _req_return = ""
+    try:
+        _body = await req.json()
+        _req_return = str((_body or {}).get("return_url") or "").strip()
+    except Exception:  # noqa: BLE001 — a missing/!json body is fine
+        _req_return = ""
+    if _req_return and not any(_req_return.startswith(o + "/") or _req_return == o
+                               for o in _ALLOWED_ORIGINS):
+        logger.warning("BILLING_PORTAL | rejected off-site return_url %r",
+                       _req_return[:120])
+        _req_return = ""
+
+    out = billing.billing_portal_url(customer, _req_return)
     if out.get("error"):
         raise HTTPException(status_code=400, detail=out["error"])
+    logger.info("BILLING_PORTAL | opened for customer %s", customer[:8] + "…")
     return out
 
 

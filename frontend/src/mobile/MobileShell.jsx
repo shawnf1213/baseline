@@ -10,6 +10,7 @@ import SearchTab from './SearchTab'
 import ResearchTab from './ResearchTab'
 import PlayerDashboard from './PlayerDashboard'
 import InstallPrompt from '../components/InstallPrompt'
+import AccountSheet from './AccountSheet'
 import { fetchPrizePicksBoard, fetchUnderdogBoard, fetchSlate, fetchRecord } from '../utils/api'
 import { parsePrizePicksBoard, parseUnderdogBoard } from './data'
 
@@ -18,6 +19,7 @@ const EMPTY_BOARD = { date: null, isToday: false, rows: [] }
 export default function MobileShell() {
   const [tab, setTab] = useState('board')
   const [book, setBook] = useState('prizepicks')
+  const [accountOpen, setAccountOpen] = useState(false)
   const [openPlayer, setOpenPlayer] = useState(null)
   // A prop tapped on the board, handed to the Projections tab to run straight
   // away. The board is where someone decides they care about a prop; making
@@ -113,14 +115,38 @@ export default function MobileShell() {
           <img src="/baseline-logo.png" alt="Baseline"
                style={{ height: 26, display: 'block',
                         visibility: wide ? 'hidden' : 'visible' }} />
-          <span style={{
-            fontFamily: T.cond, fontWeight: 700, fontSize: 10, letterSpacing: 2.5,
-            color: T.green, textTransform: 'uppercase',
-            border: `1px solid ${T.green}44`, borderRadius: 999,
-            padding: '5px 11px', background: `${T.green}12`,
-          }}>Research</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span style={{
+              fontFamily: T.cond, fontWeight: 700, fontSize: 10, letterSpacing: 2.5,
+              color: T.green, textTransform: 'uppercase',
+              border: `1px solid ${T.green}44`, borderRadius: 999,
+              padding: '5px 11px', background: `${T.green}12`,
+            }}>Research</span>
+            {/* ACCOUNT. The only route to cancelling was previously "email
+                support", which is the thing App Store guideline 5.1.1(v) calls
+                out and which reads as a dark pattern even when it is not — the
+                Stripe portal existed the whole time and nothing linked to it. */}
+            <button
+              onClick={() => setAccountOpen(true)}
+              aria-label="Account and subscription"
+              style={{
+                width: 32, height: 32, borderRadius: 999, flex: '0 0 auto',
+                display: 'grid', placeItems: 'center', cursor: 'pointer',
+                background: 'transparent', border: `1px solid ${T.glassLine}`,
+                color: T.muted, padding: 0,
+              }}>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+                   stroke="currentColor" strokeWidth="2" strokeLinecap="round"
+                   strokeLinejoin="round" aria-hidden="true">
+                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+                <circle cx="12" cy="7" r="4" />
+              </svg>
+            </button>
+          </div>
         </div>
       </header>
+
+      <AccountSheet open={accountOpen} onClose={() => setAccountOpen(false)} />
 
       {/* Tab content — cross-faded so switching tabs reads as a transition
           rather than an instant repaint. mode="wait" would double the delay,
