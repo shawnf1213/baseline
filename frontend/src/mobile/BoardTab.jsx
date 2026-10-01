@@ -13,7 +13,24 @@ import PlayerPhoto from './PlayerPhoto'
 import { TeamMark } from './nflviz'
 
 const DEFAULT_FILTERS = { prop: 'All', tour: 'All', surface: 'All', sort: 'start' }
-const PROJECT_CAP = 120  // auto-project the whole current view (throttled in project.js)
+
+// ── EVERY ROW ON THE BOARD GETS PRICED ───────────────────────────────────────
+// This was 120, and it silently truncated the board. Today's PrizePicks slate
+// is 203 tennis rows over 104 player-match groups, which at PAGE_SIZE 24 is 5
+// pages — but 120 rows only reach 64 groups. So pages 1-2 priced, page 3 came
+// up two-thirds full, and pages 4-5 showed "—" and "No projection for this
+// line yet" on every card, permanently.
+//
+// Paging could never recover it either: the window is taken over `filtered`,
+// which does not depend on `page`, so turning to page 4 requested nothing. The
+// rows past the cut were not slow, they were never asked for.
+//
+// THE CAP WAS NEVER THE THROTTLE. project.js holds the queue at LIMIT 3 in
+// flight and caches per player/context, so the real cost is the ~104 distinct
+// players, not the 203 rows — the extra rows mostly land on players already
+// fetched. Raising this changes WHICH WORK FINISHES FIRST, not how hard the
+// backend is hit. The headroom is for a bigger slate, not a target.
+const PROJECT_CAP = 500
 
 
 // Lazily project a set of rows (cached + concurrency-limited in project.js).
@@ -33,6 +50,28 @@ function useBoardProjections(rows) {
     return () => { alive = false }
   }, [rows])
   return map
+}
+
+// ── THE PAGE THE READER IS ON FILLS FIRST ────────────────────────────────────
+// Queueing the whole board is only half the fix. At three at a time, a reader
+// who turns to page 4 is sitting behind ~150 projections for rows they cannot
+// see, which is minutes of spinner for a page whose own rows were queued last.
+//
+// These are already in the queue with their own setMap attached, so this does
+// not fire a second request for anything — projectRow joins the in-flight
+// promise and promotes the queued entry to the front. Reverse order because
+// promote() unshifts: promoting last-to-first leaves the top of the page at
+// the head of the queue, so a page fills downwards the way it is read.
+function usePagePriority(pageGroups) {
+  useEffect(() => {
+    const rows = pageGroups.flatMap(g => g.rows)
+    for (let i = rows.length - 1; i >= 0; i--) {
+      const r = rows[i]
+      if (cachedProjection(r) === undefined) {
+        projectRow(r, undefined, { priority: true })
+      }
+    }
+  }, [pageGroups])
 }
 
 const BOOKS = [
@@ -132,8 +171,21 @@ export default function BoardTab({ boards, book, setBook, loading, error, onOpen
   const pageGroups = useMemo(
     () => groups.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE),
     [groups, page])
+
+  // Declared here, above the NFL early return, so the hook order is the same on
+  // every render whichever sport is selected. The NFL board is server-priced
+  // and has no client projection queue, so handing it this is a no-op.
+  usePagePriority(pageGroups)
+
   const activeCount = ['prop', 'tour', 'surface'].filter(k => filters[k] !== 'All').length
   const projecting = filtered.slice(0, PROJECT_CAP).some(r => proj[r.key]?.loading)
+
+  // HOW MANY ARE ACTUALLY PRICED, not how many are on the board. This read
+  // `rows.length`, so the header said "203 priced" while the cards on the later
+  // pages showed "—" — the board told a reader the work was done and then did
+  // not show it. It only ever happened to be true on a short slate.
+  const priced = useMemo(
+    () => rows.filter(r => r._state === 'done').length, [rows])
 
   const SportSwitch = (
     <GlassTabs value={sport} onChange={setSport} style={{ marginBottom: 0 }}
@@ -207,7 +259,8 @@ export default function BoardTab({ boards, book, setBook, loading, error, onOpen
           <Pill live>Live</Pill>
           {rows.length ? (
             <span style={{ color: T.muted2 }}>
-              {rows.length} priced{projecting ? ' · projecting…' : ''}
+              {priced}{priced < rows.length ? ` of ${rows.length}` : ''} priced
+              {projecting ? ' · projecting…' : ''}
             </span>
           ) : projecting ? (
             <span style={{ color: T.muted2 }}>projecting…</span>
