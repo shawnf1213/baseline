@@ -19,7 +19,11 @@ API_BASE = os.getenv(
 
 LOG_TIMEOUT     = 15
 RECORD_TIMEOUT  = 20
-RESOLVE_TIMEOUT = 95
+# ABOVE the server's own RESOLVE_TIMEOUT_S (240), or the client hangs up first
+# and the grade the backend was about to return is thrown away. 95 paired with
+# the old 90s server cap; both were smaller than the work resolve_pick asks for,
+# which is what stalled every pick on the 2026-10-02 card.
+RESOLVE_TIMEOUT = int(os.getenv("RESOLVE_TIMEOUT", "270") or "270")
 
 
 def log_pick(rec: dict) -> dict:

@@ -806,6 +806,21 @@ class ResolveRequest(BaseModel):
     lean: str
 
 
+# ── THE RESOLVE BUDGET ───────────────────────────────────────────────────────
+# 90 seconds was smaller than the work this endpoint asks for, and on
+# 2026-10-02 that took out grading entirely: all 13 pending picks came back
+# NEEDS REVIEW / "resolver error", every call timing out at 90.1s, and nothing
+# on the 10/02 card graded. resolve_pick's cache-first read (see features.py)
+# fixes the normal case; this gives the fallback refetch of a player's career
+# history room to finish instead of being cut off and retried forever.
+#
+# Nothing waits on this interactively — it is called by the bot's resolver loop
+# every two hours, so a slow grade costs nothing a fast wrong answer does not
+# cost more. discord-bot/results_tracker.RESOLVE_TIMEOUT must stay ABOVE it, or
+# the client gives up first and the server's work is thrown away.
+RESOLVE_TIMEOUT_S = float(os.getenv("RESOLVE_TIMEOUT_S", "240") or "240")
+
+
 @app.post("/api/results/resolve")
 async def results_resolve(req: ResolveRequest):
     """Auto-resolve a pending pick from Sofascore's completed-match stats.
@@ -815,7 +830,15 @@ async def results_resolve(req: ResolveRequest):
     try:
         return await asyncio.wait_for(loop.run_in_executor(
             None, features.resolve_pick, req.player, req.opponent,
-            req.prop_type, req.line, req.lean), timeout=90.0)
+            req.prop_type, req.line, req.lean), timeout=RESOLVE_TIMEOUT_S)
+    except asyncio.TimeoutError:
+        # Named separately because it is the one failure that says nothing about
+        # the pick: the grade may well have been computable with more time, and
+        # a generic "resolver error" hid that for a whole day.
+        logger.error("resolve TIMED OUT after %.0fs | %s vs %s | %s %s %s",
+                     RESOLVE_TIMEOUT_S, req.player, req.opponent,
+                     req.prop_type, req.lean, req.line)
+        return {"result": "NEEDS REVIEW", "reason": "resolver timeout"}
     except Exception as exc:  # noqa: BLE001
         logger.warning("resolve endpoint error: %s", exc)
         return {"result": "NEEDS REVIEW", "reason": "resolver error"}

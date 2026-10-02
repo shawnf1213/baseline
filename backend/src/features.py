@@ -299,28 +299,64 @@ def resolve_pick(player: str, opponent: str, prop_type: str,
     p = resolve_player(player)
     if not p:
         return {"result": "NEEDS REVIEW", "reason": "player not resolved"}
-    try:
-        # force_fresh: resolution must NOT read the 6h stats cache — it can predate
-        # today's completed match and produce a false "completed match not found".
-        data = get_player_stats_by_surface(p["id"], p["tour"], force_fresh=True) or {}
-    except Exception as exc:  # noqa: BLE001
-        return {"result": "NEEDS REVIEW", "reason": f"stats error: {exc}"}
 
     opp_norm = _norm(opponent)
     now = time.time()
-    best = None
-    for m in (data.get("all_matches") or []):     # most recent first
-        if not m.get("won") and not m.get("score"):
-            continue
-        # Match must be finished and recent (last ~3 days) and vs the right opp.
-        ts = m.get("timestamp", 0) or 0
-        if ts and (now - ts) > 3 * 86400:
-            break                                  # too old; list is newest-first
-        on = _norm(m.get("opponent_name", ""))
-        if on and (opp_norm == on or opp_norm.split()[-1:] == on.split()[-1:]
-                   or _ratio(opp_norm, on) >= 0.8):
-            best = m
-            break
+
+    def _find_match(payload: dict):
+        """The completed match vs `opponent` in the last ~3 days, or None.
+
+        Unchanged logic — lifted out of the body so it can be run against the
+        CACHED snapshot before deciding whether a fresh fetch is warranted.
+        """
+        for m in (payload.get("all_matches") or []):   # most recent first
+            if not m.get("won") and not m.get("score"):
+                continue
+            ts = m.get("timestamp", 0) or 0
+            if ts and (now - ts) > 3 * 86400:
+                break                                  # too old; newest-first
+            on = _norm(m.get("opponent_name", ""))
+            if on and (opp_norm == on or opp_norm.split()[-1:] == on.split()[-1:]
+                       or _ratio(opp_norm, on) >= 0.8):
+                return m
+        return None
+
+    # ── CACHE FIRST, FRESH ONLY IF THE MATCH REALLY IS MISSING ───────────────
+    # This was an unconditional force_fresh=True, and that is what broke
+    # resolution outright on 2026-10-02: all 13 pending picks returned
+    # NEEDS REVIEW / "resolver error", which is /api/results/resolve's
+    # asyncio.wait_for(timeout=90.0) firing. Measured, every call took 90.1s.
+    #
+    # force_fresh POPS the events cache, so resolution always took the cold
+    # path: begin_player_session() sleeps 1.5-3.5s, then up to MAX_PAGES_DEFAULT
+    # (50) pages of career history in batches of five, retrying failed pages on
+    # a rotated port, then stats for up to STATS_EVENT_CAP (50) events. For
+    # Sabalenka that is a 755-match refetch. It cannot fit in 90 seconds, so it
+    # never once completed and nothing graded.
+    #
+    # AND THE CACHE ALREADY HELD THE ANSWER. The same snapshot read WITHOUT
+    # force_fresh came back in 16.6s with today's completed match against
+    # Zarazua at the head of all_matches and bp_converted_count = 4 on it.
+    #
+    # force_fresh was added for a real failure — a 6h snapshot that predates a
+    # just-finished match, reported as a false "completed match not found" — so
+    # it is kept, as the FALLBACK it should always have been. The cached read
+    # settles the normal case; the expensive one runs only when the match is
+    # genuinely absent, which is exactly the case it was written for.
+    try:
+        data = get_player_stats_by_surface(p["id"], p["tour"]) or {}
+    except Exception as exc:  # noqa: BLE001
+        return {"result": "NEEDS REVIEW", "reason": f"stats error: {exc}"}
+    best = _find_match(data)
+    if best is None:
+        logger.info("RESOLVE_REFETCH | %s vs %s | not in the cached snapshot — "
+                    "forcing a fresh fetch", player, opponent)
+        try:
+            data = get_player_stats_by_surface(
+                p["id"], p["tour"], force_fresh=True) or {}
+        except Exception as exc:  # noqa: BLE001
+            return {"result": "NEEDS REVIEW", "reason": f"stats error: {exc}"}
+        best = _find_match(data)
     if best is None:
         # No completed match — check whether it was CANCELLED / POSTPONED /
         # WALKED OVER so the pick can be auto-voided (DNP) instead of hanging.
