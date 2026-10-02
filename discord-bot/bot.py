@@ -2541,9 +2541,39 @@ def _start_line_monitor(channel, picks: list):
             except Exception:  # noqa: BLE001
                 pass
 
+        async def _still_posted():
+            """Keys still on the published board, for the monitor to filter by.
+
+            Reads the RECORD, which hides excluded_from_record rows — so a pick
+            withdrawn after posting (a superseded board that was unlogged and
+            rescanned) disappears from here and the monitor drops it. Returns
+            None on any failure so the monitor keeps its old behaviour rather
+            than silently stopping.
+            """
+            try:
+                rec = await asyncio.to_thread(results_tracker.get_record)
+                cutoff = (datetime.datetime.now(datetime.timezone.utc)
+                          - datetime.timedelta(hours=18))
+                out = set()
+                for q in (rec or {}).get("picks", []):
+                    if q.get("result") not in (None, "", "PENDING"):
+                        continue
+                    try:
+                        dt = datetime.datetime.fromisoformat(
+                            (q.get("generated_at") or "").replace("Z", "+00:00"))
+                    except Exception:  # noqa: BLE001
+                        continue
+                    if dt < cutoff:
+                        continue
+                    out.add((pick_of_day._norm(q.get("player") or ""), q.get("prop_type")))
+                return out or None
+            except Exception:  # noqa: BLE001
+                return None
+
         _line_monitor_task = asyncio.create_task(
             line_monitor.monitor(picks, pick_of_day.current_board_lines, _post_alert,
-                                 record_line=_record_closing_line))
+                                 record_line=_record_closing_line,
+                                 is_live=_still_posted))
         log.info("POD: line monitor started for %d picks", len(picks))
     except Exception:  # noqa: BLE001
         log.exception("failed to start line monitor")
@@ -6044,6 +6074,49 @@ RECAP_BATCH_DATES = [d.strip() for d in
                      if d.strip()]
 
 
+# ── SUB-50% DAYS STAY OFF THE CHANNEL (2026-10-02, operator) ─────────────────
+# "do not post the recap for days under 50% for any sport keep it logged, but
+# dont post the recap."
+#
+# NOTHING ABOUT GRADING CHANGES. The picks still resolve, still land in the
+# results table, still count in the monthly ⭐ line and the rolling record, and
+# still show on the website. The only thing this withholds is the @everyone post
+# in the track-record channel.
+#
+# ONE FLOOR, EVERY SPORT — tennis here, NFL in _maybe_post_nfl_recap, MLB in
+# backend/mlb/recap.post_recap, all reading this same env var so the three
+# cannot drift to different thresholds.
+#
+# EACH SPORT MEASURES THE RATE THE WAY ITS OWN RECAP PRINTS IT. Tennis and MLB
+# count a push as cashed and drop voids; NFL takes wins over decisions with
+# pushes out of both sides. Using each embed's own convention is the point: the
+# rule is about the number subscribers would have been shown, and a held recap
+# whose own header would have read "50%" would be the floor contradicting the
+# post it suppressed.
+#
+# Set RECAP_MIN_RATE=0 to post every day again (what backfill_recaps.py needs if
+# it is ever pointed at a losing day on purpose).
+RECAP_MIN_RATE = float(os.getenv("RECAP_MIN_RATE", "50") or "50")
+
+
+def _recap_rate_ok(cash: int, total: int, label: str) -> bool:
+    """False when the day graded under RECAP_MIN_RATE, so the recap is held.
+
+    `total` is the plays that actually PLAYED. A day with nothing settled is not
+    a losing day, so it passes here — whether it is ready at all is decided by
+    the readiness checks upstream, which is where it belongs.
+    """
+    if total <= 0:
+        return True
+    rate = round(cash / total * 100)
+    if rate >= RECAP_MIN_RATE:
+        return True
+    log.warning("recap HELD (%s): %d/%d = %d%% is under the %g%% floor — "
+                "graded and logged, NOT posted", label, cash, total, rate,
+                RECAP_MIN_RATE)
+    return False
+
+
 async def _recap_already_posted(channel, date_str: str,
                                 source: str = "prizepicks") -> bool:
     """True if this day's recap for THIS source is already in the channel. Reads
@@ -6087,6 +6160,15 @@ async def _post_recap_for(channel, date_str: str, why: str,
     if not (_book and _book.get("total")):
         log.info("recap: no graded %s record yet — nothing to post for %s",
                  source, date_str)
+        return False
+    # The day's own rate, counted exactly as daily_recap_embed's "Today" line
+    # counts it: cashed = W + PUSH over everything that played, scoped by SLATE
+    # date. VOID/DNP never played and is out of both sides.
+    _played = [p for p in (_book.get("picks") or [])
+               if p.get("result") in ("W", "L", "PUSH")
+               and _slate_date_of(p) == date_str]
+    _cash = sum(1 for p in _played if p["result"] in ("W", "PUSH"))
+    if not _recap_rate_ok(_cash, len(_played), f"{source} {date_str}"):
         return False
     await channel.send(content="@everyone",
                        embed=daily_recap_embed(rec, target_date=date_str, source=source),
@@ -6260,6 +6342,10 @@ async def _maybe_post_nfl_recap():
                     continue
                 w = sum(1 for p in rows if p.get("result") == "W")
                 lo = sum(1 for p in rows if p.get("result") == "L")
+                # nfl_recap_embed prints w/(w+lo) — pushes out of both sides —
+                # so the floor is measured on the same pair it would display.
+                if not _recap_rate_ok(w, w + lo, f"NFL {book} {slate}"):
+                    continue
                 await channel.send(
                     content="@everyone",
                     embed=nfl_recap_embed(slate, book, rows, w, lo),

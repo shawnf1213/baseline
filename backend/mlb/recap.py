@@ -25,6 +25,21 @@ log = logging.getLogger("baseline.mlb.recap")
 
 _MARK = {"W": "✅", "L": "❌", "PUSH": "➖", "VOID": "🚫", "PENDING": "⏳"}
 
+# ── SUB-50% DAYS STAY OFF THE CHANNEL (2026-10-02, operator) ─────────────────
+# "do not post the recap for days under 50% for any sport keep it logged, but
+# dont post the recap." MLB is one of the sports, so the floor applies here too.
+#
+# SAME ENV VAR AS THE BOT so one setting governs tennis, NFL and MLB and the
+# three cannot drift to different thresholds — and the shared cashed convention
+# documented in this module's header means the number compared against it here
+# means what it means there. Nothing else is shared: this module still never
+# imports from the bot (Rule 2).
+#
+# Grading is untouched — rows resolve and stay in mlb_picks either way. An
+# explicit force=True post is an operator action on one named slate and is NOT
+# held, which is also the escape hatch for re-posting a day deliberately.
+RECAP_MIN_RATE = float(os.getenv("RECAP_MIN_RATE", "50") or "50")
+
 
 def et_today() -> str:
     """MLB's own calendar day, US Eastern."""
@@ -323,6 +338,23 @@ def post_recap(book: str, slate_date: str = None, token: str = None,
         if pend:
             return {"ok": False, "book": book, "reason":
                     f"{len(pend)} pick(s) still pending — holding the recap"}
+    # The day's rate as build_recap_embed's "Today" line computes it: cashed =
+    # W + PUSH over W + L + PUSH, voids out of both sides. Measured on the same
+    # pair the embed would have printed, so the floor and the header agree.
+    if not force:
+        _cash = sum(1 for r in rows if (r.get("result") or "") in ("W", "PUSH"))
+        _lost = sum(1 for r in rows if (r.get("result") or "") == "L")
+        _dec = _cash + _lost
+        if _dec:
+            _rate = round(_cash / _dec * 100)
+            if _rate < RECAP_MIN_RATE:
+                log.warning("mlb recap HELD (%s %s): %d/%d = %d%% is under the "
+                            "%g%% floor — graded and logged, NOT posted",
+                            book, slate_date, _cash, _dec, _rate, RECAP_MIN_RATE)
+                return {"ok": False, "book": book, "slate": slate_date,
+                        "held": True, "rate": _rate,
+                        "reason": f"{_cash}/{_dec} = {_rate}% is under the "
+                                  f"{RECAP_MIN_RATE:g}% floor — not posted"}
     if not tok:
         return {"ok": False, "book": book, "reason": "no DISCORD_BOT_TOKEN"}
     embed = build_recap_embed(book, slate_date, shadow=shadow)
