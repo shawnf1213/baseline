@@ -6823,6 +6823,14 @@ async def _before_subscription_role_sync():
 async def on_ready():
     global _guild_synced
 
+    # THE RECAP FLOOR, STATED AT STARTUP. It decides whether a graded day is
+    # announced at all, and the only other time it appears in the log is when it
+    # holds something — so without this line a floor that silently reverted
+    # (an env change redeploying an older image has bitten this service more
+    # than once) would look exactly like a run of days that all cleared it.
+    log.info("recap floor: %g%% — days under this are graded and logged but "
+             "NOT posted (RECAP_MIN_RATE)", RECAP_MIN_RATE)
+
     # Adopt the backend's court list before any autocomplete can run. Best
     # effort: a failure leaves the shipped snapshot in place, which is the same
     # list, just frozen at deploy time. Never fatal — the bot must come up.
