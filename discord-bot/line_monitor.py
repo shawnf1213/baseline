@@ -85,7 +85,7 @@ def _recompute_lean(projection, line):
 
 
 async def monitor(picks: list, get_lines, post_alert, interval: int = INTERVAL_SECONDS,
-                  record_line=None):
+                  record_line=None, is_live=None):
     """Watch ``picks`` for line movement until each match starts.
 
     picks: dicts with pp_player, prop_type, original_line, projection, lean,
@@ -129,12 +129,38 @@ async def monitor(picks: list, get_lines, post_alert, interval: int = INTERVAL_S
                 await asyncio.sleep(interval)
             now = time.time()
 
+            # ── A PICK THAT IS NO LONGER POSTED IS NO LONGER WATCHED ─────────
+            # A board can be superseded after it goes out — a bad board gets
+            # unlogged and rescanned, and the picks that were withdrawn are
+            # flagged excluded_from_record. The monitor was started with the old
+            # list and kept alerting on them, so subscribers saw line changes for
+            # plays that were not on any board. That happened on 2026-09-29:
+            # Oliynykova was withdrawn with the rest of a bad board and still
+            # posted a "Line moved" alert half an hour later.
+            #
+            # is_live returns the keys still published. Anything missing is
+            # dropped, so the monitor follows the CURRENT board rather than the
+            # one it happened to start with. It is optional and a failure is
+            # non-fatal: a monitor that cannot check simply keeps watching, which
+            # is the old behaviour rather than a silent stop.
+            _live = None
+            if is_live is not None:
+                try:
+                    _live = await is_live()
+                except Exception as exc:  # noqa: BLE001
+                    log.debug("line monitor: liveness check failed: %s", exc)
+
             # Drop picks whose match has started (or the safety cap elapsed).
             still = []
             for a in active:
                 st = a["pick"].get("start_timestamp")
                 if (st and now >= st) or (now - started_at > MAX_RUNTIME_SECS):
                     log.info("Line monitor: stopping %s (match started)", a["pick"].get("player"))
+                    continue
+                if _live is not None and a["key"] not in _live:
+                    log.info("Line monitor: stopping %s %s — no longer on the posted "
+                             "board (withdrawn or superseded)",
+                             a["pick"].get("player"), a["pick"].get("prop_type"))
                     continue
                 still.append(a)
             active = still
