@@ -948,8 +948,10 @@ async def _evaluate(prop: dict, sem: asyncio.Semaphore):
             "confidence_data_only": data.get("confidence_data_only"),
             "p1_win_prob": data.get("p1_win_prob"), "p2_win_prob": data.get("p2_win_prob"),
             # Strength-of-field: both players' current ATP/WTA ranks and the
-            # both-challenger-level flag — deprioritizes challenger-vs-challenger
-            # matchups below tour-level plays in _rank_key.
+            # both-challenger-level flag. RECORDED, NOT RANKED ON — the flag was
+            # the lead term of _rank_key until 2026-10-02 and is no longer used
+            # for ordering (it demoted the better-performing group; see there).
+            # Still stored on every pick because that is what made it measurable.
             "player_rank": data.get("player_rank"),
             "opponent_rank": data.get("opponent_rank"),
             "both_challenger_level": data.get("both_challenger_level"),
@@ -1292,13 +1294,14 @@ def attach_calibrated_confidence(picks: list) -> None:
 
 
 def _rank_key(pk: dict) -> tuple:
-    """Ranking key (sort DESCENDING). Three levels, strength-of-field first:
+    """Ranking key (sort DESCENDING). Two levels:
 
-      0. tour_level  — tour matches (1) ALWAYS rank above challenger-vs-
-                       challenger matchups (0). Deprioritize-only.
-      1. confidence  — the PRIMARY term
-      2. rel_edge    — |projection - line| / line, tiebreaker among plays of
+      0. confidence  — the PRIMARY term
+      1. rel_edge    — |projection - line| / line, tiebreaker among plays of
                        equal confidence
+
+    A third term led this tuple until 2026-10-02 and dominated both of these;
+    see the note on the return statement for what it did and why it is gone.
 
     REVERTED TO CONFIDENCE-FIRST 2026-09-20 (operator), after an edge-first
     board went out reading as a list of low-confidence plays. The reasoning,
@@ -1349,8 +1352,33 @@ def _rank_key(pk: dict) -> tuple:
     non-monotonic, edge quartiles are not), but the live number should be
     expected to land below the backtest.
     """
-    return (0 if pk.get("both_challenger_level") else 1,
-            pk.get("confidence") or 0,
+    # ── THE TOUR-LEVEL TERM IS GONE (2026-10-02, operator) ───────────────────
+    # It used to lead this tuple as `0 if both_challenger_level else 1`, and
+    # because the comparison is lexicographic that one bit outranked confidence
+    # AND edge together: a challenger-vs-challenger play could not place above a
+    # tour play at ANY confidence or edge. It did not deprioritise, it exiled.
+    #
+    # The 10/2 board is what that looks like. Alexandra Shubladze — conf 72,
+    # OVER 5.5 BP won, proj 7.0, edge +1.5 — was the ONLY pick on the card with
+    # the flag set (rank 163 vs 421), and it was posted 10th, beneath Djokovic
+    # at 71 and Jeanjean at 67 (edge -0.5). Strip the flag and the card is in
+    # exact confidence order; with it, one play is cut off the bottom.
+    #
+    # AND THE DEMOTION POINTS THE WRONG WAY. Measured 2026-09-24 on 723 graded
+    # in-record picks, classified by world rank from the pricer's own rankings
+    # feed — challenger-level plays are the BETTER group:
+    #
+    #     both outside top 150     37-29   n= 66   56.1%
+    #     both inside top 150     240-220  n=460   52.2%
+    #
+    # Dropping those picks entirely would have made the record WORSE (53.7% ->
+    # 53.4%). The real drag is the top of the rankings (1-30 at 48.5%, the
+    # largest bucket), because the book prices marquee players sharpest and the
+    # edge lives a tier down. So this term was burying the plays that earn most.
+    #
+    # The flag is still COMPUTED AND STORED on every pick — it is how that was
+    # measured and how it stays measurable. It just no longer sorts anything.
+    return (pk.get("confidence") or 0,
             _rel_edge(pk))
 
 
