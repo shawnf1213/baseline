@@ -5555,7 +5555,16 @@ async def _before_extra_pod_run():
 # (50.8%) against the board's 282-231 (55.0%), and dragged the published record
 # from 55.0% to 53.8%. The gap was not significant on its own (p=0.31) but it
 # never pointed the other way.
+# STANDING MODE (operator, 2026-10-03: "add a rescan at 5pm"). Set
+# EVENING_RESCAN_DATE=daily and it runs EVERY day instead of one. A real date
+# still means that date only, and empty still means never — so the cautious
+# default is unchanged and the one-day form it was written for still works.
+#
+# The sentinel is explicit rather than a separate boolean because the date field
+# is already the thing that decides whether this runs; adding a second switch
+# would create a state where the two disagree and the loop has to pick a winner.
 EVENING_RESCAN_DATE = os.getenv("EVENING_RESCAN_DATE", "").strip()
+EVENING_RESCAN_DAILY = EVENING_RESCAN_DATE.lower() in ("daily", "*", "every")
 EVENING_RESCAN_HOUR = int(os.getenv("EVENING_RESCAN_HOUR", "20") or "20")
 EVENING_RESCAN_MINUTE = int(os.getenv("EVENING_RESCAN_MINUTE", "0") or "0")
 EVENING_RESCAN_MAX = int(os.getenv("EVENING_RESCAN_MAX", "3") or "3")
@@ -5575,7 +5584,7 @@ async def evening_rescan():
     if not POD_CHANNEL_ID or not EVENING_RESCAN_DATE:
         return
     _today = datetime.datetime.now(POD_TZINFO).strftime("%Y-%m-%d")
-    if _today != EVENING_RESCAN_DATE:
+    if not EVENING_RESCAN_DAILY and _today != EVENING_RESCAN_DATE:
         log.info("evening rescan: armed for %s, today is %s — not running",
                  EVENING_RESCAN_DATE, _today)
         return
@@ -7224,11 +7233,16 @@ async def on_ready():
             and not evening_rescan.is_running()):
         try:
             evening_rescan.start()
-            log.warning("Evening rescan ARMED for %s at %02d:%02d %s "
-                        "(max %d, >=%d%% confidence, ordered by room) -> channel %s",
-                        EVENING_RESCAN_DATE, EVENING_RESCAN_HOUR,
-                        EVENING_RESCAN_MINUTE, POD_TZINFO, EVENING_RESCAN_MAX,
-                        EVENING_RESCAN_MIN_CONF, POD_CHANNEL_ID)
+            log.warning("Evening rescan ARMED %s at %02d:%02d %s "
+                        "(max %d, >=%d%% confidence, ordered by room) -> channel "
+                        "%s | second scans %s",
+                        "DAILY" if EVENING_RESCAN_DAILY
+                        else f"for {EVENING_RESCAN_DATE}",
+                        EVENING_RESCAN_HOUR, EVENING_RESCAN_MINUTE, POD_TZINFO,
+                        EVENING_RESCAN_MAX, EVENING_RESCAN_MIN_CONF,
+                        POD_CHANNEL_ID,
+                        "ON" if SECOND_SCANS_ENABLED else
+                        "OFF — the rescan will no-op until SECOND_SCANS_ENABLED=1")
         except Exception:  # noqa: BLE001
             log.exception("failed to start evening rescan loop")
     # Underdog board — a SECOND book on its own 10:30 PM schedule, scored
