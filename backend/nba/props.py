@@ -93,7 +93,8 @@ def _combo_sigma(u: dict, prop: str, scale: float) -> float:
 
 
 def project(player: str, prop: str, line: float = None, game: dict = None,
-            season: int = None, as_of=None, inj: dict = None) -> dict:
+            season: int = None, as_of=None, inj: dict = None,
+            position: str = None) -> dict:
     """Project one NBA player prop.
 
     `game` is a schedule row from client.upcoming() — it supplies the opponent,
@@ -105,7 +106,7 @@ def project(player: str, prop: str, line: float = None, game: dict = None,
     the player is below the minutes the model was fitted on.
     """
     from . import usage as _usage, ratings as _rat, confidence as _conf
-    from . import distributions as _dist
+    from . import distributions as _dist, client as _c
     try:
         if prop not in SUPPORTED:
             return {}
@@ -131,6 +132,17 @@ def project(player: str, prop: str, line: float = None, game: dict = None,
 
         opponent = (game or {}).get("opponent_team")
         team = (game or {}).get("player_team") or u.get("team")
+        # Venue, as a real input now rather than a badge. None when there is no
+        # schedule row — home_factor then returns 1.000 and says "venue unknown"
+        # instead of assuming a neutral court that does not exist.
+        is_home = ((game or {}).get("home_abbr") == u.get("team")
+                   if game and game.get("home_abbr") else None)
+        # The player's listed position, for defence-vs-position. The board row
+        # carries one (PrizePicks publishes it); the roster table is the
+        # fallback, and "" means the positional layer is skipped and the
+        # team-level rank used instead.
+        pos = position or (_rat.player_positions(season) or {}).get(
+            _c._norm_name(u["player"]), "")
 
         # ── THE GAME IN FRONT OF HIM ─────────────────────────────────────────
         pace = (_rat.pace_factor(opponent, season) if opponent
@@ -147,8 +159,15 @@ def project(player: str, prop: str, line: float = None, game: dict = None,
             base = (u.get("stats") or {}).get(st)
             if not isinstance(base, (int, float)):
                 return {}
-            opp = (_rat.opponent_factor(opponent, st, season) if opponent
-                   else {"factor": 1.0, "basis": "no opponent supplied"})
+            # EACH COMPONENT GETS ITS OWN DEFENSIVE AND VENUE MULTIPLIER, and
+            # for a combo that is the whole point: a team can be top-5 against
+            # guards' scoring and bottom-5 against their assists, so one blended
+            # defence number on a PRA would be wrong in both directions at once.
+            opp = (_rat.opponent_factor(opponent, st, season, position=pos)
+                   if opponent else
+                   {"factor": 1.0, "basis": "no opponent supplied",
+                    "rank": None, "by_position": False})
+            hf = _usage.home_factor(u, st, is_home)
             # minutes x per-minute rate, then the bounded adjustments. The
             # per-minute rate already embeds the player's own blended form, so
             # this scales HIS baseline to tonight's workload rather than handing
@@ -157,6 +176,7 @@ def project(player: str, prop: str, line: float = None, game: dict = None,
             v = (mins * rate
                  * pace.get("factor", 1.0)
                  * opp.get("factor", 1.0)
+                 * hf.get("factor", 1.0)
                  * vac.get("factor", 1.0)
                  * rest_f)
             components[st] = round(v, 2)
@@ -166,6 +186,13 @@ def project(player: str, prop: str, line: float = None, game: dict = None,
                 "opponent_factor": opp.get("factor", 1.0),
                 "opponent_basis": opp.get("basis"),
                 "opponent_rank": opp.get("rank"),
+                "opponent_by_position": opp.get("by_position"),
+                "home_factor": hf.get("factor", 1.0),
+                "home_basis": hf.get("basis"),
+                "home_used": hf.get("used"),
+                "home_avg": hf.get("home"), "away_avg": hf.get("away"),
+                "home_games": hf.get("home_games"),
+                "away_games": hf.get("away_games"),
             }
             mu += v
 
@@ -199,8 +226,24 @@ def project(player: str, prop: str, line: float = None, game: dict = None,
             "opponent": opponent,
             "rest": rest,
             "back_to_back": bool(rest.get("back_to_back")),
-            "home": ((game or {}).get("home_abbr") == u.get("team")
-                     if game else None),
+            "home": is_home,
+            "position": pos or None,
+            # The headline defensive and venue numbers for the prop as a whole,
+            # lifted from the component that names it (the first part of a
+            # combo, or the single stat). Combos still apply each component's
+            # OWN multiplier above; this is for display, which needs one number
+            # it can caption honestly.
+            "def_rank": (drivers.get(stats_for[0]) or {}).get("opponent_rank"),
+            "def_basis": (drivers.get(stats_for[0]) or {}).get("opponent_basis"),
+            "def_by_position": (drivers.get(stats_for[0]) or {}).get(
+                "opponent_by_position"),
+            "def_factor": (drivers.get(stats_for[0]) or {}).get(
+                "opponent_factor"),
+            "home_factor": (drivers.get(stats_for[0]) or {}).get("home_factor"),
+            "home_basis": (drivers.get(stats_for[0]) or {}).get("home_basis"),
+            "home_used": (drivers.get(stats_for[0]) or {}).get("home_used"),
+            "split": ((u.get("splits") or {}).get(
+                prop if parts else SINGLE_PROPS[prop]) or None),
             "traded": u.get("traded"),
             "stale": u.get("stale"),
             "days_since_last": u.get("days_since_last"),

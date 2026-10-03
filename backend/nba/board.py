@@ -261,8 +261,11 @@ def scan_board(book: str = "prizepicks", season: int = None,
                 # does not belong on today's board at all.
                 off_slate += 1
                 continue
+            # The book publishes a position on its own board rows; passing it
+            # saves a roster lookup and is the more current of the two.
             r = _props.project(ln["player"], prop, line=ln["line"],
-                               game=game, season=season, inj=inj)
+                               game=game, season=season, inj=inj,
+                               position=ln.get("position"))
             if not r:
                 no_usage += 1
                 continue

@@ -31,12 +31,13 @@ def a(s):
         "ascii", "replace").decode()
 
 
-def trace(player, prop, line, team, opponent, why):
+def trace(player, prop, line, team, opponent, why, home=True, position=None):
     from nba import props as P
     game = {"player_team": team, "opponent_team": opponent,
-            "home_abbr": team, "tipoff": AS_OF}
+            "home_abbr": team if home else opponent,
+            "away_abbr": opponent if home else team, "tipoff": AS_OF}
     r = P.project(player, prop, line=line, game=game, season=SEASON,
-                  as_of=AS_OF, inj={})
+                  as_of=AS_OF, inj={}, position=position)
     print(f"\n{'=' * 78}\n{a(player)} — {why}\n{'=' * 78}")
     if not r:
         print("  NO USAGE — not priced")
@@ -60,6 +61,14 @@ def trace(player, prop, line, team, opponent, why):
         print("    [OK] components sum to the projection")
     print(f"    usage vacuum x{r['usage_vacuum']}  ({a(r['usage_vacuum_basis'])})")
     print(f"    back-to-back {r['back_to_back']}  rest={r['rest']}")
+    for st, d in (r.get("drivers") or {}).items():
+        print(f"    def_adj      {st}: {a(d.get('opponent_basis'))} "
+              f"-> x{d.get('opponent_factor')} "
+              f"[{'vs position' if d.get('opponent_by_position') else 'team-level'}]")
+        print(f"    home_split   {st}: {d.get('home_avg')} home / "
+              f"{d.get('away_avg')} away "
+              f"({d.get('home_games')}/{d.get('away_games')} games) "
+              f"-> x{d.get('home_factor')}  [{a(d.get('home_used'))}]")
     print(f"    FINAL        proj={r['projection']}  fair={r.get('fair_line')}  "
           f"sd={r['sd']}  edge={r.get('edge')} ({r.get('edge_sd')} sd)")
     print(f"    lean={r.get('lean')}  p={r.get('p_over')}/{r.get('p_under')}  "
@@ -99,6 +108,124 @@ def main():
         if r:
             first[(player, prop)] = r
 
+    # ── THE DEFENCE + VENUE CASES (operator, 2026-10-03) ────────────────────
+    # Picked FROM THE DATA rather than asserted: find the softest and hardest
+    # defences against this player's position for his stat, so the two cases are
+    # genuinely bottom-5 and top-5 rather than two teams I guessed at.
+    from nba import ratings as _R
+    from nba import client as _C
+    from nba import usage as _U
+    print(f"\n{'=' * 78}\nDEFENCE + VENUE — picking opponents from the data\n{'=' * 78}")
+    pos = (_R.player_positions(SEASON) or {}).get(_C._norm_name("Tyrese Maxey"), "G")
+    dvp = _R.defense_vs_position(SEASON)
+    ranked = sorted(
+        ((t, c["G"]["pts_rank"]) for t, c in dvp.items()
+         if "G" in c and c["G"].get("pts_rank") and (c["G"].get("n") or 0) >= _R.DVP_MIN_GAMES),
+        key=lambda x: x[1])
+    hardest, softest = ranked[0][0], ranked[-1][0]
+    print(f"  Maxey position={pos} | hardest vs G pts = {hardest} (rank "
+          f"{ranked[0][1]}) | softest = {softest} (rank {ranked[-1][1]})")
+
+    r_soft = trace("Tyrese Maxey", "pts", 24.5, "PHI", softest,
+                   f"STAR at HOME vs bottom-5 defence ({softest}) — both "
+                   f"multipliers should be POSITIVE", home=True, position=pos)
+    r_hard = trace("Tyrese Maxey", "pts", 24.5, "PHI", hardest,
+                   f"same player AWAY vs top-5 defence ({hardest}) — both "
+                   f"multipliers should be NEGATIVE", home=False, position=pos)
+
+    # BOTH MULTIPLIERS POSITIVE needs a player whose OWN split favours home.
+    # Maxey's does not — he averages more on the road — so forcing his case to
+    # show two positive numbers would be fitting the test to the expectation.
+    # This finds a real player with a genuine home edge instead.
+    print(f"\n{'=' * 78}\nBOTH MULTIPLIERS POSITIVE — finding a real home-split "
+          f"player\n{'=' * 78}")
+    best = None
+    for nm in sorted({r["player"] for r in []} | {
+            "Jalen Brunson", "LeBron James", "Cade Cunningham", "Luke Kennard",
+            "Tyrese Maxey", "Jayson Tatum"}):
+        uu = _U.player_usage(nm, season=SEASON, as_of=AS_OF)
+        sp = ((uu or {}).get("splits") or {}).get("pts") or {}
+        h, aw = sp.get("home"), sp.get("away")
+        if (isinstance(h, (int, float)) and isinstance(aw, (int, float))
+                and sp.get("home_games", 0) >= _U.HOME_SPLIT_MIN_GAMES
+                and sp.get("away_games", 0) >= _U.HOME_SPLIT_MIN_GAMES
+                and h > aw):
+            gap = h - aw
+            if best is None or gap > best[1]:
+                best = (nm, gap, uu)
+    if best:
+        nm, gap, uu = best
+        ppos = (_R.player_positions(SEASON) or {}).get(_C._norm_name(nm), "G")
+        r_both = trace(nm, "pts", 20.5, uu.get("team") or "PHI", softest,
+                       f"HOME-SPLIT player (+{gap:.1f} pts at home) at HOME vs "
+                       f"bottom-5 — BOTH multipliers positive",
+                       home=True, position=ppos)
+        if r_both:
+            d = (r_both.get("drivers") or {}).get("pts") or {}
+            df, hf2 = d.get("opponent_factor", 1.0), d.get("home_factor", 1.0)
+            print(f"  def x{df}  home x{hf2}  -> both > 1.0: "
+                  f"{'[OK]' if df > 1 and hf2 > 1 else '[CHECK]'}")
+            first[(nm, "both-pos")] = r_both
+    else:
+        print("  no sampled player has a positive home split with 10+ games "
+              "each side — the asymmetry is reported, not manufactured")
+
+    print(f"\n{'=' * 78}\nSTACKING AND CLAMPS\n{'=' * 78}")
+    for lbl, rr in (("home vs bottom-5", r_soft), ("away vs top-5", r_hard)):
+        if not rr:
+            continue
+        d = (rr.get("drivers") or {}).get("pts") or {}
+        df, hf = d.get("opponent_factor", 1.0), d.get("home_factor", 1.0)
+        print(f"  {lbl:<18} def x{df}  home x{hf}  combined x{df * hf:.4f}"
+              f"   proj={rr['projection']}")
+        assert abs(df - 1.0) <= _R.DEF_TOTAL_CLAMP + 1e-9, "defence clamp breached"
+        assert abs(hf - 1.0) <= _U.HOME_CLAMP + 1e-9, "home clamp breached"
+    print(f"  [OK] defence within +/-{_R.DEF_TOTAL_CLAMP:.0%}, "
+          f"home within +/-6% — clamped independently, never as one budget")
+    if r_soft and r_hard:
+        print(f"  [OK] bottom-5 home projects {r_soft['projection']} vs "
+              f"top-5 away {r_hard['projection']} "
+              f"({r_soft['projection'] - r_hard['projection']:+.2f} swing)")
+        first[("Tyrese Maxey", "pts-soft")] = r_soft
+
+    # ── THE THIN-SPLIT FALLBACK ─────────────────────────────────────────────
+    print(f"\n{'=' * 78}\nTHIN HOME SPLIT -> LEAGUE BASELINE FALLBACK\n{'=' * 78}")
+    thin = None
+    for nm in ("Keshad Johnson", "Luke Kennard", "Tyrese Maxey"):
+        u = _U.player_usage(nm, season=SEASON, as_of=AS_OF)
+        sp = ((u or {}).get("splits") or {}).get("pts") or {}
+        hg, ag = sp.get("home_games", 0), sp.get("away_games", 0)
+        hf = _U.home_factor(u, "pts", True)
+        # EXACT, not a substring. The first version tested `"baseline" in used`,
+        # and "player split 60/40 with baseline" contains it — so every player
+        # using the blend was labelled FALLBACK, directly contradicting the
+        # basis line printed underneath. A trace that mislabels itself is worse
+        # than no trace.
+        mark = ("player split" if (hf.get("used") or "").startswith("player split")
+                else "FALLBACK -> baseline")
+        print(f"  {a(nm):<20} home_games={hg:<3} away_games={ag:<3} -> {mark}")
+        print(f"       {a(hf.get('basis'))}  -> x{hf.get('factor')}")
+        if hg < _U.HOME_SPLIT_MIN_GAMES or ag < _U.HOME_SPLIT_MIN_GAMES:
+            thin = nm
+    print(f"  [{'OK' if thin else 'NOTE'}] "
+          + (f"{a(thin)} has under {_U.HOME_SPLIT_MIN_GAMES} games on a side and "
+             f"fell back to the league baseline, logged above"
+             if thin else
+             "every sampled player has 10+ each side; the fallback branch is "
+             "exercised by the unit case below"))
+    # Exercise the fallback deterministically, so this check cannot silently
+    # stop testing anything when every real player has a full season.
+    synth = {"splits": {"pts": {"home": 30.0, "away": 20.0,
+                                "home_games": 4, "away_games": 3}}}
+    hf = _U.home_factor(synth, "pts", True)
+    print(f"  synthetic 4/3-game split (30.0 home / 20.0 away): "
+          f"x{hf['factor']} via {a(hf['used'])}")
+    assert "baseline" in hf["used"], "thin split did NOT fall back"
+    assert abs(hf["factor"] - (1 + _U.HOME_BASELINE)) < 1e-6, \
+        "fallback did not use the league baseline exactly"
+    print(f"  [OK] a 4/3-game split is discarded entirely — a 10-point gap on "
+          f"seven games does not move the projection")
+
     # ── REPRODUCIBILITY ──────────────────────────────────────────────────────
     # The same case twice must produce an identical number. Everything is served
     # from the cached frame, so a second run that disagreed would mean a fetch
@@ -106,16 +233,28 @@ def main():
     print(f"\n{'=' * 78}\nREPRODUCIBILITY — same inputs, second run\n{'=' * 78}")
     from nba import props as P
     ok = True
-    for (player, prop), r0 in first.items():
-        game = {"player_team": r0.get("team"), "opponent_team": r0.get("opponent"),
-                "home_abbr": r0.get("team"), "tipoff": AS_OF}
-        r1 = P.project(player, prop, line=r0.get("line"), game=game,
-                       season=SEASON, as_of=AS_OF, inj={})
+    for (player, _label), r0 in first.items():
+        # THE PROP COMES OFF THE ROW, NOT OFF THE DICT KEY. The key carries a
+        # label so two cases on the same player+prop can both be stored, and the
+        # first version passed that label straight in as the prop name — so
+        # "pts-soft" reached project(), matched nothing, returned {}, and the
+        # run reported itself non-reproducible when nothing was wrong.
+        prop = r0.get("prop")
+        r1 = P.project(player, prop, line=r0.get("line"),
+                       game={"player_team": r0.get("team"),
+                             "opponent_team": r0.get("opponent"),
+                             "home_abbr": (r0.get("team") if r0.get("home")
+                                           else r0.get("opponent")),
+                             "away_abbr": (r0.get("opponent") if r0.get("home")
+                                           else r0.get("team")),
+                             "tipoff": AS_OF},
+                       season=SEASON, as_of=AS_OF, inj={},
+                       position=r0.get("position"))
         same = (r1.get("projection") == r0.get("projection")
                 and r1.get("confidence") == r0.get("confidence")
                 and r1.get("sd") == r0.get("sd"))
         ok = ok and same
-        print(f"  {a(player):<20} {prop:<5} "
+        print(f"  {a(player):<20} {str(_label):<10} "
               f"proj {r0.get('projection')} -> {r1.get('projection')}  "
               f"conf {r0.get('confidence')} -> {r1.get('confidence')}  "
               f"{'[OK] identical' if same else '[FAIL] DIFFERS'}")

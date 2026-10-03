@@ -27,6 +27,7 @@ Rule 2 throughout: never raises, returns {} and says why.
 
 import logging
 import math
+import os
 import statistics as _st
 
 log = logging.getLogger("baseline.nba.usage")
@@ -65,7 +66,7 @@ COMBO_PARTS = {
 # season by 4 points moves ~2.6 — visible, not whipsawed.
 RECENT_N = 10
 RECENT_HALFLIFE = 5.0
-RECENT_W = float(__import__("os").getenv("NBA_RECENT_WEIGHT", "0.65") or 0.65)
+RECENT_W = float(os.getenv("NBA_RECENT_WEIGHT", "0.65") or 0.65)
 
 # Sigma is measured over this many games — the spread the EVR grade reads.
 SIGMA_N = 20
@@ -87,10 +88,10 @@ ROTATION_RISKY = 0.45
 # board refuses rather than pricing him — same philosophy as nfl VOLUME_FLOOR:
 # below the volume the model was fitted on the SHAPE is different, not merely
 # noisier.
-MIN_MINUTES = float(__import__("os").getenv("NBA_MIN_MINUTES", "12.0") or 12.0)
+MIN_MINUTES = float(os.getenv("NBA_MIN_MINUTES", "12.0") or 12.0)
 
 # Minimum games before a player can be priced at all.
-MIN_GAMES = int(__import__("os").getenv("NBA_MIN_GAMES", "8") or 8)
+MIN_GAMES = int(os.getenv("NBA_MIN_GAMES", "8") or 8)
 
 # ── INACTIVITY ───────────────────────────────────────────────────────────────
 # Days since last appearance. The tennis module treats a long gap as an amber
@@ -207,6 +208,43 @@ def player_usage(player: str, season: int = None, as_of=None) -> dict:
                 sigma[combo] = _st.pstdev(series)
                 stats[combo] = sum(series) / len(series)
 
+        # ── HOME / AWAY SPLITS ───────────────────────────────────────────────
+        # stats.nba.com encodes the venue in `matchup`: "PHI vs. BOS" is home,
+        # "PHI @ BOS" is away. Computed per stat so the projection can use the
+        # player's OWN split rather than a league constant, and surfaced whole
+        # (both averages and both counts) so the card can show the number the
+        # adjustment is made of instead of applying it silently.
+        splits = {}
+        home_rows = [r for r in rows if " vs. " in str(r.get("matchup") or "")]
+        away_rows = [r for r in rows if " @ " in str(r.get("matchup") or "")]
+        for col in BASE_STATS:
+            h = _series(home_rows, col)
+            aw = _series(away_rows, col)
+            if not h and not aw:
+                continue
+            splits[col] = {
+                "home": round(sum(h) / len(h), 3) if h else None,
+                "away": round(sum(aw) / len(aw), 3) if aw else None,
+                "home_games": len(h), "away_games": len(aw),
+            }
+        for combo, parts in COMBO_PARTS.items():
+            def _sum_series(rs):
+                out = []
+                for r in rs:
+                    vals = [r.get(p) for p in parts]
+                    if all(isinstance(v, (int, float)) and not (
+                            isinstance(v, float) and math.isnan(v))
+                           for v in vals):
+                        out.append(float(sum(vals)))
+                return out
+            h, aw = _sum_series(home_rows), _sum_series(away_rows)
+            if h or aw:
+                splits[combo] = {
+                    "home": round(sum(h) / len(h), 3) if h else None,
+                    "away": round(sum(aw) / len(aw), 3) if aw else None,
+                    "home_games": len(h), "away_games": len(aw),
+                }
+
         # Days since the last appearance, for the inactivity gate.
         last_date = rows[0].get("game_date")
         days_since = None
@@ -247,6 +285,7 @@ def player_usage(player: str, season: int = None, as_of=None) -> dict:
             "stats": {k: round(v, 3) for k, v in stats.items()},
             "sigma": {k: round(v, 3) for k, v in sigma.items()},
             "per_min": {k: round(v, 5) for k, v in per_min.items()},
+            "splits": splits,
             "days_since_last": days_since,
             "stale": stale,
             "last_game": (str(last_date)[:10] if last_date is not None else None),
@@ -362,3 +401,82 @@ def usage_vacuum(team: str, player: str, season: int = None,
 # Damping and bounds on the usage-vacuum term — see usage_vacuum.
 VACUUM_DAMP = 0.60
 VACUUM_MIN, VACUUM_MAX = 1.0, 1.18
+
+
+# ── HOME / AWAY AS A CALCULATED INPUT (operator, 2026-10-03) ─────────────────
+# Promoted from display flag to a term in the projection. Two layers:
+#
+#   LEAGUE BASELINE   a small, uniform home edge on scoring props, inverted on
+#                     the road. Real and well established, but small.
+#   PLAYER SPLIT      his OWN home and away averages for that stat, which can
+#                     be much larger than the baseline in either direction.
+#
+# THE SPLIT IS ONLY TRUSTED WITH SAMPLE BEHIND IT. Under HOME_SPLIT_MIN_GAMES on
+# either side the player split is discarded entirely and the baseline carries
+# the whole adjustment — a 6-game home average is a number about six games, and
+# blending it in at 60% would let a hot fortnight masquerade as a venue effect.
+# When it does qualify it is blended 60/40 with the baseline rather than used
+# raw, because even 10 games is thin for a per-venue split.
+#
+# Capped at +/-6% total, separately from the defensive and pace clamps.
+HOME_BASELINE = float(os.getenv("NBA_HOME_BASELINE", "0.015") or 0.015)
+HOME_SPLIT_MIN_GAMES = int(os.getenv("NBA_HOME_MIN_GAMES", "10") or 10)
+HOME_SPLIT_WEIGHT = 0.60
+HOME_CLAMP = float(os.getenv("NBA_HOME_CLAMP", "0.06") or 0.06)
+
+# Which stats the league baseline applies to. Scoring props carry a real home
+# edge; rebounds and assists are far weaker and are left to the player's own
+# split alone rather than given a constant they have not earned.
+_BASELINE_STATS = ("pts", "fg3m", "nba_fantasy_pts", "pra", "pr", "pa")
+
+
+def home_factor(usage: dict, stat: str, is_home) -> dict:
+    """The home/away multiplier for one stat. {factor, basis, ...}.
+
+    `is_home` None means the venue is unknown — the factor is 1.000 and says so,
+    rather than quietly assuming a neutral court that does not exist.
+    """
+    out = {"factor": 1.0, "basis": "venue unknown", "home": None, "away": None,
+           "home_games": 0, "away_games": 0, "used": "none"}
+    try:
+        if is_home is None:
+            return out
+        sp = ((usage or {}).get("splits") or {}).get(stat) or {}
+        out.update({"home": sp.get("home"), "away": sp.get("away"),
+                    "home_games": sp.get("home_games") or 0,
+                    "away_games": sp.get("away_games") or 0})
+
+        base = HOME_BASELINE if stat in _BASELINE_STATS else 0.0
+        baseline_adj = base if is_home else -base
+
+        h, aw = sp.get("home"), sp.get("away")
+        enough = (out["home_games"] >= HOME_SPLIT_MIN_GAMES
+                  and out["away_games"] >= HOME_SPLIT_MIN_GAMES)
+        if enough and isinstance(h, (int, float)) and isinstance(aw, (int, float)) \
+                and h > 0 and aw > 0:
+            mean = (h + aw) / 2.0
+            # His own effect, expressed as a multiplier on his overall average.
+            own = ((h if is_home else aw) / mean) - 1.0
+            adj = HOME_SPLIT_WEIGHT * own + (1 - HOME_SPLIT_WEIGHT) * baseline_adj
+            out["used"] = "player split 60/40 with baseline"
+            out["basis"] = (f"{h:.1f} home / {aw:.1f} away over "
+                            f"{out['home_games']}/{out['away_games']} games, "
+                            f"60/40 blend")
+        else:
+            adj = baseline_adj
+            why = ("no league baseline for this stat" if base == 0.0 else
+                   "league baseline")
+            if not enough:
+                out["used"] = "league baseline (split too thin)"
+                out["basis"] = (f"{why} — needs {HOME_SPLIT_MIN_GAMES}+ games "
+                                f"each side, has {out['home_games']}/"
+                                f"{out['away_games']}")
+            else:
+                out["used"] = "league baseline"
+                out["basis"] = why
+        adj = max(-HOME_CLAMP, min(HOME_CLAMP, adj))
+        out["factor"] = round(1.0 + adj, 4)
+        return out
+    except Exception as exc:  # noqa: BLE001 — Rule 2
+        log.warning("nba home_factor failed (%s): %s", stat, str(exc)[:160])
+        return out

@@ -174,13 +174,32 @@ def build_prop_embed(r: dict, line=None):
                   + f" = {_fmt(r.get('projection'), 2)}",
             inline=False)
 
-    ctx = [f"Minutes {_fmt(r.get('minutes'))} ({r.get('rotation')})",
-           f"Games {r.get('games_in_window')}"]
+    # ── SUPPORTING STATS ─────────────────────────────────────────────────────
+    # Matching the depth the tennis cards give surface stats: the numbers the
+    # adjustments are MADE OF, not just the adjusted result. A reader who cannot
+    # see "28th vs guards" and "24.1 home / 20.8 away" has to take the
+    # projection on trust, which is the opposite of what this product sells.
+    ctx = [f"**Minutes** {_fmt(r.get('minutes'))} ({r.get('rotation')})"
+           f" · **Games** {r.get('games_in_window')}"]
+    if r.get("def_basis"):
+        tag = "vs position" if r.get("def_by_position") else "team-level"
+        ctx.append(f"**Defense** {r['def_basis']} → ×{r.get('def_factor')} "
+                   f"_({tag})_")
+    sp = r.get("split") or {}
+    if isinstance(sp.get("home"), (int, float)) or isinstance(sp.get("away"), (int, float)):
+        where = ("HOME" if r.get("home") else "AWAY") if r.get("home") is not None else "—"
+        ctx.append(f"**Home/Away** {_fmt(sp.get('home'))} home / "
+                   f"{_fmt(sp.get('away'))} away "
+                   f"({sp.get('home_games', 0)}/{sp.get('away_games', 0)} games)"
+                   f" · playing **{where}** → ×{r.get('home_factor')}")
+        if r.get("home_used"):
+            ctx.append(f"_{r['home_used']}_")
     if r.get("pace_basis"):
-        ctx.append(f"Pace {r['pace_basis']}")
+        ctx.append(f"**Pace** {r['pace_basis']}")
     if r.get("usage_vacuum_basis"):
-        ctx.append(f"Usage {r['usage_vacuum_basis']}")
-    e.add_field(name="Context", value="\n".join(ctx)[:1024], inline=False)
+        ctx.append(f"**Usage** {r['usage_vacuum_basis']}")
+    e.add_field(name="Supporting stats", value="\n".join(ctx)[:1024],
+                inline=False)
 
     cav = _caveats(r)
     if cav:
