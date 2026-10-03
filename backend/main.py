@@ -645,6 +645,71 @@ async def nba_board_push(req: Request, payload: dict = Body(...)):
     return {"ok": database.is_ready(), "written": n, "submitted": len(rows)}
 
 
+@app.get("/api/nba/diag")
+async def nba_diag(req: Request):
+    """Can this CONTAINER reach the NBA feeds, proxied and direct?
+
+    WHY THIS EXISTS. The whole reason core/proxy.py was written is that public
+    sports APIs refuse datacenter ranges, and the symptom is the worst kind:
+    everything works on a laptop and fails only in the container. There was no
+    way to tell the two apart from outside — the proxy's state reached the logs
+    only as a 407 inside some other feature's failure, so "is the proxy up" and
+    "does this host accept us" were both answered by guessing.
+
+    This answers them from INSIDE the container, which is the only place the
+    question means anything. Probes are HEAD-weight, read-only and run on demand.
+
+    Admin-gated and fails closed, like every other diagnostic route here: it
+    reports infrastructure state, which is not public information.
+    """
+    _require_admin(req)
+    out = {"proxy": {}, "probes": []}
+    try:
+        from core import proxy as _px
+        out["proxy"] = _px.status()
+    except Exception as exc:  # noqa: BLE001
+        out["proxy"] = {"error": str(exc)[:200]}
+
+    targets = [
+        ("stats.nba.com",
+         "https://stats.nba.com/stats/playergamelogs"
+         "?LeagueID=00&Season=2025-26&SeasonType=Regular%20Season&PlayerID=203999"),
+        ("espn nba scoreboard",
+         "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard"),
+    ]
+    for name, url in targets:
+        for mode in ("direct", "proxied"):
+            row = {"target": name, "mode": mode}
+            t0 = time.time()
+            try:
+                if mode == "direct":
+                    import requests as _rq
+                    hdrs = ({"User-Agent": "Mozilla/5.0"}
+                            if "espn" in name else
+                            {"User-Agent": "Mozilla/5.0", "Referer":
+                             "https://www.nba.com/", "Origin":
+                             "https://www.nba.com", "x-nba-stats-origin":
+                             "stats", "x-nba-stats-token": "true"})
+                    r = _rq.get(url, headers=hdrs, timeout=30)
+                else:
+                    from core import proxy as _px
+                    if not _px.configured():
+                        row["skipped"] = "proxy not configured"
+                        out["probes"].append(row)
+                        continue
+                    from nba import client as _nc
+                    hdrs = (_nc._ESPN_HEADERS if "espn" in name
+                            else _nc._STATS_HEADERS)
+                    r = _px.get(url, "nba", headers=hdrs, timeout=30)
+                row["status"] = getattr(r, "status_code", None) if r else None
+                row["bytes"] = len(getattr(r, "content", b"") or b"") if r else 0
+            except Exception as exc:  # noqa: BLE001
+                row["error"] = f"{type(exc).__name__}: {str(exc)[:160]}"
+            row["seconds"] = round(time.time() - t0, 2)
+            out["probes"].append(row)
+    return out
+
+
 @app.get("/api/nba/board")
 async def nba_board_get(book: str = None, slate_date: str = None):
     """The current scanned NBA board. Public, read-only.
