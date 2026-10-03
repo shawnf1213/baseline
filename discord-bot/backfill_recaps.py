@@ -22,12 +22,43 @@ import bot  # noqa: E402
 log = logging.getLogger("backfill")
 
 # (slate date, book) oldest first, so the channel reads chronologically.
-TARGETS = [
+#
+# TAKEN FROM THE COMMAND LINE, with the original backlog as the default:
+#
+#     python backfill_recaps.py 2026-10-03
+#     python backfill_recaps.py 2026-10-03:prizepicks 2026-10-04
+#
+# The list below was hardcoded to the 9/1-9/2 backlog it was written for, so
+# every later use meant editing the file — and an operator tool that has to be
+# edited before each run is one that gets edited WRONG under time pressure. A
+# bare date posts both books; `date:book` pins one.
+#
+# The 50% floor in _post_recap_for still applies here. This is a scheduling
+# override, not a policy one: it decides WHEN a recap is considered, never
+# whether a losing day is allowed out.
+_DEFAULT_TARGETS = [
     ("2026-09-01", "prizepicks"),
     ("2026-09-01", "underdog"),
     ("2026-09-02", "prizepicks"),
     ("2026-09-02", "underdog"),
 ]
+
+
+def _targets_from_argv(argv):
+    out = []
+    for tok in argv:
+        tok = tok.strip()
+        if not tok:
+            continue
+        if ":" in tok:
+            d, _, b = tok.partition(":")
+            out.append((d.strip(), b.strip().lower()))
+        else:
+            out.extend([(tok, "prizepicks"), (tok, "underdog")])
+    return out
+
+
+TARGETS = _targets_from_argv(sys.argv[1:]) or _DEFAULT_TARGETS
 
 
 @bot.client.event
