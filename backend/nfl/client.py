@@ -248,9 +248,22 @@ def get_schedule(start: str = None, end: str = None) -> list:
     """
     import requests
     try:
+        # ONE DATE PER CALL — ESPN STOPPED ACCEPTING RANGES.
+        # This sent `dates=START-END` and that is now a 400 Bad Request, so
+        # every scheduled scan has been falling straight through to the
+        # nflverse games.csv fallback: observed live on 2026-10-03 at 02:26 and
+        # again at 03:11, "nfl schedule failed: HTTP Error 400" both times.
+        # It is NOT an IP block and not the proxy — the same URL 400s from a
+        # residential line, while `dates=20261005` returns 200 from both. The
+        # basketball scoreboard behaves identically, which is how this was
+        # found.
+        #
+        # The fallback works, which is exactly why this went unnoticed: it is a
+        # CSV snapshot, so the board kept running on fixtures without live
+        # spread and total movement. Callers wanting a span walk the days.
         params = {}
         if start:
-            params["dates"] = f"{start}-{end}" if end else start
+            params["dates"] = start
         # Through the residential proxy when configured — ESPN answers 403 to
         # Railway's datacenter range while returning 200 to a laptop, which is
         # why /nflgame worked in every local test and was dead in production.
@@ -307,11 +320,21 @@ def upcoming_week(days: int = 8) -> list:
     not a prediction.
     """
     today = _dt.date.today()
-    end = today + _dt.timedelta(days=days)
-    games = get_schedule(today.strftime("%Y%m%d"), end.strftime("%Y%m%d"))
-    out = [g for g in games if g.get("state") == "pre"]
+    # WALKS ONE DAY AT A TIME, because ESPN no longer accepts a range — see
+    # get_schedule. Deduped on game_id, since adjacent single-day queries can
+    # return the same fixture around a timezone boundary.
+    out, seen = [], set()
+    for i in range(max(1, int(days)) + 1):
+        d = today + _dt.timedelta(days=i)
+        for g in get_schedule(d.strftime("%Y%m%d")):
+            gid = g.get("game_id")
+            if g.get("state") != "pre" or gid in seen:
+                continue
+            seen.add(gid)
+            out.append(g)
     if out:
         return out
+    end = today + _dt.timedelta(days=days)
     # ESPN refuses datacenter IPs. It answers fine from a laptop and returns
     # 403 Forbidden from the Railway container, so /nflgame, /nflspread and the
     # board's whole game-script term worked in every local test and were dead in
