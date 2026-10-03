@@ -576,6 +576,97 @@ async def nfl_project(payload: dict = Body(...)):
         raise HTTPException(status_code=500, detail=str(exc)[:200])
 
 
+# ════════════════════════════════════════════════════════════════════════════
+# NBA — the same five endpoints NFL exposes, against nba_picks / nba_board.
+#
+# A PARALLEL SET, NOT A SPORT-PARAMETERISED ONE. The separate tables only buy
+# their guarantee if no single handler can address two of them; collapsing these
+# into /api/{sport}/results/* would put that back on a string argument, which is
+# exactly the filter that gets forgotten.
+# ════════════════════════════════════════════════════════════════════════════
+NBA_BOARD_TOKEN = os.getenv("NBA_BOARD_TOKEN", "")
+
+
+@app.post("/api/nba/results/log")
+async def nba_results_log(payload: dict = Body(...)):
+    """Insert NBA picks as PENDING. Body: {"picks": [ ... ]}."""
+    from src import database
+    rows = payload.get("picks") or []
+    n = database.nba_log_picks(rows)
+    return {"ok": database.is_ready(), "written": n, "submitted": len(rows)}
+
+
+@app.get("/api/nba/results/pending")
+async def nba_results_pending():
+    from src import database
+    return {"pending": database.nba_pending()}
+
+
+@app.post("/api/nba/results/update")
+async def nba_results_update(payload: dict = Body(...)):
+    from src import database
+    ok = database.nba_update_result(payload.get("pick_id"),
+                                    payload.get("result"),
+                                    payload.get("value"))
+    return {"ok": ok}
+
+
+@app.get("/api/nba/results/record")
+async def nba_results_record(slate_date: str = None, book: str = None,
+                             since_days: int = None):
+    """Every NBA pick, for the recap. Read-only."""
+    from src import database
+    return {"picks": database.nba_picks(slate_date=slate_date, book=book,
+                                        since_days=since_days),
+            "ready": database.is_ready()}
+
+
+@app.post("/api/nba/board")
+async def nba_board_push(req: Request, payload: dict = Body(...)):
+    """Replace the stored board for one (book, slate). Bot only.
+
+    TOKEN-GATED, IN A HEADER. Same reasoning as the NFL ingest: an open endpoint
+    would let anyone publish invented projections under our name, and a token in
+    a query parameter lands in access logs, browser history and referrers.
+    """
+    from src import database
+    if not NBA_BOARD_TOKEN:
+        raise HTTPException(status_code=503,
+                            detail="NBA board ingest disabled (no token configured)")
+    supplied = req.headers.get("x-nba-board-token", "")
+    if not hmac.compare_digest(supplied, NBA_BOARD_TOKEN):
+        raise HTTPException(status_code=401, detail="bad token")
+    rows = payload.get("rows") or []
+    book = (payload.get("book") or "prizepicks").strip()
+    slate = (payload.get("slate_date") or "").strip()
+    if not slate:
+        raise HTTPException(status_code=400, detail="slate_date required")
+    n = database.nba_board_replace(rows, book, slate)
+    return {"ok": database.is_ready(), "written": n, "submitted": len(rows)}
+
+
+@app.get("/api/nba/board")
+async def nba_board_get(book: str = None, slate_date: str = None):
+    """The current scanned NBA board. Public, read-only.
+
+    WITH NO SLATE ASKED FOR, FINISHED SLATES ARE NOT RETURNED — the same guard
+    nfl_board_get needs, and more urgently: the NBA plays nightly, so an
+    unfiltered read accumulates dead slates several times faster. The cutoff is
+    nba.board.slate_date(), the SAME function the scanner uses to decide which
+    slate it is writing, so the read and the write cannot drift apart.
+    """
+    from src import database
+    not_before = None
+    try:
+        from nba import board as _b
+        not_before = str(_b.slate_date())
+    except Exception as exc:  # noqa: BLE001 — Rule 2
+        logger.warning("nba board slate cutoff unavailable: %s", exc)
+    return {"rows": database.nba_board(book=book, slate_date=slate_date,
+                                       not_before=not_before),
+            "ready": database.is_ready()}
+
+
 @app.get("/api/nfl/results/pending")
 async def nfl_results_pending():
     from src import database

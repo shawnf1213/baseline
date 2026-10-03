@@ -45,3 +45,6 @@ logs/
 
 # NFL data cache — nflverse parquet, re-downloadable
 backend/nfl/_cache/
+
+# NBA parquet cache — downloaded per deploy, never committed (mirrors nfl/_cache)
+backend/nba/_cache/

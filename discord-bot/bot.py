@@ -4310,6 +4310,106 @@ async def _before_nfl_boards():
     await client.wait_until_ready()
 
 
+# ── THE NBA BOARD — DAILY, BECAUSE THIS SPORT PLAYS NIGHTLY ──────────────────
+# The opposite shape to NFL, and deliberately so. Football plays on three days
+# and a daily board was empty most of the week; basketball plays most nights
+# from late October to April, so a daily board is the right cadence and an
+# eve-night filter would be the thing that made no sense.
+#
+# Posted in the LATE AFTERNOON, before the first tip (typically 7pm ET), so the
+# board is up while the lines are still live. Lines move all day, so posting too
+# early means posting against numbers nobody can still take.
+NBA_TASKS_ENABLED = os.getenv("NBA_TASKS_ENABLED", "true").strip().lower() in (
+    "1", "true", "yes", "on")
+NBA_BOARD_HOUR = int(os.getenv("NBA_BOARD_HOUR", "16") or "16")
+NBA_BOARD_MINUTE = int(os.getenv("NBA_BOARD_MINUTE", "30") or "30")
+NBA_MAX_PLAYS = int(os.getenv("NBA_MAX_PLAYS", "10") or "10")
+
+
+async def _nba_post_board(book: str, day=None, window_days: int = 0):
+    """Scan, post and persist ONE book's NBA board. Never raises.
+
+    One book failing must not stop the other, and neither may stop tennis —
+    the same isolation every sport module here is held to.
+    """
+    try:
+        nb = _nba_import("nba.board")
+        npost = _nba_import("nba.post")
+        nstore = _nba_import("nba.store")
+        npub = _nba_import("nba.publish")
+        import nba as _nba_pkg
+
+        slate = str(day or nb.slate_date())
+        rows = await asyncio.to_thread(nb.scan_board, book, None, True,
+                                       slate, window_days)
+        if not rows:
+            log.info("NBA board (%s): nothing qualified for %s", book, slate)
+            return
+        star = nb.pick_star(rows)
+        top = rows[:NBA_MAX_PLAYS]
+        cid = npost.channel_for("board", book)
+        if not cid:
+            log.warning("NBA board (%s): no channel configured — not posting", book)
+            return
+        ch = client.get_channel(cid)
+        if ch is None:
+            log.warning("NBA board (%s): channel %s not found", book, cid)
+            return
+        await ch.send(embed=npost.build_board_embed(
+            top, book, shadow=_nba_pkg.SHADOW, slate=slate, star=star))
+        log.warning("NBA board (%s): posted %d play(s) for %s%s", book,
+                    len(top), slate,
+                    f" (star: {star['player']})" if star else " (no star)")
+        # Persist the POSTED plays to the record, and the WHOLE board to the
+        # website table. Two different things in two different tables — see
+        # nba/publish.py.
+        await asyncio.to_thread(nstore.log_board, top, book, slate,
+                                (star or {}).get("player"), _nba_pkg.SHADOW)
+        await asyncio.to_thread(npub.publish, rows, book, slate)
+    except Exception:  # noqa: BLE001 — Rule 2
+        log.exception("NBA board (%s) failed (tennis and NFL unaffected)", book)
+
+
+@tasks.loop(time=[datetime.time(hour=NBA_BOARD_HOUR, minute=NBA_BOARD_MINUTE,
+                                tzinfo=POD_TZINFO)])
+async def nba_daily_boards():
+    """Both books' NBA boards, posted the afternoon of each slate."""
+    if not NBA_TASKS_ENABLED:
+        return
+    for book in ("prizepicks", "underdog"):
+        await _nba_post_board(book, window_days=0)
+
+
+@nba_daily_boards.before_loop
+async def _before_nba_boards():
+    await client.wait_until_ready()
+
+
+@tasks.loop(hours=int(os.getenv("NBA_RESOLVE_EVERY_HOURS", "3") or "3"))
+async def nba_resolve_loop():
+    """Grade settled NBA picks against final box scores.
+
+    Separate from the tennis resolver and from the NFL one, reading its own
+    table. A failure here can delay an NBA recap and can do nothing else.
+    """
+    if not NBA_TASKS_ENABLED:
+        return
+    try:
+        nrecap = _nba_import("nba.recap")
+        res = await asyncio.to_thread(nrecap.resolve, None, None, None, True)
+        if res.get("graded") or res.get("void"):
+            log.warning("NBA resolve: graded=%d void=%d pending=%d",
+                        res.get("graded", 0), res.get("void", 0),
+                        res.get("pending", 0))
+    except Exception:  # noqa: BLE001 — Rule 2
+        log.exception("NBA resolve failed (other sports unaffected)")
+
+
+@nba_resolve_loop.before_loop
+async def _before_nba_resolve():
+    await client.wait_until_ready()
+
+
 # ── THE NFL WEEK, NOT A DAILY BOARD ───────────────────────────────
 # A daily board is the wrong shape for this sport. Football plays on three days
 # and nothing happens on the other four, so a board that fired every morning was
@@ -4550,6 +4650,236 @@ NFL_PROP_CHOICES = [
     app_commands.Choice(name="Receiving Yards", value="receiving_yards"),
     app_commands.Choice(name="Receptions", value="receptions"),
 ]
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# NBA — same command shape as NFL, same guard, same ephemeral behaviour.
+# ════════════════════════════════════════════════════════════════════════════
+NBA_PROJECTIONS_CHANNEL_ID = int(
+    os.getenv("NBA_PROJECTIONS_CHANNEL_ID", "1555685789323497492") or 0)
+
+NBA_PROP_CHOICES = [
+    app_commands.Choice(name="Points", value="pts"),
+    app_commands.Choice(name="Rebounds", value="reb"),
+    app_commands.Choice(name="Assists", value="ast"),
+    app_commands.Choice(name="3-Pointers Made", value="fg3m"),
+    app_commands.Choice(name="Pts+Rebs+Asts", value="pra"),
+    app_commands.Choice(name="Pts+Rebs", value="pr"),
+    app_commands.Choice(name="Pts+Asts", value="pa"),
+    app_commands.Choice(name="Rebs+Asts", value="ra"),
+    app_commands.Choice(name="Fantasy Score", value="nba_fantasy_pts"),
+]
+
+
+def _nba_import(module_name: str):
+    """Import an `nba.*` submodule, locating the package first.
+
+    Identical problem and identical fix to _nfl_import and _mlb_import — the
+    container layout is not guaranteed, and a bare ImportError swallowed by an
+    error boundary is how a sport silently never runs.
+    """
+    import sys
+    import importlib
+    here = os.path.dirname(os.path.abspath(__file__))
+    _repo = os.path.dirname(here)
+    for root in (os.path.join(_repo, "backend"), _repo, here,
+                 os.path.join(os.getcwd(), "backend"), os.getcwd(),
+                 "/app/backend", "/app"):
+        if root and os.path.isdir(os.path.join(root, "nba")):
+            if root not in sys.path:
+                sys.path.insert(0, root)
+            break
+    else:
+        log.error("NBA package NOT FOUND on disk (searched backend/, %s, %s, "
+                  "%s, /app) — NBA tasks will report this rather than failing "
+                  "silently", _repo, here, os.getcwd())
+    return importlib.import_module(module_name)
+
+
+async def nba_player_autocomplete(interaction: discord.Interaction, current: str):
+    """Player picker for the NBA commands.
+
+    Entirely local — the season frame is already in memory — so it answers well
+    inside Discord's ~3s deadline. Never raises: an autocomplete that throws
+    shows the user "Loading options failed".
+
+    It also removes the accent problem. "jokic" finds Nikola Jokic without the
+    user reproducing diacritics that the two books themselves spell differently.
+    """
+    try:
+        cur = (current or "").strip()
+        if len(cur) < 2:
+            return []
+        q = _nba_import("nba.queries")
+        hits = await asyncio.to_thread(q.search_players, cur, 25)
+        out = []
+        for h in hits:
+            label = h["name"] + (f" ({h['team']})" if h.get("team") else "")
+            out.append(app_commands.Choice(name=label[:100],
+                                           value=h["name"][:100]))
+        return out[:25]
+    except Exception:  # noqa: BLE001
+        log.exception("nba player autocomplete failed")
+        return []
+
+
+async def _nba_guard(interaction) -> bool:
+    """Channel check + queue admission, shared by every NBA command."""
+    if (NBA_PROJECTIONS_CHANNEL_ID
+            and interaction.channel_id != NBA_PROJECTIONS_CHANNEL_ID):
+        await _send_error(interaction,
+                          f"Use NBA commands in <#{NBA_PROJECTIONS_CHANNEL_ID}>.")
+        return False
+    try:
+        await _enter_queue(interaction)
+    except _QueueBusy:
+        return False
+    return True
+
+
+@client.tree.command(name="nbaprop",
+                     description="Get a Baseline NBA prop projection")
+@app_commands.describe(player="Player name", prop="Which prop to project",
+                       line="The book line, e.g. 24.5")
+@app_commands.choices(prop=NBA_PROP_CHOICES)
+@app_commands.autocomplete(player=nba_player_autocomplete)
+@app_commands.checks.cooldown(1, 5.0, key=lambda i: i.user.id)
+async def nbaprop(interaction: discord.Interaction, player: str,
+                  prop: app_commands.Choice[str], line: float = None):
+    if not await _nba_guard(interaction):
+        return
+    log.info("CMD /nbaprop | user=%s | %s | %s | line=%s",
+             interaction.user.id, player, prop.value, line)
+    try:
+        nprops = _nba_import("nba.props")
+        npost = _nba_import("nba.post")
+        nb = _nba_import("nba.board")
+        nclient = _nba_import("nba.client")
+        nl = _nba_import("nba.lines")
+        # Attach the game so the matchup applies — without it the answer is a
+        # league-neutral estimate and materially weaker. The team comes from the
+        # book's own board entry, which is the only place we learn who a player
+        # currently plays for.
+        game = None
+        try:
+            posted = await asyncio.to_thread(nl.fetch_lines, "prizepicks")
+            row = posted.get((nl._norm(player), prop.value))
+            team = (row or {}).get("team")
+            games = await asyncio.to_thread(nclient.upcoming, 3)
+            if team:
+                game = nb._game_for(team, nb._team_index(games)) or None
+        except Exception:  # noqa: BLE001 — a missing game is a weaker answer, not an error
+            log.warning("/nbaprop: could not attach a game for %s", player)
+        r = await asyncio.to_thread(nprops.project, player, prop.value, line,
+                                    game)
+        if not r:
+            await _send_error(
+                interaction,
+                f"No usable game log for **{player}**. Check the spelling — or "
+                f"he may not have enough games for the model to project.")
+            return
+        if r.get("skipped"):
+            await _send_error(interaction,
+                              f"**{player}**: {r.get('reason')}")
+            return
+        await interaction.followup.send(embed=npost.build_prop_embed(r),
+                                        ephemeral=True)
+    except Exception:  # noqa: BLE001 — never let a command crash the process
+        log.exception("UNHANDLED /nbaprop error")
+        await _send_error(interaction, MSG_GENERIC)
+    finally:
+        _leave_queue()
+
+
+@client.tree.command(name="nbaform", description="Recent game-by-game trend")
+@app_commands.describe(player="Player name", stat="Which stat to trend")
+@app_commands.choices(stat=NBA_PROP_CHOICES[:5])
+@app_commands.autocomplete(player=nba_player_autocomplete)
+async def nbaform(interaction: discord.Interaction, player: str,
+                  stat: app_commands.Choice[str] = None):
+    if not await _nba_guard(interaction):
+        return
+    try:
+        q = _nba_import("nba.queries")
+        npost = _nba_import("nba.post")
+        rows = await asyncio.to_thread(q.recent_games, player, 10)
+        if not rows:
+            await _send_error(interaction, f"No recent games for **{player}**.")
+            return
+        await interaction.followup.send(
+            embed=npost.build_form_embed(player, rows,
+                                         (stat.value if stat else "pts")),
+            ephemeral=True)
+    except Exception:  # noqa: BLE001
+        log.exception("UNHANDLED /nbaform error")
+        await _send_error(interaction, MSG_GENERIC)
+    finally:
+        _leave_queue()
+
+
+@client.tree.command(name="nbahistory",
+                     description="How often a player has cleared a line")
+@app_commands.describe(player="Player name", prop="Which prop",
+                       line="The line to test against")
+@app_commands.choices(prop=NBA_PROP_CHOICES)
+@app_commands.autocomplete(player=nba_player_autocomplete)
+async def nbahistory(interaction: discord.Interaction, player: str,
+                     prop: app_commands.Choice[str], line: float):
+    if not await _nba_guard(interaction):
+        return
+    try:
+        q = _nba_import("nba.queries")
+        npost = _nba_import("nba.post")
+        h = await asyncio.to_thread(q.line_history, player, prop.value, line, 20)
+        if not h.get("n"):
+            await _send_error(interaction, f"No games to compare for **{player}**.")
+            return
+        # line_history already summed any combo from its components, the same
+        # way the resolver does, so the embed is handed those values directly
+        # rather than re-deriving them from a second definition.
+        await interaction.followup.send(
+            embed=npost.build_history_embed(
+                player, prop.value, line,
+                [{prop.value: v} for v in h["values"]]),
+            ephemeral=True)
+    except Exception:  # noqa: BLE001
+        log.exception("UNHANDLED /nbahistory error")
+        await _send_error(interaction, MSG_GENERIC)
+    finally:
+        _leave_queue()
+
+
+@client.tree.command(name="nbaslate", description="Tonight's NBA games")
+async def nbaslate(interaction: discord.Interaction):
+    if not await _nba_guard(interaction):
+        return
+    try:
+        nclient = _nba_import("nba.client")
+        nb = _nba_import("nba.board")
+        games = await asyncio.to_thread(nclient.upcoming, 2)
+        day = nb.slate_date()
+        on = nb.games_on(games, day, 0)
+        if not on:
+            await interaction.followup.send(
+                f"No NBA games on {day}.", ephemeral=True)
+            return
+        lines = [f"**{g['away_abbr']} @ {g['home_abbr']}** · {g['tipoff'][:16]}"
+                 + (f" · spread {g['spread_home']:+g}"
+                    if isinstance(g.get("spread_home"), (int, float)) else "")
+                 + (f" · O/U {g['total']:g}"
+                    if isinstance(g.get("total"), (int, float)) else "")
+                 for g in on]
+        import discord as _d
+        npost = _nba_import("nba.post")
+        e = _d.Embed(title=f"🏀 NBA slate — {day}",
+                     description="\n".join(lines)[:4000], colour=npost.COLOR)
+        e.set_footer(text=npost.FOOTER_GENERIC)
+        await interaction.followup.send(embed=e, ephemeral=True)
+    except Exception:  # noqa: BLE001
+        log.exception("UNHANDLED /nbaslate error")
+        await _send_error(interaction, MSG_GENERIC)
+    finally:
+        _leave_queue()
 
 
 @client.tree.command(name="nflprop",
@@ -7067,6 +7397,31 @@ async def on_ready():
                                   "1546943210574708848"))
     except Exception:  # noqa: BLE001
         log.exception("failed to start NFL line watch (tennis unaffected)")
+    # NBA — its own error boundary, for the reason stated above the NFL block:
+    # one sport's kill switch or broken module must never gate another's.
+    try:
+        if NBA_TASKS_ENABLED and not nba_daily_boards.is_running():
+            nba_daily_boards.start()
+            import nba as _nba_pkg
+            log.warning("NBA boards scheduled daily at %02d:%02d %s -> pp=%s "
+                        "ud=%s | shadow=%s", NBA_BOARD_HOUR, NBA_BOARD_MINUTE,
+                        POD_TZINFO,
+                        os.getenv("NBA_PP_BOARD_CHANNEL_ID",
+                                  "1555685687708225617"),
+                        os.getenv("NBA_UD_BOARD_CHANNEL_ID",
+                                  "1555685733694705694"),
+                        _nba_pkg.SHADOW)
+        elif not NBA_TASKS_ENABLED:
+            log.warning("NBA tasks OFF (set NBA_TASKS_ENABLED=true)")
+    except Exception:  # noqa: BLE001
+        log.exception("failed to start NBA board loop (other sports unaffected)")
+    try:
+        if NBA_TASKS_ENABLED and not nba_resolve_loop.is_running():
+            nba_resolve_loop.start()
+            log.warning("NBA resolver every %sh",
+                        os.getenv("NBA_RESOLVE_EVERY_HOURS", "3"))
+    except Exception:  # noqa: BLE001
+        log.exception("failed to start NBA resolver (other sports unaffected)")
     # Prove the data layer works in THIS container before anyone asks it a
     # question — see _nfl_selfcheck.
     try:

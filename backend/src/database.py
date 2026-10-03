@@ -147,6 +147,78 @@ try:
         form        = Column(String)       # JSON: recent game log
         updated_at  = Column(DateTime(timezone=True), server_default=func.now())
 
+    class NbaPick(Base):
+        """NBA picks — SEPARATE TABLE, SAME DATABASE.
+
+        The third sport to make the same call, for the third time for the same
+        reason: not the tennis `picks` table and not a `sport` column on it. Two
+        sports in one table means every tennis query has to remember to filter,
+        and the first one that forgets silently pools another sport's record
+        into the public tennis one. mlb_picks, nfl_picks, and now this.
+        """
+        __tablename__      = "nba_picks"
+        id                 = Column(Integer, primary_key=True, autoincrement=True)
+        book               = Column(String, default="prizepicks")
+        slate_date         = Column(String, nullable=False)   # ET YYYY-MM-DD
+        player             = Column(String, nullable=False)
+        team               = Column(String, default="")
+        opponent           = Column(String, default="")
+        prop_type          = Column(String, nullable=False)
+        line               = Column(Float)
+        model_projection   = Column(Float)
+        lean               = Column(String)                   # OVER / UNDER
+        confidence         = Column(Float)                    # EVR-graded score
+        edge               = Column(Float)
+        result             = Column(String, default="PENDING")  # W/L/PUSH/VOID
+        result_value       = Column(Float)
+        is_star            = Column(Integer, default=0)
+        # WHAT THE MODEL KNEW WHEN IT PRICED THIS. Before opening night every
+        # NBA projection runs on last season's role, and a record that cannot
+        # say which rows those were cannot answer the only question worth asking
+        # of an early-season board.
+        usage_window       = Column(String, default="")
+        prior_season_only  = Column(Integer, default=0)
+        shadow             = Column(Integer, default=1)
+        season             = Column(Integer)
+        generated_at       = Column(DateTime(timezone=True), server_default=func.now())
+        resolved_at        = Column(DateTime(timezone=True), nullable=True)
+        excluded_from_record = Column(Integer, default=0)
+        # JSON snapshot of the projector's drivers — minutes, rotation cv, pace
+        # factor, usage vacuum, per-stat components. The NBA version of the
+        # question nfl_picks.drivers exists to answer: when a projection misses,
+        # was it the minutes term or the per-minute rate?
+        drivers            = Column(String)
+
+    class NbaBoardRow(Base):
+        """The CURRENT scanned NBA board — every priced line, not just posted ones.
+
+        Same split as nfl_board vs nfl_picks, for the same reason: nba_picks is
+        the RECORD (posted plays, kept forever, graded); this is the MARKET
+        (everything the scan priced, replaced wholesale each run, never graded).
+        The website needs the second to show what the tennis board shows.
+        """
+        __tablename__     = "nba_board"
+        id                = Column(Integer, primary_key=True, autoincrement=True)
+        book              = Column(String, default="prizepicks", index=True)
+        slate_date        = Column(String, nullable=False, index=True)
+        player            = Column(String, nullable=False)
+        team              = Column(String, default="")
+        opponent          = Column(String, default="")
+        matchup           = Column(String, default="")
+        tipoff            = Column(String, default="")
+        prop_type         = Column(String, nullable=False)
+        line              = Column(Float)
+        model_projection  = Column(Float)
+        fair_line         = Column(Float)
+        lean              = Column(String)
+        confidence        = Column(Float)
+        edge              = Column(Float)
+        minutes           = Column(Float)
+        rotation          = Column(String, default="")
+        usage_window      = Column(String, default="")
+        prior_season_only = Column(Integer, default=0)
+        scanned_at        = Column(DateTime(timezone=True), server_default=func.now())
+
     class Pick(Base):
         __tablename__ = "picks"
         id               = Column(Integer, primary_key=True, autoincrement=True)
@@ -1917,6 +1989,154 @@ def _nfl_dict(r) -> dict:
         v = getattr(r, c.name)
         out[c.name] = v.isoformat() if hasattr(v, "isoformat") else v
     return out
+
+
+# ── NBA ──────────────────────────────────────────────────────────────────────
+# Deliberately a parallel set rather than a generic sport-parameterised one. A
+# shared helper taking a model argument reads cleaner and is exactly how a
+# caller ends up passing the wrong table: the whole point of separate tables is
+# that no single query can touch two sports, and that guarantee is worth more
+# than the duplication it costs.
+
+def nba_log_picks(rows: list) -> int:
+    """Insert NBA picks as PENDING. Dedupes on (book, slate_date, player, prop).
+
+    Returns rows written. A retry or a re-post must never double-count a play —
+    the easiest way there is to make a win rate look better than it was.
+    """
+    if not is_ready() or not rows:
+        return 0
+    try:
+        with _session() as s:
+            n = 0
+            for rec in rows:
+                key = (rec.get("book") or "prizepicks", rec.get("slate_date"),
+                       rec.get("player"), rec.get("prop_type"))
+                if not key[2] or not key[1]:
+                    continue
+                dupe = s.query(NbaPick).filter(
+                    NbaPick.book == key[0], NbaPick.slate_date == key[1],
+                    NbaPick.player == key[2], NbaPick.prop_type == key[3]).first()
+                if dupe:
+                    continue
+                s.add(NbaPick(**{k: v for k, v in rec.items()
+                                 if k in NbaPick.__table__.columns.keys()}))
+                n += 1
+            s.commit()
+            return n
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("nba_log_picks failed: %s", exc)
+        return 0
+
+
+def nba_pending() -> list:
+    if not is_ready():
+        return []
+    try:
+        with _session() as s:
+            rows = s.query(NbaPick).filter(NbaPick.result == "PENDING").order_by(
+                NbaPick.id).all()
+            return [_nfl_dict(r) for r in rows]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("nba_pending failed: %s", exc)
+        return []
+
+
+def nba_update_result(pick_id: int, result: str, value=None) -> bool:
+    if not is_ready():
+        return False
+    try:
+        with _session() as s:
+            row = s.get(NbaPick, int(pick_id))
+            if row is None:
+                return False
+            row.result = result
+            row.result_value = value
+            row.resolved_at = func.now()
+            s.commit()
+            return True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("nba_update_result failed: %s", exc)
+        return False
+
+
+def nba_picks(slate_date: str = None, book: str = None,
+              since_days: int = None) -> list:
+    if not is_ready():
+        return []
+    try:
+        import datetime
+        with _session() as s:
+            q = s.query(NbaPick).filter(NbaPick.excluded_from_record == 0)
+            if slate_date:
+                q = q.filter(NbaPick.slate_date == slate_date)
+            if book:
+                q = q.filter(NbaPick.book == book)
+            if since_days:
+                cutoff = (datetime.date.today()
+                          - datetime.timedelta(days=int(since_days))).isoformat()
+                q = q.filter(NbaPick.slate_date >= cutoff)
+            return [_nfl_dict(r) for r in q.order_by(NbaPick.id).all()]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("nba_picks failed: %s", exc)
+        return []
+
+
+def nba_board_replace(rows: list, book: str, slate_date: str) -> int:
+    """REPLACE the stored board for one (book, slate). Returns rows written.
+
+    Replace, not append: this table is a snapshot of the current market, and
+    appending would leave yesterday's lines sitting next to today's with no way
+    to tell them apart.
+    """
+    if not is_ready():
+        return 0
+    try:
+        with _session() as s:
+            s.query(NbaBoardRow).filter(
+                NbaBoardRow.book == book,
+                NbaBoardRow.slate_date == slate_date).delete()
+            cols = NbaBoardRow.__table__.columns.keys()
+            n = 0
+            for rec in rows or []:
+                if not rec.get("player"):
+                    continue
+                s.add(NbaBoardRow(**{k: v for k, v in rec.items() if k in cols}))
+                n += 1
+            s.commit()
+            return n
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("nba_board_replace failed: %s", exc)
+        return 0
+
+
+def nba_board(book: str = None, slate_date: str = None,
+              not_before: str = None) -> list:
+    """The stored NBA board.
+
+    `not_before` exists for the reason nfl_board documents: replace only
+    replaces the slate it is given, so every slate ever scanned stays in the
+    table and the default ascending order puts dead games first. On a sport that
+    plays nightly that accumulates far faster than it does in the NFL, so a
+    caller asking for "the board" without a bound would get months of finished
+    games ahead of tonight's.
+    """
+    if not is_ready():
+        return []
+    try:
+        with _session() as s:
+            q = s.query(NbaBoardRow)
+            if book:
+                q = q.filter(NbaBoardRow.book == book)
+            if slate_date:
+                q = q.filter(NbaBoardRow.slate_date == slate_date)
+            elif not_before:
+                q = q.filter(NbaBoardRow.slate_date >= not_before)
+            rows = q.order_by(NbaBoardRow.slate_date, NbaBoardRow.id).all()
+            return [_nfl_dict(r) for r in rows]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("nba_board failed: %s", exc)
+        return []
 
 
 # ── ACCOUNT DELETION (App Store guideline 5.1.1(v)) ──────────────────────────
