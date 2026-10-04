@@ -252,12 +252,29 @@ def build_history_embed(player: str, stat: str, line: float, rows: list):
 
 
 def build_line_alert_embed(alert: dict):
-    """A posted play's line has moved."""
+    """A posted play's line has moved.
+
+    A FLIP IS THE HEADLINE, not the move. A line drifting while our lean holds
+    is information; a line crossing our projection means the bet we posted is no
+    longer the bet on offer, and those two deserve to look different at a glance
+    rather than being the same grey notice with different numbers in it.
+    """
     import discord
-    e = discord.Embed(title="🏀 NBA line moved", colour=COLOR)
-    e.description = (
-        f"**{alert.get('player')}** {alert.get('prop')}\n"
-        f"{_fmt(alert.get('old'))} → **{_fmt(alert.get('new'))}** "
-        f"({alert.get('book')})")
+    from .props import PROP_LABEL
+    flipped = bool(alert.get("flipped"))
+    prop = PROP_LABEL.get(alert.get("prop"), alert.get("prop") or "")
+    e = discord.Embed(
+        title=("⚠️ NBA line FLIPPED our lean" if flipped else "🏀 NBA line moved"),
+        colour=(0xE67E22 if flipped else COLOR))
+    old, new = alert.get("old_line", alert.get("old")), alert.get("new_line", alert.get("new"))
+    body = [f"**{alert.get('player')}** · {prop}",
+            f"{_fmt(old)} → **{_fmt(new)}**"
+            + (f"  ({alert.get('book')})" if alert.get("book") else "")]
+    if isinstance(alert.get("projection"), (int, float)):
+        body.append(f"Our projection **{_fmt(alert['projection'], 2)}** — unchanged")
+    if flipped:
+        body.append(f"Lean was **{alert.get('old_lean')}**, now "
+                    f"**{alert.get('new_lean')}** at the new number.")
+    e.description = "\n".join(body)
     e.set_footer(text=FOOTER_GENERIC)
     return e

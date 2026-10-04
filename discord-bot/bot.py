@@ -4366,8 +4366,51 @@ async def _nba_post_board(book: str, day=None, window_days: int = 0):
         await asyncio.to_thread(nstore.log_board, top, book, slate,
                                 (star or {}).get("player"), _nba_pkg.SHADOW)
         await asyncio.to_thread(npub.publish, rows, book, slate)
+        # WATCH WHAT WE POSTED. Started per board and per book, on the plays
+        # that actually went out — not the whole scan, because a line moving on
+        # a play nobody was shown is not news.
+        _start_nba_line_watch(top, book)
     except Exception:  # noqa: BLE001 — Rule 2
         log.exception("NBA board (%s) failed (tennis and NFL unaffected)", book)
+
+
+_nba_watch_tasks = {}
+
+
+def _start_nba_line_watch(rows: list, book: str) -> None:
+    """Arm the NBA line monitor for one book's posted board. Never raises."""
+    try:
+        nlm = _nba_import("nba.line_monitor")
+        npost = _nba_import("nba.post")
+        cid = npost.channel_for("lines")
+        if not cid:
+            log.warning("NBA line watch (%s): no line-changes channel configured "
+                        "— not watching", book)
+            return
+
+        async def _post_alert(alert):
+            ch = client.get_channel(cid)
+            if ch is None:
+                log.warning("NBA line watch: channel %s not found", cid)
+                return
+            await ch.send(embed=npost.build_line_alert_embed(alert))
+            log.warning("NBA line alert (%s): %s %s %s -> %s%s", book,
+                        alert.get("player"), alert.get("prop"),
+                        alert.get("old_line"), alert.get("new_line"),
+                        " [LEAN FLIPPED]" if alert.get("flipped") else "")
+
+        # One watcher per book. A new board replaces the old watcher rather
+        # than running beside it — two tasks on the same book would double every
+        # alert, which is how the tennis monitor once posted duplicates.
+        old = _nba_watch_tasks.get(book)
+        if old and not old.done():
+            old.cancel()
+        _nba_watch_tasks[book] = asyncio.create_task(
+            nlm.monitor(rows, book, _post_alert))
+        log.info("NBA line watch (%s): armed on %d posted play(s) -> channel %s",
+                 book, len(rows), cid)
+    except Exception:  # noqa: BLE001 — Rule 2; a watch failure must not cost the board
+        log.exception("NBA line watch (%s) failed to start", book)
 
 
 @tasks.loop(time=[datetime.time(hour=NBA_BOARD_HOUR, minute=NBA_BOARD_MINUTE,
@@ -4403,11 +4446,97 @@ async def nba_resolve_loop():
                         res.get("pending", 0))
     except Exception:  # noqa: BLE001 — Rule 2
         log.exception("NBA resolve failed (other sports unaffected)")
+    # Grade first, then announce whatever that completed. Posting from the same
+    # pass means a settled day goes out within the resolve interval instead of
+    # waiting for a separate clock, which is how the NFL recap works and why it
+    # does not need its own schedule.
+    try:
+        await _maybe_post_nba_recap()
+    except Exception:  # noqa: BLE001 — Rule 2
+        log.exception("NBA recap post failed (other sports unaffected)")
 
 
 @nba_resolve_loop.before_loop
 async def _before_nba_resolve():
     await client.wait_until_ready()
+
+
+# ── THE NBA RECAP ────────────────────────────────────────────────────────────
+# Posted to the SAME track-record channel tennis and NFL use, so a subscriber
+# reads one record rather than hunting three. The embed says SHADOW while
+# NBA_ENABLED is false, which is what keeps a testing record from being read as
+# a published one — the separation is in the labelling and the table, not in
+# hiding the post.
+#
+# SAME RULE AS EVERY OTHER SPORT: a day posts only once every pick on it is
+# settled. One pending play holds the day, because an incomplete recap is worse
+# than a late one. And the 50% floor applies here too — a losing day is graded,
+# logged and not announced.
+NBA_RECAP_LOOKBACK_DAYS = int(os.getenv("NBA_RECAP_LOOKBACK_DAYS", "3") or "3")
+
+
+async def _nba_recap_already_posted(channel, slate: str, book: str) -> bool:
+    """True when THIS BOOK's recap for this day is already in the channel.
+
+    Keyed on book as well as date: the two books post separately, so one being
+    up must not suppress the other. Reads the channel rather than trusting
+    in-memory state — a restart must never produce a second recap for a day.
+    """
+    try:
+        _y, _m, _d = slate.split("-")
+        label = "PrizePicks" if book == "prizepicks" else "Underdog"
+        want = f"{int(_m)}/{int(_d)} {label} NBA Recap"
+        async for msg in channel.history(limit=60):
+            for e in (msg.embeds or []):
+                if want in (e.title or ""):
+                    return True
+    except Exception:  # noqa: BLE001 — never block a post on a history read
+        log.exception("NBA recap dedupe check failed")
+    return False
+
+
+async def _maybe_post_nba_recap():
+    """Post an NBA recap for any recent slate whose picks have all settled."""
+    if not TRACK_RECORD_CHANNEL_ID or not AUTOPOST_ENABLED or not NBA_TASKS_ENABLED:
+        return
+    channel = client.get_channel(TRACK_RECORD_CHANNEL_ID)
+    if channel is None:
+        return
+    try:
+        nrecap = _nba_import("nba.recap")
+        import nba as _nba_pkg
+    except Exception:  # noqa: BLE001 — Rule 2
+        log.exception("NBA recap: module unavailable")
+        return
+    today = datetime.datetime.now(POD_TZINFO).date()
+    for back in range(NBA_RECAP_LOOKBACK_DAYS):
+        slate = str(today - datetime.timedelta(days=back))
+        for book in ("prizepicks", "underdog"):
+            try:
+                rec = await asyncio.to_thread(nrecap.record, slate, book)
+                rows = (rec or {}).get("picks") or []
+                if not rows:
+                    continue
+                if rec.get("pending"):
+                    log.info("NBA recap %s %s: %d pick(s) still pending — holding",
+                             slate, book, rec["pending"])
+                    continue
+                if await _nba_recap_already_posted(channel, slate, book):
+                    continue
+                # THE SAME 50% FLOOR every sport is held to, measured the way
+                # this embed prints it: cashed = W + PUSH over what played.
+                w, l, pu = rec["wins"], rec["losses"], rec["pushes"]
+                if not _recap_rate_ok(w + pu, w + l + pu, f"NBA {book} {slate}"):
+                    continue
+                embed = await asyncio.to_thread(
+                    nrecap.build_recap_embed, book, slate, _nba_pkg.SHADOW)
+                if embed is None:
+                    continue
+                await channel.send(embed=embed)
+                log.warning("NBA recap posted for %s %s (%d-%d%s) -> track-record",
+                            slate, book, w, l, f"-{pu} push" if pu else "")
+            except Exception:  # noqa: BLE001 — one slate must not stop the others
+                log.exception("NBA recap failed for %s %s", slate, book)
 
 
 # ── THE NFL WEEK, NOT A DAILY BOARD ───────────────────────────────
