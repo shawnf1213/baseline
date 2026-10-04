@@ -200,9 +200,17 @@ def run(season: int = 2026, stats: list = None, start: str = None,
         byband = {}
         for c, h, s in qual:
             byband.setdefault(s, []).append(h)
+        # A VERDICT NEEDS A SAMPLE. The first run of this printed "100.0% —
+        # CLEARS the 57.74% breakeven" off THREE plays, which is not a result,
+        # it is three coin flips with a conclusion attached. A report that
+        # states a verdict it cannot support is worse than one that reports
+        # nothing, because the number gets quoted and the n does not.
+        MIN_VERDICT_N = 100
         report["_board_sim"] = {
             "n": len(qual),
             "gate": f"confidence >= {_b.MIN_CONF:.0f}",
+            "sufficient": len(qual) >= MIN_VERDICT_N,
+            "min_verdict_n": MIN_VERDICT_N,
             "hit_pct": (round(sum(1 for _, h, _ in qual) / len(qual) * 100, 1)
                         if qual else None),
             "by_stat": {s: {"n": len(v),
@@ -247,7 +255,17 @@ def format_report(rep: dict) -> str:
         out += ["", "WOULD THE BOARD HAVE WON?", "-" * 72,
                 f"  gate: {bs.get('gate')}",
                 f"  plays that would have posted: {bs.get('n')}"]
-        if bs.get("hit_pct") is not None:
+        if not bs.get("sufficient"):
+            out += [f"  hit rate: {bs.get('hit_pct')}% — MEANINGLESS at this n",
+                    f"  NO VERDICT: needs {bs.get('min_verdict_n')}+ plays, "
+                    f"has {bs.get('n')}.",
+                    "  WHAT THIS ACTUALLY SHOWS: against a FAIR line the model",
+                    "  almost never clears its own confidence gate. On a live",
+                    "  board, qualification therefore comes from disagreeing",
+                    "  with the BOOK's line — and there is no stored history of",
+                    "  NBA book lines to test that against. The question 'would",
+                    "  the board have won' is UNANSWERABLE with available data."]
+        elif bs.get("hit_pct") is not None:
             out.append(f"  hit rate: {bs['hit_pct']}%")
             out.append(f"  {bs['breakeven_note']}")
             out.append("  VERDICT: " + ("CLEARS the 57.74% breakeven"
