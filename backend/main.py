@@ -645,6 +645,119 @@ async def nba_board_push(req: Request, payload: dict = Body(...)):
     return {"ok": database.is_ready(), "written": n, "submitted": len(rows)}
 
 
+def _nba_mod():
+    """The nba package, or None when this deploy does not carry it."""
+    try:
+        import nba.props as _p          # noqa: F401
+        return __import__("nba", fromlist=["props", "client", "board", "queries"])
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("nba package unavailable to the backend: %s", exc)
+        return None
+
+
+@app.get("/api/nba/props")
+async def nba_prop_types():
+    """Which NBA props can be priced, and whether pricing is available at all.
+
+    The frontend asks this before offering the mode, so an NBA tab can say
+    "unavailable on this deploy" instead of presenting a form whose submit
+    button always fails.
+    """
+    _nba = _nba_mod()
+    if _nba is None:
+        return {"available": False, "props": []}
+    from nba.props import SUPPORTED, PROP_LABEL, COMBO_PARTS
+    return {"available": True,
+            "props": [{"value": p, "label": PROP_LABEL.get(p, p),
+                       "combo": p in COMBO_PARTS} for p in SUPPORTED]}
+
+
+@app.get("/api/nba/search")
+async def nba_search(query: str = "", limit: int = 25):
+    """Player autocomplete over the cached game logs. Read-only."""
+    if not query or len(query.strip()) < 2:
+        return []
+    _nba = _nba_mod()
+    if _nba is None:
+        return []
+    from nba import queries as _q
+    loop = asyncio.get_event_loop()
+    try:
+        return await asyncio.wait_for(
+            loop.run_in_executor(None, _q.search_players, query, int(limit)),
+            timeout=30.0)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("nba search failed: %s", exc)
+        return []
+
+
+@app.post("/api/nba/project")
+async def nba_project(payload: dict = Body(...)):
+    """Price one NBA prop on demand. {} when it cannot be priced.
+
+    Generous timeout for the same reason the tennis one has it: a cold player
+    pulls a season of logs through the proxy, and a projection that times out
+    looks identical to one that is impossible.
+    """
+    _nba = _nba_mod()
+    if _nba is None:
+        return {"available": False}
+    from nba import props as _p, board as _b, client as _c
+    player = (payload.get("player") or "").strip()
+    prop = (payload.get("prop") or "").strip()
+    line = payload.get("line")
+    if not player or prop not in _p.SUPPORTED:
+        raise HTTPException(status_code=400,
+                            detail="player and a supported prop are required")
+
+    def _work():
+        game = None
+        try:
+            team = (payload.get("team") or "").strip()
+            if team:
+                games = _c.upcoming(days=3)
+                game = _b._game_for(team, _b._team_index(games)) or None
+        except Exception:  # noqa: BLE001 — a missing game is a weaker answer
+            game = None
+        return _p.project(player, prop,
+                          line=float(line) if isinstance(line, (int, float)) else None,
+                          game=game, position=payload.get("position") or None)
+
+    loop = asyncio.get_event_loop()
+    try:
+        return await asyncio.wait_for(loop.run_in_executor(None, _work),
+                                      timeout=240.0)
+    except asyncio.TimeoutError:
+        logger.error("nba project TIMED OUT | %s %s", player, prop)
+        return {"error": "timeout"}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("nba project failed: %s", exc)
+        return {}
+
+
+@app.get("/api/nba/player")
+async def nba_player(player: str = "", games: int = 20):
+    """Recent game log for one player — what the player sheet renders."""
+    if not player:
+        return {"player": "", "games": []}
+    _nba = _nba_mod()
+    if _nba is None:
+        return {"player": player, "games": []}
+    from nba import queries as _q, usage as _u
+    loop = asyncio.get_event_loop()
+
+    def _work():
+        return {"player": player,
+                "games": _q.recent_games(player, n=int(games)),
+                "usage": _u.player_usage(player)}
+    try:
+        return await asyncio.wait_for(loop.run_in_executor(None, _work),
+                                      timeout=120.0)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("nba player failed: %s", exc)
+        return {"player": player, "games": []}
+
+
 @app.get("/api/nba/diag")
 async def nba_diag(req: Request):
     """Can this CONTAINER reach the NBA feeds, proxied and direct?

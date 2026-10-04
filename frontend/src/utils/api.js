@@ -99,6 +99,32 @@ export const projectNfl = (body) =>
 export const fetchNflRecord = (signal) =>
   api.get('/api/nfl/results/record', { signal }).then(r => r.data)
 
+// ── NBA ──────────────────────────────────────────────────────────────────────
+// Same shape as the NFL set, and for the same reason: the model deploys with
+// the BOT, which scans on a schedule and publishes the whole board, while the
+// backend stores and serves it. The board is the full scanned market;
+// fetchNbaRecord is the handful that were posted and graded. Different things,
+// different tables — nba_board vs nba_picks.
+export const fetchNbaBoard   = (slate_date, signal) =>
+  api.get('/api/nba/board', { params: { slate_date }, signal }).then(r => r.data)
+
+export const fetchNbaRecord  = (signal) =>
+  api.get('/api/nba/results/record', { signal }).then(r => r.data)
+
+export const searchNbaPlayers = (query, signal) =>
+  api.get('/api/nba/search', { params: { query }, signal }).then(r => r.data)
+
+export const fetchNbaPropTypes = (signal) =>
+  api.get('/api/nba/props', { signal }).then(r => r.data)
+
+export const fetchNbaPlayer  = (player, signal) =>
+  api.get('/api/nba/player', { params: { player }, signal }).then(r => r.data)
+
+// Generous timeout for the same reason calcProp has one: a player the container
+// has not touched today pulls a season of game logs through the proxy.
+export const projectNba = (body) =>
+  api.post('/api/nba/project', body, { timeout: 300000 }).then(r => r.data)
+
 export const fetchRecord    = (signal) =>
   api.get('/api/results/record', { signal }).then(r => r.data)
 

@@ -8,6 +8,7 @@ import { shortProp, startTimeLabel, fmt, calibratedConfidence } from './data'
 import { projectRow, cachedProjection } from './project'
 import { useBookmarks, propBookmarkId } from './useBookmarks'
 import NflBoard from './NflBoard'
+import NbaBoard from './NbaBoard'
 import { Num, Reveal, Tap, EdgeScale } from './motion'
 import PlayerPhoto from './PlayerPhoto'
 import { TeamMark } from './nflviz'
@@ -90,6 +91,7 @@ export default function BoardTab({ boards, book, setBook, loading, error, onOpen
   // Counts for the NFL header, reported up by NflBoard so the two sports
   // present the same title block rather than one being bare.
   const [nflMeta, setNflMeta] = useState({})
+  const [nbaMeta, setNbaMeta] = useState({})
   const [openKey, setOpenKey] = useState(null)
   // Which page of the board is rendered. Reset whenever the view changes, or a
   // reader on page 5 of tennis lands past the end of a shorter NFL board.
@@ -190,7 +192,8 @@ export default function BoardTab({ boards, book, setBook, loading, error, onOpen
   const SportSwitch = (
     <GlassTabs value={sport} onChange={setSport} style={{ marginBottom: 0 }}
                options={[{ key: 'tennis', label: '🎾 Tennis' },
-                         { key: 'nfl', label: '🏈 NFL' }]} />
+                         { key: 'nfl', label: '🏈 NFL' },
+                         { key: 'nba', label: '🏀 NBA' }]} />
   )
 
   // BOTH SPORTS GET THE BOOK SWITCH. It used to live inline in the tennis
@@ -248,6 +251,28 @@ export default function BoardTab({ boards, book, setBook, loading, error, onOpen
         {SportSwitch}
         {BookSwitch}
         <NflBoard book={book} onMeta={setNflMeta} onProject={onProject} />
+      </div>
+    )
+  }
+
+  // NBA takes the same shape as NFL — a server-priced board rather than one the
+  // browser prices row by row — so it shares the header block and the book
+  // switch and differs only in which component renders the rows.
+  if (sport === 'nba') {
+    return (
+      <div style={{ paddingBottom: 8 }}>
+        <PageTitle sub={<>
+          <Pill live>Live</Pill>
+          {nbaMeta.count ? (
+            <span style={{ color: T.muted2 }}>{nbaMeta.count} priced</span>
+          ) : null}
+          {nbaMeta.label ? (
+            <span style={{ color: T.muted2 }}>{nbaMeta.label}</span>
+          ) : null}
+        </>}>Board</PageTitle>
+        {SportSwitch}
+        {BookSwitch}
+        <NbaBoard book={book} onMeta={setNbaMeta} onProject={onProject} />
       </div>
     )
   }

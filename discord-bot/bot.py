@@ -4461,6 +4461,44 @@ async def _before_nba_resolve():
     await client.wait_until_ready()
 
 
+# ── THE WEBSITE BOARD GOES STALE BETWEEN SCANS ───────────────────────────────
+# The Discord board is a SNAPSHOT — it is posted once and it is honest about
+# being a post. The website board is not: it is a page a subscriber opens at
+# any hour and reads as current. Publishing it once at 16:30 and leaving it
+# means someone opening the app at 19:00 sees lines that moved hours ago, with
+# nothing on the page admitting it.
+#
+# So the full scan is re-published on an interval, same as NFL does. This writes
+# only the website table (nba_board, replaced wholesale per slate) and never the
+# record — nba_picks is what POSTED, and a refresh must not be able to add to it.
+NBA_BOARD_REFRESH_MINUTES = int(
+    os.getenv("NBA_BOARD_REFRESH_MINUTES", "45") or "45")
+
+
+@tasks.loop(minutes=NBA_BOARD_REFRESH_MINUTES)
+async def nba_board_refresh():
+    """Re-price and re-publish the website board. Never posts to Discord."""
+    if not NBA_TASKS_ENABLED:
+        return
+    try:
+        npub = _nba_import("nba.publish")
+        nb = _nba_import("nba.board")
+        slate = str(nb.slate_date())
+        total = 0
+        for book in ("prizepicks", "underdog"):
+            n = await asyncio.to_thread(npub.publish_scan, book, slate, 0, None)
+            total += n or 0
+        if total:
+            log.info("NBA website board refreshed: %d row(s) for %s", total, slate)
+    except Exception:  # noqa: BLE001 — Rule 2
+        log.exception("NBA board refresh failed (other sports unaffected)")
+
+
+@nba_board_refresh.before_loop
+async def _before_nba_board_refresh():
+    await client.wait_until_ready()
+
+
 # ── THE NBA RECAP ────────────────────────────────────────────────────────────
 # Posted to the SAME track-record channel tennis and NFL use, so a subscriber
 # reads one record rather than hunting three. The embed says SHADOW while
@@ -7561,10 +7599,18 @@ async def on_ready():
     try:
         if NBA_TASKS_ENABLED and not nba_resolve_loop.is_running():
             nba_resolve_loop.start()
-            log.warning("NBA resolver every %sh",
-                        os.getenv("NBA_RESOLVE_EVERY_HOURS", "3"))
+            log.warning("NBA resolver every %sh -> recap to track-record %s",
+                        os.getenv("NBA_RESOLVE_EVERY_HOURS", "3"),
+                        TRACK_RECORD_CHANNEL_ID)
     except Exception:  # noqa: BLE001
         log.exception("failed to start NBA resolver (other sports unaffected)")
+    try:
+        if NBA_TASKS_ENABLED and not nba_board_refresh.is_running():
+            nba_board_refresh.start()
+            log.warning("NBA website board refresh every %dm",
+                        NBA_BOARD_REFRESH_MINUTES)
+    except Exception:  # noqa: BLE001
+        log.exception("failed to start NBA board refresh (other sports unaffected)")
     # Prove the data layer works in THIS container before anyone asks it a
     # question — see _nfl_selfcheck.
     try:
