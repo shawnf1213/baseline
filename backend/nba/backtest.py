@@ -41,16 +41,59 @@ log = logging.getLogger("baseline.nba.backtest")
 # The stats scored, and the minutes floor a row must clear to count — the same
 # floor the live board applies, so the backtest scores the population that would
 # actually have been priced rather than a friendlier one.
-SCORED = ("pts", "reb", "ast", "fg3m")
+SCORED = ("pts", "reb", "ast", "fg3m", "pra", "pr", "pa", "ra")
 
 
 def _median(xs):
     return _st.median(xs) if xs else None
 
 
+def _walkforward_defense(df, before, _c):
+    """Defence-allowed-per-game per team, from games STRICTLY BEFORE `before`.
+
+    The live ratings table is built from the whole season, so calling it inside
+    a walk-forward scorer would hand February's projection March's defensive
+    numbers. This rebuilds the same quantity from the games available at the
+    time, which is what the board would actually have had.
+
+    Rebuilt per MONTH rather than per game: a defensive rating does not move
+    meaningfully between two consecutive nights, and per-game would mean
+    thousands of full-season aggregations for an answer that barely changes.
+    """
+    import collections
+    prior = df[df["game_date"] < before]
+    if not len(prior):
+        return {}
+    agg = collections.defaultdict(lambda: collections.defaultdict(float))
+    for r in prior[["matchup", "pts", "reb", "ast", "fg3m"]].to_dict("records"):
+        m = str(r.get("matchup") or "")
+        opp = (m.split(" @ ", 1)[1] if " @ " in m
+               else m.split(" vs. ", 1)[1] if " vs. " in m else "")
+        opp = _c.normalize_team(opp.strip())
+        if not opp:
+            continue
+        a = agg[opp]
+        a["n"] += 1
+        for k in ("pts", "reb", "ast", "fg3m"):
+            try:
+                a[k] += float(r.get(k) or 0)
+            except (TypeError, ValueError):
+                pass
+    table = {t: {k: v[k] / (v["n"] or 1) for k in ("pts", "reb", "ast", "fg3m")}
+             for t, v in agg.items() if v["n"] >= 50}
+    if not table:
+        return {}
+    for k in ("pts", "reb", "ast", "fg3m"):
+        order = sorted(table, key=lambda t: table[t][k])
+        for i, t in enumerate(order, 1):
+            table[t][f"{k}_rank"] = i
+    return table
+
+
 def run(season: int = 2026, stats: list = None, start: str = None,
         min_prior: int = 20, max_players: int = None,
-        every_n: int = 3) -> dict:
+        every_n: int = 3, board_players_only: bool = True,
+        min_minutes_for_board: float = 24.0) -> dict:
     """Walk forward through a season and score the model against baselines.
 
     `every_n` samples every Nth eligible game rather than all of them: a full
@@ -75,6 +118,26 @@ def run(season: int = 2026, stats: list = None, start: str = None,
 
         # Eligible rows: after the warm-up cutoff, over the minutes floor.
         elig = df[(df["game_date"] >= cutoff) & (df["min"] >= _usage.MIN_MINUTES)]
+
+        # ── SCORE THE POPULATION THE BOARD ACTUALLY PRICES ───────────────────
+        # The first version scored every player over the 12-minute floor — 200
+        # of them, most of whom will never carry a prop line. The board prices
+        # the handful of high-usage players PrizePicks posts, measured live at
+        # 6 players across 37 standard lines. Those are different populations
+        # and a result on one says little about the other.
+        #
+        # Approximated by season minutes rather than by today's tab, because
+        # the tab lists tonight's slate and the backtest runs over a whole
+        # season — but the filter is the same idea: a player books post lines
+        # on is a starter, not a 13-minute reserve who cleared the floor once.
+        if board_players_only:
+            mins = elig.groupby("player_name")["min"].mean()
+            keep = set(mins[mins >= min_minutes_for_board].index)
+            before = elig["player_name"].nunique()
+            elig = elig[elig["player_name"].isin(keep)]
+            log.info("nba backtest: board-realistic filter %.0f+ min/g -> "
+                     "%d of %d player(s)", min_minutes_for_board,
+                     len(keep), before)
         players = list(dict.fromkeys(elig["player_name"].tolist()))
         if max_players:
             players = players[:max_players]
@@ -89,29 +152,73 @@ def run(season: int = 2026, stats: list = None, start: str = None,
         rows = [r for i, r in enumerate(elig.to_dict("records"))
                 if r.get("player_name") in pset and i % max(1, every_n) == 0]
 
+        # Walk-forward defence tables, one per month — see _walkforward_defense.
+        _def_cache = {}
+
+        def _defense_for(asof):
+            key = (asof.year, asof.month)
+            if key not in _def_cache:
+                _def_cache[key] = _walkforward_defense(
+                    df, pd.Timestamp(asof.year, asof.month, 1), _c)
+            return _def_cache[key]
+
+        from .props import COMBO_PARTS
+        from . import ratings as _rat
+
         for i, row in enumerate(rows):
             name = str(row.get("player_name") or "")
             asof = row.get("game_date")
             u = _usage.player_usage(name, season=season, as_of=asof)
             if not u or (u.get("games") or 0) < min_prior:
                 continue
-            mins_actual = float(row.get("min") or 0)
+            # The matchup for THIS game, and a defence table built only from
+            # games before this month.
+            m = str(row.get("matchup") or "")
+            is_home = " vs. " in m
+            opp = (m.split(" @ ", 1)[1] if " @ " in m
+                   else m.split(" vs. ", 1)[1] if " vs. " in m else "")
+            opp = _c.normalize_team(opp.strip())
+            dtable = _defense_for(asof)
+
             for s in stats:
-                actual = row.get(s)
-                if not isinstance(actual, (int, float)):
+                parts = COMBO_PARTS.get(s)
+                # ACTUALS FOR A COMBO ARE SUMMED FROM THEIR COMPONENTS, exactly
+                # as recap.RESULT_COL grades them. Combos are 59% of the live
+                # NBA tab and the first version of this scored none of them, so
+                # it measured 41% of the product and reported on all of it.
+                if parts:
+                    vals = [row.get(p) for p in parts]
+                    if not all(isinstance(v, (int, float)) for v in vals):
+                        continue
+                    actual = float(sum(vals))
+                    base_season = sum(
+                        float((u.get("stats") or {}).get(p) or 0) for p in parts)
+                else:
+                    actual = row.get(s)
+                    if not isinstance(actual, (int, float)):
+                        continue
+                    base_season = (u.get("stats") or {}).get(s)
+                if not isinstance(base_season, (int, float)) or base_season <= 0:
                     continue
-                base_season = (u.get("stats") or {}).get(s)
-                if not isinstance(base_season, (int, float)):
-                    continue
-                # THE MODEL'S NUMBER, built the way the live path builds it:
-                # projected minutes x his per-minute rate. Opponent and venue
-                # terms are deliberately OMITTED here — the defence table is
-                # built from the whole season and using it on a February game
-                # would be lookahead. What is scored is therefore the core
-                # minutes x rate engine, which is the part under test.
-                rate = (u.get("per_min") or {}).get(s)
-                proj = (float(u.get("minutes") or 0) * float(rate)
-                        if isinstance(rate, (int, float)) else base_season)
+
+                # THE MODEL'S NUMBER, with the matchup terms the live path
+                # applies — built from PRIOR-ONLY data. Excluding them (the
+                # first version) stripped out exactly the terms the model's
+                # edge is supposed to come from, which is why only 3 plays in
+                # 13,378 ever cleared the confidence gate.
+                def _one(stat_key):
+                    rate = (u.get("per_min") or {}).get(stat_key)
+                    if not isinstance(rate, (int, float)):
+                        return float((u.get("stats") or {}).get(stat_key) or 0)
+                    v = float(u.get("minutes") or 0) * float(rate)
+                    cell = dtable.get(opp) or {}
+                    rk = cell.get(f"{stat_key}_rank")
+                    if rk:
+                        v *= 1.0 + _rat._rank_adjust(rk)
+                    hf = _usage.home_factor(u, stat_key, is_home)
+                    return v * float(hf.get("factor", 1.0))
+
+                proj = (sum(_one(p) for p in parts) if parts else _one(s))
                 sigma = (u.get("sigma") or {}).get(s) or 0.0
 
                 d = out[s]
@@ -129,8 +236,11 @@ def run(season: int = 2026, stats: list = None, start: str = None,
                 line = round(float(base_season) * 2) / 2.0
                 if line <= 0 or sigma <= 0:
                     continue
-                e = _dist.p_over(s, proj, line, float(u.get("minutes") or 0),
-                                 sd=sigma)
+                # Combos have no fitted table of their own; props.py uses the
+                # points shape with the skew damped, and this must match or
+                # the backtest scores a distribution the board never uses.
+                e = _dist.p_over("pts" if parts else s, proj, line,
+                                 float(u.get("minutes") or 0), sd=sigma)
                 if not e:
                     continue
                 c = _conf.calculate_confidence(
@@ -211,7 +321,13 @@ def run(season: int = 2026, stats: list = None, start: str = None,
             "gate": f"confidence >= {_b.MIN_CONF:.0f}",
             "sufficient": len(qual) >= MIN_VERDICT_N,
             "min_verdict_n": MIN_VERDICT_N,
-            "hit_pct": (round(sum(1 for _, h, _ in qual) / len(qual) * 100, 1)
+            # `if h` IS LOAD-BEARING. Without it this counts every qualifying
+            # play rather than every winning one, so the rate is 100% by
+            # construction — which is exactly what it printed, right next to a
+            # per-stat breakdown averaging 53% that contradicted it. The second
+            # falsely positive headline this report has produced; both were
+            # caught by a number elsewhere in the same block disagreeing.
+            "hit_pct": (round(sum(1 for _, h, _ in qual if h) / len(qual) * 100, 1)
                         if qual else None),
             "by_stat": {s: {"n": len(v),
                             "hit_pct": round(sum(v) / len(v) * 100, 1)}
