@@ -7395,8 +7395,15 @@ async def on_ready():
     # holds something — so without this line a floor that silently reverted
     # (an env change redeploying an older image has bitten this service more
     # than once) would look exactly like a run of days that all cleared it.
-    log.info("recap floor: %g%% — days under this are graded and logged but "
-             "NOT posted (RECAP_MIN_RATE)", RECAP_MIN_RATE)
+    # At 0 there is nothing "under the floor", so the old wording described
+    # behaviour that no longer happens — a log line that is false whenever the
+    # setting is at its default is worse than no log line.
+    if RECAP_MIN_RATE > 0:
+        log.info("recap floor: %g%% — days under this are graded and logged "
+                 "but NOT posted (RECAP_MIN_RATE)", RECAP_MIN_RATE)
+    else:
+        log.info("recap floor: OFF — every graded day posts regardless of "
+                 "percentage (RECAP_MIN_RATE=0)")
 
     # Adopt the backend's court list before any autocomplete can run. Best
     # effort: a failure leaves the shipped snapshot in place, which is the same
