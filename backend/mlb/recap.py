@@ -25,20 +25,21 @@ log = logging.getLogger("baseline.mlb.recap")
 
 _MARK = {"W": "✅", "L": "❌", "PUSH": "➖", "VOID": "🚫", "PENDING": "⏳"}
 
-# ── SUB-50% DAYS STAY OFF THE CHANNEL (2026-10-02, operator) ─────────────────
-# "do not post the recap for days under 50% for any sport keep it logged, but
-# dont post the recap." MLB is one of the sports, so the floor applies here too.
+# ── THE RECAP FLOOR IS OFF (2026-10-05, operator) ───────────────────────────
+# "remove the limiter on recaps, all of them should post no matter the
+# percentage." Reverses the 2026-10-02 instruction that added it. MLB was one of
+# the sports it covered, so it comes off here too.
 #
-# SAME ENV VAR AS THE BOT so one setting governs tennis, NFL and MLB and the
-# three cannot drift to different thresholds — and the shared cashed convention
-# documented in this module's header means the number compared against it here
-# means what it means there. Nothing else is shared: this module still never
-# imports from the bot (Rule 2).
+# DEFAULTED TO 0 RATHER THAN SWITCHED OFF IN RAILWAY, for the reason the bot's
+# copy states: a floor left defaulting to 50 returns the moment that variable is
+# cleared, and it returns as a day quietly NOT posting — the hardest kind of
+# regression to spot.
 #
-# Grading is untouched — rows resolve and stay in mlb_picks either way. An
-# explicit force=True post is an operator action on one named slate and is NOT
-# held, which is also the escape hatch for re-posting a day deliberately.
-RECAP_MIN_RATE = float(os.getenv("RECAP_MIN_RATE", "50") or "50")
+# SAME ENV VAR AS THE BOT, still, so if it is ever turned back on one setting
+# governs tennis, NFL, NBA and MLB and the four cannot drift to different
+# thresholds. Nothing else is shared: this module still never imports from the
+# bot (Rule 2).
+RECAP_MIN_RATE = float(os.getenv("RECAP_MIN_RATE", "0") or "0")
 
 
 def et_today() -> str:

@@ -6587,29 +6587,30 @@ RECAP_BATCH_DATES = [d.strip() for d in
                      if d.strip()]
 
 
-# ── SUB-50% DAYS STAY OFF THE CHANNEL (2026-10-02, operator) ─────────────────
-# "do not post the recap for days under 50% for any sport keep it logged, but
-# dont post the recap."
+# ── THE RECAP FLOOR IS OFF (2026-10-05, operator) ───────────────────────────
+# "remove the limiter on recaps, all of them should post no matter the
+# percentage." This reverses the 2026-10-02 instruction that introduced it
+# ("do not post the recap for days under 50%"), so EVERY graded day is now
+# announced, winning or losing.
 #
-# NOTHING ABOUT GRADING CHANGES. The picks still resolve, still land in the
-# results table, still count in the monthly ⭐ line and the rolling record, and
-# still show on the website. The only thing this withholds is the @everyone post
-# in the track-record channel.
+# DEFAULT 0, NOT JUST THE ENV VAR SET TO 0. Leaving the default at 50 and
+# switching it off in Railway would mean the floor silently returns the first
+# time that variable is cleared, or on any deploy that does not carry it — and
+# it would come back as a day quietly NOT posting, which is the hardest kind of
+# change to notice. Off in the code is off.
 #
-# ONE FLOOR, EVERY SPORT — tennis here, NFL in _maybe_post_nfl_recap, MLB in
-# backend/mlb/recap.post_recap, all reading this same env var so the three
-# cannot drift to different thresholds.
+# THE MECHANISM IS KEPT, deliberately. It is one variable away from working
+# again (RECAP_MIN_RATE=50 restores exactly the old behaviour) and the reasoning
+# that produced it was sound even though the decision went the other way: a
+# losing day was still graded, still in the record, still on the website, and
+# only the @everyone post was withheld. Deleting the code would make reversing
+# this a rebuild rather than a setting.
 #
-# EACH SPORT MEASURES THE RATE THE WAY ITS OWN RECAP PRINTS IT. Tennis and MLB
-# count a push as cashed and drop voids; NFL takes wins over decisions with
-# pushes out of both sides. Using each embed's own convention is the point: the
-# rule is about the number subscribers would have been shown, and a held recap
-# whose own header would have read "50%" would be the floor contradicting the
-# post it suppressed.
-#
-# Set RECAP_MIN_RATE=0 to post every day again (what backfill_recaps.py needs if
-# it is ever pointed at a losing day on purpose).
-RECAP_MIN_RATE = float(os.getenv("RECAP_MIN_RATE", "50") or "50")
+# When it IS on, each sport measures the rate the way its own recap prints it —
+# tennis and MLB count a push as cashed and drop voids; NFL takes wins over
+# decisions. A held recap whose own header would have read "50%" would be the
+# floor contradicting the post it suppressed.
+RECAP_MIN_RATE = float(os.getenv("RECAP_MIN_RATE", "0") or "0")
 
 
 def _recap_rate_ok(cash: int, total: int, label: str) -> bool:
