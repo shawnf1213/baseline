@@ -43,7 +43,12 @@ CHANNELS = {
                                            "1555685763918860298") or 0),
 }
 
+# TWO FOOTERS, BECAUSE TENNIS HAS TWO. A board carries the projections
+# disclaimer; a recap carries the brand line. Using one everywhere made the NBA
+# recap read differently from the tennis recap sitting directly above it in the
+# same track-record channel.
 FOOTER_GENERIC = "Baseline · Model projections, not betting advice"
+FOOTER_RECAP = "Baseline — Data Driven. Optimizer Backed."
 
 
 def channel_for(kind: str = "board", book: str = None) -> int:
@@ -54,6 +59,20 @@ def channel_for(kind: str = "board", book: str = None) -> int:
 
 def _fmt(v, nd=1):
     return f"{v:.{nd}f}" if isinstance(v, (int, float)) else "—"
+
+
+def _md(slate) -> str:
+    """An ISO slate date as M/D — the form tennis titles and footers use.
+
+    ONE HELPER, shared by the board, the recap and both footers, so a date
+    cannot be formatted three ways in one channel. Returns "" rather than
+    guessing when the input is not a date.
+    """
+    try:
+        y, m, d = str(slate).split("-")
+        return f"{int(m)}/{int(d)}"
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 def _side(row: dict) -> str:
@@ -93,52 +112,89 @@ def _caveats(row: dict) -> list:
 
 
 def _ranked_line(row: dict, rank: int) -> str:
-    """One play, two lines, matching the NFL board's shape."""
+    """One play, TWO SHORT LINES — the tennis board's shape, exactly.
+
+        **1. LeBron James**
+        🟢 **OVER 16.5 POINTS** · Proj 19.0 · 65%
+
+    EVERYTHING ELSE WAS CUT (operator, 2026-10-04: "all the extra text needs to
+    be removed... it should look like tennis"). What went:
+
+      p 86%        the model's probability, printed beside a confidence that is
+                   ALSO a percentage. Two different percentages on one line and
+                   no way for a reader to tell which is which.
+      PHX @ DET    the matchup. Tennis drops the opponent for a stated reason:
+                   it is visible on PrizePicks when the prop is actually played,
+                   so it is redundant width here.
+      the caveats  "priced on last season only · minutes move week to week ·
+                   priced on prior-season usage — no current-season games",
+                   which also said prior-season TWICE in one breath.
+
+    Edge is omitted for the same reason tennis omits it: it is projection minus
+    line, derivable from what is shown, and it cost the width that forced a
+    third wrapped line on a phone.
+
+    The caveats are not lost. _caveats still builds them and build_prop_embed
+    still shows them on the single-prop card, which is where depth belongs.
+    """
     side = _side(row)
     dot = "🟢" if side == "OVER" else "🔴"
-    p = _prob(row)
+    play = (f"{side} {_fmt(row.get('line'))} "
+            f"{row.get('label') or row.get('prop') or ''}").upper()
+    bits = [f"{dot} **{play}**"]
+    if isinstance(row.get("projection"), (int, float)):
+        bits.append(f"Proj {_fmt(row.get('projection'))}")
     conf = row.get("confidence")
-    head = f"**{rank}. {row.get('player')}**"
-    body = (f"{dot} **{side} {_fmt(row.get('line'))} "
-            f"{(row.get('label') or row.get('prop') or '').upper()}** · "
-            f"Proj {_fmt(row.get('projection'))}")
     if isinstance(conf, (int, float)):
-        body += f" · {conf:.0f}%"
-    if isinstance(p, (int, float)):
-        body += f" · p {p:.0%}"
-    tail = ""
-    cav = _caveats(row)
-    if cav:
-        tail = "\n_" + " · ".join(cav[:3]) + "_"
-    mt = row.get("matchup")
-    if mt:
-        body += f" · {mt}"
-    return f"{head}\n{body}{tail}"
+        bits.append(f"{conf:.0f}%")
+    return f"**{rank}. {row.get('player')}**\n" + " · ".join(bits)
 
 
 def build_board_embed(rows: list, book: str, shadow: bool = True,
                       slate: str = None, star=None):
-    """The ranked NBA board for one book."""
+    """The ranked NBA board for one book — the tennis board's shape.
+
+    TITLE IS M/D, NOT AN ISO DATE. It read "2026-10-05 PrizePicks NBA Board"
+    against tennis's "10/5 PrizePicks Board". Same information, four times the
+    width, and it made the two sports look like different products in the same
+    server. _md() is shared by the board, the recap and the footer so the three
+    cannot drift.
+
+    The footer carries the slate too, matching tennis's trailing "• 10/5" —
+    without it a board scrolled past in a channel has no date on it at all.
+    """
     import discord
     label = "PrizePicks" if book == "prizepicks" else "Underdog"
-    title = f"🏀 {slate or ''} {label} NBA Board".strip()
+    md = _md(slate)
+    title = f"🏀 {md} {label} NBA Board".replace("  ", " ").strip()
+    foot = FOOTER_GENERIC + (f" • {md}" if md else "") + (" · shadow" if shadow else "")
     e = discord.Embed(title=title,
                       colour=COLOR_SHADOW if shadow else COLOR)
     if not rows:
         e.description = "No plays cleared the bar on this slate."
-        e.set_footer(text=FOOTER_GENERIC + (" · shadow" if shadow else ""))
+        e.set_footer(text=foot)
         return e
-    blocks = []
+
+    # THE SAME CONVICTION DIVIDER THE TENNIS BOARD DRAWS, at the first sub-80
+    # play, and only when the board actually spans both tiers. Lets a reader
+    # separate conviction from coverage at a glance rather than reading ten
+    # percentages and working it out.
+    blocks, divided = [], False
+    has_conviction = any(isinstance(r.get("confidence"), (int, float))
+                         and r["confidence"] >= 80 for r in rows)
     for i, r in enumerate(rows, 1):
-        if star is not None and r is star:
-            blocks.append("⭐ " + _ranked_line(r, i))
-        else:
-            blocks.append(_ranked_line(r, i))
+        c = r.get("confidence")
+        if (has_conviction and not divided
+                and isinstance(c, (int, float)) and c < 80):
+            blocks.append("**— Volume plays (60–79%) —**")
+            divided = True
+        line = _ranked_line(r, i)
+        blocks.append(("⭐ " + line) if star is not None and r is star else line)
     e.description = "\n\n".join(blocks)[:4000]
     if shadow:
         e.description = ("⚠️ **SHADOW** — NBA is in testing. This board is not "
                          "part of the public record.\n\n" + e.description)
-    e.set_footer(text=FOOTER_GENERIC + (" · shadow" if shadow else ""))
+    e.set_footer(text=foot)
     return e
 
 

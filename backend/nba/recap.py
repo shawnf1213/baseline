@@ -175,42 +175,51 @@ def record(slate_date: str = None, book: str = None,
 def build_recap_embed(book: str, slate_date: str, shadow: bool = True):
     """One book's recap for one slate. None when there is nothing to show."""
     import discord
-    from .post import COLOR, COLOR_SHADOW, FOOTER_GENERIC
+    from .post import COLOR, COLOR_SHADOW, FOOTER_RECAP, _md
     from .props import PROP_LABEL
     rec = record(slate_date=slate_date, book=book)
     rows = rec.get("picks") or []
     if not rows:
         return None
     label = "PrizePicks" if book == "prizepicks" else "Underdog"
+    md = _md(slate_date)
+
+    # THE TENNIS RECAP'S SHAPE, field for field: a titled "Today's Picks" list
+    # in PLAYER · PROP · LINE · LEAN -> VALUE order, then a "📋 Record" block
+    # reading "X/Y cashed". The first cut put the lean before the prop and the
+    # record loose in the description, which is the NFL shape this was changed
+    # away from on the same day.
     lines = []
     for r in rows:
         res = (r.get("result") or "PENDING").upper()
-        mark = _MARK.get(res, "⏳")
         av = r.get("result_value")
         prop = PROP_LABEL.get(r.get("prop_type"), r.get("prop_type") or "")
-        tail = f"  →  **{av:g}**" if isinstance(av, (int, float)) else ""
+        row = (f"{_MARK.get(res, '⏳')} **{r.get('player')}** {prop} "
+               f"{r.get('line')} {(r.get('lean') or '').upper()}")
         if res == "VOID":
-            tail = "  —  **DNP**"
-        lines.append(f"{mark} **{r.get('player')}** {r.get('lean')} "
-                     f"{r.get('line')} {prop}{tail}")
+            row += " — **DNP**"
+        elif isinstance(av, (int, float)):
+            row += f" → **{av:g}**"
+        lines.append(row)
+
+    # CASHED = W + PUSH over everything that played — the convention tennis,
+    # MLB and now NFL all use. VOID never played and is out of both sides.
     w, l, pu = rec["wins"], rec["losses"], rec["pushes"]
-    dec = w + l
-    day = (f"**Today:** {w}/{dec} ({w / dec * 100:.0f}%)" if dec
-           else "**Today:** nothing settled yet")
-    try:
-        _y, _m, _d = slate_date.split("-")
-        _label_date = f"{int(_m)}/{int(_d)}"
-    except Exception:  # noqa: BLE001
-        _label_date = slate_date
-    desc = "\n".join(lines) + "\n\n" + day
+    cashed, played = w + pu, w + l + pu
+    day = (f"**Today:** {cashed}/{played} cashed "
+           f"({cashed / played * 100:.0f}%)"
+           + (f"  ·  incl. {pu} push" if pu else "")) if played else \
+          "**Today:** nothing settled yet"
     if rec["voids"]:
-        desc += f"\n_{rec['voids']} void_"
-    if shadow:
-        desc = ("⚠️ **SHADOW** — NBA is in testing. This record is separate "
-                "from tennis and is not part of the public track record.\n\n"
-                + desc)
-    e = discord.Embed(title=f"📊 {_label_date} {label} NBA Recap",
-                      description=desc[:4000],
+        day += f"\n_{rec['voids']} void_"
+
+    e = discord.Embed(title=f"📊 {md} NBA {label} Recap",
                       colour=COLOR_SHADOW if shadow else COLOR)
-    e.set_footer(text=FOOTER_GENERIC + (" · shadow" if shadow else ""))
+    if shadow:
+        e.description = ("⚠️ **SHADOW** — NBA is in testing. This record is "
+                         "separate and is not part of the public track record.")
+    e.add_field(name="Today's Picks", value="\n".join(lines)[:1024],
+                inline=False)
+    e.add_field(name="📋 Record", value=day, inline=False)
+    e.set_footer(text=f"{FOOTER_RECAP} • {md}" + (" · shadow" if shadow else ""))
     return e

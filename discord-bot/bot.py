@@ -6786,26 +6786,60 @@ def nfl_recap_embed(slate: str, book: str, rows: list, w: int, lo: int):
     either subscriber saw. Keeping them apart also means a late game on one book
     cannot hold the other book's recap back.
     """
-    dec = w + lo
-    pct = f"{w / dec * 100:.0f}%" if dec else "—"
+    # ── UNIFORM WITH THE TENNIS RECAP (operator, 2026-10-04) ────────────────
+    # "NFL recaps dont look like tennis either i need uniformity." Four things
+    # differed, and every one of them made the same product look like two:
+    #
+    #   title     "🏈 NFL PrizePicks Recap — 2026-10-01" against tennis's
+    #             "📊 10/3 PrizePicks Recap". Same information, four times the
+    #             width, different icon.
+    #   play      "**Jerry Jeudy** OVER 13.5 Receiving Yards — 36" against
+    #             tennis's "**Shubladze** Break Points Won 4.5 OVER → 6". The
+    #             lean and the prop are in OPPOSITE ORDER between the two, which
+    #             is the kind of difference a reader feels without being able to
+    #             name it.
+    #   record    a bare "6-2 · 75% · 8 play(s)" in the description, where
+    #             tennis has a titled "📋 Record" block reading "X/Y cashed".
+    #   footer    no date, where tennis carries "• 10/3".
+    #
+    # CASHED, NOT WON. Tennis counts W + PUSH over everything that played, and
+    # the two sports must not mean different things by the same word in the same
+    # channel. A push did not miss.
+    pu = sum(1 for p in rows if (p.get("result") or "") == "PUSH")
+    cashed, played = w + pu, w + lo + pu
+    pct = f"{cashed / played * 100:.0f}%" if played else "—"
     label = NFL_BOOK_LABEL.get(book, book.title())
+    try:
+        _y, _m, _d = str(slate).split("-")
+        md = f"{int(_m)}/{int(_d)}"
+    except Exception:  # noqa: BLE001
+        md = str(slate)
     e = discord.Embed(
-        title=f"🏈 NFL {label} Recap — {slate}",
+        title=f"📊 {md} NFL {label} Recap",
         colour=(COLOR_OVER if w > lo else
-                COLOR_UNDER if lo > w else COLOR_NEUTRAL),
-        description=f"**{w}-{lo}**  ·  {pct}  ·  {len(rows)} play(s)")
+                COLOR_UNDER if lo > w else COLOR_NEUTRAL))
+    icon = {"W": "✅", "L": "❌", "PUSH": "⚪", "VOID": "🚫"}
     lines = []
     for p in rows:
         res = p.get("result") or "PENDING"
-        mark = {"W": "✅", "L": "❌", "PUSH": "➖", "VOID": "⚪"}.get(res, "•")
         av = p.get("result_value")
         prop = (p.get("prop_type") or "").replace("_", " ").title()
-        lines.append(
-            f"{mark} **{p.get('player')}** {p.get('lean')} {p.get('line'):g} "
-            f"{prop}" + (f" — {av:g}" if isinstance(av, (int, float)) else ""))
+        # PLAYER, PROP, LINE, LEAN -> VALUE. Tennis's order exactly.
+        row = (f"{icon.get(res, '⏳')} **{p.get('player')}** {prop} "
+               f"{p.get('line'):g} {(p.get('lean') or '').upper()}")
+        if res == "VOID":
+            row += " — **DNP**"
+        elif isinstance(av, (int, float)):
+            row += f" → **{av:g}**"
+        lines.append(row)
     if lines:
-        e.add_field(name="Plays", value="\n".join(lines)[:1024], inline=False)
-    e.set_footer(text=FOOTER_GENERIC)
+        e.add_field(name="Today's Picks", value="\n".join(lines)[:1024],
+                    inline=False)
+    rec = (f"**Today:** {cashed}/{played} cashed ({pct})"
+           + (f"  ·  incl. {pu} push" if pu else "")) if played else \
+          "**Today:** nothing settled yet"
+    e.add_field(name="📋 Record", value=rec, inline=False)
+    e.set_footer(text=f"{FOOTER_GENERIC} • {md}")
     return e
 
 
