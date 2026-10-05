@@ -4520,13 +4520,20 @@ async def _nba_recap_already_posted(channel, slate: str, book: str) -> bool:
     up must not suppress the other. Reads the channel rather than trusting
     in-memory state — a restart must never produce a second recap for a day.
     """
+    # MATCH ON IDENTITY — date, sport, book — not on a composed title string.
+    # This built "10/5 PrizePicks NBA Recap" while the embed titles itself
+    # "📊 10/5 NBA PrizePicks Recap": the book and the sport in the opposite
+    # order, so it would never have matched and the NBA recap would have
+    # reposted on every resolve pass exactly as the NFL one did. Caught before
+    # it ever fired, because the NFL bug showed what to look for.
     try:
         _y, _m, _d = slate.split("-")
+        md = f"{int(_m)}/{int(_d)}"
         label = "PrizePicks" if book == "prizepicks" else "Underdog"
-        want = f"{int(_m)}/{int(_d)} {label} NBA Recap"
         async for msg in channel.history(limit=60):
             for e in (msg.embeds or []):
-                if want in (e.title or ""):
+                t = (e.title or "")
+                if "NBA" in t and label in t and (md in t or str(slate) in t):
                     return True
     except Exception:  # noqa: BLE001 — never block a post on a history read
         log.exception("NBA recap dedupe check failed")
@@ -6902,11 +6909,30 @@ async def _nfl_recap_already_posted(channel, slate: str, book: str) -> bool:
     Keyed on book as well as date: the two books post separately, so one being
     up must not suppress the other.
     """
-    want = f"🏈 NFL {NFL_BOOK_LABEL.get(book, book.title())} Recap — {slate}"
+    # ── MATCH ON IDENTITY, NOT ON THE WHOLE TITLE ───────────────────────────
+    # This did an EXACT match on the full title string, which coupled the
+    # duplicate guard to the cosmetics. Renaming the title on 2026-10-04 for
+    # uniformity with tennis therefore broke it silently: the guard looked for
+    # "🏈 NFL PrizePicks Recap — 2026-10-01", the embed now says
+    # "📊 10/1 NFL PrizePicks Recap", nothing ever matched, and the recap
+    # reposted with an @everyone on every resolve pass — every two hours.
+    #
+    # What identifies a recap is the DATE, the SPORT and the BOOK. Matching on
+    # those three means a future title change cannot resurrect this, and it
+    # still recognises the OLD titles already sitting in the channel, so the
+    # guard works across the rename rather than starting a fresh duplicate run.
+    _lab = NFL_BOOK_LABEL.get(book, book.title())
+    try:
+        _y, _m, _d = str(slate).split("-")
+        _md = f"{int(_m)}/{int(_d)}"
+    except Exception:  # noqa: BLE001
+        _md = str(slate)
     try:
         async for msg in channel.history(limit=60):
             for e in (msg.embeds or []):
-                if (e.title or "").strip() == want:
+                t = (e.title or "")
+                if ("NFL" in t and _lab in t
+                        and (_md in t or str(slate) in t)):
                     return True
     except Exception:  # noqa: BLE001 — never block a post on a history read
         log.exception("NFL recap dedupe check failed")
