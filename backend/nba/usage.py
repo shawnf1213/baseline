@@ -245,15 +245,34 @@ def player_usage(player: str, season: int = None, as_of=None) -> dict:
                     "home_games": len(h), "away_games": len(aw),
                 }
 
-        # Days since the last appearance, for the inactivity gate.
+        # ── INACTIVITY IS MEASURED AGAINST THE LEAGUE, NOT THE CALENDAR ──────
+        # This compared the player's last game to TODAY, and that is only a
+        # signal while the league is playing. In the off-season every player is
+        # equally "inactive" — measured 2026-10-04, all 37 board rows came back
+        # 175 days stale and took the -22 penalty, which capped the entire board
+        # at 53 against a floor of 60 and posted nothing.
+        #
+        # It would have done the same on OPENING NIGHT: on 21 October every
+        # player's last game is the previous April, so the whole league would
+        # have been flagged inactive and the first board of the season would
+        # have been empty with no error anywhere.
+        #
+        # The real question is "has he missed games his team played", so the
+        # reference is the most recent game ANYONE has played in the data. When
+        # the league is idle that is his own last game and nobody is stale; once
+        # the season is running it is last night, and a player who has not
+        # played in two weeks is correctly flagged.
         last_date = rows[0].get("game_date")
         days_since = None
         try:
-            import datetime as _dt
             import pandas as pd
-            ref = pd.Timestamp(as_of) if as_of is not None else pd.Timestamp(
-                _dt.date.today())
-            days_since = int((ref - pd.Timestamp(last_date)).days)
+            league_last = df["game_date"].max()
+            ref = pd.Timestamp(as_of) if as_of is not None else None
+            # During the season the league's last game is ~yesterday, so this is
+            # the same number as before. Out of season it collapses to zero.
+            if ref is not None:
+                league_last = min(league_last, ref)
+            days_since = max(0, int((league_last - pd.Timestamp(last_date)).days))
         except Exception:  # noqa: BLE001
             pass
         stale = None
