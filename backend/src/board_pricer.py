@@ -250,7 +250,9 @@ async def run_pass() -> dict:
                 priced += 1
             else:
                 failed += 1
-            if i % 20 == 19:
+            # Persist often: a redeploy mid-pass must not throw away an hour
+            # of priced rows (the first deploy lost its first three).
+            if i % 5 == 4:
                 persist()
             await asyncio.sleep(GAP_S)
         persist()
