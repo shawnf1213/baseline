@@ -53,3 +53,6 @@ example
 
 # web export used only for store screenshots
 dist-web/
+
+# App Store Connect API key and other local-only credentials
+.secrets/
