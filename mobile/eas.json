@@ -6,7 +6,6 @@
   "build": {
     "preview": {
       "distribution": "internal",
-      "channel": "preview",
       "ios": {
         "simulator": false
       },
@@ -17,8 +16,8 @@
     },
     "production": {
       "distribution": "store",
-      "channel": "production",
       "autoIncrement": true,
+      "credentialsSource": "local",
       "env": {
         "EXPO_PUBLIC_API_URL": "https://backend-production-84ab.up.railway.app",
         "EXPO_PUBLIC_ENV": "production"

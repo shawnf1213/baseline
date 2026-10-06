@@ -56,3 +56,6 @@ dist-web/
 
 # App Store Connect API key and other local-only credentials
 .secrets/
+
+# EAS local signing credentials (points into .secrets/)
+credentials.json
