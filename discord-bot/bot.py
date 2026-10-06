@@ -2539,9 +2539,10 @@ def _start_line_monitor(channel, picks: list):
             must never interrupt the alerting the monitor exists to do."""
             try:
                 await asyncio.to_thread(
-                    requests.post, f"{API_BASE}/api/results/observe-line",
-                    json={"player": player, "prop_type": prop_type,
-                          "line": float(line)}, timeout=8)
+                    lambda: requests.post(f"{API_BASE}/api/results/observe-line",
+                                          json={"player": player, "prop_type": prop_type,
+                                                "line": float(line)}, timeout=8,
+                                          headers=_service_token.headers()))
             except Exception:  # noqa: BLE001
                 pass
 
@@ -7327,8 +7328,9 @@ async def subscription_role_sync():
         return
     try:
         r = await asyncio.to_thread(
-            requests.get, f"{API_BASE}/api/billing/subscribers",
-            params={"token": BILLING_SYNC_TOKEN}, timeout=30)
+            lambda: requests.get(f"{API_BASE}/api/billing/subscribers",
+                                 params={"token": BILLING_SYNC_TOKEN}, timeout=30,
+                                 headers=_service_token.headers()))
         if r.status_code != 200:
             log.warning("sub role sync: backend HTTP %s", r.status_code)
             return
