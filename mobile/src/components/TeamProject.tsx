@@ -192,7 +192,7 @@ export function TeamProject({ sport, params }: { sport: SportKey; params: Record
               <GameChart hist={hist} line={isNum(line) ? ln : null} lean={lean || 'OVER'} gamesWord="games" />
             </Card>
           ) : <Card style={{ marginTop: 10 }}><Skeleton h={120} r={10} /></Card>}
-          <Muted size={10.5} style={{ textAlign: 'center', marginTop: 16 }}>Model projections, not betting advice.</Muted>
+          <Muted size={10.5} style={{ textAlign: 'center', marginTop: 16 }}>Projections are for informational purposes only.</Muted>
         </>
       ) : null}
 

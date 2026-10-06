@@ -1,14 +1,7 @@
-// Welcome — the first screen a brand-new download sees (operator, Task 2).
-//
-// WHY IT EXISTS. Non-members cannot sign in (the email code only goes to a
-// subscriber's inbox, and Discord sign-in without the role lands on the locked
-// screen), so without this a new user could never reach a Subscribe option.
-// This screen is reachable with NO session at all: what Baseline does, the
-// public record, and — on the US storefront only — the way in.
-//
-// NON-US: description, record and sign-in. No purchase button, no purchase
-// wording. The two branches are additive: nothing is removed for non-US, a
-// card is added for US.
+// Welcome — the first screen a brand-new download sees. Reachable with no
+// session at all: what Baseline does, the public record, and — on the US
+// storefront only — the way in. Outside the US: description, record and
+// sign-in; no purchase button, no purchase wording.
 //
 // THE RECORD IS THE PUBLIC ONE. /api/results/summary is the endpoint the
 // landing page reads, deliberately public, a few hundred bytes. Pick of the
@@ -16,10 +9,11 @@
 // but always present, because that endpoint's own contract says quoting the
 // headline without all-time is selecting a number rather than reporting one.
 import { useEffect, useState } from 'react'
-import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native'
+import { ActivityIndicator, Linking, Pressable, StyleSheet, Text, View } from 'react-native'
 import { Redirect, router } from 'expo-router'
 import { Screen } from '@/components/Screen'
-import { Card, Muted } from '@/components/ui'
+import { Button, Card, Disclaimer, Muted } from '@/components/ui'
+import { PRIVACY_URL, SUPPORT_URL } from '@/components/AccountSheet'
 import { useSession } from '@/lib/session'
 import { fetchSummary } from '@/lib/api'
 import { isUSStorefront } from '@/lib/region'
@@ -40,8 +34,6 @@ type Summary = {
   ready?: boolean
   all_time?: Tally
   live_props?: Tally
-  recent?: Tally
-  recent_days?: number
   days_active?: number
   potd_month?: { month: string; wins: number; losses: number; tracked: number; win_rate: number | null }
 }
@@ -49,8 +41,7 @@ type Summary = {
 function monthName(ym?: string) {
   if (!ym) return 'This month'
   const [y, m] = ym.split('-').map(Number)
-  return new Date(Date.UTC(y, (m || 1) - 1, 1)).toLocaleDateString(undefined,
-    { month: 'long', timeZone: 'UTC' })
+  return new Date(Date.UTC(y, (m || 1) - 1, 1)).toLocaleDateString(undefined, { month: 'long', timeZone: 'UTC' })
 }
 
 function Stat({ label, t, sub }: { label: string; t?: Tally | null; sub?: string }) {
@@ -81,7 +72,6 @@ export default function Welcome() {
     return () => { alive = false }
   }, [us])
 
-  // A restored session skips this screen entirely.
   if (status === 'active') return <Redirect href="/(tabs)" />
   if (status === 'locked') return <Redirect href="/locked" />
 
@@ -93,8 +83,7 @@ export default function Welcome() {
     finally { setBuying(null) }
   }
   const pm = sum?.potd_month
-  const pmTally: Tally | null = pm
-    ? { wins: pm.wins, losses: pm.losses, total: pm.wins + pm.losses, win_rate: pm.win_rate } : null
+  const pmTally: Tally | null = pm ? { wins: pm.wins, losses: pm.losses, total: pm.wins + pm.losses, win_rate: pm.win_rate } : null
 
   return (
     <Screen>
@@ -122,8 +111,6 @@ export default function Welcome() {
           <Muted>The record is unavailable right now.</Muted>
         ) : (
           <>
-            {/* Lead with the two records that describe what a member gets
-                today; all-time sits beneath, smaller, never omitted. */}
             <View style={s.stats}>
               <Stat label={`${monthName(pm?.month)} ⭐`} t={pmTally} sub="Pick of the Day" />
               <Stat label="Live props" t={sum.live_props} sub="all-time" />
@@ -142,11 +129,8 @@ export default function Welcome() {
           <Text style={s.h}>Subscribe</Text>
           <Muted size={12}>Checkout opens in your browser.</Muted>
           {plans.map(p => (
-            <Pressable key={p} onPress={() => buy(p)} disabled={buying !== null}
-                       style={[s.btn, s.primary]}>
-              {buying === p ? <ActivityIndicator color="#052e16" />
-                            : <Text style={s.primaryText}>{PLAN_LABEL[p]}</Text>}
-            </Pressable>
+            <Button key={p} label={PLAN_LABEL[p]} onPress={() => buy(p)} busy={buying === p} disabled={buying !== null}
+                    style={{ marginTop: T.s2 }} />
           ))}
           <View style={s.note}>
             <Text style={s.noteText}>
@@ -158,12 +142,20 @@ export default function Welcome() {
         </Card>
       ) : null}
 
-      <Pressable onPress={() => router.push('/sign-in')} style={[s.btn, s.ghost, { marginTop: T.s4 }]}>
-        <Text style={s.ghostText}>Already a member? Sign in</Text>
-      </Pressable>
+      <Button label="Already a member? Sign in" kind="ghost" onPress={() => router.push('/sign-in')} style={{ marginTop: T.s4 }} />
 
-      <Text style={s.foot}>Projections are for informational purposes only.</Text>
+      <Disclaimer />
+      <FooterLinks />
     </Screen>
+  )
+}
+
+export function FooterLinks() {
+  return (
+    <View style={{ flexDirection: 'row', justifyContent: 'center', gap: 18, marginTop: 8 }}>
+      <Pressable onPress={() => Linking.openURL(PRIVACY_URL)} hitSlop={8}><Text style={s.link}>Privacy</Text></Pressable>
+      <Pressable onPress={() => Linking.openURL(SUPPORT_URL)} hitSlop={8}><Text style={s.link}>Support</Text></Pressable>
+    </View>
   )
 }
 
@@ -177,21 +169,12 @@ const s = StyleSheet.create({
   pointText: { fontFamily: F.bodyMed, fontSize: 14, lineHeight: 19, color: T.white, flex: 1 },
   stats: { flexDirection: 'row', marginTop: 6, marginBottom: 10 },
   stat: { flex: 1, minWidth: 0, paddingRight: 8 },
-  statLabel: { fontFamily: F.condBold, fontSize: 9.5, letterSpacing: 1, textTransform: 'uppercase',
-               color: T.muted2 },
+  statLabel: { fontFamily: F.condBold, fontSize: 9.5, letterSpacing: 1, textTransform: 'uppercase', color: T.muted2 },
   statNum: { fontFamily: F.condHeavy, fontSize: 24, lineHeight: 28, marginTop: 2 },
   statSub: { fontFamily: F.body, fontSize: 10.5, color: T.muted2, marginTop: 1 },
-  btn: { minHeight: 48, borderRadius: T.r2, alignItems: 'center', justifyContent: 'center',
-         paddingHorizontal: 16, marginTop: T.s2 },
-  primary: { backgroundColor: T.green },
-  primaryText: { fontFamily: F.condBlack, fontSize: 14, letterSpacing: 1.2,
-                 textTransform: 'uppercase', color: '#052e16' },
-  ghost: { borderWidth: 1, borderColor: T.glassLineHi, backgroundColor: T.glass },
-  ghostText: { fontFamily: F.condBlack, fontSize: 14, letterSpacing: 1.2,
-               textTransform: 'uppercase', color: T.white },
   note: { marginTop: T.s3, padding: 10, borderRadius: T.r1, backgroundColor: `${T.amber}14`,
           borderWidth: 1, borderColor: `${T.amber}44` },
   noteText: { fontFamily: F.bodyMed, fontSize: 12.5, lineHeight: 18, color: T.amber },
   err: { color: T.red, fontFamily: F.bodyMed, fontSize: 12.5, marginTop: 8 },
-  foot: { color: T.muted2, fontFamily: F.body, fontSize: 11, textAlign: 'center', marginTop: T.s5 },
+  link: { fontFamily: F.body, fontSize: 12, color: T.muted2, textDecorationLine: 'underline' },
 })

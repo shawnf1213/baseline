@@ -119,7 +119,7 @@ export default function Picks() {
       )}
 
       <Muted size={10.5} style={{ textAlign: 'center', marginTop: 24 }}>
-        Model projections, not betting advice.
+        Projections are for informational purposes only.
       </Muted>
       <PickSheet pick={open} onClose={() => setOpen(null)} />
       <AccountSheet open={account} onClose={() => setAccount(false)} />

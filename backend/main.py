@@ -224,6 +224,15 @@ async def startup():
     except Exception:  # noqa: BLE001
         pass
 
+    # The live tennis board is priced here, on a schedule, one row at a time
+    # (src/board_pricer) — never by the phones. Isolated: failure only leaves
+    # board rows pending.
+    try:
+        from src import board_pricer
+        board_pricer.start()
+    except Exception:  # noqa: BLE001
+        logger.exception("board pricer failed to start — board rows stay pending")
+
     logger.info("Backend ready.")
 
 
@@ -421,14 +430,20 @@ async def board_live(book: str = "prizepicks"):
     """The live tennis prop market for one book, unpriced — see src/live_board.
     The website parses the same feeds in the browser; the app reads this so a
     phone never downloads Underdog's whole multi-sport payload."""
-    from src import live_board
+    from src import live_board, board_pricer
     b = (book or "prizepicks").strip().lower()
     if b not in ("prizepicks", "underdog"):
         raise HTTPException(status_code=400, detail="book must be prizepicks or underdog")
     loop = asyncio.get_event_loop()
     try:
-        return await asyncio.wait_for(
+        out = await asyncio.wait_for(
             loop.run_in_executor(None, live_board.live_board, b), timeout=80.0)
+        # A copy, so the cached board is never mutated by the merge.
+        out = dict(out)
+        out["rows"] = board_pricer.merge([dict(r) for r in (out.get("rows") or [])])
+        out["priced"] = sum(1 for r in out["rows"] if r.get("pricing") == "priced")
+        out["pricer"] = board_pricer.status()
+        return out
     except Exception as exc:  # noqa: BLE001 — Rule 2: never raise at the edge
         logger.warning("live board unavailable (%s): %s", b, exc)
         return {"book": b, "rows": [], "count": 0, "available": False}

@@ -291,7 +291,7 @@ function TennisProject({ params }: { params: Record<string, string | undefined> 
               <Text style={pb.read}>{res.explanation}</Text>
             </Card>
           ) : null}
-          <Muted size={10.5} style={{ textAlign: 'center', marginTop: 16 }}>Model projections, not betting advice.</Muted>
+          <Muted size={10.5} style={{ textAlign: 'center', marginTop: 16 }}>Projections are for informational purposes only.</Muted>
         </>
       ) : null}
 

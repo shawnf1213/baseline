@@ -139,7 +139,7 @@ export function PickSheet({ pick, onClose }: { pick: PickRow | null; onClose: ()
             </Text>
           </>
         ) : (
-          <Text style={s.edgeLine}>Baseline has not priced this line yet. Use Project this matchup to run it now.</Text>
+          <Text style={s.edgeLine}>Baseline hasn't priced this line yet — rows are priced on a schedule and this one is in the queue. Check back in a few minutes, or use Project this matchup to run it now.</Text>
         )}
       </Card>
 
@@ -220,7 +220,7 @@ export function PickSheet({ pick, onClose }: { pick: PickRow | null; onClose: ()
       )}
 
       <Muted size={10.5} style={{ textAlign: 'center', marginTop: 18 }}>
-        Model projections, not betting advice.
+        Projections are for informational purposes only.
       </Muted>
     </Sheet>
   )

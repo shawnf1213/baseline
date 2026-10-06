@@ -134,6 +134,36 @@ export function Muted({ children, size = 12, style }:
   return <Text style={[{ color: T.muted2, fontFamily: F.body, fontSize: size }, style]}>{children}</Text>
 }
 
+// The one line every pick and projection screen ends with (App Store
+// guideline 5.3 — informational, never advice).
+export const DISCLAIMER = 'Projections are for informational purposes only.'
+export function Disclaimer({ style }: { style?: StyleProp<ViewStyle> }) {
+  return (
+    <View style={[{ marginTop: 20, alignItems: 'center' }, style]}>
+      <Text style={{ color: T.muted2, fontFamily: F.body, fontSize: 10.5, textAlign: 'center' }}>{DISCLAIMER}</Text>
+    </View>
+  )
+}
+
+// One person, one row — search results, saved players, recently viewed.
+export function PersonRow({ name, meta, right, onPress, onLongPress }:
+  { name: string; meta?: string; right?: ReactNode; onPress: () => void; onLongPress?: () => void }) {
+  const t = (name || '').trim().split(/\s+/)
+  const ini = ((t[0]?.[0] || '') + (t.length > 1 ? t[t.length - 1][0] : '')).toUpperCase() || '?'
+  return (
+    <Pressable onPress={() => { select(); onPress() }} onLongPress={onLongPress}
+               style={({ pressed }) => [s.person, pressed && { opacity: 0.8 }]}>
+      <View style={s.personAvatar}><Text style={s.personIni}>{ini}</Text></View>
+      <View style={{ flex: 1, minWidth: 0 }}>
+        <Text style={s.personName} numberOfLines={1}>{name}</Text>
+        {meta ? <Text style={s.personMeta} numberOfLines={1}>{meta}</Text> : null}
+      </View>
+      {right}
+      <Text style={s.personChev}>›</Text>
+    </Pressable>
+  )
+}
+
 const s = StyleSheet.create({
   card: {
     borderWidth: StyleSheet.hairlineWidth, borderColor: T.glassLine,
@@ -178,6 +208,15 @@ const s = StyleSheet.create({
   btnGhost: { borderWidth: 1, borderColor: T.glassLineHi, backgroundColor: T.glass },
   btnQuiet: { minHeight: 44 },
   btnText: { fontFamily: F.condBlack, fontSize: 15, letterSpacing: 1.2, textTransform: 'uppercase' },
+  person: { flexDirection: 'row', alignItems: 'center', gap: 12, minHeight: 60, paddingHorizontal: 12,
+            paddingVertical: 8, borderRadius: T.r2, borderWidth: StyleSheet.hairlineWidth, borderColor: T.glassLine,
+            backgroundColor: T.glass, marginBottom: 8 },
+  personAvatar: { width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(255,255,255,0.07)',
+                  alignItems: 'center', justifyContent: 'center' },
+  personIni: { fontFamily: F.condBold, fontSize: 14, color: T.muted },
+  personName: { fontFamily: F.condBlack, fontSize: 17, color: T.white, letterSpacing: 0.3 },
+  personMeta: { fontFamily: F.body, fontSize: 12, color: T.muted, marginTop: 1 },
+  personChev: { fontFamily: F.body, fontSize: 22, color: T.muted2 },
   empty: { alignItems: 'center', paddingVertical: 36, paddingHorizontal: 20 },
   emptyTitle: { fontFamily: F.condBold, fontSize: 17, color: T.white, letterSpacing: 0.4,
                 textAlign: 'center' },

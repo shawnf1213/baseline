@@ -15,7 +15,7 @@ import { PickCard } from '@/components/PickCard'
 import { PickSheet } from '@/components/PickSheet'
 import { OptionSheet } from '@/components/OptionSheet'
 import { SelectField } from '@/components/projectBits'
-import { BoardRow, Priced, applyPrice, cachedPrice, loadBoard, priceRow } from '@/lib/board'
+import { BoardRow, loadBoard } from '@/lib/board'
 import { Book, PickRow, kickoffLabel, normName, prettyDate, propLabel, startTimeLabel } from '@/lib/picks'
 import { SportKey, SportSwitch, useSport } from '@/lib/sports'
 import { F, T } from '@/theme'
@@ -30,7 +30,6 @@ const SORTS: { value: Sort; label: string; sub?: string }[] = [
   { value: 'confidence', label: 'Confidence', sub: 'highest first' },
   { value: 'edge', label: 'Edge', sub: 'biggest gap to the line first' },
 ]
-const PRICE_CAP = 500
 const EMPTY: Record<SportKey, string> = {
   tennis: 'has no tennis lines up right now. Check back when matches are near.',
   nfl: 'The board refreshes through the day; Sunday slates load Friday.',
@@ -46,7 +45,6 @@ export default function Board() {
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [prices, setPrices] = useState<Record<string, Priced | null>>({})
   const [query, setQuery] = useState('')
   const [prop, setProp] = useState('All')
   const [sort, setSort] = useState<Sort>('start')
@@ -70,25 +68,16 @@ export default function Board() {
   const board = data[key]
   const baseRows = board?.rows || []
 
-  // Price tennis rows a few at a time, in list order, and keep what lands.
+  // Tennis rows are priced on the backend on a schedule; while a board still
+  // has pending rows, poll it every minute so they fill in without a pull.
   useEffect(() => {
-    if (sport !== 'tennis' || !baseRows.length) return
-    let on = true
-    baseRows.slice(0, PRICE_CAP).forEach(r => {
-      const c = cachedPrice(r)
-      if (c !== undefined) { setPrices(m => (r.key in m ? m : { ...m, [r.key]: c })); return }
-      priceRow(r).then(p => { if (on && alive.current) setPrices(m => ({ ...m, [r.key]: p })) })
-    })
-    return () => { on = false }
-  }, [sport, baseRows])
+    if (sport !== 'tennis' || !board || !board.rows.some(r => r.state === 'pending')) return
+    const t = setInterval(() => { if (alive.current) load(sport, book, true) }, 60_000)
+    return () => clearInterval(t)
+  }, [sport, book, board, load])
 
   const rows = useMemo(() => {
-    let list = baseRows.map(r => {
-      if (sport !== 'tennis') return r
-      const p = prices[r.key]
-      if (p === undefined) return { ...r, state: (cachedPrice(r) === undefined ? 'loading' : 'idle') as BoardRow['state'] }
-      return applyPrice(r, p)
-    })
+    let list: BoardRow[] = baseRows
     const q = normName(query)
     if (q) list = list.filter(r => normName(r.player).includes(q) || normName(r.opponent).includes(q)
       || normName(r.team || '').includes(q) || normName(propLabel(sport, r.propType)).includes(q))
@@ -97,7 +86,7 @@ export default function Board() {
     else if (sort === 'edge') list = [...list].sort((a, b) => Math.abs(b.edge ?? -1) - Math.abs(a.edge ?? -1))
     else if (sport === 'tennis') list = [...list].sort((a, b) => (a.startTs ?? Infinity) - (b.startTs ?? Infinity))
     return list
-  }, [baseRows, prices, query, prop, sort, sport])
+  }, [baseRows, query, prop, sort, sport])
 
   const propOptions = useMemo(() => {
     const seen = new Map<string, string>()
@@ -127,7 +116,7 @@ export default function Board() {
       {!loading && !error && rows.length ? (
         <Muted size={11.5} style={{ marginTop: 12, marginBottom: 8 }}>
           {sport === 'tennis'
-            ? `${priced}${priced < rows.length ? ` of ${rows.length}` : ''} priced · ${players} players${priced < rows.length ? ' · pricing…' : ''}`
+            ? `${priced}${priced < rows.length ? ` of ${rows.length}` : ''} priced · ${players} players${rows.some(r => r.state === 'pending') ? ' · Baseline is pricing the rest' : ''}`
             : `${rows.length} lines · ${players} players`}
         </Muted>
       ) : <View style={{ height: 12 }} />}
@@ -148,7 +137,7 @@ export default function Board() {
         data={body ? [] : rows}
         keyExtractor={r => r.key}
         renderItem={({ item: r }) => (
-          <PickCard r={r} onPress={setOpen} pricing={r.state === 'loading' || r.state === 'idle'} noData={r.state === 'nodata'}
+          <PickCard r={r} onPress={setOpen} pricing={r.state === 'pending'} noData={r.state === 'nodata' || r.state === 'started'}
                     sub={r.sport === 'tennis' ? startTimeLabel(r.startTs) : kickoffLabel(r.startsAt)} />
         )}
         ListHeaderComponent={header}
@@ -160,7 +149,7 @@ export default function Board() {
               {sport !== 'tennis' ? ' ⭐ marks a posted play.' : ''}
               {book === 'underdog' ? ' Multiplier and one-sided lines are left out.' : ''}
             </Muted>
-            <Muted size={10.5} style={{ textAlign: 'center', marginTop: 10 }}>Model projections, not betting advice.</Muted>
+            <Muted size={10.5} style={{ textAlign: 'center', marginTop: 10 }}>Projections are for informational purposes only.</Muted>
           </View>
         ) : null}
         contentContainerStyle={{ paddingHorizontal: 16, paddingTop: insets.top + T.s3, paddingBottom: T.s5 }}
