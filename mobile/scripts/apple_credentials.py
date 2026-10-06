@@ -45,7 +45,10 @@ API = "https://api.appstoreconnect.apple.com"
 
 def token() -> str:
     key = open(os.path.join(SECRETS, f"AuthKey_{KEY_ID}.p8")).read()
-    now = int(time.time())
+    # Backdated: with iat = now, calls failed at random with 401 NOT_AUTHORIZED
+    # (an iat a second in Apple's future is rejected). exp stays within the
+    # 20-minute limit counted from iat.
+    now = int(time.time()) - 30
     return jwt.encode({"iss": ISSUER_ID, "iat": now, "exp": now + 1200, "aud": "appstoreconnect-v1"},
                       key, algorithm="ES256", headers={"kid": KEY_ID, "typ": "JWT"})
 

@@ -87,6 +87,16 @@ Required sizes (iPhone only; `supportsTablet` is false):
 - 6.9" display: 1320 × 2868 (or 1290 × 2796 for 6.7") — required
 - 6.5" display: 1284 × 2778 or 1242 × 2688 — required unless 6.9" covers it (Apple now derives 6.5" from 6.9" uploads)
 
-Order: Picks (Pick of the Day) · Board · Pick detail sheet · Project · Research
-player sheet. Captions are drawn into the frames by `mobile/scripts/screenshots.mjs`
-(see that script for how the frames are produced from the running app).
+Order (build 6, uploaded to App Store Connect 2026-10-06): Board · Picks · pick
+sheet of the board's strongest play · Project · Research player sheet · NFL
+board with a player's props dropped down. Plain app frames, no captions, from
+the running app with real data. The Picks frame shows a starred card only when
+the latest board has a real Pick of the Day.
+
+To refresh after a UI change:
+
+    npx expo export --platform web --output-dir dist-web
+    SERVE_DIR=dist-web PUPPETEER_DIR=<dir with puppeteer> node scripts/screenshots.mjs <reviewer-session-file> http://localhost:5173 store/screenshots
+    python scripts/asc_screenshots.py --replace
+
+`ONLY=01-board` re-renders a single frame.
