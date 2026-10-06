@@ -133,3 +133,11 @@ The app never calls a restricted route.
 - Runner for next time: `scripts/eas-ios.sh build|submit|status` (from `mobile/`, PowerShell or a terminal — the EAS CLI's `expo config` subprocess crashes when spawned from this session's Git Bash).
 
 **Still yours:** TestFlight internal group + testers; APNs push key (developer portal → upload on expo.dev); App Privacy, age rating, screenshots, description in App Store Connect (`testflight-steps.md` §3–5); review notes with the reviewer email and the fixed code.
+
+## 9. Round of 2026-10-06 morning (build 6)
+
+- **Board, one card per player.** A player with several props is one card that drops down to all of them, like the website's board; a single-prop player opens the sheet directly (`components/PlayerGroupCard.tsx`, `lib/board.ts groupBoard`).
+- **NFL lines every day.** The bot's 45-minute website refresh priced only today and tomorrow, so Tuesdays and Fridays were empty. It now prices every listed line with a game in the next 7 days and stores each game day as its own slate (`nfl/publish.py publish_upcoming`). The app and website show every upcoming game day at once. First run: 82 PrizePicks and 56 Underdog rows across Thursday, Sunday and Monday.
+- **The ⭐ is a flag, never a position.** The app's tennis picks promoted the board's #1 play to Pick of the Day whenever no pick was flagged. Only flagged picks get the star now. Board footers on the app and website say what the star means.
+- **Test NBA picks removed from the record.** The four 2026-10-05 test picks are excluded (hidden from the record and recaps, not graded, kept for audit). New admin route `/api/nba/results/exclude` and `scripts/exclude_picks.py` (reversible with `--undo`).
+- **Store screenshots** still show the old per-prop Board; re-render them before App Store review (`scripts/screenshots.mjs`).
