@@ -1,18 +1,18 @@
-// The six tabs of the PWA's BottomNav, in the same order with the same labels:
-// Boards · Project · Picks · Players · Search · Saved. The account sheet is not
-// a tab on the web either; it opens from a header control (Phase 4).
+// Three tabs (redesign proposal, replacing the website's six):
+//   Picks     Baseline's board — Pick of the Day first, then everything else
+//   Project   price any matchup
+//   Research  players, search and saved players in one place (Phase 4)
+// The account sheet opens from a control on the Picks header in Phase 4, not
+// from a tab.
 import { Redirect, Tabs } from 'expo-router'
 import { Platform, Text, View } from 'react-native'
 import { F, T } from '@/theme'
 import { useSession } from '@/lib/session'
 
 const TABS = [
-  { name: 'index',    label: 'Boards',  glyph: '▦' },
-  { name: 'project',  label: 'Project', glyph: '◎' },
-  { name: 'picks',    label: 'Picks',   glyph: '★' },
-  { name: 'players',  label: 'Players', glyph: '●' },
-  { name: 'search',   label: 'Search',  glyph: '⌕' },
-  { name: 'saved',    label: 'Saved',   glyph: '♡' },
+  { name: 'index',    label: 'Picks',    glyph: '★' },
+  { name: 'project',  label: 'Project',  glyph: '◎' },
+  { name: 'research', label: 'Research', glyph: '⌕' },
 ] as const
 
 export default function TabsLayout() {
@@ -30,9 +30,9 @@ export default function TabsLayout() {
       tabBarInactiveTintColor: T.muted2,
       tabBarStyle: {
         backgroundColor: T.bgElev, borderTopColor: T.glassLine,
-        borderTopWidth: 1, height: Platform.OS === 'ios' ? 84 : 64,
+        borderTopWidth: 1, height: Platform.OS === 'ios' ? 86 : 66, paddingTop: 6,
       },
-      tabBarLabelStyle: { fontFamily: F.condBold, fontSize: 10.5, letterSpacing: 0.8,
+      tabBarLabelStyle: { fontFamily: F.condBold, fontSize: 11, letterSpacing: 0.9,
                           textTransform: 'uppercase' },
       sceneStyle: { backgroundColor: T.bg },
     }}>
@@ -40,7 +40,7 @@ export default function TabsLayout() {
         <Tabs.Screen key={t.name} name={t.name} options={{
           title: t.label,
           tabBarIcon: ({ color }) =>
-            <Text style={{ color, fontSize: 18, lineHeight: 22 }}>{t.glyph}</Text>,
+            <Text style={{ color, fontSize: 20, lineHeight: 24 }}>{t.glyph}</Text>,
         }} />
       ))}
     </Tabs>

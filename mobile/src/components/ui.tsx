@@ -1,10 +1,11 @@
-// The card primitives — ports of Card, Pill, GlassTabs, SectionLabel and
-// PageTitle from frontend/src/mobile/bits.jsx. Same names on purpose, so a
-// screen ported from the PWA reads line for line.
+// The shared primitives. Brand identity stays (dark ground, Baseline green,
+// red/amber for results, Barlow); the shapes are the phone's — 44pt+ targets,
+// full-width segmented controls, plain labels.
 import { ReactNode } from 'react'
-import { Pressable, StyleSheet, Text, View, ViewStyle, StyleProp } from 'react-native'
+import { ActivityIndicator, Pressable, StyleProp, StyleSheet, Text, View, ViewStyle } from 'react-native'
 import { LinearGradient } from 'expo-linear-gradient'
 import { F, GLASS_DIR, T } from '@/theme'
+import { select } from '@/lib/haptics'
 
 type CardProps = {
   children: ReactNode
@@ -14,8 +15,8 @@ type CardProps = {
 }
 
 // GLASS, matching the landing page's cards — the website's own 160deg
-// gradient over the dark ground, with a hairline and a soft drop. No blur,
-// for the reason theme.ts records.
+// gradient over the dark ground, with a hairline. No blur, for the reason
+// theme.ts records.
 export function Card({ children, style, onPress, hi }: CardProps) {
   const body = (
     <LinearGradient colors={[...(hi ? T.glassHiStops : T.glassStops)]}
@@ -27,7 +28,7 @@ export function Card({ children, style, onPress, hi }: CardProps) {
   if (!onPress) return body
   return (
     <Pressable onPress={onPress}
-               style={({ pressed }) => [pressed && { transform: [{ scale: 0.985 }] }]}>
+               style={({ pressed }) => [pressed && { transform: [{ scale: 0.985 }], opacity: 0.92 }]}>
       {body}
     </Pressable>
   )
@@ -43,10 +44,10 @@ export function Pill({ children, tone = T.green, live }:
   )
 }
 
-export function SectionLabel({ children, right }:
-                             { children: ReactNode; right?: ReactNode }) {
+export function SectionLabel({ children, right, first }:
+                             { children: ReactNode; right?: ReactNode; first?: boolean }) {
   return (
-    <View style={s.sectionRow}>
+    <View style={[s.sectionRow, first && { marginTop: T.s2 }]}>
       <Text style={s.sectionLabel}>{children}</Text>
       {right ? <View>{typeof right === 'string'
         ? <Text style={s.sectionRight}>{right}</Text> : right}</View> : null}
@@ -60,23 +61,30 @@ export function PageTitle({ children, sub, right }:
     <View style={s.titleRow}>
       <View style={{ flex: 1, minWidth: 0 }}>
         <Text style={s.title}>{children}</Text>
-        {sub ? <View style={s.subRow}>{sub}</View> : null}
+        {sub ? (typeof sub === 'string'
+          ? <Text style={s.subText}>{sub}</Text>
+          : <View style={s.subRow}>{sub}</View>) : null}
       </View>
       {right}
     </View>
   )
 }
 
-export function GlassTabs<K extends string>({ options, value, onChange }:
-  { options: { key: K; label: string }[]; value: K; onChange: (k: K) => void }) {
+// Full-width segmented control, 44pt tall: the book switch, the mode switch,
+// ATP/WTA. One of these replaces the website's three differently-sized tab
+// rows.
+export function Segmented<K extends string>({ options, value, onChange, compact }:
+  { options: { key: K; label: string }[]; value: K; onChange: (k: K) => void; compact?: boolean }) {
   return (
-    <View style={s.tabs}>
+    <View style={[s.seg, compact && { minHeight: 38 }]}>
       {options.map(o => {
         const on = o.key === value
         return (
-          <Pressable key={o.key} onPress={() => onChange(o.key)}
-                     style={[s.tab, on && s.tabOn]}>
-            <Text style={[s.tabText, on && { color: T.green }]}>{o.label}</Text>
+          <Pressable key={o.key} onPress={() => { if (!on) { select(); onChange(o.key) } }}
+                     style={[s.segItem, on && s.segOn]}>
+            <Text style={[s.segText, compact && { fontSize: 12.5 }, on && { color: T.green }]}>
+              {o.label}
+            </Text>
           </Pressable>
         )
       })}
@@ -84,8 +92,46 @@ export function GlassTabs<K extends string>({ options, value, onChange }:
   )
 }
 
-export function Muted({ children, size = 12 }: { children: ReactNode; size?: number }) {
-  return <Text style={{ color: T.muted2, fontFamily: F.body, fontSize: size }}>{children}</Text>
+// A single toggle chip (surface, filter). 40pt tall.
+export function Chip({ active, onPress, children }:
+                     { active?: boolean; onPress: () => void; children: ReactNode }) {
+  return (
+    <Pressable onPress={() => { select(); onPress() }} style={[s.chip, active && s.chipOn]}>
+      <Text style={[s.chipText, active && { color: T.green }]}>{children}</Text>
+    </Pressable>
+  )
+}
+
+export function Button({ label, onPress, kind = 'primary', disabled, busy, style }:
+  { label: string; onPress: () => void; kind?: 'primary' | 'ghost' | 'quiet';
+    disabled?: boolean; busy?: boolean; style?: StyleProp<ViewStyle> }) {
+  const off = disabled || busy
+  return (
+    <Pressable onPress={onPress} disabled={off}
+               style={({ pressed }) => [s.btn, kind === 'primary' && s.btnPrimary,
+                 kind === 'ghost' && s.btnGhost, kind === 'quiet' && s.btnQuiet,
+                 off && kind === 'primary' && s.btnOff, pressed && { opacity: 0.85 }, style]}>
+      {busy ? <ActivityIndicator color={kind === 'primary' ? '#052e16' : T.green} />
+            : <Text style={[s.btnText, kind === 'primary' ? (off ? { color: T.muted2 } : { color: '#052e16' })
+                                                         : { color: kind === 'quiet' ? T.muted : T.white }]}>
+                {label}
+              </Text>}
+    </Pressable>
+  )
+}
+
+export function Empty({ title, hint }: { title: string; hint?: string }) {
+  return (
+    <View style={s.empty}>
+      <Text style={s.emptyTitle}>{title}</Text>
+      {hint ? <Text style={s.emptyHint}>{hint}</Text> : null}
+    </View>
+  )
+}
+
+export function Muted({ children, size = 12, style }:
+                      { children: ReactNode; size?: number; style?: StyleProp<any> }) {
+  return <Text style={[{ color: T.muted2, fontFamily: F.body, fontSize: size }, style]}>{children}</Text>
 }
 
 const s = StyleSheet.create({
@@ -104,18 +150,37 @@ const s = StyleSheet.create({
   pillText: { fontFamily: F.condBold, fontSize: 10.5, letterSpacing: 1.1, textTransform: 'uppercase' },
   sectionRow: { flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between',
                 marginTop: T.s4, marginBottom: T.s2 },
-  sectionLabel: { fontFamily: F.condBold, fontSize: 11, letterSpacing: 1.4,
+  sectionLabel: { fontFamily: F.condBold, fontSize: 11.5, letterSpacing: 1.4,
                   textTransform: 'uppercase', color: T.muted },
-  sectionRight: { fontFamily: F.body, fontSize: 11, color: T.muted2 },
+  sectionRight: { fontFamily: F.bodyMed, fontSize: 11.5, color: T.muted2 },
   titleRow: { flexDirection: 'row', alignItems: 'flex-end', gap: T.s3, marginBottom: T.s3 },
-  title: { fontFamily: F.condHeavy, fontSize: 30, letterSpacing: 0.4, color: T.white, lineHeight: 32 },
+  title: { fontFamily: F.condHeavy, fontSize: 32, letterSpacing: 0.4, color: T.white, lineHeight: 34 },
+  subText: { fontFamily: F.body, fontSize: 13, color: T.muted, marginTop: 4 },
   subRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 4, flexWrap: 'wrap' },
-  tabs: { flexDirection: 'row', gap: 4, padding: 3, borderRadius: 999,
-          backgroundColor: 'rgba(255,255,255,0.025)', borderWidth: 1, borderColor: T.glassLine,
-          alignSelf: 'flex-start', marginBottom: T.s3 },
-  tab: { minHeight: 32, paddingHorizontal: 13, borderRadius: 999, justifyContent: 'center',
-         borderWidth: 1, borderColor: 'transparent' },
-  tabOn: { borderColor: `${T.green}55`, backgroundColor: `${T.green}1C` },
-  tabText: { fontFamily: F.condBlack, fontSize: 12.5, letterSpacing: 1, textTransform: 'uppercase',
+  seg: { flexDirection: 'row', gap: 4, padding: 4, borderRadius: T.r2, minHeight: 46,
+         backgroundColor: 'rgba(255,255,255,0.03)', borderWidth: 1, borderColor: T.glassLine,
+         marginBottom: T.s3 },
+  segItem: { flex: 1, borderRadius: T.r1, alignItems: 'center', justifyContent: 'center',
+             borderWidth: 1, borderColor: 'transparent' },
+  segOn: { borderColor: `${T.green}55`, backgroundColor: `${T.green}1C` },
+  segText: { fontFamily: F.condBlack, fontSize: 14, letterSpacing: 1, textTransform: 'uppercase',
              color: T.muted2 },
+  chip: { minHeight: 40, paddingHorizontal: 16, borderRadius: 999, justifyContent: 'center',
+          borderWidth: 1, borderColor: T.glassLine, backgroundColor: 'rgba(255,255,255,0.035)' },
+  chipOn: { borderColor: `${T.green}77`, backgroundColor: `${T.green}1C` },
+  chipText: { fontFamily: F.condBlack, fontSize: 13, letterSpacing: 1, textTransform: 'uppercase',
+              color: T.muted },
+  btn: { minHeight: 52, borderRadius: T.r2, alignItems: 'center', justifyContent: 'center',
+         paddingHorizontal: 18 },
+  btnPrimary: { backgroundColor: T.green },
+  btnOff: { backgroundColor: 'transparent', borderWidth: 1, borderColor: T.glassLine,
+            borderStyle: 'dashed' },
+  btnGhost: { borderWidth: 1, borderColor: T.glassLineHi, backgroundColor: T.glass },
+  btnQuiet: { minHeight: 44 },
+  btnText: { fontFamily: F.condBlack, fontSize: 15, letterSpacing: 1.2, textTransform: 'uppercase' },
+  empty: { alignItems: 'center', paddingVertical: 36, paddingHorizontal: 20 },
+  emptyTitle: { fontFamily: F.condBold, fontSize: 17, color: T.white, letterSpacing: 0.4,
+                textAlign: 'center' },
+  emptyHint: { fontFamily: F.body, fontSize: 13.5, color: T.muted, lineHeight: 19,
+               textAlign: 'center', marginTop: 8, maxWidth: 300 },
 })

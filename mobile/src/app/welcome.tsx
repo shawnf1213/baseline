@@ -28,6 +28,13 @@ import { F, T } from '@/theme'
 
 const PLAN_LABEL: Record<Plan, string> = { weekly: 'Weekly · free trial', monthly: 'Monthly' }
 
+const POINTS = [
+  'Daily ranked picks for tennis, NFL and NBA',
+  'Projections against any sportsbook line',
+  'Every pick graded in public',
+  'Player stats and research',
+]
+
 type Tally = { wins: number; losses: number; total: number; win_rate: number | null }
 type Summary = {
   ready?: boolean
@@ -98,14 +105,13 @@ export default function Welcome() {
 
       <Card>
         <Text style={s.h}>What Baseline does</Text>
-        <Text style={s.p}>
-          Every day the model prices the player-prop boards for tennis, NFL and
-          NBA — break points, double faults, passing yards, points, rebounds and
-          more — against the lines the books post, ranks what it likes, and
-          publishes a Pick of the Day. Every play is graded and the record is
-          public. Members get the ranked boards, the star, a projection tool for
-          any player and line, and player research.
-        </Text>
+        <Text style={s.p}>A model that prices player props and shows its work.</Text>
+        {POINTS.map(p => (
+          <View key={p} style={s.point}>
+            <Text style={s.pointDot}>●</Text>
+            <Text style={s.pointText}>{p}</Text>
+          </View>
+        ))}
       </Card>
 
       <Card style={{ marginTop: T.s3 }}>
@@ -166,6 +172,9 @@ const s = StyleSheet.create({
   wordmark: { fontFamily: F.condHeavy, fontSize: 34, letterSpacing: 6, color: T.white },
   h: { fontFamily: F.condBlack, fontSize: 18, color: T.white, marginBottom: 6 },
   p: { fontFamily: F.body, fontSize: 14, lineHeight: 21, color: T.muted },
+  point: { flexDirection: 'row', alignItems: 'flex-start', gap: 10, marginTop: 8 },
+  pointDot: { fontSize: 8, color: T.green, lineHeight: 19 },
+  pointText: { fontFamily: F.bodyMed, fontSize: 14, lineHeight: 19, color: T.white, flex: 1 },
   stats: { flexDirection: 'row', marginTop: 6, marginBottom: 10 },
   stat: { flex: 1, minWidth: 0, paddingRight: 8 },
   statLabel: { fontFamily: F.condBold, fontSize: 9.5, letterSpacing: 1, textTransform: 'uppercase',
