@@ -46,12 +46,17 @@ const SHOTS = [
   { name: '02-picks', path: '/picks', ready: 'Pick of the Day|No .* picks yet' },
   { name: '03-pick-sheet', path: '/picks', ready: 'Pick of the Day', then: async (page) => {
       await clickText(page, 'Pick of the Day'); await hasText(page, 'Recent form'); await sleep(6000) } },
-  { name: '04-project', path: '/project', ready: 'Price any matchup' },
+  // Project, opened the way a pick sheet opens it: both players, prop and line
+  // in the URL, so it runs on its own (a matchup the board pricer has priced).
+  { name: '04-project', path: '/project?t=1&sport=tennis&player=Darja%20Vidmanova&playerId=298339&opponent=Kyoka%20Okamura&opponentId=130690&tour=WTA&surface=Hard&prop=Total%20Games&line=19.5',
+    ready: 'Price any matchup', then: async (page) => {
+      await hasText(page, 'Serve & return', 180_000); await sleep(4000) } },
   { name: '05-research', path: '/research', ready: 'Research', then: async (page) => {
       const input = await page.waitForSelector('input[placeholder*="Search"]', { timeout: 30_000 })
       await input.click(); await page.keyboard.type('Sinner', { delay: 40 })
       await hasText(page, 'Jannik Sinner', 60_000); await clickText(page, 'Jannik Sinner')
-      await hasText(page, 'Recent form|Prop history', 120_000); await sleep(5000) } },
+      await hasText(page, 'streak', 120_000)
+      await hasText(page, 'Last 10 matches', 180_000); await sleep(5000) } },
 ]
 
 const browser = await puppeteer.launch({ headless: true, args: ['--no-sandbox', '--disable-gpu'] })
