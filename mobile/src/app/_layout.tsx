@@ -23,6 +23,7 @@ import { BarlowCondensed_600SemiBold, BarlowCondensed_700Bold,
 import { T } from '@/theme'
 import { SessionProvider } from '@/lib/session'
 import { SportProvider } from '@/lib/sports'
+import { PushRouter } from '@/components/PushRouter'
 
 SplashScreen.preventAutoHideAsync()
 
@@ -53,6 +54,7 @@ export default function RootLayout() {
   return (
     <SessionProvider>
       <SportProvider>
+        <PushRouter />
         <ThemeProvider value={NAV_THEME}>
           <StatusBar style="light" />
           <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: T.bg } }}>

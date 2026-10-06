@@ -189,6 +189,23 @@ try:
         # was it the minutes term or the per-minute rate?
         drivers            = Column(String)
 
+    class PushToken(Base):
+        """One row per DEVICE that asked for push notifications (the iOS app).
+
+        `token` is Expo's push token for the install; `sub` + `kind` is the
+        member it belongs to (a Discord id or an email, as in the session), so
+        a lapsed membership or an account deletion can find and drop it.
+        `prefs` is JSON: {"board": {"tennis": true, ...}, "recap": {...}}.
+        """
+        __tablename__ = "push_tokens"
+        token       = Column(String, primary_key=True)
+        sub         = Column(String, nullable=False, index=True)
+        kind        = Column(String, default="discord")      # discord | email
+        platform    = Column(String, default="ios")
+        prefs       = Column(String, default="{}")           # JSON
+        created_at  = Column(DateTime(timezone=True), server_default=func.now())
+        updated_at  = Column(DateTime(timezone=True), server_default=func.now())
+
     class NbaBoardRow(Base):
         """The CURRENT scanned NBA board — every priced line, not just posted ones.
 
@@ -2199,6 +2216,13 @@ def delete_account(discord_id: str = "", email: str = "") -> dict:
                 r.signup_ip = ""
                 r.status = "deleted" if (r.status or "") != "deleted" else r.status
                 out["subscriptions"] += 1
+            # The devices registered for push by this identity go with it.
+            try:
+                subs = [x for x in (did, mail) if x]
+                out["push_tokens"] = s.query(PushToken).filter(PushToken.sub.in_(subs)).delete(
+                    synchronize_session=False) if subs else 0
+            except Exception as exc:  # noqa: BLE001 — never block the deletion on this
+                logger.warning("delete_account: push token cleanup failed: %s", exc)
             s.commit()
         out["ok"] = True
         logger.warning("account deleted: subs=%d active_sub=%s",
@@ -2325,3 +2349,106 @@ def nfl_players(slate_date: str = None, player: str = None) -> list:
     except Exception as exc:  # noqa: BLE001
         logger.warning("nfl_players failed: %s", exc)
         return []
+
+
+# ── PUSH TOKENS (the iOS app) ────────────────────────────────────────────────
+def push_upsert(token: str, sub: str, kind: str, platform: str, prefs: dict) -> bool:
+    """Register or refresh one device for one member. Re-registering a token
+    under a different member moves it (the device signed in as someone else)."""
+    if not is_ready() or not token or not sub:
+        return False
+    try:
+        import json as _json
+        from sqlalchemy import func as _func
+        with _session() as s:
+            row = s.get(PushToken, token)
+            if row is None:
+                row = PushToken(token=token)
+                s.add(row)
+            row.sub = sub
+            row.kind = kind or "discord"
+            row.platform = platform or "ios"
+            row.prefs = _json.dumps(prefs or {})
+            row.updated_at = _func.now()
+            s.commit()
+            return True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("push_upsert failed: %s", exc)
+        return False
+
+
+def push_delete(token: str) -> bool:
+    if not is_ready() or not token:
+        return False
+    try:
+        with _session() as s:
+            s.query(PushToken).filter(PushToken.token == token).delete(synchronize_session=False)
+            s.commit()
+            return True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("push_delete failed: %s", exc)
+        return False
+
+
+def push_delete_sub(sub: str) -> int:
+    if not is_ready() or not sub:
+        return 0
+    try:
+        with _session() as s:
+            n = s.query(PushToken).filter(PushToken.sub == sub).delete(synchronize_session=False)
+            s.commit()
+            return int(n or 0)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("push_delete_sub failed: %s", exc)
+        return 0
+
+
+def push_prefs(token: str) -> dict:
+    if not is_ready() or not token:
+        return {}
+    try:
+        import json as _json
+        with _session() as s:
+            row = s.get(PushToken, token)
+            return _json.loads(row.prefs or "{}") if row else {}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("push_prefs failed: %s", exc)
+        return {}
+
+
+def push_targets(event: str, sport: str) -> list:
+    """[(token, sub, kind)] for every device whose prefs allow this event for
+    this sport. A missing preference means ON."""
+    if not is_ready():
+        return []
+    try:
+        import json as _json
+        with _session() as s:
+            out = []
+            for row in s.query(PushToken).all():
+                try:
+                    p = _json.loads(row.prefs or "{}")
+                except Exception:  # noqa: BLE001
+                    p = {}
+                ev = p.get(event) if isinstance(p, dict) else None
+                on = True
+                if isinstance(ev, dict) and sport in ev:
+                    on = bool(ev[sport])
+                elif isinstance(ev, bool):
+                    on = ev
+                if on:
+                    out.append((row.token, row.sub, row.kind or "discord"))
+            return out
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("push_targets failed: %s", exc)
+        return []
+
+
+def push_count() -> int:
+    if not is_ready():
+        return 0
+    try:
+        with _session() as s:
+            return int(s.query(PushToken).count())
+    except Exception:  # noqa: BLE001
+        return 0

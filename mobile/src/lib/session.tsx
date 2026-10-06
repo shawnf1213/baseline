@@ -7,9 +7,10 @@
 //   locked       a session, but /api/auth/me says active: false
 //   active       a session with an active membership (or the reviewer flag)
 // plus `loading` while the first check runs behind the splash.
-import { createContext, ReactNode, useCallback, useContext, useEffect, useMemo, useState } from 'react'
+import { createContext, ReactNode, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { AppState } from 'react-native'
 import { fetchMe, Me, signOut as _signOut } from './auth'
+import { registerForPush, unregisterPush } from './push'
 
 type Status = 'loading' | 'signed-out' | 'locked' | 'active'
 type Ctx = {
@@ -47,9 +48,24 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const apply = useCallback((m: Me) => { setMe(m); setStatus(statusOf(m)); setError(null) }, [])
-  const signOut = useCallback(async () => { await _signOut(); setMe(null); setStatus('signed-out') }, [])
+  // The device is forgotten by the backend BEFORE the session is cleared —
+  // the unregister call needs it — so a signed-out phone gets nothing.
+  const signOut = useCallback(async () => {
+    try { await unregisterPush() } catch { /* best effort */ }
+    await _signOut(); setMe(null); setStatus('signed-out')
+  }, [])
 
   useEffect(() => { refresh() }, [refresh])
+
+  // REGISTER FOR PUSH ONCE PER LAUNCH, when (and only when) the membership is
+  // active. A quiet no-op until the EAS project id exists or if permission
+  // is declined — nothing here can block the app.
+  const pushDone = useRef(false)
+  useEffect(() => {
+    if (status !== 'active' || pushDone.current) return
+    pushDone.current = true
+    registerForPush().catch(() => {})
+  }, [status])
 
   // RE-CHECK ON FOREGROUND. Entitlement is a server fact that changes while
   // the app is closed — a cancelled subscription, a role removed — and the

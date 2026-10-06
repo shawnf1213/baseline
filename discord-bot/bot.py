@@ -26,6 +26,7 @@ from discord.ext import tasks
 from dotenv import load_dotenv
 
 import service_token as _service_token   # X-Service-Token for every backend call
+import push_notify      # app push after a Discord post succeeds (fire-and-forget)
 import pick_of_day      # isolated Pick of the Day feature (own failure handling)
 import underdog         # Underdog Fantasy board client (own failure handling)
 import results_tracker   # Feature 1 — durable results log (own failure handling)
@@ -3212,6 +3213,10 @@ async def _post_daily_picks(channel, track: bool = True) -> str:
     # Overflow (a board so long it needed >9 board embeds) continues unpinged.
     for i in range(10, len(post), 10):
         await channel.send(embeds=post[i:i + 10])
+    # The app hears about it only now — after the post landed, never before.
+    if track:
+        push_notify.notify("board", "tennis", "Tennis board is up",
+                           f"{len(ranked)} play{'s' if len(ranked) != 1 else ''} on PrizePicks — tap to see the board.")
 
     # ── LOG ONLY AFTER A SUCCESSFUL SEND ─────────────────────────────────────
     # This used to log BEFORE posting, so a board that was never published — or
@@ -3397,6 +3402,9 @@ async def _post_underdog_board(channel, track: bool = True,
                        embeds=embeds[:10], allowed_mentions=EVERYONE_MENTION)
     for i in range(10, len(embeds), 10):
         await channel.send(embeds=embeds[i:i + 10])
+    if track:
+        push_notify.notify("board", "tennis", "Underdog tennis board is up",
+                           f"{len(ranked)} play{'s' if len(ranked) != 1 else ''} on Underdog — tap to see the board.")
 
     # LOG ONLY AFTER A SUCCESSFUL SEND, same rule as the PrizePicks board — an
     # unposted play is not a play. pick_group "underdog" keeps this book's record
@@ -4244,6 +4252,9 @@ async def _nfl_post_board(book: str, day=None, window_days: int = None,
         log.warning("NFL %sboard (%s) posted %d of %d play(s) for %s to %s "
                     "(star=%s, shadow=%s)", label, book, len(shown), len(rows),
                     day, cid, has_star, shadow)
+        push_notify.notify("board", "nfl", f"NFL {label}board is up",
+                           f"{len(shown)} play{'s' if len(shown) != 1 else ''} on "
+                           f"{'Underdog' if book == 'underdog' else 'PrizePicks'} for {day} — tap to see the board.")
         # Hand the POSTED rows to the line watch so alerts track what readers
         # were actually shown, and record those — recording all 168 scanned rows
         # would blacklist the whole slate from any later scan.
@@ -4363,6 +4374,9 @@ async def _nba_post_board(book: str, day=None, window_days: int = 0):
         log.warning("NBA board (%s): posted %d play(s) for %s%s", book,
                     len(top), slate,
                     f" (star: {star['player']})" if star else " (no star)")
+        push_notify.notify("board", "nba", "NBA board is up",
+                           f"{len(top)} play{'s' if len(top) != 1 else ''} on "
+                           f"{'Underdog' if book == 'underdog' else 'PrizePicks'} for {slate} — tap to see the board.")
         # Persist the POSTED plays to the record, and the WHOLE board to the
         # website table. Two different things in two different tables — see
         # nba/publish.py.
@@ -4583,6 +4597,8 @@ async def _maybe_post_nba_recap():
                 await channel.send(embed=embed)
                 log.warning("NBA recap posted for %s %s (%d-%d%s) -> track-record",
                             slate, book, w, l, f"-{pu} push" if pu else "")
+                push_notify.notify("recap", "nba", f"NBA recap: {w}-{l}" + (f"-{pu}" if pu else ""),
+                                   f"{slate} {'Underdog' if book == 'underdog' else 'PrizePicks'} results are in.")
             except Exception:  # noqa: BLE001 — one slate must not stop the others
                 log.exception("NBA recap failed for %s %s", slate, book)
 
@@ -6691,6 +6707,8 @@ async def _post_recap_for(channel, date_str: str, why: str,
                        embed=daily_recap_embed(rec, target_date=date_str, source=source),
                        allowed_mentions=EVERYONE_MENTION)
     log.info("recap: posted %s %s -> track-record (%s)", source, date_str, why)
+    push_notify.notify("recap", "tennis", f"Tennis recap: {_cash}-{len(_played) - _cash}",
+                       f"{date_str} {'Underdog' if str(source).lower().startswith('underdog') else 'PrizePicks'} results are in.")
     return True
 
 
@@ -6903,6 +6921,8 @@ async def _maybe_post_nfl_recap():
                     allowed_mentions=EVERYONE_MENTION)
                 log.warning("NFL recap posted for %s %s (%d-%d) -> track-record",
                             slate, book, w, lo)
+                push_notify.notify("recap", "nfl", f"NFL recap: {w}-{lo}",
+                                   f"{slate} {'Underdog' if book == 'underdog' else 'PrizePicks'} results are in.")
         except Exception:  # noqa: BLE001 — one slate must not stop the others
             log.exception("NFL recap failed for %s", slate)
 

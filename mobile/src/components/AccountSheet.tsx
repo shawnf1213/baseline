@@ -12,9 +12,11 @@ import { router } from 'expo-router'
 import { Sheet } from './Sheet'
 import { Card, Muted } from './ui'
 import { initials } from './projectBits'
+import { NotificationPrefs } from './NotificationPrefs'
 import { F, T } from '@/theme'
 import { ApiError, billingPortalUrl, deleteAccount } from '@/lib/api'
 import { useSession } from '@/lib/session'
+import { unregisterPush } from '@/lib/push'
 import { tap, warn } from '@/lib/haptics'
 
 // Whop members hold the Discord premium role; their subscription lives in
@@ -92,6 +94,7 @@ export function AccountSheet({ open, onClose, children }:
        { text: 'Delete', style: 'destructive', onPress: async () => {
          setBusy('delete'); setMsg(null)
          try {
+           try { await unregisterPush() } catch { /* the server drops the rest */ }
            const r = await deleteAccount()
            await signOut()
            onClose()
@@ -130,6 +133,9 @@ export function AccountSheet({ open, onClose, children }:
       ) : null}
 
       {children}
+
+      <Text style={s.section}>Notifications</Text>
+      <NotificationPrefs />
 
       <Text style={s.section}>Play responsibly</Text>
       <Card>

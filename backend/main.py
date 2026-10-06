@@ -2704,6 +2704,73 @@ def account_delete(req: Request, payload: dict = Body(default=None)):
                      "subscription was found.")}
 
 
+# ── PUSH NOTIFICATIONS (the iOS app) ─────────────────────────────────────────
+# register / unregister / prefs are member calls (the gate requires an active
+# session; the identity comes from the session, never the body). send is the
+# bot's, after a Discord post succeeded — service token only, and the fan-out
+# runs in a thread so the bot is never waiting on devices.
+def _session_identity(req: Request):
+    from src import discord_auth
+    tok = req.headers.get("authorization", "").replace("Bearer ", "").strip()
+    data = discord_auth.read_session(tok)
+    if not data or data.get("sub") in (None, "", "state"):
+        raise HTTPException(status_code=401, detail="sign in first")
+    return str(data["sub"]), ((data.get("k") or "discord"))
+
+
+@app.post("/api/push/register")
+async def push_register(req: Request, payload: dict = Body(...)):
+    from src import database, push
+    sub, kind = _session_identity(req)
+    token = str((payload or {}).get("token") or "").strip()
+    if not token.startswith("ExponentPushToken[") and not token.startswith("ExpoPushToken["):
+        raise HTTPException(status_code=400, detail="an Expo push token is required")
+    prefs = push.normalise_prefs((payload or {}).get("prefs"))
+    ok = database.push_upsert(token, sub, kind, str((payload or {}).get("platform") or "ios")[:16], prefs)
+    return {"ok": ok, "prefs": prefs}
+
+
+@app.post("/api/push/unregister")
+async def push_unregister(req: Request, payload: dict = Body(...)):
+    from src import database
+    _session_identity(req)
+    token = str((payload or {}).get("token") or "").strip()
+    return {"ok": database.push_delete(token) if token else False}
+
+
+@app.get("/api/push/prefs")
+async def push_prefs_get(req: Request, token: str = ""):
+    from src import database, push
+    _session_identity(req)
+    return {"prefs": push.normalise_prefs(database.push_prefs(token))}
+
+
+@app.post("/api/push/prefs")
+async def push_prefs_set(req: Request, payload: dict = Body(...)):
+    from src import database, push
+    sub, kind = _session_identity(req)
+    token = str((payload or {}).get("token") or "").strip()
+    prefs = push.normalise_prefs((payload or {}).get("prefs"))
+    ok = database.push_upsert(token, sub, kind, "ios", prefs) if token else False
+    return {"ok": ok, "prefs": prefs}
+
+
+@app.post("/api/push/send")
+async def push_send(req: Request, payload: dict = Body(...)):
+    """Bot only. {event: board|recap, sport, title, body, data?}. Returns at once."""
+    from src import push, database
+    if not is_service_request(req):
+        raise HTTPException(status_code=401, detail="service token required")
+    event = str((payload or {}).get("event") or "").strip().lower()
+    sport = str((payload or {}).get("sport") or "").strip().lower()
+    if event not in push.EVENTS or sport not in push.SPORTS:
+        raise HTTPException(status_code=400, detail="event must be board|recap and sport tennis|nfl|nba|mlb")
+    title = str((payload or {}).get("title") or "Baseline")[:80]
+    body = str((payload or {}).get("body") or "")[:180]
+    push.send_async(event, sport, title, body, (payload or {}).get("data") or {})
+    return {"ok": True, "queued": True, "devices": database.push_count()}
+
+
 # ── MAGIC-LINK SIGN-IN (subscribers without Discord) ─────────────────────────
 @app.get("/api/auth/magic/config")
 def magic_config():
