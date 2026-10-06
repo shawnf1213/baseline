@@ -46,11 +46,11 @@ footer{margin-top:52px;padding-top:20px;border-top:1px solid var(--line);
   </header>
 
   <h1>Privacy Policy</h1>
-  <p class="meta">Last updated 14 September 2026</p>
+  <p class="meta">Last updated 6 October 2026</p>
 
-  <p>Baseline (“we”, “us”) operates <a href="https://baselineev.com">baselineev.com</a>
-  and an associated Discord bot. This policy explains exactly what we hold about
-  you, why we hold it, and how to get rid of it.</p>
+  <p>Baseline (“we”, “us”) operates <a href="https://baselineev.com">baselineev.com</a>,
+  the Baseline iOS app, and an associated Discord bot. This policy explains
+  exactly what we hold about you, why we hold it, and how to get rid of it.</p>
 
   <div class="card">
     <p><strong>The short version.</strong> We store the minimum needed to know
@@ -102,6 +102,18 @@ footer{margin-top:52px;padding-top:20px;border-top:1px solid var(--line);
     <li>When the preview started, when it was last checked, and how many times.</li>
   </ul>
 
+  <h3>The iOS app</h3>
+  <p>The app signs you in the same way the website does (Discord, or a code
+  sent to your email) and holds the same account data — nothing extra about you
+  is created by installing it. Two things live on your phone only and never
+  reach us: the players you save, and your notification preferences. If you
+  turn on notifications, we store the <strong>push token</strong> Apple and Expo
+  issue for your install, tied to your account, so that we can tell you when a
+  board or a day's results post. It is removed when you sign out, when you
+  delete your account, or when your membership lapses. The app contains no
+  analytics, advertising or tracking SDKs, and no third-party login other than
+  Discord.</p>
+
   <h2>2. What we do <em>not</em> do</h2>
   <ul>
     <li><strong>No analytics.</strong> No Google Analytics, Meta Pixel,
@@ -121,9 +133,10 @@ footer{margin-top:52px;padding-top:20px;border-top:1px solid var(--line);
     <tr><th>Provider</th><th>What it handles</th></tr>
     <tr><td>Stripe</td><td>Payments and subscription billing</td></tr>
     <tr><td>Discord</td><td>Sign-in and premium role in our server</td></tr>
-    <tr><td>Resend</td><td>Sending sign-in links by email</td></tr>
+    <tr><td>Resend</td><td>Sending sign-in links and codes by email</td></tr>
     <tr><td>Railway</td><td>Application hosting and database</td></tr>
     <tr><td>Vercel</td><td>Website hosting</td></tr>
+    <tr><td>Expo (Apple Push Notification service)</td><td>Delivering app notifications you have turned on; sees only the device token</td></tr>
   </table>
   <p>Sports statistics come from third-party data sources. Those requests carry
   no information about you.</p>
@@ -150,6 +163,8 @@ footer{margin-top:52px;padding-top:20px;border-top:1px solid var(--line);
     <li><strong>Trial signup IP</strong> — deleted when the account is deleted.</li>
     <li><strong>Preview hashes</strong> — retained only as long as the preview
     rule needs them.</li>
+    <li><strong>Push tokens</strong> — deleted on sign-out, account deletion, or
+    when a membership lapses.</li>
   </ul>
 
   <h2>6. Your rights</h2>
@@ -182,8 +197,8 @@ footer{margin-top:52px;padding-top:20px;border-top:1px solid var(--line);
   <a href="mailto:support@baselineev.com">support@baselineev.com</a>.</p>
 
   <footer>
-    <p><a href="/">Baseline</a> · <a href="/terms">Terms of Service</a></p>
-    <p>Model projections, not betting advice.</p>
+    <p><a href="/">Baseline</a> · <a href="/terms">Terms of Service</a> · <a href="/support">Support</a></p>
+    <p>Projections are for informational purposes only.</p>
   </footer>
 </div>
 </body>

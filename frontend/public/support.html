@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Support · Baseline</title>
+<meta name="description" content="Help with the Baseline app and website: sign-in, membership, billing, notifications, deleting your account.">
+<!-- A STATIC FILE, NOT A ROUTE — reachable with no account, which is what App
+     Review and a locked-out member both need. Served straight from disk. -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;600;700&family=Barlow+Condensed:wght@700;800;900&display=swap" rel="stylesheet">
+<style>
+:root{--g:#00E676;--ink:#070707;--card:#101412;--line:#1e2522;--txt:#dbe4df;--dim:#93a09a;--amber:#FFB300}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--ink);color:var(--txt);font-family:Barlow,system-ui,sans-serif;
+  font-size:16.5px;line-height:1.65;-webkit-font-smoothing:antialiased}
+.wrap{max-width:820px;margin:0 auto;padding:44px 22px 90px}
+header{display:flex;align-items:center;gap:14px;margin-bottom:34px}
+header img{width:150px}
+h1{font-family:"Barlow Condensed",sans-serif;font-weight:900;font-size:46px;color:#fff;line-height:1.05;margin:26px 0 6px}
+h2{font-family:"Barlow Condensed",sans-serif;font-weight:800;font-size:27px;color:#fff;margin:36px 0 10px;letter-spacing:.02em}
+h3{font-family:"Barlow Condensed",sans-serif;font-weight:800;font-size:20px;color:var(--g);margin:22px 0 6px;letter-spacing:.06em;text-transform:uppercase}
+p,li{margin-bottom:11px}
+ul{padding-left:22px}
+a{color:var(--g)}
+.meta{color:var(--dim);font-size:14px;margin-bottom:8px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px 20px;margin:18px 0}
+.help{border-color:rgba(255,179,0,.35);background:rgba(255,179,0,.06)}
+footer{margin-top:52px;padding-top:20px;border-top:1px solid var(--line);color:var(--dim);font-size:14px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <a href="/"><img src="/baseline-logo.png" alt="Baseline"></a>
+  </header>
+
+  <h1>Support</h1>
+  <p class="meta">Baseline app and website</p>
+
+  <div class="card">
+    <p><strong>Email us:</strong> <a href="mailto:support@baselineev.com">support@baselineev.com</a>.
+    Include the email or Discord name on your membership and, if it is about the
+    app, your iPhone model and iOS version. We answer within one business day.</p>
+  </div>
+
+  <h2>Signing in</h2>
+  <h3>I subscribed but the app says no active membership</h3>
+  <p>Sign in with the <em>same email you used at checkout</em> — choose
+  <strong>Sign in with email</strong> and enter the 6-digit code we send. If you
+  signed in with Discord instead, your Discord account may not be linked to the
+  subscription; use the email option. Then tap <strong>Check membership
+  again</strong> in the account sheet.</p>
+  <h3>The code never arrives</h3>
+  <p>Codes are only sent to addresses that hold a membership. Check spam, wait a
+  minute, then request a new one. Each code works once, for ten minutes.</p>
+  <h3>Discord sign-in opens the wrong account</h3>
+  <p>Use <strong>Use a different Discord account</strong> on the sign-in screen;
+  it asks Discord to let you choose again.</p>
+
+  <h2>Billing and cancelling</h2>
+  <p>Baseline never handles card details. Where you manage your subscription
+  depends on where you bought it:</p>
+  <ul>
+    <li><strong>Bought on the website (Stripe):</strong> open the account sheet
+    in the app, or your account on the website, and choose <strong>Manage
+    subscription</strong>. Stripe's portal handles cancelling, changing your
+    card and invoices.</li>
+    <li><strong>Bought through Whop:</strong> manage or cancel it in your
+    <a href="https://whop.com/hub" target="_blank" rel="noreferrer">Whop hub</a>.</li>
+  </ul>
+  <p>Cancelling stops renewals; access runs to the end of the paid period.
+  Deleting your account does <em>not</em> cancel a subscription — cancel first.</p>
+
+  <h2>Deleting your account</h2>
+  <p>In the app: account sheet → <strong>Delete account</strong>. On the website:
+  your account menu → Delete account. It removes your account record and any
+  notification tokens. See the <a href="/privacy">Privacy Policy</a> for what is
+  kept and why.</p>
+
+  <h2>Notifications</h2>
+  <p>The app can tell you when a board posts and when a day's results post, per
+  sport. Turn each on or off in the account sheet. If you see no switches, allow
+  notifications for Baseline in iOS Settings first. Nothing else is ever
+  pushed.</p>
+
+  <h2>Projections and results</h2>
+  <p>Every projection comes from the same model that posts to the Baseline
+  Discord, and every released pick is graded in public. A pick that shows
+  <em>Pending</em> is waiting for the match or game to finish; <em>Void</em>
+  means it did not count (a withdrawal, retirement or a line that changed).
+  Projections are for informational purposes only — they are statistics, not
+  advice, and no outcome is guaranteed.</p>
+
+  <div class="card help">
+    <p><strong>If gambling stops being fun.</strong> Help is free, confidential
+    and available 24/7 from the National Problem Gambling Helpline:
+    <a href="tel:18004262537">1-800-GAMBLER</a> ·
+    <a href="https://www.ncpgambling.org/help-treatment/" target="_blank" rel="noreferrer">ncpgambling.org</a>.</p>
+  </div>
+
+  <footer>
+    <p><a href="/">Baseline</a> · <a href="/privacy">Privacy Policy</a> · <a href="/terms">Terms of Service</a></p>
+    <p>Projections are for informational purposes only.</p>
+  </footer>
+</div>
+</body>
+</html>
