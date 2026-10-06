@@ -240,16 +240,32 @@ def games_on(games: list, day=None, window_days: int = 0) -> list:
     return out
 
 
-def _team_index(games: list) -> dict:
-    """team abbr -> (game, is_home). Both sides of every upcoming game."""
+def _team_index(games: list, earliest: bool = False) -> dict:
+    """team abbr -> (game, is_home). Both sides of every upcoming game.
+
+    earliest=True keeps each team's FIRST game rather than its last. It only
+    matters when a team has two games in the list, which a one-day board never
+    does but the week-long website board does: a club that plays Sunday and
+    again on Thursday has both inside seven days, and a book's line is always
+    for the NEXT one. Without this the later game overwrote the earlier and the
+    row was priced against the wrong opponent, spread and total. The default is
+    unchanged so the other callers behave exactly as before.
+    """
     from .client import normalize_team
+    seq = list(games or [])
+    if earliest:
+        import datetime
+        seq.sort(key=lambda g: (_et_date(g.get("kickoff")) or datetime.date.max,
+                                str(g.get("kickoff") or "")))
     idx = {}
-    for g in games or []:
-        h, a = g.get("home_abbr"), g.get("away_abbr")
-        if h:
-            idx[normalize_team(h)] = (g, True)
-        if a:
-            idx[normalize_team(a)] = (g, False)
+    for g in seq:
+        for abbr, home in ((g.get("home_abbr"), True), (g.get("away_abbr"), False)):
+            if not abbr:
+                continue
+            k = normalize_team(abbr)
+            if earliest and k in idx:
+                continue
+            idx[k] = (g, home)
     return idx
 
 
@@ -348,7 +364,7 @@ def scan_board(book: str = "prizepicks", season: int = None,
                         "The next kickoff is %s.", book, _day,
                         min((_et_date(g.get("kickoff")) for g in allg
                              if _et_date(g.get("kickoff"))), default="unknown"))
-        idx = _team_index(games)
+        idx = _team_index(games, earliest=True)
         if not idx:
             log.warning("nfl board (%s): no upcoming games — every row will be "
                         "unscripted", book)

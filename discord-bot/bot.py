@@ -4642,21 +4642,25 @@ NFL_BOARD_REFRESH_MINUTES = int(
 
 @tasks.loop(minutes=NFL_BOARD_REFRESH_MINUTES)
 async def nfl_board_refresh():
-    """Scan and publish the full board for the site. Posts nothing to Discord."""
+    """Scan and publish the full board for the site and the app. Posts nothing
+    to Discord.
+
+    EVERY GAME THE BOOKS LIST, NOT ONLY TOMORROW'S (operator, 2026-10-06: "NFL
+    live lines should be readily available and being projected, not just on
+    game days"). This scanned today plus one day, so Tuesdays and Fridays
+    priced nothing and the board read empty while the books were already
+    listing the next games. publish_upcoming scans NFL_REFRESH_WINDOW_DAYS
+    ahead and stores each game day as its own slate. The Discord boards above
+    keep their own one-day scan and schedule.
+    """
     if not NFL_TASKS_ENABLED:
         return
     try:
         npub = _nfl_import("nfl.publish")
-        nb = _nfl_import("nfl.board")
-        day = nb.slate_date()
-        for book in ("prizepicks", "underdog"):
-            try:
-                n = await asyncio.to_thread(npub.publish_scan, book, day)
-                if n:
-                    log.warning("NFL website board: %d row(s) published (%s %s)",
-                                n, book, day)
-            except Exception:  # noqa: BLE001 — one book must not stop the other
-                log.exception("NFL website board publish failed for %s", book)
+        out = await asyncio.to_thread(npub.publish_upcoming)
+        total = sum(sum(v.values()) for v in (out or {}).values())
+        log.warning("NFL website board: %d row(s) published across %s",
+                    total, {b: sorted(v) for b, v in (out or {}).items()})
     except Exception:  # noqa: BLE001 — Rule 2
         log.exception("NFL website board refresh failed (tennis unaffected)")
 
