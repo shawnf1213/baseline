@@ -25,6 +25,8 @@ except Exception:  # pragma: no cover
 
 import requests
 
+import service_token as _service_token   # X-Service-Token for every backend call
+
 # Venue clock for the card-date rule — see CARD_START_LOCAL_HOUR and the block
 # in _price_one. Never fatal: without it every card falls back to the ET cutoff,
 # which is the behaviour that shipped before it.
@@ -571,13 +573,15 @@ def _season_surface() -> str:
 
 
 def _get(path: str, params: dict, timeout: int):
-    r = requests.get(f"{API_BASE}{path}", params=params, timeout=timeout)
+    r = requests.get(f"{API_BASE}{path}", params=params, timeout=timeout,
+                     headers=_service_token.headers())
     r.raise_for_status()
     return r.json()
 
 
 def _post(path: str, payload: dict, timeout: int):
-    r = requests.post(f"{API_BASE}{path}", json=payload, timeout=timeout)
+    r = requests.post(f"{API_BASE}{path}", json=payload, timeout=timeout,
+                      headers=_service_token.headers())
     r.raise_for_status()
     return r.json()
 

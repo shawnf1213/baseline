@@ -622,6 +622,20 @@ async def nfl_project(payload: dict = Body(...)):
 NBA_BOARD_TOKEN = os.getenv("NBA_BOARD_TOKEN", "")
 
 
+# ── SERVICE CALLERS ──────────────────────────────────────────────────────────
+# The bot and the publishers identify themselves with X-Service-Token (see
+# core/service_token.py). Compared constant-time; an unset token means no
+# caller can ever be a service caller, rather than every caller being one.
+def is_service_request(req: Request) -> bool:
+    try:
+        from core import service_token as _svc
+        expected = _svc.token()
+        supplied = req.headers.get(_svc.HEADER.lower(), "") or req.headers.get(_svc.HEADER, "")
+        return bool(expected) and hmac.compare_digest(supplied, expected)
+    except Exception:  # noqa: BLE001
+        return False
+
+
 @app.post("/api/nba/results/log")
 async def nba_results_log(payload: dict = Body(...)):
     """Insert NBA picks as PENDING. Body: {"picks": [ ... ]}."""

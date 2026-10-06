@@ -30,10 +30,17 @@ LOG_TIMEOUT = 20
 READ_TIMEOUT = 25
 
 
+def _svc_headers() -> dict:
+    """X-Service-Token for every backend call — see core/service_token.py."""
+    t = (os.getenv("BASELINE_SERVICE_TOKEN") or "").strip()
+    return {"X-Service-Token": t} if t else {}
+
+
 def _post(path: str, payload: dict, timeout: int = LOG_TIMEOUT):
     import requests
     try:
-        r = requests.post(f"{API_BASE}{path}", json=payload, timeout=timeout)
+        r = requests.post(f"{API_BASE}{path}", json=payload, timeout=timeout,
+                          headers=_svc_headers())
         r.raise_for_status()
         return r.json() or {}
     except Exception as exc:  # noqa: BLE001 — Rule 2
@@ -45,7 +52,7 @@ def _get(path: str, params: dict = None, timeout: int = READ_TIMEOUT):
     import requests
     try:
         r = requests.get(f"{API_BASE}{path}", params=params or None,
-                         timeout=timeout)
+                         timeout=timeout, headers=_svc_headers())
         r.raise_for_status()
         return r.json() or {}
     except Exception as exc:  # noqa: BLE001 — Rule 2

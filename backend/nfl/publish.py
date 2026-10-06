@@ -23,6 +23,12 @@ import os
 
 log = logging.getLogger("baseline.nfl.publish")
 
+def _svc_headers() -> dict:
+    """X-Service-Token for every backend call — see core/service_token.py."""
+    t = (os.getenv("BASELINE_SERVICE_TOKEN") or "").strip()
+    return {"X-Service-Token": t} if t else {}
+
+
 API_BASE = os.getenv(
     "BASELINE_API_URL", "https://backend-production-84ab.up.railway.app"
 ).rstrip("/")
@@ -68,7 +74,7 @@ def publish(rows: list, book: str, slate_date: str) -> int:
         payload = {"book": book, "slate_date": str(slate_date),
                    "rows": [_row(r, str(slate_date), book) for r in rows[:MAX_ROWS]]}
         resp = requests.post(f"{API_BASE}/api/nfl/board", json=payload,
-                             headers={"X-NFL-Board-Token": TOKEN},
+                             headers={"X-NFL-Board-Token": TOKEN, **_svc_headers()},
                              timeout=TIMEOUT)
         resp.raise_for_status()
         n = int((resp.json() or {}).get("written") or 0)
@@ -194,7 +200,7 @@ def publish_players(rows: list, slate_date: str, limit: int = MAX_PLAYERS) -> in
         resp = requests.post(f"{API_BASE}/api/nfl/players",
                              json={"slate_date": str(slate_date),
                                    "players": payload},
-                             headers={"X-NFL-Board-Token": TOKEN},
+                             headers={"X-NFL-Board-Token": TOKEN, **_svc_headers()},
                              timeout=120)
         resp.raise_for_status()
         n = int((resp.json() or {}).get("written") or 0)

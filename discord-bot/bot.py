@@ -25,6 +25,7 @@ from discord import app_commands
 from discord.ext import tasks
 from dotenv import load_dotenv
 
+import service_token as _service_token   # X-Service-Token for every backend call
 import pick_of_day      # isolated Pick of the Day feature (own failure handling)
 import underdog         # Underdog Fantasy board client (own failure handling)
 import results_tracker   # Feature 1 — durable results log (own failure handling)
@@ -346,13 +347,15 @@ class DataUnavailable(Exception):
 
 
 def _get(path: str, params: dict, timeout: int):
-    r = requests.get(f"{API_BASE}{path}", params=params, timeout=timeout)
+    r = requests.get(f"{API_BASE}{path}", params=params, timeout=timeout,
+                     headers=_service_token.headers())
     r.raise_for_status()
     return r.json()
 
 
 def _post(path: str, payload: dict, timeout: int):
-    r = requests.post(f"{API_BASE}{path}", json=payload, timeout=timeout)
+    r = requests.post(f"{API_BASE}{path}", json=payload, timeout=timeout,
+                      headers=_service_token.headers())
     r.raise_for_status()
     return r.json()
 

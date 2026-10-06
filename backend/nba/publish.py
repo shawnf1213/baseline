@@ -23,6 +23,12 @@ import os
 
 log = logging.getLogger("baseline.nba.publish")
 
+def _svc_headers() -> dict:
+    """X-Service-Token for every backend call — see core/service_token.py."""
+    t = (os.getenv("BASELINE_SERVICE_TOKEN") or "").strip()
+    return {"X-Service-Token": t} if t else {}
+
+
 API_BASE = os.getenv(
     "BASELINE_API_URL", "https://backend-production-84ab.up.railway.app"
 ).rstrip("/")
@@ -65,7 +71,7 @@ def publish(rows: list, book: str, slate_date: str) -> int:
                    "rows": [_row(r, slate_date, book) for r in (rows or [])
                             [:MAX_ROWS]]}
         r = requests.post(f"{API_BASE}/api/nba/board", json=payload,
-                          headers={"x-nba-board-token": TOKEN},
+                          headers={"x-nba-board-token": TOKEN, **_svc_headers()},
                           timeout=TIMEOUT)
         r.raise_for_status()
         n = int((r.json() or {}).get("written") or 0)
