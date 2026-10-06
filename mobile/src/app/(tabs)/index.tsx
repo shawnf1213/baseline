@@ -1,17 +1,19 @@
 // Board — the first tab: the live player board, every line the books list for
 // the selected sport with Baseline's number beside it. At the top, the
 // strongest plays as a swipeable strip and a one-line summary of the slate;
-// under it, compact rows (face · call · confidence ring). Search, prop filter
-// and sort; pull to refresh; placeholders while it loads.
+// under it, one card per player (face · best call · confidence ring) that
+// drops down to every prop on him, like the website's board. Search, prop
+// filter and sort; pull to refresh; placeholders while it loads.
 //
 // Tennis rows are priced on the backend on a schedule and arrive priced or
-// pending; NFL and NBA arrive priced by the bot's scan.
+// pending; NFL and NBA arrive priced by the bot's scan, every game day still
+// to come at once.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { FlatList, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Empty, Icon, Muted, PageTitle, SectionLabel, Segmented, Symbol } from '@/components/ui'
 import { SkeletonCard } from '@/components/Skeleton'
-import { PickCard } from '@/components/PickCard'
+import { PlayerGroupCard } from '@/components/PlayerGroupCard'
 import { PickSheet } from '@/components/PickSheet'
 import { OptionSheet } from '@/components/OptionSheet'
 import { SelectField } from '@/components/projectBits'
@@ -19,7 +21,7 @@ import { HeaderAccount } from '@/components/HeaderAccount'
 import { PlayerAvatar } from '@/components/Avatar'
 import { ConfRing } from '@/components/Ring'
 import { AmbientGlow, CardGlow } from '@/components/Glow'
-import { BoardRow, loadBoard } from '@/lib/board'
+import { BoardData, BoardRow, BoardSort, groupBoard, loadBoard } from '@/lib/board'
 import { Book, PickRow, fmtLine, fmtSigned, kickoffLabel, normName, prettyDate, propLabel,
          startTimeLabel } from '@/lib/picks'
 import { SportKey, SportSwitch, useSport } from '@/lib/sports'
@@ -30,7 +32,7 @@ const BOOKS: { key: Book; label: string }[] = [
   { key: 'prizepicks', label: 'PrizePicks' },
   { key: 'underdog', label: 'Underdog' },
 ]
-type Sort = 'start' | 'confidence' | 'edge'
+type Sort = BoardSort
 const SORTS: { value: Sort; label: string; sub?: string }[] = [
   { value: 'start', label: 'Start time', sub: 'soonest first' },
   { value: 'confidence', label: 'Confidence', sub: 'highest first' },
@@ -38,16 +40,24 @@ const SORTS: { value: Sort; label: string; sub?: string }[] = [
 ]
 const EMPTY: Record<SportKey, string> = {
   tennis: 'has no tennis lines up right now. Check back when matches are near.',
-  nfl: 'The board refreshes through the day; Sunday slates load Friday.',
+  nfl: 'Lines show up here, priced, as soon as the book lists the next games.',
   nba: 'The board is published in the afternoon on game days.',
   mlb: '',
+}
+
+// "Oct 8 – Oct 12 · live lines" — every game day on an NFL/NBA board.
+function slateLine(sport: SportKey, b?: BoardData) {
+  if (sport === 'tennis' || !b || !b.slates.length) return 'Live lines, priced by Baseline'
+  const first = prettyDate(b.slates[0]), last = prettyDate(b.slates[b.slates.length - 1])
+  if (b.final) return `${first} · final`
+  return `${first === last ? first : `${first} – ${last}`} · live lines`
 }
 
 export default function Board() {
   const insets = useSafeAreaInsets()
   const { sport } = useSport()
   const [book, setBook] = useState<Book>('prizepicks')
-  const [data, setData] = useState<Record<string, { rows: BoardRow[]; available: boolean; slate: string | null }>>({})
+  const [data, setData] = useState<Record<string, BoardData>>({})
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -56,6 +66,9 @@ export default function Board() {
   const [sort, setSort] = useState<Sort>('start')
   const [sheet, setSheet] = useState<'prop' | 'sort' | null>(null)
   const [open, setOpen] = useState<PickRow | null>(null)
+  // The one player card dropped down, like the website's board — opening
+  // another closes it.
+  const [openKey, setOpenKey] = useState<string | null>(null)
   const alive = useRef(true)
   useEffect(() => () => { alive.current = false }, [])
 
@@ -67,7 +80,7 @@ export default function Board() {
     finally { if (alive.current) { setLoading(false); setRefreshing(false) } }
   }, [])
   useEffect(() => {
-    setQuery(''); setProp('All'); setSort(sport === 'tennis' ? 'start' : 'confidence')
+    setQuery(''); setProp('All'); setSort(sport === 'tennis' ? 'start' : 'confidence'); setOpenKey(null)
     if (data[key] === undefined) load(sport, book); else setLoading(false)
   }, [sport, book])  // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -82,17 +95,17 @@ export default function Board() {
     return () => clearInterval(t)
   }, [sport, book, board, load])
 
+  // Filter the props, then fold them into one card per player. Filtering first
+  // means "Aces" shows each player's Aces line alone, not his whole card.
   const rows = useMemo(() => {
     let list: BoardRow[] = baseRows
     const q = normName(query)
     if (q) list = list.filter(r => normName(r.player).includes(q) || normName(r.opponent).includes(q)
       || normName(r.team || '').includes(q) || normName(propLabel(sport, r.propType)).includes(q))
     if (prop !== 'All') list = list.filter(r => r.propType === prop)
-    if (sort === 'confidence') list = [...list].sort((a, b) => (b.confidence ?? -1) - (a.confidence ?? -1))
-    else if (sort === 'edge') list = [...list].sort((a, b) => Math.abs(b.edge ?? -1) - Math.abs(a.edge ?? -1))
-    else if (sport === 'tennis') list = [...list].sort((a, b) => (a.startTs ?? Infinity) - (b.startTs ?? Infinity))
     return list
-  }, [baseRows, query, prop, sort, sport])
+  }, [baseRows, query, prop, sport])
+  const groups = useMemo(() => groupBoard(rows, sort), [rows, sort])
 
   // The strongest priced plays on the whole board (not the filtered list), one
   // per player so the strip is a spread of the slate, not one name four times.
@@ -125,8 +138,7 @@ export default function Board() {
 
   const header = (
     <View>
-      <PageTitle sub={board?.slate && sport !== 'tennis' ? `${prettyDate(board.slate)} slate · live lines` : 'Live lines, priced by Baseline'}
-                 right={<HeaderAccount />}>Board</PageTitle>
+      <PageTitle sub={slateLine(sport, board)} right={<HeaderAccount />}>Board</PageTitle>
       <SportSwitch />
       <Segmented options={BOOKS} value={book} onChange={setBook} compact />
 
@@ -150,7 +162,7 @@ export default function Board() {
                         renderItem={({ item }) => <TopCard r={item} onPress={setOpen} />} />
             </>
           ) : null}
-          <SectionLabel right={`${rows.length} ${rows.length === 1 ? 'line' : 'lines'}`}>
+          <SectionLabel right={`${groups.length} ${groups.length === 1 ? 'player' : 'players'} · ${rows.length} ${rows.length === 1 ? 'line' : 'lines'}`}>
             {filtering ? 'Matches' : 'Full board'}
           </SectionLabel>
         </>
@@ -186,11 +198,12 @@ export default function Board() {
     <View style={{ flex: 1, backgroundColor: T.bg }}>
       <AmbientGlow />
       <FlatList
-        data={body ? [] : rows}
-        keyExtractor={r => r.key}
-        renderItem={({ item: r }) => (
-          <PickCard r={r} onPress={setOpen} pricing={r.state === 'pending'} noData={r.state === 'nodata' || r.state === 'started'}
-                    sub={r.sport === 'tennis' ? startTimeLabel(r.startTs) : kickoffLabel(r.startsAt)} />
+        data={body ? [] : groups}
+        keyExtractor={g => g.key}
+        extraData={openKey}
+        renderItem={({ item: g }) => (
+          <PlayerGroupCard g={g} open={openKey === g.key} onOpen={setOpen}
+                           onToggle={() => setOpenKey(k => (k === g.key ? null : g.key))} />
         )}
         ListHeaderComponent={header}
         ListEmptyComponent={body}

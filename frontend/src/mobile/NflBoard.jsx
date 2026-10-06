@@ -48,12 +48,24 @@ function prettyDate(iso) {
     { weekday: 'short', month: 'numeric', day: 'numeric', timeZone: 'UTC' })
 }
 
-// NFL pick -> the row shape the shared board components speak.
-function toRow(p) {
+// "Thu" / "Sun" / "Mon" — the ET weekday of a kickoff.
+function etWeekday(iso) {
+  const t = Date.parse(iso || '')
+  if (!Number.isFinite(t)) return ''
+  return new Date(t).toLocaleDateString('en-US',
+    { weekday: 'short', timeZone: 'America/New_York' })
+}
+
+// NFL pick -> the row shape the shared board components speak. `multiDay` is
+// set when the board spans more than one game day, so each card says which
+// day its game is on.
+function toRow(p, multiDay = false) {
+  const ko = Date.parse(p.kickoff || '')
+  const day = multiDay ? etWeekday(p.kickoff) : ''
   return {
     key: `nfl-${p.id}`,
     player: p.player,
-    opponent: p.opponent || '—',
+    opponent: (p.opponent || '—') + (day ? ` · ${day}` : ''),
     surface: '',
     // Carried through so a card can draw the club crest.
     team: p.team,
@@ -66,7 +78,8 @@ function toRow(p) {
     // the stored value is a probability. Passing 0.81 straight through would
     // render every NFL play as the lowest possible tier.
     confidence: typeof p.confidence === 'number' ? p.confidence * 100 : null,
-    startTs: null,
+    // Kickoff, so the open card shows the game time like a tennis card does.
+    startTs: Number.isFinite(ko) ? Math.floor(ko / 1000) : null,
     _state: 'done',
     _pick: p,
   }
@@ -136,16 +149,17 @@ export default function NflBoard({ book = 'prizepicks', onMeta, onProject }) {
     () => [...new Set((picks || []).map(p => p.slate_date).filter(Boolean))]
       .sort().reverse(), [picks])
 
-  // THE LIVE SLATE, chosen for the reader rather than offered as tabs. Tennis
-  // has no date picker — it shows the board that is live now — and a football
-  // board with two date chips on it was asking a question the reader does not
-  // have. Today if there is a slate today, otherwise the NEXT one; only fall
-  // back to the most recent when nothing upcoming is published.
-  const active = useMemo(() => {
+  // EVERY GAME DAY STILL TO COME, in one board — still no date tabs. Tennis
+  // has no date picker; it shows every line that is live now, and so does
+  // this. The bot prices every line the books list for the coming week and
+  // stores each game day as its own slate (operator, 2026-10-06: NFL lines
+  // available and projected every day, not just on game days), so a Tuesday
+  // carries Thursday's, Sunday's and Monday's lines. Only when nothing is
+  // upcoming does it fall back to the most recent slate.
+  const shown = useMemo(() => {
     const today = etToday()
-    if (slates.includes(today)) return today
-    const upcoming = slates.filter(s => s > today).sort()
-    return upcoming[0] || slates[0]
+    const upcoming = slates.filter(s => s >= today).sort()
+    return upcoming.length ? upcoming : slates.slice(0, 1)
   }, [slates])
 
   // Merge the record INTO the board: a row that was posted to Discord carries
@@ -166,7 +180,7 @@ export default function NflBoard({ book = 'prizepicks', onMeta, onProject }) {
   // rather than dropped, so an older published row cannot silently vanish.
   const rows = useMemo(
     () => (picks || [])
-      .filter(p => p.slate_date === active && (!p.book || p.book === book))
+      .filter(p => shown.includes(p.slate_date) && (!p.book || p.book === book))
       .map(p => {
         const hit = byPosted.get(`${p.slate_date}|${p.player}|${p.prop_type}`)
         return hit ? { ...p, result: hit.result, result_value: hit.result_value,
@@ -174,12 +188,15 @@ export default function NflBoard({ book = 'prizepicks', onMeta, onProject }) {
       })
       .sort((a, b) => ((b.is_potd || 0) - (a.is_potd || 0))
         || ((b.confidence || 0) - (a.confidence || 0))),
-    [picks, active, byPosted, book])
+    [picks, shown, byPosted, book])
 
   // The SAME row shape the tennis board uses, built once. The summary, the top
   // plays and the grid all read it, so none of them can describe a different
   // board than the others.
-  const viewRows = useMemo(() => rows.map(toRow), [rows])
+  const viewRows = useMemo(() => {
+    const multiDay = new Set(rows.map(p => p.slate_date)).size > 1
+    return rows.map(p => toRow(p, multiDay))
+  }, [rows])
 
   // The SAME grouping the tennis board uses — 168 props across roughly sixty
   // players, so the board is sixty cards instead of a hundred and sixty-eight
@@ -199,9 +216,12 @@ export default function NflBoard({ book = 'prizepicks', onMeta, onProject }) {
 
   useEffect(() => {
     if (!onMeta) return
+    const first = shown[0], last = shown[shown.length - 1]
     onMeta({ count: viewRows.length,
-             label: active ? `${prettyDate(active)} slate` : '' })
-  }, [onMeta, viewRows.length, active])
+             label: !first ? ''
+               : first === last ? `${prettyDate(first)} slate`
+               : `${prettyDate(first)} – ${prettyDate(last)}` })
+  }, [onMeta, viewRows.length, shown])
 
   if (err) return <Empty icon="⚠️" title="NFL board unavailable" hint={err} />
   if (!picks) {
@@ -210,8 +230,8 @@ export default function NflBoard({ book = 'prizepicks', onMeta, onProject }) {
     </div>
   }
   if (!picks.length) {
-    return <Empty icon="🏈" title="No NFL board right now"
-                  hint="The board refreshes through the day. Sunday slates load Friday." />
+    return <Empty icon="🏈" title="No NFL lines right now"
+                  hint="Lines show up here, priced, as soon as PrizePicks or Underdog list the next games." />
   }
 
   return (
