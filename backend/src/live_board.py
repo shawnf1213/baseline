@@ -119,6 +119,18 @@ def _slate_maps() -> dict:
     return maps
 
 
+def _epoch(iso):
+    """ISO-8601 from either book ("2026-10-06T00:00:00.000-04:00",
+    "2026-10-07T04:00:00Z") -> epoch seconds, or None."""
+    if not iso:
+        return None
+    try:
+        s = str(iso).strip().replace("Z", "+00:00")
+        return int(datetime.fromisoformat(s).timestamp())
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _enrich(rows: list, maps: dict) -> list:
     full, last = maps.get("full") or {}, maps.get("last") or {}
     for r in rows:
@@ -126,7 +138,10 @@ def _enrich(rows: list, maps: dict) -> list:
         r["tour"] = info.get("tour") or ""
         r["surface"] = info.get("surface") or ""
         r["tournament"] = info.get("tournament") or ""
-        r["start_timestamp"] = info.get("start_timestamp") or None
+        # The slate's start time when the name joined; otherwise the book's
+        # own start time, so the board can still sort soonest-first after the
+        # day's slate has rolled over.
+        r["start_timestamp"] = info.get("start_timestamp") or _epoch(r.get("starts_at"))
     return rows
 
 
