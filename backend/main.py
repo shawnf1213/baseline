@@ -1140,6 +1140,20 @@ async def results_exclude(http_req: Request, req: ExcludeRequest):
     return {"updated": database.set_excluded(req.ids, req.excluded)}
 
 
+@app.post("/api/nba/results/exclude")
+async def nba_results_exclude(http_req: Request, req: ExcludeRequest):
+    """The NBA twin of /api/results/exclude, against nba_picks: test or
+    superseded plays leave the record, the recap and the grader, and stay in
+    the table for audit. Admin-gated for the same reason — it rewrites the
+    published record. First used 2026-10-06 for four test picks posted before
+    the season (operator: "they need to be removed and not tracked")."""
+    _require_admin(http_req)
+    from src import database
+    logger.warning("NBA_RESULTS_EXCLUDE | ids=%s excluded=%s | authorised admin edit",
+                   req.ids, req.excluded)
+    return {"updated": database.nba_set_excluded(req.ids, req.excluded)}
+
+
 class SetLineRequest(BaseModel):
     id: int
     line: float | None = None

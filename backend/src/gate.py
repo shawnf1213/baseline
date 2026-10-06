@@ -58,6 +58,7 @@ RESTRICTED_PREFIX = (
     "/api/results/observe-line",
     "/api/nfl/results/log", "/api/nfl/results/pending", "/api/nfl/results/update",
     "/api/nba/results/log", "/api/nba/results/pending", "/api/nba/results/update",
+    "/api/nba/results/exclude",
     "/api/billing/subscribers", "/api/billing/ip-history", "/api/billing/resync",
     "/api/search/debug", "/api/search/probe", "/api/proxy/", "/api/cache/clear",
     "/api/nba/diag", "/api/preview/", "/api/odds/", "/api/admin/", "/api/push/send",

@@ -2047,16 +2047,44 @@ def nba_log_picks(rows: list) -> int:
 
 
 def nba_pending() -> list:
+    """PENDING NBA picks for the grader. An excluded row is out of the record,
+    so it is out of grading too — grading a test play would only invite it
+    back into a recap."""
     if not is_ready():
         return []
     try:
         with _session() as s:
-            rows = s.query(NbaPick).filter(NbaPick.result == "PENDING").order_by(
-                NbaPick.id).all()
+            rows = s.query(NbaPick).filter(
+                NbaPick.result == "PENDING",
+                func.coalesce(NbaPick.excluded_from_record, 0) == 0,
+            ).order_by(NbaPick.id).all()
             return [_nfl_dict(r) for r in rows]
     except Exception as exc:  # noqa: BLE001
         logger.warning("nba_pending failed: %s", exc)
         return []
+
+
+def nba_set_excluded(ids: list, excluded: bool = True) -> int:
+    """Flag (or unflag) NBA pick rows as excluded_from_record — test or
+    superseded plays kept for audit but out of the record, the recap and the
+    grader. The rows are retained; only the flag changes. Returns rows updated.
+    The NBA twin of set_excluded, against its own table on purpose (see the
+    note above nba_log_picks)."""
+    if not is_ready() or not ids:
+        return 0
+    try:
+        n = 0
+        with _session() as s:
+            for pid in ids:
+                row = s.get(NbaPick, int(pid))
+                if row is None:
+                    continue
+                row.excluded_from_record = 1 if excluded else 0
+                n += 1
+        return n
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("nba_set_excluded failed: %s", exc)
+        return 0
 
 
 def nba_update_result(pick_id: int, result: str, value=None) -> bool:
