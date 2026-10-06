@@ -125,9 +125,17 @@ def main():
     serial = attrs.get("serialNumber") or format(cert.serial_number, "X")
     print(f"distribution certificate created: id={cert_id} serial={serial} expires={attrs.get('expirationDate')}")
     p12_pw = pysecrets.token_urlsafe(18)
+    # LEGACY ENCRYPTION ON PURPOSE. cryptography's default (PBES2 / AES-256)
+    # is refused by macOS's `security import` on the EAS build machine, which
+    # fails the build in "Prepare credentials". 3DES + SHA-1 is what Keychain
+    # Access and Xcode export themselves.
+    legacy = (serialization.PrivateFormat.PKCS12.encryption_builder()
+              .kdf_rounds(50000)
+              .key_cert_algorithm(pkcs12.PBES.PBESv1SHA1And3KeyTripleDESCBC)
+              .hmac_hash(hashes.SHA1())
+              .build(p12_pw.encode()))
     p12 = pkcs12.serialize_key_and_certificates(
-        name=APP_NAME.encode(), key=priv, cert=cert, cas=None,
-        encryption_algorithm=serialization.BestAvailableEncryption(p12_pw.encode()))
+        name=APP_NAME.encode(), key=priv, cert=cert, cas=None, encryption_algorithm=legacy)
     p12_path = os.path.join(SECRETS, f"dist_{serial}.p12")
     with open(p12_path, "wb") as f:
         f.write(p12)
