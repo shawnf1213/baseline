@@ -40,7 +40,8 @@
         {
           "fonts": []
         }
-      ]
+      ],
+      "expo-localization"
     ],
     "experiments": {
       "typedRoutes": true

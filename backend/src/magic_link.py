@@ -63,6 +63,23 @@ _THROTTLE_SECONDS = 60         # one send per address per minute
 CODE_TTL = 10 * 60
 CODE_MAX_ATTEMPTS = 5
 _CODE_KEY = "magic_code:{}"
+
+# ── THE APP STORE REVIEWER'S FIXED CODE (operator, 2026-10-05) ──────────────
+# Apple's reviewer cannot reach the operator's Discord or inbox, so the emailed
+# code alone would fail review. For the ONE address in APP_REVIEWER_EMAILS, a
+# fixed code held as a backend secret is accepted as well as the emailed one.
+#
+# Three things keep this from being a back door:
+#   - it is checked ONLY when the address is the designated reviewer, so for
+#     every other address this branch does not exist;
+#   - it is refused unless the secret is at least REVIEWER_CODE_MIN_LEN
+#     characters, so a short or empty value disables it rather than weakening
+#     it;
+#   - what it unlocks is the reviewer flag (active, never owner, never admin),
+#     because access_for_email resolves the same address to exactly that.
+# The value is set in Railway and never appears in this repo or in logs.
+REVIEWER_CODE = os.getenv("APP_REVIEWER_CODE", "").strip()
+REVIEWER_CODE_MIN_LEN = 12
 _last_sent: dict = {}
 
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s.]+\.[^@\s]+$")
@@ -241,8 +258,21 @@ def verify_code(email: str, code: str) -> dict:
     it too. There is no path through here that leaves a usable code behind
     after it has been used."""
     addr = (email or "").strip().lower()
+    if not addr or not _EMAIL_RE.match(addr):
+        return {"error": "enter the 6-digit code from the email"}
+    # Reviewer first, and only for the reviewer. Compared constant-time, on
+    # the raw (trimmed) input — the fixed code is not six digits.
+    try:
+        from . import discord_auth
+        is_reviewer = addr in discord_auth.REVIEWER_EMAILS
+    except Exception:  # noqa: BLE001
+        is_reviewer = False
+    if (is_reviewer and len(REVIEWER_CODE) >= REVIEWER_CODE_MIN_LEN
+            and hmac.compare_digest(str(code or "").strip(), REVIEWER_CODE)):
+        logger.info("reviewer signed in with the fixed code")
+        return {"email": addr}
     digits = "".join(ch for ch in str(code or "") if ch.isdigit())
-    if not addr or not _EMAIL_RE.match(addr) or len(digits) != 6:
+    if len(digits) != 6:
         return {"error": "enter the 6-digit code from the email"}
     try:
         from . import database

@@ -96,12 +96,17 @@ export default function SignIn() {
           <Text style={s.label}>Check your inbox</Text>
           <Muted>If that address has a membership, a 6-digit code is on its way.
             It works once, for 10 minutes.</Muted>
-          <TextInput value={code} onChangeText={v => setCode(v.replace(/\D/g, '').slice(0, 6))}
-                     keyboardType="number-pad" textContentType="oneTimeCode"
-                     autoComplete="one-time-code" placeholder="••••••"
-                     placeholderTextColor={T.muted2} maxLength={6}
+          {/* Not number-pad and not capped at six: the emailed code is six
+              digits, but the App Store reviewer's fixed code is longer and
+              not numeric, and the field has to accept both. iOS still offers
+              the code from Mail via textContentType="oneTimeCode". */}
+          <TextInput value={code} onChangeText={v => setCode(v.replace(/\s/g, '').slice(0, 40))}
+                     keyboardType="default" textContentType="oneTimeCode"
+                     autoComplete="one-time-code" autoCapitalize="none"
+                     autoCorrect={false} placeholder="6-digit code"
+                     placeholderTextColor={T.muted2} maxLength={40}
                      style={[s.input, s.code]} editable={!busy} />
-          <Pressable onPress={checkCode} disabled={busy || code.length !== 6}
+          <Pressable onPress={checkCode} disabled={busy || code.length < 6}
                      style={[s.btn, s.btnPrimary, { marginTop: T.s3 }]}>
             {busy ? <ActivityIndicator color="#052e16" />
                   : <Text style={s.btnPrimaryText}>Sign in</Text>}
@@ -139,7 +144,7 @@ const s = StyleSheet.create({
   input: { backgroundColor: 'rgba(255,255,255,0.04)', borderWidth: 1, borderColor: T.glassLine,
            borderRadius: T.r1, paddingHorizontal: 14, minHeight: 48, color: T.white,
            fontFamily: F.body, fontSize: 16, marginTop: 8 },
-  code: { fontFamily: F.condBlack, fontSize: 28, letterSpacing: 10, textAlign: 'center' },
+  code: { fontFamily: F.condBlack, fontSize: 24, letterSpacing: 4, textAlign: 'center' },
   err: { color: T.red, fontFamily: F.bodyMed, fontSize: 13, textAlign: 'center', marginTop: T.s3 },
   foot: { color: T.muted2, fontFamily: F.body, fontSize: 11, textAlign: 'center', marginTop: T.s6 },
 })

@@ -75,8 +75,11 @@ export async function requestEmailCode(email: string): Promise<void> {
 }
 
 export async function verifyEmailCode(email: string, code: string): Promise<Me> {
+  // Sent as typed (whitespace stripped), not digit-filtered: the backend
+  // normalises the six-digit case itself, and the reviewer's fixed code is
+  // not numeric.
   const r = await api.post<{ session: string }>('/api/auth/magic/code',
-    { email: email.trim(), code: code.replace(/\D/g, '') })
+    { email: email.trim(), code: code.replace(/\s/g, '') })
   await setSession(r.session)
   return fetchMe()
 }
