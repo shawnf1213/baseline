@@ -43,8 +43,10 @@ async function serve(dir) {
   return server
 }
 
-// Logical points × scale = Apple's required pixel sizes.
-const DEVICES = [
+// Logical points × scale = Apple's required pixel sizes. RAW=1 instead renders
+// one 440×902 capture per screen — a 6.9" screen less its 54pt status bar —
+// for scripts/store_frames.mjs to place inside a phone frame.
+const DEVICES = process.env.RAW ? [{ name: 'raw', width: 440, height: 902, scale: 3 }] : [
   { name: '6.9in-1320x2868', width: 440, height: 956, scale: 3 },
   { name: '6.5in-1242x2688', width: 414, height: 896, scale: 3 },
 ]
@@ -128,6 +130,10 @@ async function openTopPlay(page) {
 async function settle(page) {
   try { await page.waitForNetworkIdle({ idleTime: 1500, timeout: 25_000 }) } catch {}
   try { await page.waitForFunction(() => [...document.images].every(i => i.complete), { timeout: 15_000 }) } catch {}
+  // A sheet focuses its Done button on the web and the browser rings it; the
+  // iOS app draws no such ring, so it never belongs in a store frame.
+  await page.addStyleTag({ content: '*:focus,*:focus-visible{outline:none!important}' })
+  await page.evaluate(() => { const a = document.activeElement; if (a && a !== document.body && a.blur) a.blur() })
   await sleep(800)
 }
 
@@ -149,10 +155,28 @@ const SHOTS = [
       if (!(await openTopPlay(page))) await openPricedProp(page)
       await hasText(page, 'Recent form'); await sleep(6000) } },
   // Project, opened the way a pick sheet opens it: both players, prop and line
-  // in the URL, so it runs on its own (a matchup the board pricer has priced).
-  { name: '04-project', path: '/project?t=1&sport=tennis&player=Darja%20Vidmanova&playerId=298339&opponent=Kyoka%20Okamura&opponentId=130690&tour=WTA&surface=Hard&prop=Total%20Games&line=19.5',
+  // in the URL, so it runs on its own (a matchup the board pricer has priced;
+  // swap in a current one when this goes stale). Scrolled so the verdict card
+  // is in view under a little of the form.
+  { name: '04-project', path: '/project?t=1&sport=tennis&player=Coco%20Gauff&playerId=264983&opponent=Elise%20Mertens&opponentId=78551&tour=WTA&surface=Hard&prop=Break%20Points%20Won&line=4.5',
     ready: 'Price any matchup', then: async (page) => {
-      await hasText(page, 'Serve & return', 180_000); await sleep(4000) } },
+      await hasText(page, 'edge [+−-]?\\d', 180_000); await sleep(3000)
+      await page.evaluate(() => {
+        // The subtitle is nested text ("vs " + name + " · Hard"), so match on
+        // any element and keep the tightest one.
+        const leaf = [...document.querySelectorAll('div,span')]
+          .filter(e => /^vs .+ · (Hard|Clay|Grass)$/.test((e.textContent || '').trim()))
+          .sort((a, b) => a.textContent.length - b.textContent.length)[0]
+        if (!leaf) return
+        // Scroll the screen's own scroller by the subtitle's offset, leaving
+        // ~260pt above it (the verdict's title and the Run button).
+        let sc = leaf.parentElement
+        while (sc && !(/(auto|scroll)/.test(getComputedStyle(sc).overflowY) && sc.scrollHeight > sc.clientHeight)) sc = sc.parentElement
+        if (!sc) return
+        const delta = leaf.getBoundingClientRect().top - sc.getBoundingClientRect().top - 260
+        sc.scrollTop = Math.max(0, Math.min(sc.scrollHeight - sc.clientHeight, sc.scrollTop + delta))
+      })
+      await sleep(1500) } },
   { name: '05-research', path: '/research', ready: 'Research', then: async (page) => {
       const input = await page.waitForSelector('input[placeholder*="Search"]', { timeout: 30_000 })
       // An active player: a page carrying the "may be inactive" warning (Sinner,

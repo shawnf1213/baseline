@@ -66,7 +66,7 @@ App Store Connect → your app → **App Store** tab → version 1.0 → **App R
 - **Pricing and Availability**: Free (the membership is bought on the website). Availability: all territories is fine; the app itself only shows Subscribe on the US storefront.
 - **App Privacy**: answer per `apple-review.md` (Email, User ID, Device ID (push token), Purchase History — all "linked to you", none used for tracking; no analytics, no crash data).
 - **Age Rating**: per `apple-review.md` ("Gambling and Contests" → 17+/18+).
-- **Screenshots**: done through the API (2026-10-06, build 6): six frames each in the 6.9" and 6.5" iPhone slots. To replace them after a UI change, re-render (`store-listing.md` → Screenshots) and run `python scripts/asc_screenshots.py --replace`.
+- **Screenshots**: done through the API (2026-10-06, build 6): six marketing frames each in the 6.9" and 6.5" iPhone slots. To replace them after a UI change, follow `store-listing.md` → Screenshots (capture, compose, `python scripts/asc_screenshots.py --replace`).
 - **Description / keywords / support URL / marketing URL**: from `store-listing.md`.
 
 ## 6. Afterwards

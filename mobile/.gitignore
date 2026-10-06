@@ -59,3 +59,6 @@ dist-web/
 
 # EAS local signing credentials (points into .secrets/)
 credentials.json
+
+# raw app captures that store_frames.mjs composes into the store frames
+store/raw/

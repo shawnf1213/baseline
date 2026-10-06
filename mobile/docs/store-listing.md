@@ -87,16 +87,28 @@ Required sizes (iPhone only; `supportsTablet` is false):
 - 6.9" display: 1320 × 2868 (or 1290 × 2796 for 6.7") — required
 - 6.5" display: 1284 × 2778 or 1242 × 2688 — required unless 6.9" covers it (Apple now derives 6.5" from 6.9" uploads)
 
-Order (build 6, uploaded to App Store Connect 2026-10-06): Board · Picks · pick
-sheet of the board's strongest play · Project · Research player sheet · NFL
-board with a player's props dropped down. Plain app frames, no captions, from
-the running app with real data. The Picks frame shows a starred card only when
-the latest board has a real Pick of the Day.
+Marketing frames (build 6, on App Store Connect since 2026-10-06): a two-line
+headline (green, white), the real app inside a drawn iPhone with status bar and
+Dynamic Island, a two-line tagline and the B mark. The phone always holds an
+unretouched capture of the running app with real data; only the frame is drawn.
+No review counts, ratings, testimonials or results claims; copy describes what
+the app does.
 
-To refresh after a UI change:
+| # | Headline | Screen | Tagline |
+|---|---|---|---|
+| 1 | Player props / projected. | Board, tilted phone, brand bar and sport chips | — |
+| 2 | Every line / priced live | Board (tennis) | The live board / top plays first |
+| 3 | Our number / vs. the line | Pick sheet of the board's strongest play | Edge and confidence / on every prop |
+| 4 | Every prop / one tap deep | NFL board, a player's props dropped down | NFL lines / all week long |
+| 5 | Know / the form | Research player sheet | Last 5, last 10 / prop by prop |
+| 6 | Price any / matchup | Project verdict | Pick the players / get the number |
+
+To refresh after a UI change (from `mobile/`):
 
     npx expo export --platform web --output-dir dist-web
-    SERVE_DIR=dist-web PUPPETEER_DIR=<dir with puppeteer> node scripts/screenshots.mjs <reviewer-session-file> http://localhost:5173 store/screenshots
+    RAW=1 ONLY=01-board,03-pick-sheet,04-project,05-research,06-nfl-board SERVE_DIR=dist-web PUPPETEER_DIR=<dir with puppeteer> node scripts/screenshots.mjs <reviewer-session-file> http://localhost:5173 store/raw
+    PUPPETEER_DIR=<dir with puppeteer> node scripts/store_frames.mjs store/raw/raw store/screenshots
     python scripts/asc_screenshots.py --replace
 
-`ONLY=01-board` re-renders a single frame.
+Copy and frame order live in `scripts/store_frames.mjs` (`FRAMES`); the
+Project matchup lives in `scripts/screenshots.mjs` and should be a current one.
