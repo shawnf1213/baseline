@@ -28,6 +28,23 @@ const BASE = resolveBase()
 
 export const api = axios.create({ baseURL: BASE, timeout: 60000 })
 
+// THE SESSION RIDES ON EVERY BACKEND CALL. Member-facing endpoints are gated
+// on an active membership (backend src/gate.py), and the session is what
+// proves it — the same token AuthGate stores after Discord or email sign-in.
+// Only this instance (our backend) carries it; the /pp and /ud proxies use
+// the bare axios import and never see it.
+const SESSION_KEY = 'baseline_session'
+api.interceptors.request.use((cfg) => {
+  try {
+    const tok = localStorage.getItem(SESSION_KEY) || ''
+    if (tok) {
+      cfg.headers = cfg.headers || {}
+      if (!cfg.headers.Authorization) cfg.headers.Authorization = `Bearer ${tok}`
+    }
+  } catch { /* storage unavailable (private mode) — the request goes out unsigned */ }
+  return cfg
+})
+
 // PrizePicks is CORS-locked to browsers, so it ALWAYS goes through the same-origin
 // `/pp` proxy (Vercel rewrite in prod, Vite proxy in dev) — never cross-origin.
 export const fetchPrizePicksBoard = (signal) =>

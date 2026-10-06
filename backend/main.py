@@ -187,6 +187,18 @@ _ALLOWED_ORIGINS = [
     "http://localhost:5174",
 ]
 
+# THE MEMBER GATE (src/gate.py) — registered BEFORE CORS so CORS wraps it and
+# a 401/403 it returns still carries the CORS headers the website needs to
+# read it. Off unless PREMIUM_ENFORCE=1 or the admin override says so.
+@app.middleware("http")
+async def _member_gate(request: Request, call_next):
+    try:
+        from src import gate as _gate
+    except Exception:  # noqa: BLE001 — a broken gate must never take the API down
+        return await call_next(request)
+    return await _gate.middleware(request, call_next)
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_ALLOWED_ORIGINS,
@@ -639,16 +651,33 @@ NBA_BOARD_TOKEN = os.getenv("NBA_BOARD_TOKEN", "")
 
 # ── SERVICE CALLERS ──────────────────────────────────────────────────────────
 # The bot and the publishers identify themselves with X-Service-Token (see
-# core/service_token.py). Compared constant-time; an unset token means no
-# caller can ever be a service caller, rather than every caller being one.
+# core/service_token.py and src/gate.py). Compared constant-time; an unset
+# token means no caller can ever be a service caller.
 def is_service_request(req: Request) -> bool:
-    try:
-        from core import service_token as _svc
-        expected = _svc.token()
-        supplied = req.headers.get(_svc.HEADER.lower(), "") or req.headers.get(_svc.HEADER, "")
-        return bool(expected) and hmac.compare_digest(supplied, expected)
-    except Exception:  # noqa: BLE001
-        return False
+    from src import gate as _gate
+    return _gate.is_service(req)
+
+
+# ── THE ENFORCEMENT SWITCH ───────────────────────────────────────────────────
+# Flip member-gate enforcement without a deploy. Admin token only. Body
+# {"on": true|false|null} — null clears the override (back to PREMIUM_ENFORCE).
+@app.get("/api/admin/enforce")
+async def enforce_status(req: Request):
+    _require_admin(req)
+    from src import gate as _gate
+    return _gate.status()
+
+
+@app.post("/api/admin/enforce")
+async def enforce_set(req: Request, payload: dict = Body(default=None)):
+    _require_admin(req)
+    from src import gate as _gate
+    on = (payload or {}).get("on", None)
+    if on is not None and not isinstance(on, bool):
+        raise HTTPException(status_code=400, detail='send {"on": true|false|null}')
+    ok = _gate.set_override(on)
+    logger.warning("GATE | enforcement override set to %s (ok=%s)", on, ok)
+    return {"ok": ok, **_gate.status()}
 
 
 @app.post("/api/nba/results/log")
