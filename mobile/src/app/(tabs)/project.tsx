@@ -17,6 +17,8 @@ import { PlayerPicker, PickedPlayer } from '@/components/PlayerPicker'
 import { OptionSheet } from '@/components/OptionSheet'
 import { TeamProject } from '@/components/TeamProject'
 import { BigLine, ConfRing, NumField, SelectField, Tile, pb } from '@/components/projectBits'
+import { CardGlow } from '@/components/Glow'
+import { HeaderAccount } from '@/components/HeaderAccount'
 import { Divider, EdgeScale, Figures, GameChart, HitWindows, StatBlock } from '@/components/charts'
 import { ApiError, calcProp, fetchHistory, fetchNextMatch } from '@/lib/api'
 import { resolveCourtName, useCourts } from '@/lib/courts'
@@ -38,7 +40,7 @@ export default function Project() {
   const { sport } = useSport()
   return (
     <Screen>
-      <PageTitle sub="Price any matchup with Baseline's model">Project</PageTitle>
+      <PageTitle sub="Price any matchup with Baseline's model" right={<HeaderAccount />}>Project</PageTitle>
       <SportSwitch />
       {sport === 'tennis' ? <TennisProject params={params} /> : <TeamProject sport={sport} params={params} />}
     </Screen>
@@ -174,10 +176,10 @@ function TennisProject({ params }: { params: Record<string, string | undefined> 
       <Card>
         <Segmented options={TOURS} value={tour} onChange={switchTour} compact />
         <View style={{ flexDirection: 'row', alignItems: 'stretch', gap: 10 }}>
-          <Tile label="Player" name={player?.name} sub={player?.currentRank ? `#${player.currentRank}` : undefined}
+          <Tile label="Player" name={player?.name} sport="tennis" sub={player?.currentRank ? `#${player.currentRank}` : undefined}
                 onPress={() => setPicking('player')} onClear={() => { setPlayer(null); clearResult() }} />
           <View style={pb.vs}><Text style={pb.vsText}>VS</Text></View>
-          <Tile label="Opponent" name={opponent?.name} sub={opponent?.currentRank ? `#${opponent.currentRank}` : undefined}
+          <Tile label="Opponent" name={opponent?.name} sport="tennis" sub={opponent?.currentRank ? `#${opponent.currentRank}` : undefined}
                 onPress={() => setPicking('opponent')} onClear={() => { setOpponent(null); clearResult() }} />
         </View>
 
@@ -242,6 +244,7 @@ function TennisProject({ params }: { params: Record<string, string | undefined> 
            : mode === 'match' ? <MatchVerdict res={res} player={player} opponent={opponent} surface={surface} court={court} />
            : (
             <Card style={[pb.verdict, { borderColor: `${side.tone}55` }]}>
+              <CardGlow color={side.tone} strength={0.24} />
               <Head player={player} opponent={opponent} surface={surface} court={court} />
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14, marginTop: T.s4 }}>
                 <View style={{ flex: 1, minWidth: 0 }}>
@@ -335,6 +338,7 @@ function SpreadVerdict({ res, spread, player, opponent, surface, court }:
   const margin = res.spread_margin_proj
   return (
     <Card style={[pb.verdict, { borderColor: `${tone}55` }]}>
+      <CardGlow color={tone} strength={0.24} />
       <Head player={player} opponent={opponent} surface={surface} court={court} />
       <Text style={[pb.k, { marginTop: T.s4 }]}>Games spread {sp > 0 ? '+' : ''}{sp}</Text>
       <BigLine value={cover != null ? `${Math.round(cover)}%` : '—'} badge={covers ? 'Covers' : 'Does not cover'} tone={tone} />
@@ -358,6 +362,7 @@ function MatchVerdict({ res, player, opponent, surface, court }:
   const tone = wp == null ? T.muted2 : fav ? T.green : T.red
   return (
     <Card style={[pb.verdict, { borderColor: `${tone}55` }]}>
+      <CardGlow color={tone} strength={0.24} />
       <Head player={player} opponent={opponent} surface={surface} court={court} />
       <Text style={[pb.k, { marginTop: T.s4 }]}>To win the match</Text>
       <BigLine value={wp != null ? `${Math.round(wp)}%` : '—'} badge={fav ? 'Favoured' : 'Underdog'} tone={tone} />

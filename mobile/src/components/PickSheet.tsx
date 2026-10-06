@@ -1,21 +1,25 @@
-// A pick's full story, in a sheet: the call, the projection against the line,
-// confidence, the result, and the player's recent form for that prop. The
-// card shows the verdict; this is where the reader checks it. One sheet for
-// every sport — only the "recent form" source and the context line differ.
+// A pick's full story, in a sheet: the matchup, the call, the projection
+// against the line, confidence, the result, and the player's recent form for
+// that prop. The card shows the verdict; this is where the reader checks it.
+// One sheet for every sport — only the "recent form" source differs.
 //
 // Tennis record rows carry names, not Sofascore ids, so recent form is
 // fetched lazily: resolve the player by name (unless the board already did),
-// then /api/history for this prop, surface and line. NFL reads the published
-// profile's weekly log; NBA reads the recent game log. All of it is cancelled
-// if the sheet closes first.
+// then /api/history for this prop, surface and line (Fantasy Score and Break
+// Points Saved included — the backend computes them per match with the same
+// formulas the resolver grades with). NFL reads the published profile's
+// weekly log; NBA the recent game log. All cancelled if the sheet closes.
 import { useEffect, useRef, useState } from 'react'
 import { StyleSheet, Text, View } from 'react-native'
 import { router } from 'expo-router'
 import { Sheet } from './Sheet'
-import { Button, Card, Muted } from './ui'
+import { Button, Card, Disclaimer, Muted } from './ui'
 import { Skeleton } from './Skeleton'
-import { EdgeScale, GameChart, HitWindows, Meter } from './charts'
-import { ResultBadge } from './PickCard'
+import { EdgeScale, GameChart, HitWindows } from './charts'
+import { ResultBadge, SurfaceChip } from './PickCard'
+import { PlayerAvatar, TeamLogo } from './Avatar'
+import { ConfRing } from './Ring'
+import { CardGlow } from './Glow'
 import { F, T, sideTone, tier } from '@/theme'
 import { fetchHistory, fetchNbaPlayer, fetchNflPlayer } from '@/lib/api'
 import { Found, Hist, PickRow, fmt, fmtLine, fmtSigned, kickoffLabel, nbaHistory, nflHistory,
@@ -68,7 +72,8 @@ export function PickSheet({ pick, onClose }: { pick: PickRow | null; onClose: ()
         if (!who) { setForm({ state: 'error' }); return }
         const h = await fetchHistory(who.id, who.tour, pick.propType, pick.surface, pick.line ?? 0)
         if (alive.current !== token) return
-        setForm({ state: 'ready', hist: shapeHistory(h), who })
+        const shaped = shapeHistory(h)
+        setForm(shaped.games.length ? { state: 'ready', hist: shaped, who } : { state: 'error', who })
         if (pick.opponentId) setOpp({ id: pick.opponentId, name: pick.opponent, tour: who.tour, currentRank: null })
         else resolvePlayer(pick.opponent, who.tour).then(o => { if (alive.current === token) setOpp(o) })
       } catch { if (alive.current === token) setForm({ state: 'error' }) }
@@ -87,11 +92,7 @@ export function PickSheet({ pick, onClose }: { pick: PickRow | null; onClose: ()
   const last = r.player.split(' ').slice(-1)[0]
   const priced = r.projection != null
   const gamesWord = r.sport === 'tennis' ? 'matches' : 'games'
-
-  const context = r.sport === 'tennis'
-    ? [r.tournament, r.surface, r.startTs ? startTimeLabel(r.startTs) : ''].filter(Boolean).join(' · ') || 'Tournament not recorded'
-    : [r.matchup, kickoffLabel(r.startsAt)].filter(Boolean).join(' · ')
-      || [r.team, r.opponent ? `vs ${r.opponent}` : ''].filter(Boolean).join(' ')
+  const when = r.sport === 'tennis' ? (r.startTs ? startTimeLabel(r.startTs) : '') : kickoffLabel(r.startsAt)
 
   const openProject = () => {
     tap()
@@ -111,24 +112,46 @@ export function PickSheet({ pick, onClose }: { pick: PickRow | null; onClose: ()
     <Sheet open={!!pick} onClose={onClose}
            title={`${prettyDate(r.date)} · ${BOOK[r.book] || r.book}${r.isPotd ? ' · ⭐' : ''}`}
            footer={<Button label="Project this matchup" onPress={openProject} kind="ghost" />}>
-      <Text style={s.name}>
-        {r.player}{r.playerRank ? <Text style={s.rank}>  #{r.playerRank}</Text> : null}
-        {r.team ? <Text style={s.rank}>  {r.team}</Text> : null}
-      </Text>
-      <Text style={s.vs}>vs {r.opponent}{r.opponentRank ? ` (#${r.opponentRank})` : ''}</Text>
-      <Muted size={12.5} style={{ marginTop: 2 }}>{context}</Muted>
+      {/* THE MATCHUP */}
+      <View style={s.matchup}>
+        <View style={s.side}>
+          <PlayerAvatar sport={r.sport} name={r.player} size={70} ring={priced ? side.tone : null} team={r.team} />
+          <Text style={s.who} numberOfLines={2}>{r.player}</Text>
+          <Text style={s.whoSub}>{r.playerRank ? `#${r.playerRank}` : r.team || (r.tour && !r.tourInferred ? r.tour : '')}</Text>
+        </View>
+        <View style={s.vs}><Text style={s.vsText}>VS</Text></View>
+        <View style={s.side}>
+          {r.sport === 'tennis'
+            ? <PlayerAvatar sport="tennis" name={r.opponent} size={70} />
+            : <TeamLogo sport={r.sport} team={r.opponent} size={70} />}
+          <Text style={s.who} numberOfLines={2}>{r.opponent || '—'}</Text>
+          <Text style={s.whoSub}>{r.opponentRank ? `#${r.opponentRank}` : r.sport !== 'tennis' ? 'opponent' : ''}</Text>
+        </View>
+      </View>
+      <View style={s.context}>
+        {r.sport === 'tennis' ? <SurfaceChip surface={r.surface} /> : null}
+        <Muted size={12} style={{ flexShrink: 1, textAlign: 'center' }}>
+          {[r.sport === 'tennis' ? r.tournament : r.matchup, when].filter(Boolean).join(' · ') || ' '}
+        </Muted>
+      </View>
 
       {/* THE CALL */}
-      <Card style={[s.call, { borderColor: `${side.tone}44` }]}>
-        <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
-          <Text style={[s.callSide, { color: side.tone }]}>{r.lean || (priced ? '—' : 'Line')}</Text>
-          <Text style={s.callLine}>{fmtLine(r.line)}</Text>
-          <Text style={s.callProp}>{label}</Text>
-          {r.isThreeX ? <Text style={s.threex}>3x slip</Text> : null}
+      <Card style={[s.call, { borderColor: `${side.tone}55` }]}>
+        <CardGlow color={priced ? side.tone : T.muted2} strength={0.22} />
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+              <Text style={[s.callSide, { color: priced ? side.tone : T.muted }]}>{r.lean || (priced ? '—' : 'LINE')}</Text>
+              <Text style={s.callLine}>{fmtLine(r.line)}</Text>
+              <Text style={s.callProp}>{label}</Text>
+            </View>
+            {r.isThreeX ? <Text style={s.threex}>3x slip</Text> : null}
+          </View>
+          {priced ? <ConfRing conf={r.confidence} size={70} /> : <ConfRing conf={null} size={70} state="pending" />}
         </View>
         {priced ? (
           <>
-            <View style={{ marginTop: 14 }}>
+            <View style={{ marginTop: 16 }}>
               <EdgeScale line={r.line} proj={r.projection} tone={side.tone} />
             </View>
             <Text style={s.edgeLine}>
@@ -137,43 +160,29 @@ export function PickSheet({ pick, onClose }: { pick: PickRow | null; onClose: ()
               {r.overPrice != null && r.underPrice != null
                 ? ` Underdog prices: over ${r.overPrice > 0 ? '+' : ''}${r.overPrice}, under ${r.underPrice > 0 ? '+' : ''}${r.underPrice}.` : ''}
             </Text>
+            <View style={s.tierRow}>
+              <View style={[s.tierDot, { backgroundColor: tr.tone }]} />
+              <Text style={s.tierWord}>{TIER_WORD[tr.label]}</Text>
+            </View>
+            <Muted size={11} style={{ marginTop: 4, lineHeight: 15 }}>
+              Confidence is the model's own 0–100 score — the same number the Discord card shows.
+              {r.usageWindow ? ` Usage window: ${r.usageWindow}.` : ''}
+              {r.minutes != null ? ` Projected minutes: ${Math.round(r.minutes)}.` : ''}
+              {r.rotation && r.rotation !== 'stable' ? ` Rotation: ${r.rotation}.` : ''}
+            </Muted>
           </>
         ) : (
           <Text style={s.edgeLine}>Baseline hasn't priced this line yet — rows are priced on a schedule and this one is in the queue. Check back in a few minutes, or use Project this matchup to run it now.</Text>
         )}
       </Card>
 
-      {/* CONFIDENCE */}
-      {priced ? (
-        <Card style={{ marginTop: 10 }}>
-          <View style={{ flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-between' }}>
-            <View>
-              <Text style={s.k}>Confidence</Text>
-              <Text style={s.tierWord}>{TIER_WORD[tr.label]}</Text>
-            </View>
-            <Text style={[s.confNum, { color: tr.tone }]}>{r.confidence != null ? Math.round(r.confidence) : '—'}</Text>
-          </View>
-          <View style={{ marginTop: 10 }}><Meter pct={r.confidence} tone={tr.tone} /></View>
-          <Muted size={11.5} style={{ marginTop: 8, lineHeight: 16 }}>
-            The model's own score for this play, 0–100. The same number the Discord card shows.
-            {r.usageWindow ? ` Usage window: ${r.usageWindow}.` : ''}
-            {r.minutes != null ? ` Projected minutes: ${Math.round(r.minutes)}.` : ''}
-            {r.rotation && r.rotation !== 'stable' ? ` Rotation: ${r.rotation}.` : ''}
-          </Muted>
-        </Card>
-      ) : null}
-
       {/* RESULT */}
-      <Card style={{ marginTop: 10, borderColor: `${resTone}33` }}>
+      <Card style={{ marginTop: 10, borderColor: `${resTone}40` }}>
         <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
           <View style={{ flex: 1, minWidth: 0 }}>
             <Text style={s.k}>Result</Text>
             {meta.tone === 'pending' ? (
-              <Text style={s.resultText}>
-                {r.isPotd != null || r.result !== 'PENDING' || r.sport !== 'tennis'
-                  ? 'Not graded yet — results post after the game finishes.'
-                  : 'Not graded yet — results post after the match finishes.'}
-              </Text>
+              <Text style={s.resultText}>Not graded yet — results post after the {r.sport === 'tennis' ? 'match' : 'game'} finishes.</Text>
             ) : meta.tone === 'void' ? (
               <Text style={s.resultText}>{meta.label} — this play did not count (did not play, walkover, or a line that changed).</Text>
             ) : (
@@ -195,22 +204,21 @@ export function PickSheet({ pick, onClose }: { pick: PickRow | null; onClose: ()
       {form.state === 'loading' ? (
         <Card>
           <View style={{ flexDirection: 'row', gap: 8 }}>
-            {[0, 1, 2].map(i => <Skeleton key={i} h={58} r={10} style={{ flex: 1 }} />)}
+            {[0, 1, 2].map(i => <Skeleton key={i} h={110} r={14} style={{ flex: 1 }} />)}
           </View>
-          <Skeleton h={110} r={10} style={{ marginTop: 12 }} />
+          <Skeleton h={150} r={12} style={{ marginTop: 12 }} />
           <Muted size={11} style={{ marginTop: 10 }}>Pulling {last}'s recent {gamesWord}…</Muted>
         </Card>
       ) : form.state === 'none' ? (
         <Card><Muted size={12.5} style={{ lineHeight: 17 }}>
-          {label} is built from several stats, so there is no single per-match log to show.
-          Use Project this matchup for the full breakdown.
+          There is no per-{r.sport === 'tennis' ? 'match' : 'game'} log for {label}. Use Project this matchup for the full breakdown.
         </Muted></Card>
       ) : form.state === 'error' ? (
-        <Card><Muted size={12.5}>Couldn't load recent {gamesWord} right now.</Muted></Card>
+        <Card><Muted size={12.5}>No recent {gamesWord} with this stat{r.surface ? ` on ${r.surface.toLowerCase()}` : ''} yet.</Muted></Card>
       ) : (
         <Card>
           <HitWindows hist={form.hist!} lean={r.lean || 'OVER'} line={r.line} gamesWord={gamesWord} />
-          <Muted size={11} style={{ marginTop: 8, marginBottom: 14 }}>
+          <Muted size={11} style={{ marginTop: 10, marginBottom: 16, lineHeight: 15 }}>
             How often {last} finished {r.lean === 'UNDER' ? 'under' : 'over'} {fmtLine(r.line)}
             {r.surface ? ` on ${r.surface.toLowerCase()}` : ''}
             {form.hist!.average != null ? ` · average ${fmt(form.hist!.average)}` : ''}
@@ -219,27 +227,31 @@ export function PickSheet({ pick, onClose }: { pick: PickRow | null; onClose: ()
         </Card>
       )}
 
-      <Muted size={10.5} style={{ textAlign: 'center', marginTop: 18 }}>
-        Projections are for informational purposes only.
-      </Muted>
+      <Disclaimer />
     </Sheet>
   )
 }
 
 const s = StyleSheet.create({
-  name: { fontFamily: F.condHeavy, fontSize: 28, lineHeight: 31, color: T.white, marginTop: 4 },
-  rank: { fontFamily: F.condBold, fontSize: 15, color: T.muted2 },
-  vs: { fontFamily: F.bodyMed, fontSize: 15, color: T.muted, marginTop: 2 },
-  call: { marginTop: 16, borderWidth: 1 },
-  callSide: { fontFamily: F.condHeavy, fontSize: 24, letterSpacing: 1.2 },
-  callLine: { fontFamily: F.condHeavy, fontSize: 30, color: T.white },
+  matchup: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', marginTop: 6 },
+  side: { flex: 1, alignItems: 'center', minWidth: 0 },
+  who: { fontFamily: F.condBlack, fontSize: 17, color: T.white, textAlign: 'center', marginTop: 8, lineHeight: 19 },
+  whoSub: { fontFamily: F.condBold, fontSize: 11, letterSpacing: 0.8, color: T.muted2, marginTop: 2, textTransform: 'uppercase' },
+  vs: { width: 38, height: 38, borderRadius: 19, alignItems: 'center', justifyContent: 'center', marginTop: 16,
+        backgroundColor: 'rgba(255,255,255,0.06)', borderWidth: 1, borderColor: T.glassLineHi },
+  vsText: { fontFamily: F.condHeavy, fontSize: 13, color: T.muted, letterSpacing: 0.6 },
+  context: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, marginTop: 12 },
+  call: { marginTop: 16, borderWidth: 1, overflow: 'hidden' },
+  callSide: { fontFamily: F.condHeavy, fontSize: 26, letterSpacing: 1.2 },
+  callLine: { fontFamily: F.condHeavy, fontSize: 32, color: T.white },
   callProp: { fontFamily: F.condBold, fontSize: 15, color: T.muted, flexShrink: 1 },
-  threex: { fontFamily: F.condBold, fontSize: 10, letterSpacing: 1, color: T.amber,
+  threex: { alignSelf: 'flex-start', fontFamily: F.condBold, fontSize: 10, letterSpacing: 1, color: T.amber,
             borderWidth: 1, borderColor: `${T.amber}44`, borderRadius: 5, paddingHorizontal: 5,
-            paddingVertical: 1, textTransform: 'uppercase', marginLeft: 'auto' },
+            paddingVertical: 1, textTransform: 'uppercase', marginTop: 6 },
   edgeLine: { fontFamily: F.body, fontSize: 12.5, color: T.muted, lineHeight: 17, marginTop: 12 },
+  tierRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 12 },
+  tierDot: { width: 8, height: 8, borderRadius: 4 },
+  tierWord: { fontFamily: F.bodySemi, fontSize: 13.5, color: T.white },
   k: { fontFamily: F.condBold, fontSize: 10.5, letterSpacing: 1.3, textTransform: 'uppercase', color: T.muted2 },
-  tierWord: { fontFamily: F.bodyMed, fontSize: 14, color: T.white, marginTop: 3 },
-  confNum: { fontFamily: F.condHeavy, fontSize: 36, lineHeight: 38 },
   resultText: { fontFamily: F.body, fontSize: 13.5, color: T.muted, lineHeight: 19, marginTop: 3 },
 })

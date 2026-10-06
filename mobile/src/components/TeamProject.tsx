@@ -10,6 +10,8 @@ import { Sheet } from './Sheet'
 import { OptionSheet } from './OptionSheet'
 import { Divider, EdgeScale, Figures, GameChart, HitWindows } from './charts'
 import { BigLine, ConfRing, FactTile, NumField, SelectField, Tile, pb } from './projectBits'
+import { PlayerAvatar } from './Avatar'
+import { CardGlow } from './Glow'
 import { ApiError, fetchNbaPlayer, fetchNbaProps, fetchNflPlayer, fetchNflProps, projectNba, projectNfl,
          searchNba, searchNfl } from '@/lib/api'
 import { Hist, NBA_PROPS, NFL_PROPS, fmt, fmtLine, fmtSigned, nbaHistory, nflHistory, propLabel } from '@/lib/picks'
@@ -116,10 +118,11 @@ export function TeamProject({ sport, params }: { sport: SportKey; params: Record
     <>
       <Card>
         <View style={{ flexDirection: 'row', alignItems: 'stretch', gap: 10 }}>
-          <Tile label="Player" name={player?.name} sub={[player?.position, player?.team].filter(Boolean).join(' · ')}
+          <Tile label="Player" name={player?.name} sport={sport} team={player?.team}
+                sub={[player?.position, player?.team].filter(Boolean).join(' · ')}
                 onPress={() => setPicking(true)} onClear={() => { setPlayer(null); clearResult() }} />
           <View style={pb.vs}><Text style={pb.vsText}>VS</Text></View>
-          <FactTile label="Opponent comes from the schedule" name={opponentName} sub={game.matchup || 'opponent'} />
+          <FactTile label="Opponent comes from the schedule" name={opponentName} sport={sport} sub={game.matchup || 'opponent'} />
         </View>
         <Divider />
         <View style={{ flexDirection: 'row', gap: 10 }}>
@@ -148,6 +151,7 @@ export function TeamProject({ sport, params }: { sport: SportKey; params: Record
       {res && !busy && player ? (
         <>
           <Card style={[pb.verdict, { borderColor: `${side.tone}55` }]}>
+            <CardGlow color={side.tone} strength={0.24} />
             <Text style={pb.headName} numberOfLines={1}>{player.name}</Text>
             <Muted size={12.5}>
               {[res.position || player.position, game.matchup || (opponentName ? `vs ${opponentName}` : ''),
@@ -274,7 +278,7 @@ function TeamPicker({ open, sport, onPick, onClose }:
             {rows.slice(0, 10).map(p => (
               <Pressable key={`${p.name}|${p.team}`} onPress={() => { tap(); onPick(p) }}
                          style={({ pressed }) => [s.row, pressed && { backgroundColor: 'rgba(255,255,255,0.06)' }]}>
-                <View style={s.avatar}><Text style={s.avatarText}>{(p.team || '?').slice(0, 3)}</Text></View>
+                <PlayerAvatar sport={sport} name={p.name} size={40} team={p.team} />
                 <Text style={s.name} numberOfLines={1}>{p.name}</Text>
                 <Text style={s.sub}>{[p.position, p.games != null ? `${p.games} games` : ''].filter(Boolean).join(' · ')}</Text>
               </Pressable>

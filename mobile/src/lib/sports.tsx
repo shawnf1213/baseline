@@ -10,7 +10,11 @@
 // switch is one control drawn on three screens, not three settings.
 import { createContext, ReactNode, useContext, useEffect, useMemo, useState } from 'react'
 import { fetchSports } from './api'
-import { Segmented } from '@/components/ui'
+import { Segmented, Symbol } from '@/components/ui'
+
+const SPORT_ICON: Record<SportKey, Symbol> = {
+  tennis: 'tennisball.fill', nfl: 'football.fill', nba: 'basketball.fill', mlb: 'baseball.fill',
+}
 
 export type SportKey = 'tennis' | 'nfl' | 'nba' | 'mlb'
 export type SportInfo = { key: SportKey; label: string; visible: boolean }
@@ -69,7 +73,7 @@ export function SportSwitch({ onChange }: { onChange?: (k: SportKey) => void }) 
   const visible = sports.filter(s => s.visible)
   if (visible.length <= 1) return null
   return (
-    <Segmented options={visible.map(s => ({ key: s.key, label: s.label }))} value={sport}
+    <Segmented options={visible.map(s => ({ key: s.key, label: s.label, icon: SPORT_ICON[s.key] }))} value={sport}
                onChange={k => { setSport(k); onChange?.(k) }} />
   )
 }

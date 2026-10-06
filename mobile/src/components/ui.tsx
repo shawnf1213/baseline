@@ -1,11 +1,21 @@
 // The shared primitives. Brand identity stays (dark ground, Baseline green,
 // red/amber for results, Barlow); the shapes are the phone's — 44pt+ targets,
 // full-width segmented controls, plain labels.
-import { ReactNode } from 'react'
+import { ComponentProps, ReactNode } from 'react'
 import { ActivityIndicator, Pressable, StyleProp, StyleSheet, Text, View, ViewStyle } from 'react-native'
 import { LinearGradient } from 'expo-linear-gradient'
+import { SymbolView } from 'expo-symbols'
 import { F, GLASS_DIR, T } from '@/theme'
 import { select } from '@/lib/haptics'
+
+export type Symbol = ComponentProps<typeof SymbolView>['name']
+
+// An SF Symbol on iOS; on other platforms the fallback (usually nothing).
+export function Icon({ name, size = 16, color = T.muted, fallback = null }:
+  { name: Symbol; size?: number; color?: string; fallback?: ReactNode }) {
+  return <SymbolView name={name} size={size} tintColor={color} type="monochrome" fallback={fallback}
+                     style={{ width: size, height: size }} />
+}
 
 type CardProps = {
   children: ReactNode
@@ -74,7 +84,7 @@ export function PageTitle({ children, sub, right }:
 // ATP/WTA. One of these replaces the website's three differently-sized tab
 // rows.
 export function Segmented<K extends string>({ options, value, onChange, compact }:
-  { options: { key: K; label: string }[]; value: K; onChange: (k: K) => void; compact?: boolean }) {
+  { options: { key: K; label: string; icon?: Symbol }[]; value: K; onChange: (k: K) => void; compact?: boolean }) {
   return (
     <View style={[s.seg, compact && { minHeight: 38 }]}>
       {options.map(o => {
@@ -82,9 +92,14 @@ export function Segmented<K extends string>({ options, value, onChange, compact 
         return (
           <Pressable key={o.key} onPress={() => { if (!on) { select(); onChange(o.key) } }}
                      style={[s.segItem, on && s.segOn]}>
-            <Text style={[s.segText, compact && { fontSize: 12.5 }, on && { color: T.green }]}>
-              {o.label}
-            </Text>
+            {on ? <LinearGradient colors={[`${T.green}30`, `${T.green}0E`]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
+                                  style={[StyleSheet.absoluteFill, { borderRadius: T.r1 }]} /> : null}
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              {o.icon ? <Icon name={o.icon} size={compact ? 13 : 15} color={on ? T.green : T.muted2} /> : null}
+              <Text style={[s.segText, compact && { fontSize: 12.5 }, on && { color: T.green }]}>
+                {o.label}
+              </Text>
+            </View>
           </Pressable>
         )
       })}
@@ -146,14 +161,15 @@ export function Disclaimer({ style }: { style?: StyleProp<ViewStyle> }) {
 }
 
 // One person, one row — search results, saved players, recently viewed.
-export function PersonRow({ name, meta, right, onPress, onLongPress }:
-  { name: string; meta?: string; right?: ReactNode; onPress: () => void; onLongPress?: () => void }) {
+export function PersonRow({ name, meta, right, onPress, onLongPress, avatar }:
+  { name: string; meta?: string; right?: ReactNode; onPress: () => void; onLongPress?: () => void;
+    avatar?: ReactNode }) {
   const t = (name || '').trim().split(/\s+/)
   const ini = ((t[0]?.[0] || '') + (t.length > 1 ? t[t.length - 1][0] : '')).toUpperCase() || '?'
   return (
     <Pressable onPress={() => { select(); onPress() }} onLongPress={onLongPress}
                style={({ pressed }) => [s.person, pressed && { opacity: 0.8 }]}>
-      <View style={s.personAvatar}><Text style={s.personIni}>{ini}</Text></View>
+      {avatar ?? <View style={s.personAvatar}><Text style={s.personIni}>{ini}</Text></View>}
       <View style={{ flex: 1, minWidth: 0 }}>
         <Text style={s.personName} numberOfLines={1}>{name}</Text>
         {meta ? <Text style={s.personMeta} numberOfLines={1}>{meta}</Text> : null}

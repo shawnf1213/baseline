@@ -1,9 +1,13 @@
 // Small pieces the three projection forms share: a labelled select, a number
-// field, the confidence ring, the big-number verdict line, initials.
+// field, player tiles with faces, the confidence ring, the big-number
+// verdict line, initials.
 import { ReactNode } from 'react'
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native'
 import { F, T, tier } from '@/theme'
 import { tap } from '@/lib/haptics'
+import { PlayerAvatar, TeamLogo } from './Avatar'
+import { Ring } from './Ring'
+import type { SportKey } from '@/lib/sports'
 
 export const initials = (name: string) => {
   const t = (name || '').trim().split(/\s+/)
@@ -36,15 +40,16 @@ export function NumField({ label, value, onChange, placeholder, signed, width = 
   )
 }
 
-export function Tile({ label, name, sub, onPress, onClear }:
-  { label: string; name?: string | null; sub?: string; onPress: () => void; onClear: () => void }) {
+export function Tile({ label, name, sub, onPress, onClear, sport = 'tennis', team }:
+  { label: string; name?: string | null; sub?: string; onPress: () => void; onClear: () => void;
+    sport?: SportKey; team?: string | null }) {
   if (name) {
     return (
       <View style={[s.tile, s.tileOn]}>
         <Pressable onPress={() => { tap(); onClear() }} hitSlop={10} style={s.clear}>
           <Text style={s.clearX}>×</Text>
         </Pressable>
-        <View style={s.avatar}><Text style={s.initials}>{initials(name)}</Text></View>
+        <PlayerAvatar sport={sport} name={name} size={58} ring={T.green} team={team} />
         <Text style={s.tileName} numberOfLines={2}>{name}</Text>
         <Text style={s.tileSub}>{sub || label}</Text>
       </View>
@@ -64,12 +69,14 @@ export function Tile({ label, name, sub, onPress, onClear }:
 
 // A read-only tile for a fact we looked up rather than a choice (NFL/NBA
 // opponent from the schedule).
-export function FactTile({ label, name, sub }: { label: string; name?: string | null; sub?: string }) {
+export function FactTile({ label, name, sub, sport }:
+  { label: string; name?: string | null; sub?: string; sport?: SportKey }) {
   return (
     <View style={[s.tile, s.tileFact]}>
       {name ? (
         <>
-          <View style={s.avatar}><Text style={s.initials}>{name.slice(0, 3).toUpperCase()}</Text></View>
+          {sport ? <TeamLogo sport={sport} team={name} size={58} />
+                 : <View style={s.avatar}><Text style={s.initials}>{name.slice(0, 3).toUpperCase()}</Text></View>}
           <Text style={s.tileName} numberOfLines={2}>{name}</Text>
           <Text style={s.tileSub}>{sub || label}</Text>
         </>
@@ -83,14 +90,15 @@ export function FactTile({ label, name, sub }: { label: string; name?: string | 
   )
 }
 
+// The verdict's confidence: a filled gauge in the lean's colour.
 export function ConfRing({ conf, tone }: { conf: number | null | undefined; tone: string }) {
   if (conf == null) return null
   const tr = tier(conf)
   return (
-    <View style={[s.ring, { borderColor: `${tone}66` }]}>
-      <Text style={[s.ringNum, { color: tone }]}>{Math.round(conf)}</Text>
+    <Ring value={conf} size={86} stroke={7} tone={tone}>
+      <Text style={[s.ringNum, { color: T.white }]}>{Math.round(conf)}</Text>
       <Text style={s.ringK}>{tr.label ? tr.label.toLowerCase() : 'conf.'}</Text>
-    </View>
+    </Ring>
   )
 }
 
@@ -111,7 +119,7 @@ export const pb = StyleSheet.create({
   k: { fontFamily: F.condBold, fontSize: 10.5, letterSpacing: 1.3, textTransform: 'uppercase', color: T.muted2 },
   under: { fontFamily: F.body, fontSize: 12.5, color: T.muted, marginTop: 6 },
   headName: { fontFamily: F.condBlack, fontSize: 20, color: T.white },
-  verdict: { marginTop: T.s3, borderWidth: 1 },
+  verdict: { marginTop: T.s3, borderWidth: 1, overflow: 'hidden' },
   read: { fontFamily: F.body, fontSize: 13.5, color: T.muted, lineHeight: 19 },
   vs: { alignSelf: 'center', width: 34, height: 34, borderRadius: 17, alignItems: 'center',
         justifyContent: 'center', backgroundColor: 'rgba(255,255,255,0.05)', borderWidth: 1, borderColor: T.glassLine },

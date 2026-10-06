@@ -1,4 +1,5 @@
-// Where a tapped notification lands: the Picks tab, switched to that sport.
+// Where a tapped notification lands: the Picks tab (third tab), switched to
+// that sport.
 // Mounted once inside the providers; renders nothing.
 import { useEffect } from 'react'
 import { Platform } from 'react-native'
@@ -24,7 +25,8 @@ export function PushRouter() {
         const go = (data: any) => {
           const { sport } = routeFor(data)
           if (sport) setSport(sport)
-          router.push('/(tabs)')
+          // Boards and recaps are both about Baseline's released picks.
+          router.push('/picks')
         }
         const last = await Notifications.getLastNotificationResponseAsync()
         if (on && last?.notification?.request?.content?.data) go(last.notification.request.content.data)

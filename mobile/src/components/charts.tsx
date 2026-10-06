@@ -1,9 +1,11 @@
-// The small visual pieces a pick's evidence is drawn with: the line-versus-
-// projection scale, a confidence meter, the hit windows, the game log with
-// the line drawn through it, and the serve/return table. Plain Views, no
-// SVG, so they run in Expo Go with nothing added.
+// The visual pieces a pick's evidence is drawn with: the line-versus-
+// projection scale, a confidence meter, the hit windows as rings, the game
+// log with the book line and the average drawn through it, and the
+// serve/return table.
 import { ReactNode } from 'react'
 import { StyleSheet, Text, View } from 'react-native'
+import { LinearGradient } from 'expo-linear-gradient'
+import { Ring } from './Ring'
 import { F, T } from '@/theme'
 import { Hist, fmt, fmtLine } from '@/lib/picks'
 
@@ -51,8 +53,11 @@ export function Meter({ pct, tone, height = 6 }: { pct: number | null; tone: str
 // ── HIT WINDOWS ─────────────────────────────────────────────────────────────
 // How often this prop cleared, on the side Baseline leans, over the last 5,
 // last 10 and the season.
-export function HitWindows({ hist, lean, line, gamesWord = 'matches' }:
-  { hist: Hist | null; lean: string; line: number | null; gamesWord?: string }) {
+// `season` = show the season cell. Its counts come from the server, tallied
+// against the line the request carried — so it is only meaningful when that
+// was a real book line, not a placeholder.
+export function HitWindows({ hist, lean, line, gamesWord = 'matches', season = true }:
+  { hist: Hist | null; lean: string; line: number | null; gamesWord?: string; season?: boolean }) {
   if (!hist || line == null) return null
   const vals = hist.games.map(g => g.value)
   const side = (arr: number[]) => {
@@ -63,7 +68,7 @@ export function HitWindows({ hist, lean, line, gamesWord = 'matches' }:
   }
   const s = hist.season
   const tot = s.over + s.under + s.push
-  const seasonPct = tot ? Math.round(((lean === 'UNDER' ? s.under : s.over) / tot) * 100) : null
+  const seasonPct = season && tot ? Math.round(((lean === 'UNDER' ? s.under : s.over) / tot) * 100) : null
   const cells = [
     { k: 'Last 5', d: side(vals.slice(0, 5)) },
     { k: 'Last 10', d: side(vals) },
@@ -76,8 +81,10 @@ export function HitWindows({ hist, lean, line, gamesWord = 'matches' }:
         const tone = d.pct >= 70 ? T.green : d.pct >= 50 ? T.amber : T.red
         return (
           <View key={k} style={c.cell}>
-            <Text style={c.k}>{k}</Text>
-            <Text style={[c.big, { color: tone }]}>{d.pct}%</Text>
+            <Ring value={d.pct} size={62} stroke={5} tone={tone}>
+              <Text style={[c.ringNum, { color: T.white }]}>{d.pct}<Text style={c.ringPct}>%</Text></Text>
+            </Ring>
+            <Text style={[c.k, { marginTop: 8 }]}>{k}</Text>
             <Text style={c.sub}>avg {fmt(d.avg)}{d.n ? ` · ${d.n} ${gamesWord}` : ''}</Text>
           </View>
         )
@@ -87,45 +94,65 @@ export function HitWindows({ hist, lean, line, gamesWord = 'matches' }:
 }
 
 // ── GAME LOG ────────────────────────────────────────────────────────────────
-// Every recent match as a bar with the line drawn through it; green cleared
-// the line on the side Baseline leans, red did not.
+// Every recent match as a bar, with the book line (dashed, labelled) and the
+// player's average (dotted) drawn through them; green cleared the line on the
+// side Baseline leans, red did not.
 export function GameChart({ hist, line, lean, gamesWord = 'matches' }:
   { hist: Hist | null; line: number | null; lean: string; gamesWord?: string }) {
   const games = hist?.games || []
   if (!games.length || line == null) return null
   const series = [...games].reverse()           // oldest -> newest
-  const top = Math.max(line, ...series.map(g => g.value)) * 1.25 || 1
-  const H = 96
+  const avg = series.reduce((a, g) => a + g.value, 0) / series.length
+  const top = Math.max(line, avg, ...series.map(g => g.value)) * 1.22 || 1
+  const H = 132
+  const at = (v: number) => Math.min(H - 2, Math.max(0, (v / top) * H))
+  const hits = series.filter(g => (lean === 'UNDER' ? g.value < line : g.value > line)).length
   // "2026-10-04" prints as 10/04; anything else ("Wk 5") prints as given.
   const dateLabel = (d?: string) => (/^\d{4}-\d{2}-\d{2}/.test(d || '') ? d!.slice(5, 10).replace('-', '/') : (d || ''))
   return (
     <View>
-      <Text style={[c.k, { marginBottom: 10 }]}>Last {series.length} {gamesWord} · line {fmtLine(line)}</Text>
-      <View style={{ height: H, flexDirection: 'row', alignItems: 'flex-end', gap: 4 }}>
-        <View pointerEvents="none"
-              style={[c.lineRule, { bottom: Math.min(100, (line / top) * 100) + '%' as any }]} />
+      <View style={{ flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 12 }}>
+        <Text style={c.k}>Last {series.length} {gamesWord}</Text>
+        <Text style={c.sub}>
+          <Text style={{ color: hits / series.length >= 0.5 ? T.green : T.red, fontFamily: F.bodySemi }}>{hits}/{series.length}</Text>
+          {' '}{lean === 'UNDER' ? 'under' : 'over'} {fmtLine(line)}
+        </Text>
+      </View>
+      <View style={{ height: H, flexDirection: 'row', alignItems: 'flex-end', gap: 5 }}>
+        {/* average — dotted, behind the bars */}
+        <View pointerEvents="none" style={[c.avgRule, { bottom: at(avg) }]} />
         {series.map((g, i) => {
           const cleared = lean === 'UNDER' ? g.value < line : g.value > line
-          const h = Math.max(4, (g.value / top) * H)
+          const h = Math.max(6, at(g.value))
           const tone = cleared ? T.green : T.red
           return (
             <View key={i} style={{ flex: 1, alignItems: 'center', justifyContent: 'flex-end' }}>
               <Text style={[c.barVal, { color: tone }]}>{Number.isInteger(g.value) ? g.value : fmt(g.value)}</Text>
-              <View style={{ width: '100%', height: h, borderRadius: 3, borderWidth: 1,
-                             borderColor: tone, backgroundColor: `${tone}66` }} />
+              <LinearGradient colors={[`${tone}F0`, `${tone}40`]} start={{ x: 0.5, y: 0 }} end={{ x: 0.5, y: 1 }}
+                              style={{ width: '100%', height: h, borderTopLeftRadius: 6, borderTopRightRadius: 6,
+                                       borderBottomLeftRadius: 2, borderBottomRightRadius: 2 }} />
             </View>
           )
         })}
+        {/* the book line — dashed, on top, with its value in a pill */}
+        <View pointerEvents="none" style={[c.lineRule, { bottom: at(line) }]} />
+        <View pointerEvents="none" style={[c.linePill, { bottom: at(line) - 9 }]}>
+          <Text style={c.linePillText}>{fmtLine(line)}</Text>
+        </View>
       </View>
-      <View style={{ flexDirection: 'row', gap: 4, marginTop: 5 }}>
+      <View style={{ flexDirection: 'row', gap: 5, marginTop: 6 }}>
         {series.map((g, i) => (
           <View key={i} style={{ flex: 1, alignItems: 'center' }}>
             <Text style={c.axis} numberOfLines={1}>{dateLabel(g.date)}</Text>
-            <Text style={[c.axis, { color: '#4a4a4a' }]} numberOfLines={1}>
+            <Text style={[c.axis, { color: '#555' }]} numberOfLines={1}>
               {(g.opponent || '').split(' ').slice(-1)[0].slice(0, 6)}
             </Text>
           </View>
         ))}
+      </View>
+      <View style={{ flexDirection: 'row', gap: 14, marginTop: 10 }}>
+        <View style={c.legend}><View style={[c.legendDash, { borderColor: 'rgba(255,255,255,0.7)' }]} /><Text style={c.sub}>Book line</Text></View>
+        <View style={c.legend}><View style={[c.legendDash, { borderColor: T.blue, borderStyle: 'dotted' }]} /><Text style={c.sub}>Average {fmt(avg)}</Text></View>
       </View>
     </View>
   )
@@ -280,10 +307,19 @@ const c = StyleSheet.create({
          borderWidth: 2, borderColor: T.ground },
   dotBig: { width: 13, height: 13, borderRadius: 7, marginLeft: -6.5 },
   meter: { backgroundColor: 'rgba(255,255,255,0.08)', overflow: 'hidden' },
-  cell: { flex: 1, padding: 10, borderRadius: T.r1, borderWidth: 1, borderColor: T.glassLine,
-          backgroundColor: 'rgba(255,255,255,0.025)', alignItems: 'center' },
+  cell: { flex: 1, paddingVertical: 12, paddingHorizontal: 6, borderRadius: T.r2, borderWidth: 1,
+          borderColor: T.glassLine, backgroundColor: 'rgba(255,255,255,0.025)', alignItems: 'center' },
+  ringNum: { fontFamily: F.condHeavy, fontSize: 19 },
+  ringPct: { fontFamily: F.condBold, fontSize: 11, color: T.muted },
   lineRule: { position: 'absolute', left: 0, right: 0, borderTopWidth: 1.5, borderStyle: 'dashed',
-              borderColor: 'rgba(255,255,255,0.45)', zIndex: 2 },
+              borderColor: 'rgba(255,255,255,0.7)', zIndex: 2 },
+  avgRule: { position: 'absolute', left: 0, right: 0, borderTopWidth: 1.5, borderStyle: 'dotted',
+             borderColor: `${T.blue}AA`, zIndex: 1 },
+  linePill: { position: 'absolute', right: -2, zIndex: 3, paddingHorizontal: 6, paddingVertical: 2,
+              borderRadius: 6, backgroundColor: '#f2f2f2' },
+  linePillText: { fontFamily: F.condHeavy, fontSize: 11, color: '#0a0a0a' },
+  legend: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  legendDash: { width: 16, borderTopWidth: 1.5, borderStyle: 'dashed' },
   barVal: { fontFamily: F.condBold, fontSize: 10.5, marginBottom: 3 },
   axis: { fontFamily: F.body, fontSize: 8.5, color: T.muted2 },
   colName: { fontFamily: F.condBold, fontSize: 13, color: T.white, marginBottom: 8 },

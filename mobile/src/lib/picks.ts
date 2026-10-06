@@ -17,15 +17,16 @@ export type Book = 'prizepicks' | 'underdog'
 
 // ── props per sport ─────────────────────────────────────────────────────────
 // Tennis: `history` = GET /api/history has a per-match over/under log for the
-// prop. Fantasy Score and Break Points Saved are composites with no log.
+// prop — every tennis prop now, the composites (Fantasy Score, Break Points
+// Saved) computed per match by the same functions the resolver grades with.
 export const PROP_TYPES = [
   { key: 'Aces',                   short: 'Aces',            unit: 'aces',               history: true },
   { key: 'Double Faults',          short: 'Double Faults',   unit: 'double faults',      history: true },
   { key: 'Break Points Won',       short: 'Break Pts Won',   unit: 'break points won',   history: true },
-  { key: 'Break Points Saved',     short: 'Break Pts Saved', unit: 'break points saved', history: false },
+  { key: 'Break Points Saved',     short: 'Break Pts Saved', unit: 'break points saved', history: true },
   { key: 'Total Games',            short: 'Total Games',     unit: 'games',              history: true },
   { key: 'Player Total Games Won', short: 'Games Won',       unit: 'games won',          history: true },
-  { key: 'Fantasy Score',          short: 'Fantasy Score',   unit: 'fantasy points',     history: false },
+  { key: 'Fantasy Score',          short: 'Fantasy Score',   unit: 'fantasy points',     history: true },
 ] as const
 export const SURFACES = ['Hard', 'Clay', 'Grass'] as const
 

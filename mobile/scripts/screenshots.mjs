@@ -42,16 +42,16 @@ async function clickText(page, re) {
 }
 
 const SHOTS = [
-  { name: '01-picks', path: '/', ready: 'Pick of the Day|No .* picks yet' },
-  { name: '02-board', path: '/board', ready: 'priced|lines|No .* lines' },
-  { name: '03-pick-sheet', path: '/', ready: 'Pick of the Day', then: async (page) => {
-      await clickText(page, 'Pick of the Day'); await hasText(page, 'Confidence|Recent form|Result'); await sleep(2500) } },
+  { name: '01-board', path: '/', ready: 'Top plays|Full board|No .* lines' },
+  { name: '02-picks', path: '/picks', ready: 'Pick of the Day|No .* picks yet' },
+  { name: '03-pick-sheet', path: '/picks', ready: 'Pick of the Day', then: async (page) => {
+      await clickText(page, 'Pick of the Day'); await hasText(page, 'Recent form'); await sleep(6000) } },
   { name: '04-project', path: '/project', ready: 'Price any matchup' },
   { name: '05-research', path: '/research', ready: 'Research', then: async (page) => {
       const input = await page.waitForSelector('input[placeholder*="Search"]', { timeout: 30_000 })
       await input.click(); await page.keyboard.type('Sinner', { delay: 40 })
       await hasText(page, 'Jannik Sinner', 60_000); await clickText(page, 'Jannik Sinner')
-      await hasText(page, 'Recent form|Prop history', 120_000); await sleep(4000) } },
+      await hasText(page, 'Recent form|Prop history', 120_000); await sleep(5000) } },
 ]
 
 const browser = await puppeteer.launch({ headless: true, args: ['--no-sandbox', '--disable-gpu'] })

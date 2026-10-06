@@ -2436,8 +2436,18 @@ def _recent_form_pull(proj_val, surf_matches, prop_type, weight=0.30):
 # ---------------------------------------------------------------------------
 
 
-_PIC_CACHE: dict = {}          # norm name -> (checked_at, url|None)
+_PIC_CACHE: dict = {}          # norm name -> (checked_at, url|None, ttl)
 _PIC_TTL = 30 * 24 * 3600      # a headshot does not change
+# A MISS IS ONLY REMEMBERED FOR LONG WHEN IT IS DEFINITIVE — no article, or
+# an article that is not about a player. A timeout, a 429 or a 5xx used to be
+# cached as "no photo" for the full 30 days, so one throttled request during a
+# board's burst of image loads hid that player's face for a month (Sinner,
+# 2026-10-06). Transient misses are retried after ten minutes.
+_PIC_MISS_TTL = 10 * 60
+# At most a few upstream lookups at once: a board opens with dozens of faces,
+# and Wikimedia throttles a burst from one address.
+import threading as _threading
+_PIC_UPSTREAM = _threading.BoundedSemaphore(4)
 
 
 def _nfl_headshot(name: str):
@@ -2451,7 +2461,9 @@ def _nfl_headshot(name: str):
             prof = r.get("profile") or {}
             eid = str(prof.get("espn_id") or "").strip()
             if eid and eid.isdigit():
-                return f"https://a.espncdn.com/i/headshots/nfl/players/full/{eid}.png"
+                # ESPN's resizer: ~60 KB instead of the ~280 KB original.
+                return ("https://a.espncdn.com/combiner/i?img=/i/headshots/nfl/players/full/"
+                        f"{eid}.png&w=280&h=204")
     except Exception as exc:  # noqa: BLE001
         logger.info("nfl headshot lookup failed for %s: %s", name, exc)
     return None
@@ -2471,7 +2483,8 @@ def _nba_headshot(name: str):
         hit = df[df["player_name"].astype(str).map(_c._norm_name) == key]
         if len(hit):
             pid = int(hit.iloc[0]["player_id"])
-            return f"https://cdn.nba.com/headshots/nba/latest/1040x760/{pid}.png"
+            # 260x190 is ~15 KB; the 1040x760 original is ~175 KB.
+            return f"https://cdn.nba.com/headshots/nba/latest/260x190/{pid}.png"
     except Exception as exc:  # noqa: BLE001
         logger.info("nba headshot lookup failed for %s: %s", name, exc)
     return None
@@ -2519,22 +2532,25 @@ def player_image(name: str = "", player_id: str = "", sport: str = "tennis"):
     # Tennis keeps its original key so the warm cache survives this change.
     key = nm.lower() if sp == "tennis" else f"{sp}:{nm.lower()}"
     hit = _PIC_CACHE.get(key)
-    if hit and (time.time() - hit[0]) < _PIC_TTL:
+    if hit and (time.time() - hit[0]) < (hit[2] if len(hit) > 2 else _PIC_TTL):
         if hit[1]:
             return RedirectResponse(hit[1], status_code=307)
         raise HTTPException(status_code=404, detail="no image")
     # NFL and NBA have real league headshots keyed by an id we already hold;
     # Wikipedia is the fallback for anyone without one.
     url = _nfl_headshot(nm) if sp == "nfl" else _nba_headshot(nm) if sp == "nba" else None
+    definitive = bool(url)
     if not url:
         try:
-            r = _rq.get(
-                "https://en.wikipedia.org/api/rest_v1/page/summary/"
-                + urllib.parse.quote(nm.replace(" ", "_")),
-                # Wikimedia require a descriptive agent and rate-limit generic ones.
-                headers={"User-Agent": "BaselineTennis/1.0 (baselineev.vercel.app)"},
-                timeout=12)
+            with _PIC_UPSTREAM:
+                r = _rq.get(
+                    "https://en.wikipedia.org/api/rest_v1/page/summary/"
+                    + urllib.parse.quote(nm.replace(" ", "_")),
+                    # Wikimedia require a descriptive agent and rate-limit generic ones.
+                    headers={"User-Agent": "BaselineTennis/1.0 (baselineev.vercel.app)"},
+                    timeout=12)
             if r.status_code == 200:
+                definitive = True
                 j = r.json() or {}
                 blurb = ((j.get("description") or "") + " "
                          + (j.get("extract") or "")[:200]).lower()
@@ -2543,9 +2559,13 @@ def player_image(name: str = "", player_id: str = "", sport: str = "tennis"):
                            or (j.get("originalimage") or {}).get("source"))
                 else:
                     logger.info("player image %s: article is not a %s player", nm, sp)
+            elif r.status_code == 404:
+                definitive = True          # no article — a real answer
+            else:
+                logger.info("player image %s: wikipedia HTTP %s (not cached long)", nm, r.status_code)
         except Exception:  # noqa: BLE001
             logger.warning("player image lookup failed for %s", nm)
-    _PIC_CACHE[key] = (time.time(), url)
+    _PIC_CACHE[key] = (time.time(), url, _PIC_TTL if (url or definitive) else _PIC_MISS_TTL)
     if url:
         return RedirectResponse(url, status_code=307)
     raise HTTPException(status_code=404, detail="no image")

@@ -13,6 +13,8 @@ import { router } from 'expo-router'
 import { Sheet } from './Sheet'
 import { Button, Card, Disclaimer, Muted, Pill } from './ui'
 import { Skeleton } from './Skeleton'
+import { PlayerAvatar } from './Avatar'
+import { CardGlow } from './Glow'
 import { Divider, Figures, GameChart, HitWindows, Meter } from './charts'
 import { fetchForm, fetchHistory, fetchNbaPlayer, fetchNextMatch, fetchNflPlayer, fetchStats } from '@/lib/api'
 import { PlayerLine, boardLinesFor } from '@/lib/board'
@@ -53,12 +55,17 @@ export function PlayerSheet({ player, onClose }: { player: PlayerRef | null; onC
 }
 
 // ── shared bits ─────────────────────────────────────────────────────────────
-function Header({ name, badges }: { name: string; badges: (string | null | undefined)[] }) {
+function Header({ name, badges, sport, team }:
+  { name: string; badges: (string | null | undefined)[]; sport: SportKey; team?: string | null }) {
   return (
-    <View style={{ marginTop: 2, marginBottom: 6 }}>
-      <Text style={s.name}>{name}</Text>
-      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
-        {badges.filter(Boolean).map(b => <Pill key={b!} tone={T.muted}>{b}</Pill>)}
+    <View style={s.header}>
+      <CardGlow color={T.green} strength={0.2} />
+      <PlayerAvatar sport={sport} name={name} size={84} ring={T.green} team={team} />
+      <View style={{ flex: 1, minWidth: 0 }}>
+        <Text style={s.name} numberOfLines={2}>{name}</Text>
+        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
+          {badges.filter(Boolean).map(b => <Pill key={b!} tone={T.muted}>{b}</Pill>)}
+        </View>
       </View>
     </View>
   )
@@ -102,7 +109,7 @@ function PropHistory({ sport, name, propKey, hist, line, lean, gamesWord, surfac
       </View>
       {ref != null ? (
         <View style={{ marginTop: 10 }}>
-          <HitWindows hist={hist} lean={haveSide ? lean : 'OVER'} line={ref} gamesWord={gamesWord} />
+          <HitWindows hist={hist} lean={haveSide ? lean : 'OVER'} line={ref} gamesWord={gamesWord} season={!!line} />
           <Muted size={11} style={{ marginTop: 6, marginBottom: 12 }}>
             {haveSide ? `How often ${name.split(' ').slice(-1)[0]} finished ${lean.toLowerCase()} ${fmtLine(ref)}`
                       : `How often ${name.split(' ').slice(-1)[0]} went over ${line ? 'the line' : 'their average'} of ${fmt(ref)}`}
@@ -173,7 +180,7 @@ function TennisPlayer({ p, onClose }: { p: PlayerRef; onClose: () => void }) {
   if (notFound) return <Card style={{ marginTop: 10 }}><Muted size={13}>Couldn't find this player in the data source.</Muted></Card>
   return (
     <View>
-      <Header name={p.name} badges={[who?.tour, who?.currentRank ? `#${who.currentRank}` : null,
+      <Header sport="tennis" name={p.name} badges={[who?.tour, who?.currentRank ? `#${who.currentRank}` : null,
         hand === 'L' ? 'Left-handed' : hand === 'R' ? 'Right-handed' : null, stats?.archetype || null]} />
 
       {next ? (
@@ -347,7 +354,7 @@ function NflPlayer({ p, onClose }: { p: PlayerRef; onClose: () => void }) {
   const n1 = (v: unknown) => (typeof v === 'number' ? v.toFixed(1) : '—')
   return (
     <View>
-      <Header name={p.name} badges={[prof?.position || p.position, prof?.team || p.team,
+      <Header sport="nfl" team={prof?.team || p.team} name={p.name} badges={[prof?.position || p.position, prof?.team || p.team,
         profile.depth_pos && profile.depth_rank ? `${profile.depth_pos}${profile.depth_rank} on the depth chart` : null]} />
       {state === 'loading' ? <Card style={{ marginTop: 8 }}><Skeleton h={70} r={10} /></Card>
         : state === 'none' ? <Card style={{ marginTop: 8 }}><Muted size={12.5}>No published profile for this player yet — profiles are published with each slate's board.</Muted></Card>
@@ -422,7 +429,7 @@ function NbaPlayer({ p, onClose }: { p: PlayerRef; onClose: () => void }) {
   const teamFromLog = games[0]?.matchup ? String(games[0].matchup).split(/\s+/)[0] : null
   return (
     <View>
-      <Header name={p.name} badges={[p.team || teamFromLog, usage?.position || null,
+      <Header sport="nba" team={p.team || teamFromLog} name={p.name} badges={[p.team || teamFromLog, usage?.position || null,
         typeof usage?.rotation === 'string' ? `rotation ${usage.rotation}` : null]} />
       {state === 'loading' ? <Card style={{ marginTop: 8 }}><Skeleton h={70} r={10} /></Card>
         : state === 'none' ? <Card style={{ marginTop: 8 }}><Muted size={12.5}>No game log for this player yet.</Muted></Card>
@@ -461,6 +468,9 @@ const s = StyleSheet.create({
            justifyContent: 'center' },
   heartOn: { borderColor: `${T.green}66`, backgroundColor: `${T.green}1C` },
   heartText: { fontFamily: F.condBold, fontSize: 12, color: T.muted, letterSpacing: 0.6 },
+  header: { flexDirection: 'row', alignItems: 'center', gap: 14, marginTop: 4, marginBottom: 6, padding: 14,
+            borderRadius: T.r3, overflow: 'hidden', borderWidth: StyleSheet.hairlineWidth, borderColor: T.glassLine,
+            backgroundColor: 'rgba(255,255,255,0.02)' },
   name: { fontFamily: F.condHeavy, fontSize: 26, lineHeight: 29, color: T.white },
   k: { fontFamily: F.condBold, fontSize: 10.5, letterSpacing: 1.3, textTransform: 'uppercase', color: T.muted2 },
   kRight: { fontFamily: F.bodyMed, fontSize: 11.5, color: T.muted2 },

@@ -4,6 +4,7 @@ import { useEffect } from 'react'
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native'
 import { Sheet } from './Sheet'
 import { Muted } from './ui'
+import { PlayerAvatar } from './Avatar'
 import { Skeleton } from './Skeleton'
 import { F, T } from '@/theme'
 import { SearchHit, usePlayerSearch } from '@/lib/usePlayerSearch'
@@ -43,9 +44,7 @@ export function PlayerPicker({ open, label, tour, onPick, onClose }:
           {results.slice(0, 8).map(h => (
             <Pressable key={h.id} onPress={() => choose(h)}
                        style={({ pressed }) => [s.row, pressed && { backgroundColor: 'rgba(255,255,255,0.06)' }]}>
-              <View style={s.avatar}>
-                <Text style={s.initials}>{initials(h.name)}</Text>
-              </View>
+              <PlayerAvatar sport="tennis" name={h.name} size={40} />
               <Text style={s.name} numberOfLines={1}>{h.name}</Text>
               {h.currentRank ? <Text style={s.rank}>#{h.currentRank}</Text> : null}
             </Pressable>
@@ -54,11 +53,6 @@ export function PlayerPicker({ open, label, tour, onPick, onClose }:
       )}
     </Sheet>
   )
-}
-
-const initials = (name: string) => {
-  const t = (name || '').trim().split(/\s+/)
-  return ((t[0]?.[0] || '') + (t.length > 1 ? t[t.length - 1][0] : '')).toUpperCase() || '?'
 }
 
 const s = StyleSheet.create({

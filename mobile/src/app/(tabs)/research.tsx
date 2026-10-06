@@ -5,9 +5,11 @@
 import { useEffect, useState } from 'react'
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native'
 import { Screen } from '@/components/Screen'
-import { Empty, Muted, PageTitle, PersonRow, SectionLabel, Segmented } from '@/components/ui'
+import { Empty, Icon, Muted, PageTitle, PersonRow, SectionLabel, Segmented } from '@/components/ui'
 import { Skeleton } from '@/components/Skeleton'
 import { PlayerRef, PlayerSheet } from '@/components/PlayerSheet'
+import { PlayerAvatar } from '@/components/Avatar'
+import { HeaderAccount } from '@/components/HeaderAccount'
 import { searchNba, searchNfl } from '@/lib/api'
 import { usePlayerSearch } from '@/lib/usePlayerSearch'
 import { SportKey, SportSwitch, useSport } from '@/lib/sports'
@@ -48,12 +50,15 @@ export default function Research() {
 
   return (
     <Screen>
-      <PageTitle sub="Any player, their form, and the props on them">Research</PageTitle>
+      <PageTitle sub="Any player, their form, and the props on them" right={<HeaderAccount />}>Research</PageTitle>
       <SportSwitch />
       {sport === 'tennis' ? <Segmented options={TOURS} value={tour} onChange={setTour} compact /> : null}
-      <TextInput value={query} onChangeText={setQuery} placeholder={`Search ${sportWord} players`}
-                 placeholderTextColor={T.muted2} autoCorrect={false} autoCapitalize="words"
-                 clearButtonMode="while-editing" style={s.search} returnKeyType="search" />
+      <View style={s.searchWrap}>
+        <Icon name="magnifyingglass" size={15} color={T.muted2} />
+        <TextInput value={query} onChangeText={setQuery} placeholder={`Search ${sportWord} players`}
+                   placeholderTextColor={T.muted2} autoCorrect={false} autoCapitalize="words"
+                   clearButtonMode="while-editing" style={s.search} returnKeyType="search" />
+      </View>
 
       {searching ? (
         <>
@@ -63,6 +68,7 @@ export default function Research() {
             : !results.length ? <Empty title="No players found" hint={sport === 'tennis' ? 'Try a different spelling or the other tour.' : 'Try a different spelling.'} />
             : results.slice(0, 12).map(h => (
               <PersonRow key={`${h.name}|${h.team || h.id || ''}`} name={h.name}
+                         avatar={<PlayerAvatar sport={sport} name={h.name} size={44} team={h.team} />}
                          meta={[h.tour, h.rank ? `#${h.rank}` : null, h.position, h.team, h.games != null ? `${h.games} games` : null].filter(Boolean).join(' · ')}
                          onPress={() => openHit(h)} />
             ))}
@@ -76,6 +82,7 @@ export default function Research() {
             </Muted>
           ) : mySaved.map(p => (
             <PersonRow key={p.key} name={p.name} meta={[p.tour, p.rank ? `#${p.rank}` : null, p.team].filter(Boolean).join(' · ')}
+                       avatar={<PlayerAvatar sport={p.sport} name={p.name} size={44} ring={T.green} team={p.team} />}
                        onPress={() => openSaved(p)}
                        right={<Pressable onPress={() => { tap(); toggle(p) }} hitSlop={8} style={s.unsave}><Text style={s.unsaveText}>♥</Text></Pressable>} />
           ))}
@@ -84,6 +91,7 @@ export default function Research() {
               <SectionLabel right={<Pressable onPress={clear} hitSlop={8}><Text style={s.clear}>Clear</Text></Pressable>}>Recently viewed</SectionLabel>
               {myRecent.map(p => (
                 <PersonRow key={p.key} name={p.name} meta={[p.tour, p.rank ? `#${p.rank}` : null, p.team].filter(Boolean).join(' · ')}
+                           avatar={<PlayerAvatar sport={p.sport} name={p.name} size={44} team={p.team} />}
                            onPress={() => openSaved(p)} />
               ))}
             </>
@@ -124,8 +132,9 @@ function useTeamSearch(sport: SportKey, q: string) {
 }
 
 const s = StyleSheet.create({
-  search: { backgroundColor: 'rgba(255,255,255,0.04)', borderWidth: 1, borderColor: T.glassLine,
-            borderRadius: T.r1, paddingHorizontal: 14, minHeight: 50, color: T.white, fontFamily: F.body, fontSize: 16 },
+  searchWrap: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 14, minHeight: 50,
+                backgroundColor: 'rgba(255,255,255,0.045)', borderWidth: 1, borderColor: T.glassLine, borderRadius: T.r2 },
+  search: { flex: 1, color: T.white, fontFamily: F.body, fontSize: 16, minHeight: 48 },
   unsave: { minWidth: 36, minHeight: 36, alignItems: 'center', justifyContent: 'center' },
   unsaveText: { fontSize: 18, color: T.green },
   clear: { fontFamily: F.bodyMed, fontSize: 12, color: T.muted2 },
