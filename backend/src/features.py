@@ -244,11 +244,33 @@ def streak_only(player_id: str, tour: str = "ATP") -> dict:
 
 
 # ── Feature 6 — historical prop lookup ──────────────────────────────────────
+# The two COMPOSITE props have no PROP_FIELD entry; their per-match value is
+# computed by the SAME functions resolve_pick grades them with, so a history
+# chart and a graded result can never disagree about what a match scored.
+_COMPOSITE_PROPS = ("Fantasy Score", "Break Points Saved")
+
+
+def _history_value(m: dict, prop_type: str, field: str, tour: str):
+    if prop_type == "Fantasy Score":
+        # A match that ended early carries a PARTIAL score (and the resolver's
+        # retirement rules), which is not what a full-match projection is read
+        # against — so it is left out of the history, never shown as a low score.
+        if m.get("match_ended_early"):
+            return None
+        return _fantasy_score(m, tour)
+    if prop_type == "Break Points Saved":
+        if m.get("match_ended_early"):
+            return None
+        v = _break_points_saved(m)
+        return float(v) if v is not None else None
+    return _val(m, field)
+
+
 def get_history(player_id: str, tour: str, prop_type: str, surface: str, line: float) -> dict:
     """Over/under counts vs ``line`` for ``prop_type`` across the player's last
     20 matches on ``surface``, plus average and the last 10 individual results."""
     field = PROP_FIELD.get(prop_type)
-    if not field:
+    if not field and prop_type not in _COMPOSITE_PROPS:
         return {"error": f"unsupported prop_type {prop_type!r}"}
     try:
         data = get_player_stats_by_surface(player_id, tour) or {}
@@ -256,15 +278,21 @@ def get_history(player_id: str, tour: str, prop_type: str, surface: str, line: f
         logger.warning("get_history stats failed pid=%s: %s", player_id, exc)
         return {}
     surf = (surface or "").title()
-    pool = [m for m in (data.get("all_matches") or [])
-            if (not surf or m.get("surface") == surf) and _val(m, field) is not None]
-    pool = pool[:20]                      # most recent 20 on surface with the stat
+    pool = []
+    for m in (data.get("all_matches") or []):
+        if surf and m.get("surface") != surf:
+            continue
+        v = _history_value(m, prop_type, field, tour)
+        if v is not None:
+            pool.append((m, v))
+        if len(pool) >= 20:               # most recent 20 on surface with the stat
+            break
     if not pool:
         return {"player_matches": 0, "over": 0, "under": 0, "average": None,
                 "hit_rate": None, "line": line, "surface": surf,
                 "prop_type": prop_type, "last10": []}
 
-    vals = [_val(m, field) for m in pool]
+    vals = [v for _, v in pool]
     over = sum(1 for v in vals if v > line)
     under = sum(1 for v in vals if v < line)
     push = sum(1 for v in vals if v == line)
@@ -274,9 +302,9 @@ def get_history(player_id: str, tour: str, prop_type: str, surface: str, line: f
     last10 = [{
         "date": m.get("date", ""),
         "opponent": m.get("opponent_name", ""),
-        "value": _val(m, field),
-        "over": _val(m, field) > line,
-    } for m in pool[:10]]
+        "value": v,
+        "over": v > line,
+    } for m, v in pool[:10]]
 
     return {
         "player_matches": len(pool), "over": over, "under": under, "push": push,

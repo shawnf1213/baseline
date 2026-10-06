@@ -2440,8 +2440,51 @@ _PIC_CACHE: dict = {}          # norm name -> (checked_at, url|None)
 _PIC_TTL = 30 * 24 * 3600      # a headshot does not change
 
 
+def _nfl_headshot(name: str):
+    """ESPN headshot for an NFL player, from the ESPN id the bot publishes in
+    each slate's player profiles (nfl/queries.py). A database read — never a
+    cold nflverse load on an image request."""
+    try:
+        from src import database
+        rows = database.nfl_players(player=name) or []
+        for r in rows:
+            prof = r.get("profile") or {}
+            eid = str(prof.get("espn_id") or "").strip()
+            if eid and eid.isdigit():
+                return f"https://a.espncdn.com/i/headshots/nfl/players/full/{eid}.png"
+    except Exception as exc:  # noqa: BLE001
+        logger.info("nfl headshot lookup failed for %s: %s", name, exc)
+    return None
+
+
+def _nba_headshot(name: str):
+    """NBA.com headshot from the player id in the cached game logs (the same
+    frame /api/nba/search reads). None if the logs are not on this deploy."""
+    try:
+        if _nba_mod() is None:
+            return None
+        from nba import queries as _q, client as _c
+        df = _q._frame()
+        if df is None or "player_id" not in df:
+            return None
+        key = _c._norm_name(name)
+        hit = df[df["player_name"].astype(str).map(_c._norm_name) == key]
+        if len(hit):
+            pid = int(hit.iloc[0]["player_id"])
+            return f"https://cdn.nba.com/headshots/nba/latest/1040x760/{pid}.png"
+    except Exception as exc:  # noqa: BLE001
+        logger.info("nba headshot lookup failed for %s: %s", name, exc)
+    return None
+
+
+# Words the Wikipedia article must contain before its photo is trusted, per
+# sport — a name match alone returns strangers (see player_image).
+_PIC_SPORT_WORDS = {"tennis": ("tennis",), "nba": ("basketball",),
+                    "nfl": ("american football", "football")}
+
+
 @app.get("/api/player/image")
-def player_image(name: str = "", player_id: str = ""):
+def player_image(name: str = "", player_id: str = "", sport: str = "tennis"):
     """Player headshot, sourced from Wikipedia/Wikimedia.
 
     NOT SOFASCORE: it answers 403 to /player/{id}/image with a bare request,
@@ -2470,31 +2513,38 @@ def player_image(name: str = "", player_id: str = ""):
     nm = (name or "").strip()
     if not nm:
         raise HTTPException(status_code=400, detail="name required")
-    key = nm.lower()
+    sp = (sport or "tennis").strip().lower()
+    if sp not in _PIC_SPORT_WORDS:
+        sp = "tennis"
+    # Tennis keeps its original key so the warm cache survives this change.
+    key = nm.lower() if sp == "tennis" else f"{sp}:{nm.lower()}"
     hit = _PIC_CACHE.get(key)
     if hit and (time.time() - hit[0]) < _PIC_TTL:
         if hit[1]:
             return RedirectResponse(hit[1], status_code=307)
         raise HTTPException(status_code=404, detail="no image")
-    url = None
-    try:
-        r = _rq.get(
-            "https://en.wikipedia.org/api/rest_v1/page/summary/"
-            + urllib.parse.quote(nm.replace(" ", "_")),
-            # Wikimedia require a descriptive agent and rate-limit generic ones.
-            headers={"User-Agent": "BaselineTennis/1.0 (baselineev.vercel.app)"},
-            timeout=12)
-        if r.status_code == 200:
-            j = r.json() or {}
-            blurb = ((j.get("description") or "") + " "
-                     + (j.get("extract") or "")[:200]).lower()
-            if "tennis" in blurb:
-                url = ((j.get("originalimage") or {}).get("source")
-                       or (j.get("thumbnail") or {}).get("source"))
-            else:
-                logger.info("player image %s: article is not a tennis player", nm)
-    except Exception:  # noqa: BLE001
-        logger.warning("player image lookup failed for %s", nm)
+    # NFL and NBA have real league headshots keyed by an id we already hold;
+    # Wikipedia is the fallback for anyone without one.
+    url = _nfl_headshot(nm) if sp == "nfl" else _nba_headshot(nm) if sp == "nba" else None
+    if not url:
+        try:
+            r = _rq.get(
+                "https://en.wikipedia.org/api/rest_v1/page/summary/"
+                + urllib.parse.quote(nm.replace(" ", "_")),
+                # Wikimedia require a descriptive agent and rate-limit generic ones.
+                headers={"User-Agent": "BaselineTennis/1.0 (baselineev.vercel.app)"},
+                timeout=12)
+            if r.status_code == 200:
+                j = r.json() or {}
+                blurb = ((j.get("description") or "") + " "
+                         + (j.get("extract") or "")[:200]).lower()
+                if any(w in blurb for w in _PIC_SPORT_WORDS[sp]):
+                    url = ((j.get("thumbnail") or {}).get("source")
+                           or (j.get("originalimage") or {}).get("source"))
+                else:
+                    logger.info("player image %s: article is not a %s player", nm, sp)
+        except Exception:  # noqa: BLE001
+            logger.warning("player image lookup failed for %s", nm)
     _PIC_CACHE[key] = (time.time(), url)
     if url:
         return RedirectResponse(url, status_code=307)

@@ -1624,8 +1624,11 @@ export default function ProjectionsTab({ prefill }) {
                      res.p1_win_prob],
                     ['Season avg', hist?.average != null
                       ? fmt(hist.average) : '—', T.white, null],
-                    ['Sample', hist?.player_matches != null
-                      ? `${hist.player_matches}` : '—', T.muted, null],
+                    // hitStrip names this `sample`; `player_matches` is the raw
+                    // response field and never existed on hist, so this cell
+                    // read "—" on every projection.
+                    ['Sample', hist?.sample
+                      ? `${hist.sample}` : '—', T.muted, null],
                   ].map(([k, v, tone, bar], i) => (
                     <div key={k}>
                       <div style={{ fontFamily: T.cond, fontWeight: 700,

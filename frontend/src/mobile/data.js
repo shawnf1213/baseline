@@ -2,10 +2,11 @@
 // No new endpoints — everything here derives from /api/results/record,
 // /api/slate/today and /api/history responses.
 
-// Prop types. `history` = supported by GET /api/history (over/under logs);
-// Fantasy Score is a composite with no per-match log, so it has no hit strip.
-// Break Points Saved is COMPOSITE — reconstructed from faced x save% rather than
-// logged per match — so like Fantasy Score it has no hit strip.
+// Prop types. `history` = supported by GET /api/history (over/under logs).
+// Fantasy Score and Break Points Saved are COMPOSITES, but since 2026-10-06 the
+// history endpoint computes them per match with the same functions the
+// resolver grades them with (features._fantasy_score / _break_points_saved),
+// so they get hit strips, charts and the L10 / season figures like the rest.
 //
 // Sets Won / Sets Played are deliberately ABSENT: /api/prop/calculate has no
 // branch for them (they are derived from the scenario mixture inside the bot),
@@ -15,10 +16,10 @@ export const PROP_TYPES = [
   { key: 'Aces', short: 'Aces', history: true },
   { key: 'Double Faults', short: 'Double Faults', history: true },
   { key: 'Break Points Won', short: 'Break Pts Won', history: true },
-  { key: 'Break Points Saved', short: 'Break Pts Saved', history: false },
+  { key: 'Break Points Saved', short: 'Break Pts Saved', history: true },
   { key: 'Total Games', short: 'Total Games', history: true },
   { key: 'Player Total Games Won', short: 'Games Won', history: true },
-  { key: 'Fantasy Score', short: 'Fantasy Score', history: false },
+  { key: 'Fantasy Score', short: 'Fantasy Score', history: true },
 ]
 export const SURFACES = ['Hard', 'Clay', 'Grass']
 export const TOURS = ['ATP', 'WTA', 'Challenger']
