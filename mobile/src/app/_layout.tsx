@@ -22,6 +22,7 @@ import { BarlowCondensed_600SemiBold, BarlowCondensed_700Bold,
   from '@expo-google-fonts/barlow-condensed'
 import { T } from '@/theme'
 import { SessionProvider } from '@/lib/session'
+import { SportProvider } from '@/lib/sports'
 
 SplashScreen.preventAutoHideAsync()
 
@@ -51,15 +52,17 @@ export default function RootLayout() {
   // deep link, foreground re-check — resolves to the same three states.
   return (
     <SessionProvider>
-      <ThemeProvider value={NAV_THEME}>
-        <StatusBar style="light" />
-        <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: T.bg } }}>
-          <Stack.Screen name="(tabs)" />
-          <Stack.Screen name="welcome" options={{ animation: 'fade' }} />
-          <Stack.Screen name="sign-in" options={{ animation: 'slide_from_right' }} />
-          <Stack.Screen name="locked" options={{ animation: 'fade' }} />
-        </Stack>
-      </ThemeProvider>
+      <SportProvider>
+        <ThemeProvider value={NAV_THEME}>
+          <StatusBar style="light" />
+          <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: T.bg } }}>
+            <Stack.Screen name="(tabs)" />
+            <Stack.Screen name="welcome" options={{ animation: 'fade' }} />
+            <Stack.Screen name="sign-in" options={{ animation: 'slide_from_right' }} />
+            <Stack.Screen name="locked" options={{ animation: 'fade' }} />
+          </Stack>
+        </ThemeProvider>
+      </SportProvider>
     </SessionProvider>
   )
 }

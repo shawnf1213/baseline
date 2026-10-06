@@ -1,10 +1,13 @@
 // A pick's full story, in a sheet: the call, the projection against the line,
 // confidence, the result, and the player's recent form for that prop. The
-// card shows the verdict; this is where the reader checks it.
+// card shows the verdict; this is where the reader checks it. One sheet for
+// every sport — only the "recent form" source and the context line differ.
 //
-// Record rows carry names, not Sofascore ids, so recent form is fetched
-// lazily: resolve the player by name, then /api/history for this prop,
-// surface and line. Both steps are cancelled if the sheet closes first.
+// Tennis record rows carry names, not Sofascore ids, so recent form is
+// fetched lazily: resolve the player by name (unless the board already did),
+// then /api/history for this prop, surface and line. NFL reads the published
+// profile's weekly log; NBA reads the recent game log. All of it is cancelled
+// if the sheet closes first.
 import { useEffect, useRef, useState } from 'react'
 import { StyleSheet, Text, View } from 'react-native'
 import { router } from 'expo-router'
@@ -14,9 +17,11 @@ import { Skeleton } from './Skeleton'
 import { EdgeScale, GameChart, HitWindows, Meter } from './charts'
 import { ResultBadge } from './PickCard'
 import { F, T, sideTone, tier } from '@/theme'
-import { fetchHistory } from '@/lib/api'
-import { Found, Hist, PickRow, fmt, fmtLine, fmtSigned, prettyDate, propHasHistory, propUnit,
-         resolvePlayer, resultMeta, shapeHistory, shortProp } from '@/lib/picks'
+import { fetchHistory, fetchNbaPlayer, fetchNflPlayer } from '@/lib/api'
+import { Found, Hist, PickRow, fmt, fmtLine, fmtSigned, kickoffLabel, nbaHistory, nflHistory,
+         prettyDate, propHasHistory, propLabel, propUnit, resolvePlayer, resultMeta, shapeHistory,
+         startTimeLabel } from '@/lib/picks'
+import { useSport } from '@/lib/sports'
 import { tap } from '@/lib/haptics'
 
 const TIER_WORD: Record<string, string> = {
@@ -25,10 +30,12 @@ const TIER_WORD: Record<string, string> = {
   LEAN: 'Lean — a smaller edge',
   '': 'Below the posting bar',
 }
+const BOOK: Record<string, string> = { prizepicks: 'PrizePicks', underdog: 'Underdog' }
 
 type Form = { state: 'loading' | 'ready' | 'none' | 'error'; hist?: Hist; who?: Found | null }
 
 export function PickSheet({ pick, onClose }: { pick: PickRow | null; onClose: () => void }) {
+  const { setSport } = useSport()
   const [form, setForm] = useState<Form>({ state: 'loading' })
   const [opp, setOpp] = useState<Found | null>(null)
   const alive = useRef(0)
@@ -37,20 +44,34 @@ export function PickSheet({ pick, onClose }: { pick: PickRow | null; onClose: ()
     const token = ++alive.current
     setOpp(null)
     if (!pick) return
-    if (!propHasHistory(pick.propType)) { setForm({ state: 'none' }); return }
+    if (!propHasHistory(pick.sport, pick.propType)) { setForm({ state: 'none' }); return }
     setForm({ state: 'loading' })
     ;(async () => {
-      const who = await resolvePlayer(pick.player, pick.tour)
-      if (alive.current !== token) return
-      if (!who) { setForm({ state: 'error' }); return }
       try {
+        if (pick.sport === 'nfl') {
+          const d = await fetchNflPlayer(pick.player)
+          const h = nflHistory(d?.players?.[0], pick.propType, pick.line)
+          if (alive.current === token) setForm(h ? { state: 'ready', hist: h } : { state: 'error' })
+          return
+        }
+        if (pick.sport === 'nba') {
+          const d = await fetchNbaPlayer(pick.player, 10)
+          const h = nbaHistory(d, pick.propType, pick.line)
+          if (alive.current === token) setForm(h ? { state: 'ready', hist: h } : { state: 'error' })
+          return
+        }
+        // tennis
+        const who: Found | null = pick.playerId
+          ? { id: pick.playerId, name: pick.player, tour: pick.tour === 'WTA' ? 'WTA' : 'ATP', currentRank: null }
+          : await resolvePlayer(pick.player, pick.tour)
+        if (alive.current !== token) return
+        if (!who) { setForm({ state: 'error' }); return }
         const h = await fetchHistory(who.id, who.tour, pick.propType, pick.surface, pick.line ?? 0)
         if (alive.current !== token) return
         setForm({ state: 'ready', hist: shapeHistory(h), who })
-      } catch { if (alive.current === token) setForm({ state: 'error', who }) }
-      // The opponent id is only needed for the Project hand-off; resolved in
-      // the background and never blocks the sheet.
-      resolvePlayer(pick.opponent, who.tour).then(o => { if (alive.current === token) setOpp(o) })
+        if (pick.opponentId) setOpp({ id: pick.opponentId, name: pick.opponent, tour: who.tour, currentRank: null })
+        else resolvePlayer(pick.opponent, who.tour).then(o => { if (alive.current === token) setOpp(o) })
+      } catch { if (alive.current === token) setForm({ state: 'error' }) }
     })()
   }, [pick?.key])   // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -61,61 +82,86 @@ export function PickSheet({ pick, onClose }: { pick: PickRow | null; onClose: ()
   const meta = resultMeta(r.result)
   const resTone = meta.tone === 'win' ? T.green : meta.tone === 'loss' ? T.red : meta.tone === 'void' ? T.muted2 : T.amber
   const who = form.who || null
+  const label = propLabel(r.sport, r.propType)
+  const unit = propUnit(r.sport, r.propType)
+  const last = r.player.split(' ').slice(-1)[0]
+  const priced = r.projection != null
+  const gamesWord = r.sport === 'tennis' ? 'matches' : 'games'
+
+  const context = r.sport === 'tennis'
+    ? [r.tournament, r.surface, r.startTs ? startTimeLabel(r.startTs) : ''].filter(Boolean).join(' · ') || 'Tournament not recorded'
+    : [r.matchup, kickoffLabel(r.startsAt)].filter(Boolean).join(' · ')
+      || [r.team, r.opponent ? `vs ${r.opponent}` : ''].filter(Boolean).join(' ')
 
   const openProject = () => {
     tap()
     onClose()
-    router.push({ pathname: '/project', params: {
-      player: r.player, opponent: r.opponent,
-      playerId: who?.id || '', opponentId: opp?.id || '',
+    setSport(r.sport)
+    const base = { sport: r.sport, player: r.player, prop: r.propType,
+                   line: r.line != null ? String(r.line) : '', t: String(Date.now()) }
+    router.push({ pathname: '/project', params: r.sport === 'tennis' ? {
+      ...base, opponent: r.opponent,
+      playerId: who?.id || r.playerId || '', opponentId: opp?.id || r.opponentId || '',
       tour: who?.tour || (r.tour === 'WTA' ? 'WTA' : 'ATP'),
       surface: r.surface || 'Hard', court: r.tournament || '',
-      prop: r.propType, line: r.line != null ? String(r.line) : '',
-      t: String(Date.now()),
-    } })
+    } : { ...base, team: r.team || '' } })
   }
 
   return (
     <Sheet open={!!pick} onClose={onClose}
-           title={`${prettyDate(r.date)} · ${r.book === 'underdog' ? 'Underdog' : 'PrizePicks'}${r.isPotd ? ' · ⭐' : ''}`}
+           title={`${prettyDate(r.date)} · ${BOOK[r.book] || r.book}${r.isPotd ? ' · ⭐' : ''}`}
            footer={<Button label="Project this matchup" onPress={openProject} kind="ghost" />}>
-      <Text style={s.name}>{r.player}{r.playerRank ? <Text style={s.rank}>  #{r.playerRank}</Text> : null}</Text>
+      <Text style={s.name}>
+        {r.player}{r.playerRank ? <Text style={s.rank}>  #{r.playerRank}</Text> : null}
+        {r.team ? <Text style={s.rank}>  {r.team}</Text> : null}
+      </Text>
       <Text style={s.vs}>vs {r.opponent}{r.opponentRank ? ` (#${r.opponentRank})` : ''}</Text>
-      <Muted size={12.5} style={{ marginTop: 2 }}>
-        {[r.tournament, r.surface].filter(Boolean).join(' · ') || 'Tournament not recorded'}
-      </Muted>
+      <Muted size={12.5} style={{ marginTop: 2 }}>{context}</Muted>
 
       {/* THE CALL */}
       <Card style={[s.call, { borderColor: `${side.tone}44` }]}>
-        <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 8 }}>
-          <Text style={[s.callSide, { color: side.tone }]}>{r.lean || '—'}</Text>
+        <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+          <Text style={[s.callSide, { color: side.tone }]}>{r.lean || (priced ? '—' : 'Line')}</Text>
           <Text style={s.callLine}>{fmtLine(r.line)}</Text>
-          <Text style={s.callProp}>{shortProp(r.propType)}</Text>
+          <Text style={s.callProp}>{label}</Text>
           {r.isThreeX ? <Text style={s.threex}>3x slip</Text> : null}
         </View>
-        <View style={{ marginTop: 14 }}>
-          <EdgeScale line={r.line} proj={r.projection} tone={side.tone} />
-        </View>
-        <Text style={s.edgeLine}>
-          Edge <Text style={{ color: side.tone, fontFamily: F.bodySemi }}>{fmtSigned(r.edge)} {propUnit(r.propType)}</Text>
-          {' '}between Baseline's number and the book's line.
-        </Text>
+        {priced ? (
+          <>
+            <View style={{ marginTop: 14 }}>
+              <EdgeScale line={r.line} proj={r.projection} tone={side.tone} />
+            </View>
+            <Text style={s.edgeLine}>
+              Edge <Text style={{ color: side.tone, fontFamily: F.bodySemi }}>{fmtSigned(r.edge)} {unit}</Text>
+              {' '}between Baseline's number and the book's line.
+              {r.overPrice != null && r.underPrice != null
+                ? ` Underdog prices: over ${r.overPrice > 0 ? '+' : ''}${r.overPrice}, under ${r.underPrice > 0 ? '+' : ''}${r.underPrice}.` : ''}
+            </Text>
+          </>
+        ) : (
+          <Text style={s.edgeLine}>Baseline has not priced this line yet. Use Project this matchup to run it now.</Text>
+        )}
       </Card>
 
       {/* CONFIDENCE */}
-      <Card style={{ marginTop: 10 }}>
-        <View style={{ flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-between' }}>
-          <View>
-            <Text style={s.k}>Confidence</Text>
-            <Text style={s.tierWord}>{TIER_WORD[tr.label]}</Text>
+      {priced ? (
+        <Card style={{ marginTop: 10 }}>
+          <View style={{ flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-between' }}>
+            <View>
+              <Text style={s.k}>Confidence</Text>
+              <Text style={s.tierWord}>{TIER_WORD[tr.label]}</Text>
+            </View>
+            <Text style={[s.confNum, { color: tr.tone }]}>{r.confidence != null ? Math.round(r.confidence) : '—'}</Text>
           </View>
-          <Text style={[s.confNum, { color: tr.tone }]}>{r.confidence != null ? Math.round(r.confidence) : '—'}</Text>
-        </View>
-        <View style={{ marginTop: 10 }}><Meter pct={r.confidence} tone={tr.tone} /></View>
-        <Muted size={11.5} style={{ marginTop: 8, lineHeight: 16 }}>
-          The model's own score for this play, 0–100. The same number the Discord card shows.
-        </Muted>
-      </Card>
+          <View style={{ marginTop: 10 }}><Meter pct={r.confidence} tone={tr.tone} /></View>
+          <Muted size={11.5} style={{ marginTop: 8, lineHeight: 16 }}>
+            The model's own score for this play, 0–100. The same number the Discord card shows.
+            {r.usageWindow ? ` Usage window: ${r.usageWindow}.` : ''}
+            {r.minutes != null ? ` Projected minutes: ${Math.round(r.minutes)}.` : ''}
+            {r.rotation && r.rotation !== 'stable' ? ` Rotation: ${r.rotation}.` : ''}
+          </Muted>
+        </Card>
+      ) : null}
 
       {/* RESULT */}
       <Card style={{ marginTop: 10, borderColor: `${resTone}33` }}>
@@ -123,14 +169,18 @@ export function PickSheet({ pick, onClose }: { pick: PickRow | null; onClose: ()
           <View style={{ flex: 1, minWidth: 0 }}>
             <Text style={s.k}>Result</Text>
             {meta.tone === 'pending' ? (
-              <Text style={s.resultText}>Not graded yet — results post after the match finishes.</Text>
+              <Text style={s.resultText}>
+                {r.isPotd != null || r.result !== 'PENDING' || r.sport !== 'tennis'
+                  ? 'Not graded yet — results post after the game finishes.'
+                  : 'Not graded yet — results post after the match finishes.'}
+              </Text>
             ) : meta.tone === 'void' ? (
-              <Text style={s.resultText}>{meta.label} — this play did not count (walkover, retirement or a line that changed).</Text>
+              <Text style={s.resultText}>{meta.label} — this play did not count (did not play, walkover, or a line that changed).</Text>
             ) : (
               <Text style={s.resultText}>
-                {r.player.split(' ').slice(-1)[0]} finished with{' '}
+                {last} finished with{' '}
                 <Text style={{ color: T.white, fontFamily: F.bodySemi }}>
-                  {r.resultValue != null ? `${fmtLine(r.resultValue)} ${propUnit(r.propType)}` : 'a graded result'}
+                  {r.resultValue != null ? `${fmtLine(r.resultValue)} ${unit}` : 'a graded result'}
                 </Text>
                 {r.resultValue != null && r.line != null ? ` against a line of ${fmtLine(r.line)}.` : '.'}
               </Text>
@@ -141,31 +191,31 @@ export function PickSheet({ pick, onClose }: { pick: PickRow | null; onClose: ()
       </Card>
 
       {/* RECENT FORM */}
-      <Text style={[s.k, { marginTop: 22, marginBottom: 8 }]}>Recent form · {shortProp(r.propType)}</Text>
+      <Text style={[s.k, { marginTop: 22, marginBottom: 8 }]}>Recent form · {label}</Text>
       {form.state === 'loading' ? (
         <Card>
           <View style={{ flexDirection: 'row', gap: 8 }}>
             {[0, 1, 2].map(i => <Skeleton key={i} h={58} r={10} style={{ flex: 1 }} />)}
           </View>
           <Skeleton h={110} r={10} style={{ marginTop: 12 }} />
-          <Muted size={11} style={{ marginTop: 10 }}>Pulling {r.player.split(' ').slice(-1)[0]}'s recent matches…</Muted>
+          <Muted size={11} style={{ marginTop: 10 }}>Pulling {last}'s recent {gamesWord}…</Muted>
         </Card>
       ) : form.state === 'none' ? (
         <Card><Muted size={12.5} style={{ lineHeight: 17 }}>
-          {shortProp(r.propType)} is built from several stats, so there is no single per-match
-          log to show. Use Project this matchup for the full breakdown.
+          {label} is built from several stats, so there is no single per-match log to show.
+          Use Project this matchup for the full breakdown.
         </Muted></Card>
       ) : form.state === 'error' ? (
-        <Card><Muted size={12.5}>Couldn't load recent matches right now.</Muted></Card>
+        <Card><Muted size={12.5}>Couldn't load recent {gamesWord} right now.</Muted></Card>
       ) : (
         <Card>
-          <HitWindows hist={form.hist!} lean={r.lean} line={r.line} />
+          <HitWindows hist={form.hist!} lean={r.lean || 'OVER'} line={r.line} gamesWord={gamesWord} />
           <Muted size={11} style={{ marginTop: 8, marginBottom: 14 }}>
-            How often {r.player.split(' ').slice(-1)[0]} finished {r.lean === 'UNDER' ? 'under' : 'over'} {fmtLine(r.line)}
+            How often {last} finished {r.lean === 'UNDER' ? 'under' : 'over'} {fmtLine(r.line)}
             {r.surface ? ` on ${r.surface.toLowerCase()}` : ''}
-            {form.hist!.average != null ? ` · season average ${fmt(form.hist!.average)}` : ''}
+            {form.hist!.average != null ? ` · average ${fmt(form.hist!.average)}` : ''}
           </Muted>
-          <GameChart hist={form.hist!} line={r.line} lean={r.lean} />
+          <GameChart hist={form.hist!} line={r.line} lean={r.lean || 'OVER'} gamesWord={gamesWord} />
         </Card>
       )}
 

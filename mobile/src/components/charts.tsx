@@ -51,7 +51,8 @@ export function Meter({ pct, tone, height = 6 }: { pct: number | null; tone: str
 // ── HIT WINDOWS ─────────────────────────────────────────────────────────────
 // How often this prop cleared, on the side Baseline leans, over the last 5,
 // last 10 and the season.
-export function HitWindows({ hist, lean, line }: { hist: Hist | null; lean: string; line: number | null }) {
+export function HitWindows({ hist, lean, line, gamesWord = 'matches' }:
+  { hist: Hist | null; lean: string; line: number | null; gamesWord?: string }) {
   if (!hist || line == null) return null
   const vals = hist.games.map(g => g.value)
   const side = (arr: number[]) => {
@@ -77,7 +78,7 @@ export function HitWindows({ hist, lean, line }: { hist: Hist | null; lean: stri
           <View key={k} style={c.cell}>
             <Text style={c.k}>{k}</Text>
             <Text style={[c.big, { color: tone }]}>{d.pct}%</Text>
-            <Text style={c.sub}>avg {fmt(d.avg)}{d.n ? ` · ${d.n} matches` : ''}</Text>
+            <Text style={c.sub}>avg {fmt(d.avg)}{d.n ? ` · ${d.n} ${gamesWord}` : ''}</Text>
           </View>
         )
       })}
@@ -88,15 +89,18 @@ export function HitWindows({ hist, lean, line }: { hist: Hist | null; lean: stri
 // ── GAME LOG ────────────────────────────────────────────────────────────────
 // Every recent match as a bar with the line drawn through it; green cleared
 // the line on the side Baseline leans, red did not.
-export function GameChart({ hist, line, lean }: { hist: Hist | null; line: number | null; lean: string }) {
+export function GameChart({ hist, line, lean, gamesWord = 'matches' }:
+  { hist: Hist | null; line: number | null; lean: string; gamesWord?: string }) {
   const games = hist?.games || []
   if (!games.length || line == null) return null
   const series = [...games].reverse()           // oldest -> newest
   const top = Math.max(line, ...series.map(g => g.value)) * 1.25 || 1
   const H = 96
+  // "2026-10-04" prints as 10/04; anything else ("Wk 5") prints as given.
+  const dateLabel = (d?: string) => (/^\d{4}-\d{2}-\d{2}/.test(d || '') ? d!.slice(5, 10).replace('-', '/') : (d || ''))
   return (
     <View>
-      <Text style={[c.k, { marginBottom: 10 }]}>Last {series.length} matches · line {fmtLine(line)}</Text>
+      <Text style={[c.k, { marginBottom: 10 }]}>Last {series.length} {gamesWord} · line {fmtLine(line)}</Text>
       <View style={{ height: H, flexDirection: 'row', alignItems: 'flex-end', gap: 4 }}>
         <View pointerEvents="none"
               style={[c.lineRule, { bottom: Math.min(100, (line / top) * 100) + '%' as any }]} />
@@ -116,7 +120,7 @@ export function GameChart({ hist, line, lean }: { hist: Hist | null; line: numbe
       <View style={{ flexDirection: 'row', gap: 4, marginTop: 5 }}>
         {series.map((g, i) => (
           <View key={i} style={{ flex: 1, alignItems: 'center' }}>
-            <Text style={c.axis} numberOfLines={1}>{(g.date || '').slice(5).replace('-', '/')}</Text>
+            <Text style={c.axis} numberOfLines={1}>{dateLabel(g.date)}</Text>
             <Text style={[c.axis, { color: '#4a4a4a' }]} numberOfLines={1}>
               {(g.opponent || '').split(' ').slice(-1)[0].slice(0, 6)}
             </Text>

@@ -1,9 +1,10 @@
-// Three tabs (redesign proposal, replacing the website's six):
-//   Picks     Baseline's board — Pick of the Day first, then everything else
+// Four tabs (operator ruling, 2026-10-05):
+//   Picks     Baseline's ranked picks — Pick of the Day first
+//   Board     the live player board, priced by the model
 //   Project   price any matchup
 //   Research  players, search and saved players in one place (Phase 4)
-// The account sheet opens from a control on the Picks header in Phase 4, not
-// from a tab.
+// The sport switch sits at the top of Picks, Board and Project and is shared.
+// The account sheet opens from the Picks header, not from a tab.
 import { Redirect, Tabs } from 'expo-router'
 import { Platform, Text, View } from 'react-native'
 import { F, T } from '@/theme'
@@ -11,6 +12,7 @@ import { useSession } from '@/lib/session'
 
 const TABS = [
   { name: 'index',    label: 'Picks',    glyph: '★' },
+  { name: 'board',    label: 'Board',    glyph: '▦' },
   { name: 'project',  label: 'Project',  glyph: '◎' },
   { name: 'research', label: 'Research', glyph: '⌕' },
 ] as const

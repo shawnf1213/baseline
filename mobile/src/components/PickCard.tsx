@@ -1,12 +1,14 @@
 // One pick, at a glance: player, the call (side · line · prop), confidence,
 // and its result once graded. Everything else lives in the sheet a tap opens.
 // `hero` is the Pick of the Day treatment — the first thing on the main
-// screen, so it is bigger and the only card with a tinted border.
+// screen, so it is bigger and the only card with a tinted border. `pricing`
+// is the board's not-yet-priced state: the line is known, our number is not.
 import { StyleSheet, Text, View } from 'react-native'
 import { Card } from './ui'
 import { Meter } from './charts'
+import { Skeleton } from './Skeleton'
 import { F, T, sideTone, tier } from '@/theme'
-import { PickRow, fmtLine, resultMeta, shortProp } from '@/lib/picks'
+import { PickRow, fmtLine, propLabel, resultMeta } from '@/lib/picks'
 import { tap } from '@/lib/haptics'
 
 const TIER_LABEL: Record<string, string> = { ELITE: 'Elite', STRONG: 'Strong', LEAN: 'Lean', '': '' }
@@ -23,12 +25,16 @@ export function ResultBadge({ r, big }: { r: PickRow; big?: boolean }) {
   )
 }
 
-export function PickCard({ r, onPress, hero }: { r: PickRow; onPress: (r: PickRow) => void; hero?: boolean }) {
+type Props = { r: PickRow; onPress: (r: PickRow) => void; hero?: boolean; pricing?: boolean; sub?: string; noData?: boolean }
+
+export function PickCard({ r, onPress, hero, pricing, sub, noData }: Props) {
   const side = sideTone(r.lean)
   const tr = tier(r.confidence)
   const open = () => { tap(); onPress(r) }
-  const call = `${r.lean || ''} ${fmtLine(r.line)} ${shortProp(r.propType)}`.trim()
-  const dim = resultMeta(r.result).tone === 'void'
+  const label = propLabel(r.sport, r.propType)
+  const call = `${r.lean || ''} ${fmtLine(r.line)} ${label}`.trim()
+  const dim = resultMeta(r.result).tone === 'void' || noData
+  const who = r.team ? `${r.team} vs ${r.opponent}` : `vs ${r.opponent}`
 
   if (hero) {
     return (
@@ -39,7 +45,7 @@ export function PickCard({ r, onPress, hero }: { r: PickRow; onPress: (r: PickRo
           <View style={{ flex: 1, minWidth: 0 }}>
             <Text style={s.heroName} numberOfLines={2}>{r.player}</Text>
             <Text style={s.meta} numberOfLines={1}>
-              vs {r.opponent}{r.surface ? ` · ${r.surface}` : ''}
+              {who}{r.surface ? ` · ${r.surface}` : ''}{sub ? ` · ${sub}` : ''}
             </Text>
           </View>
           <View style={{ alignItems: 'flex-end' }}>
@@ -50,7 +56,7 @@ export function PickCard({ r, onPress, hero }: { r: PickRow; onPress: (r: PickRo
         <View style={[s.callBox, { borderColor: `${side.tone}44`, backgroundColor: `${side.tone}14` }]}>
           <Text style={[s.callBig, { color: side.tone }]}>{r.lean || '—'}</Text>
           <Text style={s.callLine}>{fmtLine(r.line)}</Text>
-          <Text style={s.callProp} numberOfLines={1}>{shortProp(r.propType)}</Text>
+          <Text style={s.callProp} numberOfLines={1}>{label}</Text>
           <View style={{ flex: 1 }} />
           <ResultBadge r={r} big />
         </View>
@@ -64,21 +70,37 @@ export function PickCard({ r, onPress, hero }: { r: PickRow; onPress: (r: PickRo
 
   return (
     <Card onPress={open} style={[s.row, { opacity: dim ? 0.55 : 1 }]}>
-      <View style={[s.rail, { backgroundColor: side.tone }]} />
+      <View style={[s.rail, { backgroundColor: pricing || noData ? T.muted2 : side.tone }]} />
       <View style={{ flex: 1, minWidth: 0 }}>
-        <Text style={s.name} numberOfLines={1}>{r.player}</Text>
+        <Text style={s.name} numberOfLines={1}>
+          {r.isPotd ? '⭐ ' : ''}{r.player}
+        </Text>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 3 }}>
-          <Text style={[s.call, { color: side.tone }]} numberOfLines={1}>{call}</Text>
+          <Text style={[s.call, { color: pricing || noData ? T.muted : side.tone }]} numberOfLines={1}>{call}</Text>
           {r.isThreeX ? <Text style={s.threex}>3x</Text> : null}
         </View>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 4 }}>
-          <Text style={s.meta} numberOfLines={1}>vs {r.opponent}</Text>
+          <Text style={s.meta} numberOfLines={1}>{who}{sub ? ` · ${sub}` : ''}</Text>
           <ResultBadge r={r} />
         </View>
       </View>
-      <View style={{ alignItems: 'flex-end', minWidth: 44 }}>
-        <Text style={[s.conf, { color: tr.tone }]}>{r.confidence != null ? Math.round(r.confidence) : '—'}</Text>
-        <Text style={s.confLabel}>{TIER_LABEL[tr.label] || 'conf.'}</Text>
+      <View style={{ alignItems: 'flex-end', minWidth: 48 }}>
+        {pricing ? (
+          <>
+            <Skeleton w={34} h={22} r={6} />
+            <Text style={[s.confLabel, { marginTop: 3 }]}>pricing</Text>
+          </>
+        ) : noData ? (
+          <>
+            <Text style={[s.conf, { color: T.muted2 }]}>—</Text>
+            <Text style={s.confLabel}>no price</Text>
+          </>
+        ) : (
+          <>
+            <Text style={[s.conf, { color: tr.tone }]}>{r.confidence != null ? Math.round(r.confidence) : '—'}</Text>
+            <Text style={s.confLabel}>{TIER_LABEL[tr.label] || 'conf.'}</Text>
+          </>
+        )}
       </View>
       <Text style={s.chev}>›</Text>
     </Card>
@@ -95,7 +117,7 @@ const s = StyleSheet.create({
              color: T.amber, marginBottom: 8 },
   name: { fontFamily: F.condBlack, fontSize: 18, color: T.white, letterSpacing: 0.3 },
   heroName: { fontFamily: F.condHeavy, fontSize: 26, lineHeight: 29, color: T.white, letterSpacing: 0.3 },
-  call: { fontFamily: F.condBold, fontSize: 13.5, letterSpacing: 0.8, textTransform: 'uppercase' },
+  call: { fontFamily: F.condBold, fontSize: 13.5, letterSpacing: 0.8, textTransform: 'uppercase', flexShrink: 1 },
   meta: { fontFamily: F.body, fontSize: 12.5, color: T.muted, flexShrink: 1 },
   conf: { fontFamily: F.condHeavy, fontSize: 24, lineHeight: 26 },
   confBig: { fontFamily: F.condHeavy, fontSize: 38, lineHeight: 40 },

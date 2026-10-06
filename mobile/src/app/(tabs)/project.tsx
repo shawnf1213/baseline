@@ -1,25 +1,29 @@
-// Project — price any matchup with the same engine that builds the board
-// (/api/prop/calculate, the bot's /prop). One card to set it up, one button,
-// one verdict card, and the evidence under it.
+// Project — price any matchup with the same engine that builds the board.
+// Tennis: /api/prop/calculate (the bot's /prop). NFL and NBA: their own
+// pricing endpoints, in TeamProject. One card to set it up, one button, one
+// verdict card, and the evidence under it.
 //
 // ONE PRICING REQUEST IN FLIGHT PER SESSION (operator ruling 7): the Run
 // button is disabled while a request is out, and leaving the screen aborts
 // it. A cold player can take up to a minute on the backend, so the wait has
 // its own placeholder and a line saying why.
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { StyleSheet, Text, TextInput, View, Pressable } from 'react-native'
+import { Text, View } from 'react-native'
 import { useLocalSearchParams } from 'expo-router'
 import { Screen } from '@/components/Screen'
 import { Button, Card, Chip, Empty, Muted, PageTitle, Segmented } from '@/components/ui'
 import { Skeleton } from '@/components/Skeleton'
 import { PlayerPicker, PickedPlayer } from '@/components/PlayerPicker'
 import { OptionSheet } from '@/components/OptionSheet'
-import { Divider, EdgeScale, Figures, GameChart, HitWindows, Meter, StatBlock } from '@/components/charts'
+import { TeamProject } from '@/components/TeamProject'
+import { BigLine, ConfRing, NumField, SelectField, Tile, pb } from '@/components/projectBits'
+import { Divider, EdgeScale, Figures, GameChart, HitWindows, StatBlock } from '@/components/charts'
 import { ApiError, calcProp, fetchHistory, fetchNextMatch } from '@/lib/api'
 import { resolveCourtName, useCourts } from '@/lib/courts'
 import { Hist, PROP_TYPES, SURFACES, fmt, fmtLine, fmtSigned, propHasHistory, shapeHistory,
          shortProp } from '@/lib/picks'
-import { F, T, sideTone, tier } from '@/theme'
+import { SportSwitch, useSport } from '@/lib/sports'
+import { F, T, sideTone } from '@/theme'
 import { success, tap, warn } from '@/lib/haptics'
 
 type Mode = 'prop' | 'spread' | 'match'
@@ -31,6 +35,17 @@ const PROP_OPTIONS = PROP_TYPES.map(p => ({ value: p.key, label: p.key }))
 
 export default function Project() {
   const params = useLocalSearchParams<Record<string, string>>()
+  const { sport } = useSport()
+  return (
+    <Screen>
+      <PageTitle sub="Price any matchup with Baseline's model">Project</PageTitle>
+      <SportSwitch />
+      {sport === 'tennis' ? <TennisProject params={params} /> : <TeamProject sport={sport} params={params} />}
+    </Screen>
+  )
+}
+
+function TennisProject({ params }: { params: Record<string, string | undefined> }) {
   const courts = useCourts()
   const [mode, setMode] = useState<Mode>('prop')
   const [tour, setTour] = useState<Tour>('ATP')
@@ -65,7 +80,7 @@ export default function Project() {
   // The sheet hands over names, ids (when it could resolve them), surface,
   // tournament, prop and line. With both ids the projection runs on its own.
   useEffect(() => {
-    if (!params?.t) return
+    if (!params?.t || (params.sport && params.sport !== 'tennis')) return
     const t: Tour = params.tour === 'WTA' ? 'WTA' : 'ATP'
     setMode('prop'); setTour(t)
     if (params.surface) setSurface(params.surface)
@@ -124,7 +139,7 @@ export default function Project() {
       }, c.signal)
       if (c.signal.aborted) return
       setRes(data); success()
-      if (mode === 'prop' && propHasHistory(prop)) {
+      if (mode === 'prop' && propHasHistory('tennis', prop)) {
         fetchHistory(player.id, player.tour || tour, prop, surface, ln)
           .then(h => { if (!c.signal.aborted) setHist(shapeHistory(h)) }).catch(() => {})
       }
@@ -152,30 +167,25 @@ export default function Project() {
   }, [hist, lean, line])  // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
-    <Screen>
-      <PageTitle sub="Price any matchup with Baseline's model">Project</PageTitle>
-      <Segmented options={MODES} value={mode} onChange={m => { setMode(m); clearResult() }} />
+    <>
+      <Segmented options={MODES} value={mode} onChange={m => { setMode(m); clearResult() }} compact />
 
       {/* ── THE MATCHUP ── */}
       <Card>
         <Segmented options={TOURS} value={tour} onChange={switchTour} compact />
         <View style={{ flexDirection: 'row', alignItems: 'stretch', gap: 10 }}>
-          <PlayerTile label="Player" value={player} onPress={() => setPicking('player')}
-                      onClear={() => { setPlayer(null); clearResult() }} />
-          <View style={s.vs}><Text style={s.vsText}>VS</Text></View>
-          <PlayerTile label="Opponent" value={opponent} onPress={() => setPicking('opponent')}
-                      onClear={() => { setOpponent(null); clearResult() }} />
+          <Tile label="Player" name={player?.name} sub={player?.currentRank ? `#${player.currentRank}` : undefined}
+                onPress={() => setPicking('player')} onClear={() => { setPlayer(null); clearResult() }} />
+          <View style={pb.vs}><Text style={pb.vsText}>VS</Text></View>
+          <Tile label="Opponent" name={opponent?.name} sub={opponent?.currentRank ? `#${opponent.currentRank}` : undefined}
+                onPress={() => setPicking('opponent')} onClear={() => { setOpponent(null); clearResult() }} />
         </View>
 
         <Divider />
 
         {mode === 'prop' ? (
           <View style={{ flexDirection: 'row', gap: 10 }}>
-            <Pressable onPress={() => { tap(); setSheet('prop') }} style={[s.select, { flex: 1 }]}>
-              <Text style={s.fieldK}>Prop</Text>
-              <Text style={s.fieldV} numberOfLines={1}>{prop}</Text>
-              <Text style={s.chev}>⌄</Text>
-            </Pressable>
+            <SelectField label="Prop" value={prop} onPress={() => setSheet('prop')} style={{ flex: 1 }} />
             <NumField label="Book line" value={line} onChange={setLine} placeholder="4.5" />
           </View>
         ) : mode === 'spread' ? (
@@ -196,13 +206,9 @@ export default function Project() {
             <Chip key={sf} active={surface === sf} onPress={() => { setSurface(sf); setCourt(''); clearResult() }}>{sf}</Chip>
           ))}
         </View>
-        <Pressable onPress={() => { tap(); setSheet('court') }} style={[s.select, { marginTop: 10 }]}>
-          <Text style={s.fieldK}>Venue</Text>
-          <Text style={s.fieldV} numberOfLines={1}>{court || 'No specific venue'}</Text>
-          <Text style={s.chev}>⌄</Text>
-        </Pressable>
+        <SelectField label="Venue" value={court || 'No specific venue'} onPress={() => setSheet('court')} style={{ marginTop: 10 }} />
         {scheduled?.surface ? (
-          <Text style={[s.sched, scheduled.surface !== surface && { color: T.amber }]}>
+          <Text style={[pb.sched, scheduled.surface !== surface && { color: T.amber }]}>
             {scheduled.surface === surface
               ? `Scheduled: ${scheduled.surface}${scheduled.tournament ? ` · ${scheduled.tournament}` : ''}`
               : `This match is scheduled on ${scheduled.surface}${scheduled.tournament ? ` (${scheduled.tournament})` : ''} — you are projecting it on ${surface}.`}
@@ -235,18 +241,13 @@ export default function Project() {
           {mode === 'spread' ? <SpreadVerdict res={res} spread={spread} player={player} opponent={opponent} surface={surface} court={court} />
            : mode === 'match' ? <MatchVerdict res={res} player={player} opponent={opponent} surface={surface} court={court} />
            : (
-            <Card style={[s.verdict, { borderColor: `${side.tone}55` }]}>
+            <Card style={[pb.verdict, { borderColor: `${side.tone}55` }]}>
               <Head player={player} opponent={opponent} surface={surface} court={court} />
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14, marginTop: T.s4 }}>
                 <View style={{ flex: 1, minWidth: 0 }}>
-                  <Text style={s.k}>{shortProp(prop)}</Text>
-                  <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 10 }}>
-                    <Text style={s.bigNum}>{fmt(proj)}</Text>
-                    <View style={[s.leanPill, { borderColor: `${side.tone}55`, backgroundColor: `${side.tone}1C` }]}>
-                      <Text style={[s.leanText, { color: side.tone }]}>{lean || '—'}</Text>
-                    </View>
-                  </View>
-                  <Text style={s.under}>
+                  <Text style={pb.k}>{shortProp(prop)}</Text>
+                  <BigLine value={fmt(proj)} badge={lean || '—'} tone={side.tone} />
+                  <Text style={pb.under}>
                     Book line <Text style={{ color: T.white, fontFamily: F.bodySemi }}>{fmtLine(ln)}</Text>
                     {edge != null ? <> · edge <Text style={{ color: side.tone, fontFamily: F.bodySemi }}>{fmtSigned(edge)}</Text></> : null}
                   </Text>
@@ -268,17 +269,17 @@ export default function Project() {
           {mode === 'prop' ? (
             <>
               <Card style={{ marginTop: 10 }}>
-                <Text style={[s.k, { marginBottom: 10 }]}>Serve & return</Text>
+                <Text style={[pb.k, { marginBottom: 10 }]}>Serve & return</Text>
                 <StatBlock prop={prop} res={res} surface={surface} playerName={player.name} opponentName={opponent.name} />
               </Card>
               {hist ? (
                 <Card style={{ marginTop: 10 }}>
-                  <Text style={[s.k, { marginBottom: 10 }]}>Recent form</Text>
+                  <Text style={[pb.k, { marginBottom: 10 }]}>Recent form</Text>
                   <HitWindows hist={hist} lean={lean} line={isNum(line) ? ln : null} />
                   <View style={{ height: 14 }} />
                   <GameChart hist={hist} line={isNum(line) ? ln : null} lean={lean} />
                 </Card>
-              ) : propHasHistory(prop) ? (
+              ) : propHasHistory('tennis', prop) ? (
                 <Card style={{ marginTop: 10 }}><Skeleton h={120} r={10} /></Card>
               ) : null}
             </>
@@ -286,8 +287,8 @@ export default function Project() {
 
           {res.explanation ? (
             <Card style={{ marginTop: 10 }}>
-              <Text style={[s.k, { marginBottom: 6 }]}>The read</Text>
-              <Text style={s.read}>{res.explanation}</Text>
+              <Text style={[pb.k, { marginBottom: 6 }]}>The read</Text>
+              <Text style={pb.read}>{res.explanation}</Text>
             </Card>
           ) : null}
           <Muted size={10.5} style={{ textAlign: 'center', marginTop: 16 }}>Model projections, not betting advice.</Muted>
@@ -310,75 +311,17 @@ export default function Project() {
                    onSelect={v => { setProp(v); clearResult() }} onClose={() => setSheet(null)} />
       <OptionSheet open={sheet === 'court'} title={`Venue · ${tour} ${surface}`} options={courtOptions} value={court}
                    onSelect={v => { setCourt(v); clearResult() }} onClose={() => setSheet(null)} />
-    </Screen>
+    </>
   )
 }
 
 // ── pieces ──────────────────────────────────────────────────────────────────
-function PlayerTile({ label, value, onPress, onClear }:
-  { label: string; value: PickedPlayer | null; onPress: () => void; onClear: () => void }) {
-  if (value) {
-    return (
-      <View style={[s.tile, s.tileOn]}>
-        <Pressable onPress={() => { tap(); onClear() }} hitSlop={10} style={s.clear}><Text style={s.clearX}>×</Text></Pressable>
-        <View style={s.avatar}><Text style={s.initials}>{initials(value.name)}</Text></View>
-        <Text style={s.tileName} numberOfLines={2}>{value.name}</Text>
-        <Text style={s.tileSub}>{value.currentRank ? `#${value.currentRank}` : label}</Text>
-      </View>
-    )
-  }
-  return (
-    <Pressable onPress={() => { tap(); onPress() }} style={({ pressed }) => [s.tile, s.tileEmpty, pressed && { opacity: 0.7 }]}>
-      <View style={[s.avatar, { borderWidth: 1.5, borderStyle: 'dashed', borderColor: T.glassLineHi, backgroundColor: 'transparent' }]}>
-        <Text style={[s.initials, { fontSize: 22, color: T.muted2 }]}>+</Text>
-      </View>
-      <Text style={[s.tileName, { color: T.muted }]}>{label}</Text>
-      <Text style={s.tileSub}>tap to choose</Text>
-    </Pressable>
-  )
-}
-
-function NumField({ label, value, onChange, placeholder, signed, width = 118 }:
-  { label: string; value: string; onChange: (v: string) => void; placeholder: string; signed?: boolean; width?: number }) {
-  const clean = (v: string) => v.replace(signed ? /[^\d.\-]/g : /[^\d.]/g, '')
-  return (
-    <View style={[s.select, { width, flexShrink: 0, borderColor: value ? `${T.green}66` : T.glassLine }]}>
-      <Text style={s.fieldK}>{label}</Text>
-      <TextInput value={value} onChangeText={v => onChange(clean(v))} placeholder={placeholder}
-                 placeholderTextColor={T.muted2} keyboardType={signed ? 'numbers-and-punctuation' : 'decimal-pad'}
-                 style={s.numInput} returnKeyType="done" />
-    </View>
-  )
-}
-
 function Head({ player, opponent, surface, court }:
   { player: PickedPlayer; opponent: PickedPlayer; surface: string; court: string }) {
   return (
     <View>
-      <Text style={s.headName} numberOfLines={1}>{player.name}</Text>
+      <Text style={pb.headName} numberOfLines={1}>{player.name}</Text>
       <Muted size={12.5}>vs {opponent.name} · {surface}{court ? ` · ${court}` : ''}</Muted>
-    </View>
-  )
-}
-
-function ConfRing({ conf, tone }: { conf: number | null | undefined; tone: string }) {
-  if (conf == null) return null
-  const tr = tier(conf)
-  return (
-    <View style={[s.ring, { borderColor: `${tone}66` }]}>
-      <Text style={[s.ringNum, { color: tone }]}>{Math.round(conf)}</Text>
-      <Text style={s.ringK}>{tr.label ? tr.label.toLowerCase() : 'conf.'}</Text>
-    </View>
-  )
-}
-
-function Big({ value, suffix = '', badge, tone }: { value: number | null; suffix?: string; badge: string; tone: string }) {
-  return (
-    <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 10 }}>
-      <Text style={s.bigNum}>{value != null ? `${Math.round(value)}${suffix}` : '—'}</Text>
-      <View style={[s.leanPill, { borderColor: `${tone}55`, backgroundColor: `${tone}1C` }]}>
-        <Text style={[s.leanText, { color: tone }]}>{badge}</Text>
-      </View>
     </View>
   )
 }
@@ -391,11 +334,11 @@ function SpreadVerdict({ res, spread, player, opponent, surface, court }:
   const sp = Number(spread)
   const margin = res.spread_margin_proj
   return (
-    <Card style={[s.verdict, { borderColor: `${tone}55` }]}>
+    <Card style={[pb.verdict, { borderColor: `${tone}55` }]}>
       <Head player={player} opponent={opponent} surface={surface} court={court} />
-      <Text style={[s.k, { marginTop: T.s4 }]}>Games spread {sp > 0 ? '+' : ''}{sp}</Text>
-      <Big value={cover} suffix="%" badge={covers ? 'Covers' : 'Does not cover'} tone={tone} />
-      <Text style={s.under}>Projected margin <Text style={{ color: T.white, fontFamily: F.bodySemi }}>
+      <Text style={[pb.k, { marginTop: T.s4 }]}>Games spread {sp > 0 ? '+' : ''}{sp}</Text>
+      <BigLine value={cover != null ? `${Math.round(cover)}%` : '—'} badge={covers ? 'Covers' : 'Does not cover'} tone={tone} />
+      <Text style={pb.under}>Projected margin <Text style={{ color: T.white, fontFamily: F.bodySemi }}>
         {typeof margin === 'number' ? `${margin > 0 ? '+' : ''}${margin.toFixed(1)} games` : '—'}</Text></Text>
       <Divider />
       <Figures cells={[
@@ -414,11 +357,11 @@ function MatchVerdict({ res, player, opponent, surface, court }:
   const fav = wp != null && wp >= 50
   const tone = wp == null ? T.muted2 : fav ? T.green : T.red
   return (
-    <Card style={[s.verdict, { borderColor: `${tone}55` }]}>
+    <Card style={[pb.verdict, { borderColor: `${tone}55` }]}>
       <Head player={player} opponent={opponent} surface={surface} court={court} />
-      <Text style={[s.k, { marginTop: T.s4 }]}>To win the match</Text>
-      <Big value={wp ?? null} suffix="%" badge={fav ? 'Favoured' : 'Underdog'} tone={tone} />
-      <Text style={s.under}>{res.match_format_label || 'Best of 3'} · <Text style={{ color: T.white, fontFamily: F.bodySemi }}>
+      <Text style={[pb.k, { marginTop: T.s4 }]}>To win the match</Text>
+      <BigLine value={wp != null ? `${Math.round(wp)}%` : '—'} badge={fav ? 'Favoured' : 'Underdog'} tone={tone} />
+      <Text style={pb.under}>{res.match_format_label || 'Best of 3'} · <Text style={{ color: T.white, fontFamily: F.bodySemi }}>
         {res.expected_sets != null ? `${res.expected_sets.toFixed(2)} sets` : '—'}</Text> expected</Text>
       <Divider />
       <Figures cells={[
@@ -430,44 +373,3 @@ function MatchVerdict({ res, player, opponent, surface, court }:
     </Card>
   )
 }
-
-const initials = (name: string) => {
-  const t = (name || '').trim().split(/\s+/)
-  return ((t[0]?.[0] || '') + (t.length > 1 ? t[t.length - 1][0] : '')).toUpperCase() || '?'
-}
-
-const s = StyleSheet.create({
-  vs: { alignSelf: 'center', width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center',
-        backgroundColor: 'rgba(255,255,255,0.05)', borderWidth: 1, borderColor: T.glassLine },
-  vsText: { fontFamily: F.condBold, fontSize: 12, letterSpacing: 0.6, color: T.muted },
-  tile: { flex: 1, minWidth: 0, minHeight: 124, paddingVertical: 14, paddingHorizontal: 8, borderRadius: T.r2,
-          alignItems: 'center', justifyContent: 'center' },
-  tileOn: { backgroundColor: 'rgba(255,255,255,0.04)', borderWidth: 1, borderColor: T.glassLine },
-  tileEmpty: { borderWidth: 1.5, borderStyle: 'dashed', borderColor: T.glassLine },
-  clear: { position: 'absolute', top: 4, right: 8, minWidth: 32, minHeight: 32, alignItems: 'center', justifyContent: 'center' },
-  clearX: { fontSize: 20, color: T.muted2, lineHeight: 22 },
-  avatar: { width: 50, height: 50, borderRadius: 25, backgroundColor: 'rgba(255,255,255,0.07)',
-            alignItems: 'center', justifyContent: 'center' },
-  initials: { fontFamily: F.condBold, fontSize: 17, color: T.white },
-  tileName: { fontFamily: F.bodySemi, fontSize: 14, color: T.white, marginTop: 8, textAlign: 'center', lineHeight: 18 },
-  tileSub: { fontFamily: F.body, fontSize: 11, color: T.muted2, marginTop: 2 },
-  select: { minHeight: 56, borderRadius: T.r1, borderWidth: 1, borderColor: T.glassLine,
-            backgroundColor: 'rgba(255,255,255,0.03)', paddingHorizontal: 12, paddingTop: 8, paddingBottom: 8,
-            justifyContent: 'center' },
-  fieldK: { fontFamily: F.condBold, fontSize: 9, letterSpacing: 1.2, textTransform: 'uppercase', color: T.muted2 },
-  fieldV: { fontFamily: F.bodySemi, fontSize: 16, color: T.white, marginTop: 3, paddingRight: 18 },
-  chev: { position: 'absolute', right: 12, top: 14, fontSize: 18, color: T.muted2 },
-  numInput: { fontFamily: F.condHeavy, fontSize: 22, color: T.white, padding: 0, marginTop: 1, minHeight: 26 },
-  sched: { fontFamily: F.body, fontSize: 12, color: T.muted2, lineHeight: 17, marginTop: 8 },
-  verdict: { marginTop: T.s3, borderWidth: 1 },
-  headName: { fontFamily: F.condBlack, fontSize: 20, color: T.white },
-  k: { fontFamily: F.condBold, fontSize: 10.5, letterSpacing: 1.3, textTransform: 'uppercase', color: T.muted2 },
-  bigNum: { fontFamily: F.condHeavy, fontSize: 54, lineHeight: 56, color: T.white, letterSpacing: -1 },
-  leanPill: { borderWidth: 1, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 3 },
-  leanText: { fontFamily: F.condBlack, fontSize: 16, letterSpacing: 1, textTransform: 'uppercase' },
-  under: { fontFamily: F.body, fontSize: 12.5, color: T.muted, marginTop: 6 },
-  ring: { width: 80, height: 80, borderRadius: 40, borderWidth: 5, alignItems: 'center', justifyContent: 'center' },
-  ringNum: { fontFamily: F.condHeavy, fontSize: 26, lineHeight: 28 },
-  ringK: { fontFamily: F.condBold, fontSize: 9, letterSpacing: 1, textTransform: 'uppercase', color: T.muted2 },
-  read: { fontFamily: F.body, fontSize: 13.5, color: T.muted, lineHeight: 19 },
-})

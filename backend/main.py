@@ -399,6 +399,41 @@ async def courts_get():
         return {"tours": {}, "error": "unavailable"}
 
 
+# ── APP: WHICH SPORTS ARE SHOWN ──────────────────────────────────────────────
+# Controlled from the backend so a sport can be hidden or shown without an
+# app release (operator ruling, 2026-10-05). APP_SPORTS is a comma list of the
+# visible keys; the order is fixed here so the switch reads the same on every
+# device. Public, a few bytes, read on launch.
+APP_SPORTS_ALL = [("tennis", "Tennis"), ("nfl", "NFL"), ("nba", "NBA"), ("mlb", "MLB")]
+APP_SPORTS_DEFAULT = "tennis,nfl,nba"
+
+
+@app.get("/api/sports")
+async def sports_config():
+    raw = os.getenv("APP_SPORTS", APP_SPORTS_DEFAULT) or APP_SPORTS_DEFAULT
+    on = {s.strip().lower() for s in raw.split(",") if s.strip()}
+    return {"sports": [{"key": k, "label": label, "visible": k in on}
+                       for k, label in APP_SPORTS_ALL]}
+
+
+@app.get("/api/board/live")
+async def board_live(book: str = "prizepicks"):
+    """The live tennis prop market for one book, unpriced — see src/live_board.
+    The website parses the same feeds in the browser; the app reads this so a
+    phone never downloads Underdog's whole multi-sport payload."""
+    from src import live_board
+    b = (book or "prizepicks").strip().lower()
+    if b not in ("prizepicks", "underdog"):
+        raise HTTPException(status_code=400, detail="book must be prizepicks or underdog")
+    loop = asyncio.get_event_loop()
+    try:
+        return await asyncio.wait_for(
+            loop.run_in_executor(None, live_board.live_board, b), timeout=80.0)
+    except Exception as exc:  # noqa: BLE001 — Rule 2: never raise at the edge
+        logger.warning("live board unavailable (%s): %s", b, exc)
+        return {"book": b, "rows": [], "count": 0, "available": False}
+
+
 @app.get("/api/nfl/players")
 async def nfl_players_get(slate_date: str = None, player: str = None):
     """Published NFL player profiles. Public, read-only."""
