@@ -64,10 +64,10 @@ export default function Locked() {
       <Card style={{ marginTop: T.s3 }}>
         <Text style={s.h}>What Baseline is</Text>
         <Muted size={13}>
-          Daily tennis player-prop projections with a model-ranked board, a Pick
-          of the Day, a graded public record, and on-demand projections for any
-          player and line. Every number is produced by the same model that posts
-          to the Baseline Discord.
+          Daily player-prop projections for tennis, NFL and NBA with model-ranked
+          boards, a Pick of the Day, a graded public record, and on-demand
+          projections for any player and line. Every number is produced by the
+          same model that posts to the Baseline Discord.
         </Muted>
       </Card>
 

@@ -11,10 +11,10 @@
 // card is added for US.
 //
 // THE RECORD IS THE PUBLIC ONE. /api/results/summary is the endpoint the
-// landing page reads, deliberately public, a few hundred bytes. Both the
-// headline and the all-time figure are shown, because that endpoint's own
-// contract says quoting one without the other is selecting a number rather
-// than reporting one.
+// landing page reads, deliberately public, a few hundred bytes. Pick of the
+// Day and live props lead; the all-time figure is shown beneath them, smaller
+// but always present, because that endpoint's own contract says quoting the
+// headline without all-time is selecting a number rather than reporting one.
 import { useEffect, useState } from 'react'
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native'
 import { Redirect, router } from 'expo-router'
@@ -93,17 +93,18 @@ export default function Welcome() {
     <Screen>
       <View style={s.brand}>
         <Text style={s.wordmark}>BASE<Text style={{ color: T.green }}>LINE</Text></Text>
-        <Muted size={13}>Tennis prop projections, graded in public</Muted>
+        <Muted size={13}>Player-prop projections, graded in public</Muted>
       </View>
 
       <Card>
         <Text style={s.h}>What Baseline does</Text>
         <Text style={s.p}>
-          Every day the model prices the tennis player-prop board — break points,
-          double faults, fantasy score and more — against the lines the books
-          post, ranks what it likes, and publishes a Pick of the Day. Every play
-          is graded and the record is public. Members get the ranked board, the
-          star, a projection tool for any player and line, and player research.
+          Every day the model prices the player-prop boards for tennis, NFL and
+          NBA — break points, double faults, passing yards, points, rebounds and
+          more — against the lines the books post, ranks what it likes, and
+          publishes a Pick of the Day. Every play is graded and the record is
+          public. Members get the ranked boards, the star, a projection tool for
+          any player and line, and player research.
         </Text>
       </Card>
 
@@ -115,14 +116,15 @@ export default function Welcome() {
           <Muted>The record is unavailable right now.</Muted>
         ) : (
           <>
+            {/* Lead with the two records that describe what a member gets
+                today; all-time sits beneath, smaller, never omitted. */}
             <View style={s.stats}>
               <Stat label={`${monthName(pm?.month)} ⭐`} t={pmTally} sub="Pick of the Day" />
               <Stat label="Live props" t={sum.live_props} sub="all-time" />
-              <Stat label="All-time" t={sum.all_time} />
             </View>
             <Muted size={11}>
-              Last {sum.recent_days ?? 30} days {sum.recent && sum.recent.total > 0 && sum.recent.win_rate != null
-                ? `${sum.recent.wins}-${sum.recent.losses} (${sum.recent.win_rate.toFixed(1)}%)` : '—'}
+              All-time {sum.all_time && sum.all_time.total > 0 && sum.all_time.win_rate != null
+                ? `${sum.all_time.wins}-${sum.all_time.losses} (${sum.all_time.win_rate.toFixed(1)}%)` : '—'}
               {sum.days_active ? ` · ${sum.days_active} days tracked` : ''}
             </Muted>
           </>
