@@ -122,3 +122,14 @@ The app never calls a restricted route.
 3. **Rotate** the Decodo proxy password, `NFL_BOARD_TOKEN`, the Stripe live key and the Discord client secret (standing item).
 4. **Push notifications** go live automatically once `eas init` writes the project id — until then the app registers nothing and the account sheet says so.
 5. Optional: pin the Whop manage URL if Whop gives you a product-specific one; raise `BOARD_PRICER_GAP_S`/`INTERVAL_S` if Sofascore shows strain; `PREMIUM_ENFORCE=1` in Railway if you want the env default to match the override.
+
+## 8. Step 7 — build and TestFlight (done 2026-10-06 ~02:30 ET)
+
+- EAS project created: `@shawnf1213/baseline` (`63326d11-fa09-4641-b7c8-b3b132ee421d`); push registration in the app is live from this point.
+- Apple signing was created through the App Store Connect API (`scripts/apple_credentials.py`) because non-interactive EAS builds refuse to create credentials even with an API key: bundle id `com.baselineev.app` (`G8NX2ZT49G`, Push Notifications capability on), Apple Distribution certificate (serial `5393CB85C0BDA3F7A06EA41F3CC2E1CB`, expires 2027-10-06), App Store provisioning profile. Stored in `mobile/.secrets/` + `credentials.json` (git-ignored); `eas.json` uses `credentialsSource: local`.
+- Build #1 failed in "Prepare credentials": macOS could not verify the PKCS#12 MAC (modern PBES2 container). Fixed by repacking with legacy 3DES/SHA-1 (`scripts/repack_p12.py`, and the generator now does this). Build #3 (`cc6fb57a-6224-475b-b2ba-4fc68fbe9425`) **FINISHED** — signed store `.ipa`.
+- App Store Connect record created by you: **BaselineEV** (id `6819564801`, SKU `Baseline`; "Baseline" was taken). A macOS platform was created alongside — harmless, leave it without a build.
+- `eas submit` → **Submitted to App Store Connect** (submission `c6c764f1-5fde-4645-9c88-98774da787d3`); Apple processing follows (5–30 min, email on completion). TestFlight page: https://appstoreconnect.apple.com/apps/6819564801/testflight/ios
+- Runner for next time: `scripts/eas-ios.sh build|submit|status` (from `mobile/`, PowerShell or a terminal — the EAS CLI's `expo config` subprocess crashes when spawned from this session's Git Bash).
+
+**Still yours:** TestFlight internal group + testers; APNs push key (developer portal → upload on expo.dev); App Privacy, age rating, screenshots, description in App Store Connect (`testflight-steps.md` §3–5); review notes with the reviewer email and the fixed code.

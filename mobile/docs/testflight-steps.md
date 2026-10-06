@@ -10,7 +10,7 @@ EAS local credentials (`mobile/.secrets/`, git-ignored); production build
 https://appstoreconnect.apple.com and https://developer.apple.com with the
 Team `WHD8WZRR58`.
 
-## 1. The app record in App Store Connect (if `eas submit` could not create it)
+## 1. The app record in App Store Connect — DONE (BaselineEV, id 6819564801)
 
 App Store Connect → **My Apps** → **+** → **New App**:
 - Platforms: **iOS**
