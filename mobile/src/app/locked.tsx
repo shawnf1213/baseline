@@ -43,7 +43,7 @@ export default function Locked() {
   // "Check again" or a foreground re-check can flip this account to active —
   // when it does, the gate moves the user on rather than leaving them here.
   if (status === 'active') return <Redirect href="/(tabs)" />
-  if (status === 'signed-out') return <Redirect href="/sign-in" />
+  if (status === 'signed-out') return <Redirect href="/welcome" />
   const who = me?.username || me?.email || 'your account'
   const inServer = me?.reason !== 'not_in_server'
 
@@ -95,7 +95,7 @@ export default function Locked() {
       <Pressable onPress={refresh} style={[s.btn, s.ghost]}>
         <Text style={s.ghostText}>Check again</Text>
       </Pressable>
-      <Pressable onPress={async () => { await signOut(); router.replace('/sign-in') }}
+      <Pressable onPress={async () => { await signOut(); router.replace('/welcome') }}
                  style={s.link}>
         <Text style={s.linkText}>Sign out</Text>
       </Pressable>

@@ -21,7 +21,7 @@ export default function TabsLayout() {
   // shows the ground colour rather than a flash of either.
   const { status } = useSession()
   if (status === 'loading') return <View style={{ flex: 1, backgroundColor: T.bg }} />
-  if (status === 'signed-out') return <Redirect href="/sign-in" />
+  if (status === 'signed-out') return <Redirect href="/welcome" />
   if (status === 'locked') return <Redirect href="/locked" />
   return (
     <Tabs screenOptions={{

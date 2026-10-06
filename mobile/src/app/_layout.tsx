@@ -55,7 +55,8 @@ export default function RootLayout() {
         <StatusBar style="light" />
         <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: T.bg } }}>
           <Stack.Screen name="(tabs)" />
-          <Stack.Screen name="sign-in" options={{ animation: 'fade' }} />
+          <Stack.Screen name="welcome" options={{ animation: 'fade' }} />
+          <Stack.Screen name="sign-in" options={{ animation: 'slide_from_right' }} />
           <Stack.Screen name="locked" options={{ animation: 'fade' }} />
         </Stack>
       </ThemeProvider>

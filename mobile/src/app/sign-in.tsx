@@ -69,6 +69,10 @@ export default function SignIn() {
           <Pressable onPress={() => setStep('email')} disabled={busy} style={[s.btn, s.btnGhost]}>
             <Text style={s.btnGhostText}>Sign in with email</Text>
           </Pressable>
+          <Pressable onPress={() => (router.canGoBack() ? router.back() : router.replace('/welcome'))}
+                     style={s.link}>
+            <Text style={s.linkText}>Back</Text>
+          </Pressable>
         </>
       )}
 
