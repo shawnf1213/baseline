@@ -50,3 +50,6 @@ example
 *.ipa
 *.apk
 *.aab
+
+# web export used only for store screenshots
+dist-web/

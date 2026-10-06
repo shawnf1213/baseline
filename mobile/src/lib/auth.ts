@@ -15,6 +15,7 @@
 // the callback to bounce to https://baselineev.com, the app asks it to bounce
 // to baseline://auth. The redirect registered with Discord is the backend
 // callback either way, so nothing changes in the Discord developer portal.
+import { Platform } from 'react-native'
 import * as SecureStore from 'expo-secure-store'
 import * as WebBrowser from 'expo-web-browser'
 import * as Linking from 'expo-linking'
@@ -36,15 +37,22 @@ export type Me = {
   invite_url?: string
 }
 
+// ON WEB (used only to render store screenshots and for local checks) the
+// keychain does not exist; localStorage stands in. The shipped app is iOS.
+const WEB = Platform.OS === 'web'
+
 export async function getSession(): Promise<string | null> {
+  if (WEB) { try { return globalThis.localStorage?.getItem(KEY) ?? null } catch { return null } }
   try { return await SecureStore.getItemAsync(KEY) } catch { return null }
 }
 async function setSession(tok: string) {
+  if (WEB) { try { globalThis.localStorage?.setItem(KEY, tok) } catch { /* private mode */ }; return }
   await SecureStore.setItemAsync(KEY, tok, {
     keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK,
   })
 }
 export async function clearSession() {
+  if (WEB) { try { globalThis.localStorage?.removeItem(KEY) } catch { /* ignore */ }; return }
   try { await SecureStore.deleteItemAsync(KEY) } catch { /* already gone */ }
 }
 
