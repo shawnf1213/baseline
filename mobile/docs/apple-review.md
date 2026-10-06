@@ -3,12 +3,19 @@
 Written 2026-10-06 from what the app actually does and stores. Re-check if the
 app gains a feature that collects something new.
 
-## Age rating (App Store Connect → App Information → Age Rating)
+## Age rating (App Store Connect → App Information → Age Ratings)
 
-Apple's questionnaire asks about content, not purpose. Answer each item as
-below; the result is **17+** in the current questionnaire (driven by the
-"Gambling and Contests" item), which is also the honest outcome for a sports
-projection product that references sportsbook lines.
+**SET 2026-10-06 through the API, on Apple's 2025 questionnaire:** every
+content item None/No, including **Gambling: No** and **Simulated Gambling:
+None**, with the **age rating override at 18+**. In the 2025 definitions
+"Gambling" means the app itself takes real-money bets or wagers, which also
+brings licensing requirements (guideline 5.3.4); Baseline takes no bets, so the
+honest answer is No. The truthful answers compute to 4+, and the 18+ override
+is what keeps a product built on real-money sportsbook lines adults-only. The
+table below is the older questionnaire and is superseded by this paragraph.
+
+Apple's questionnaire asks about content, not purpose. Older questionnaire,
+for reference only:
 
 | Question | Answer | Why |
 |---|---|---|
@@ -29,13 +36,9 @@ projection product that references sportsbook lines.
 | Loot boxes / random items | No | — |
 | Made for Kids | No | — |
 
-If the newer (2025+) questionnaire is shown, the equivalent is: **Gambling
-content: "Infrequent/Mild references"** is *not* accurate — choose the option
-that describes real-money gambling references (the lines are real sportsbook
-lines) and set the minimum age to **18+** (Apple's current minimum for gambling-
-related content). Keep the in-app helpline, the "informational purposes only"
-line on every pick and projection screen, and the absence of any sportsbook
-link — those are what the reviewer checks against guideline 5.3.
+Keep the in-app helpline, the "informational purposes only" line on every pick
+and projection screen, and the absence of any sportsbook link — those are what
+the reviewer checks against guideline 5.3.
 
 ## App Privacy (App Store Connect → App Privacy)
 
