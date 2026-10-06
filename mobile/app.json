@@ -55,9 +55,11 @@
     },
     "extra": {
       "apiUrl": "https://backend-production-84ab.up.railway.app",
+      "router": {},
       "eas": {
-        "projectId": "SET_BY_EAS_INIT_IN_PHASE_7"
+        "projectId": "63326d11-fa09-4641-b7c8-b3b132ee421d"
       }
-    }
+    },
+    "owner": "shawnf1213"
   }
 }

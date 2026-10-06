@@ -28,8 +28,10 @@
   "submit": {
     "production": {
       "ios": {
-        "ascAppId": "SET_IN_PHASE_7",
-        "appleTeamId": "SET_IN_PHASE_7"
+        "appleTeamId": "WHD8WZRR58",
+        "ascApiKeyPath": "./.secrets/AuthKey_8F66NL8552.p8",
+        "ascApiKeyId": "8F66NL8552",
+        "ascApiKeyIssuerId": "b81a68cc-d55f-48d8-b96c-64a793bdc525"
       }
     }
   }
