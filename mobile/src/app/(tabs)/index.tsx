@@ -211,7 +211,7 @@ export default function Board() {
           <View>
             <Muted size={11} style={{ textAlign: 'center', marginTop: 12, lineHeight: 16 }}>
               Live {bookName} lines with Baseline's projection. Edge is projection minus line.
-              {sport !== 'tennis' ? ' ⭐ marks a posted play.' : ''}
+              {sport === 'nfl' ? ' ⭐ marks the Pick of the Day.' : sport === 'nba' ? " ⭐ marks the board's starred play." : ''}
               {book === 'underdog' ? ' Multiplier and one-sided lines are left out.' : ''}
             </Muted>
             <Muted size={10.5} style={{ textAlign: 'center', marginTop: 10 }}>Projections are for informational purposes only.</Muted>

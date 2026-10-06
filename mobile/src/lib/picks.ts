@@ -223,8 +223,14 @@ export function blankRow(sport: SportKey, book: Book, date: string): PickRow {
   }
 }
 
-function tallyDay(date: string, rows: PickRow[], starFirst: boolean): PickDay {
-  const star = rows.find(r => r.isPotd === true) || (starFirst ? rows[0] || null : null)
+// THE STAR IS A FLAG, NEVER A POSITION (operator, 2026-10-06). This used to
+// fall back to the board's first play whenever no row carried is_potd, so on
+// every day nothing cleared the ⭐ bar — and on most Underdog days — the #1
+// play was dressed as the Pick of the Day in the app while Discord had posted
+// "No Pick of the Day today". Only a row the record flags is the star; a day
+// without one simply has no star, the same as the backend's POTD record.
+function tallyDay(date: string, rows: PickRow[]): PickDay {
+  const star = rows.find(r => r.isPotd === true) || null
   let w = 0, l = 0, pending = 0
   for (const r of rows) {
     if (r.result === 'W' || r.result === 'PUSH') w++
@@ -281,7 +287,7 @@ export function derivePicks(record: any, book: Book): PickDay[] {
         if (a.id != null && b.id != null && a.id !== b.id) return a.id - b.id
         return (b.confidence ?? -1) - (a.confidence ?? -1)
       })
-      return tallyDay(date, rows, true)
+      return tallyDay(date, rows)
     })
 }
 
@@ -329,7 +335,7 @@ export function deriveTeamPicks(sport: SportKey, picks: any[], book: Book): Pick
     .sort((a, b) => (a[0] < b[0] ? 1 : -1))
     .map(([date, rows]) => {
       rows.sort((a, b) => (Number(b.isPotd) - Number(a.isPotd)) || ((b.confidence ?? -1) - (a.confidence ?? -1)))
-      return tallyDay(date, rows, false)
+      return tallyDay(date, rows)
     })
 }
 

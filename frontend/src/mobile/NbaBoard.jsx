@@ -234,7 +234,7 @@ export default function NbaBoard({ book = 'prizepicks', onMeta, onProject }) {
                     padding: '16px 12px 4px', lineHeight: 1.5 }}>
         Every {book === 'underdog' ? 'Underdog' : 'PrizePicks'} NBA line the
         model can price, with Baseline's projection. Edge = projection − line.
-        ⭐ marks a posted play. Combo props (PRA and the pairs) are compounded
+        ⭐ marks the board's starred play. Combo props (PRA and the pairs) are compounded
         from several projections and are held to a stricter bar.
         Model projections, not betting advice.
       </div>

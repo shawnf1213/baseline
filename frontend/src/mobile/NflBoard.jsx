@@ -106,7 +106,9 @@ function footNoteFor(p) {
   // warning, and it crowded a card built for a start time. The flag is still
   // carried on the row and still stated in the footer note below, so the
   // information survives without shouting from 171 cards at once.
-  return star ? <span style={{ fontSize: 11 }}>{star}posted</span> : ''
+  // The ⭐ is the Pick of the Day (is_potd), not every posted play — saying
+  // "posted" here read as if the board's #1 play carried the star.
+  return star ? <span style={{ fontSize: 11 }}>{star}Pick of the Day</span> : ''
 }
 
 export default function NflBoard({ book = 'prizepicks', onMeta, onProject }) {
@@ -283,7 +285,7 @@ export default function NflBoard({ book = 'prizepicks', onMeta, onProject }) {
       <div style={{ color: T.muted2, fontSize: 11.5, textAlign: 'center',
                     padding: '16px 12px 4px', lineHeight: 1.5 }}>
         Every PrizePicks NFL line the model can price, with Baseline's
-        projection. Edge = projection − line. ⭐ marks a posted play.
+        projection. Edge = projection − line. ⭐ marks the Pick of the Day.
         Early-season numbers run on last season's usage until enough games are
         played. Model projections, not betting advice.
       </div>

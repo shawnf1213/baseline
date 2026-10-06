@@ -89,7 +89,11 @@ export default function Picks() {
               {sport === 'tennis' && etHour() < 15 ? "Today's board posts around 3 PM ET." : WHEN[sport]}
             </Muted>
           ) : null}
-          {latest.star ? <PickCard r={latest.star} hero onPress={setOpen} /> : null}
+          {latest.star ? <PickCard r={latest.star} hero onPress={setOpen} />
+            : latest.rows.length ? (
+              // Said, not implied — the line Discord posts when the slot is empty.
+              <Muted size={12} style={{ marginBottom: 10 }}>No Pick of the Day on this board. No play qualified for the ⭐ slot.</Muted>
+            ) : null}
           {latest.rest.map(r => <PickCard key={r.key} r={r} onPress={setOpen} />)}
 
           {/* MONTH SO FAR */}
