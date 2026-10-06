@@ -56,6 +56,65 @@ PREMIUM_ROLE_IDS = {r.strip() for r in
 OWNER_DISCORD_IDS = {r.strip() for r in
                      os.getenv("BILLING_OWNER_DISCORD_IDS", "").split(",") if r.strip()}
 
+# ── THE APP STORE REVIEWER (operator ruling 3, 2026-10-05) ──────────────────
+# Apple's reviewer needs every member feature with no paid membership. This is
+# a SEPARATE flag from the owner bypass, on purpose: it grants `active` and
+# nothing else. It never sets owner, it never reaches an admin or diagnostic
+# route (those are gated on X-Admin-Token, which no session can produce), and
+# it is a single designated account — one Discord id or one email, from env.
+#
+# An id listed as BOTH owner and reviewer is a configuration error, not a
+# combination. Owner is resolved first in access_for, so such an id would get
+# owner access; rather than let that pass silently it is dropped from the
+# reviewer set at import and logged, so the only way to be a reviewer is to
+# not be an owner.
+REVIEWER_DISCORD_IDS = {r.strip() for r in
+                        os.getenv("APP_REVIEWER_DISCORD_IDS", "").split(",") if r.strip()}
+REVIEWER_EMAILS = {r.strip().lower() for r in
+                   os.getenv("APP_REVIEWER_EMAILS", "").split(",") if r.strip()}
+_overlap = REVIEWER_DISCORD_IDS & OWNER_DISCORD_IDS
+if _overlap:
+    logger.error("APP_REVIEWER_DISCORD_IDS overlaps BILLING_OWNER_DISCORD_IDS "
+                 "(%d id(s)) — a reviewer can never be an owner; dropping them "
+                 "from the reviewer set", len(_overlap))
+    REVIEWER_DISCORD_IDS -= _overlap
+
+# ── WHERE THE OAUTH CALLBACK MAY BOUNCE A FRESH SESSION ─────────────────────
+# The website asks for its own origin; the iOS app asks for its custom scheme.
+# Anything else is refused at /login and replaced with APP_URL at /callback, so
+# a crafted login link cannot hand a victim's session to a third-party host.
+# Vercel preview deployments are admitted by their project prefix so the site
+# can still be tested on a preview URL.
+APP_SCHEME_RETURN = "baseline://auth"
+_RETURN_ORIGINS = {
+    "https://baselineev.com", "https://www.baselineev.com",
+    "https://baselineev.vercel.app", "https://baseline-app-three.vercel.app",
+    "http://localhost:5173", "http://localhost:5174",
+}
+
+
+def safe_return(url: str) -> str:
+    """`url` if it is an allowed bounce target, else APP_URL."""
+    u = (url or "").strip()
+    if not u:
+        return APP_URL
+    if u == APP_SCHEME_RETURN:
+        return u
+    try:
+        from urllib.parse import urlsplit
+        p = urlsplit(u)
+        origin = f"{p.scheme}://{p.netloc}"
+    except Exception:  # noqa: BLE001
+        return APP_URL
+    if origin in _RETURN_ORIGINS:
+        return u
+    # Vercel previews: https://baseline-<hash>-<team>.vercel.app
+    if (p.scheme == "https" and p.netloc.endswith(".vercel.app")
+            and p.netloc.startswith("baseline-")):
+        return u
+    logger.warning("refused OAuth return target %s", u[:80])
+    return APP_URL
+
 SESSION_TTL = int(os.getenv("APP_SESSION_TTL_SECONDS", str(30 * 24 * 3600)))
 _ROLE_CACHE_TTL = 300          # 5 minutes — see the re-check note above
 _API = "https://discord.com/api/v10"
@@ -254,6 +313,13 @@ def access_for_email(email: str) -> dict:
     treating it as proof would let anyone who guessed a subscriber's address
     take their subscription.
     """
+    # The App Store reviewer, by email. Same contract as the Discord form:
+    # active, never owner. The address still had to prove itself through the
+    # magic link or code before reaching here.
+    if email and email.strip().lower() in REVIEWER_EMAILS:
+        return {"active": True, "reason": "reviewer", "owner": False,
+                "source": "reviewer", "email": email,
+                "username": email.split("@")[0], "discord_linked": False}
     try:
         from . import billing
         sub = billing.has_access(email=email)
@@ -294,6 +360,13 @@ def access_for(discord_id: str, username: str = "") -> dict:
     if discord_id and discord_id in OWNER_DISCORD_IDS:
         return {"active": True, "reason": "owner", "owner": True,
                 "discord_id": discord_id, "username": username}
+    # The App Store reviewer: active, and explicitly NOT owner. Checked before
+    # the role lookup so a reviewer account that is not in the guild still
+    # resolves without a Discord round-trip. See REVIEWER_DISCORD_IDS.
+    if discord_id and discord_id in REVIEWER_DISCORD_IDS:
+        return {"active": True, "reason": "reviewer", "owner": False,
+                "source": "reviewer", "discord_id": discord_id,
+                "username": username}
     roles = _member_roles(discord_id)
     if roles is None:
         # FAIL CLOSED for non-owners. An outage must not open the paywall.

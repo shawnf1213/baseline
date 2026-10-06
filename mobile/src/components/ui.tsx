@@ -3,19 +3,27 @@
 // screen ported from the PWA reads line for line.
 import { ReactNode } from 'react'
 import { Pressable, StyleSheet, Text, View, ViewStyle, StyleProp } from 'react-native'
-import { F, T } from '@/theme'
+import { LinearGradient } from 'expo-linear-gradient'
+import { F, GLASS_DIR, T } from '@/theme'
 
 type CardProps = {
   children: ReactNode
   style?: StyleProp<ViewStyle>
   onPress?: () => void
+  hi?: boolean
 }
 
-// GLASS, matching the landing page's cards — translucent over the dark ground
-// rather than a solid dark fill, with a hairline and a soft drop. No blur, for
-// the reason theme.ts records.
-export function Card({ children, style, onPress }: CardProps) {
-  const body = <View style={[s.card, style]}>{children}</View>
+// GLASS, matching the landing page's cards — the website's own 160deg
+// gradient over the dark ground, with a hairline and a soft drop. No blur,
+// for the reason theme.ts records.
+export function Card({ children, style, onPress, hi }: CardProps) {
+  const body = (
+    <LinearGradient colors={[...(hi ? T.glassHiStops : T.glassStops)]}
+                    start={GLASS_DIR.start} end={GLASS_DIR.end}
+                    style={[s.card, style]}>
+      {children}
+    </LinearGradient>
+  )
   if (!onPress) return body
   return (
     <Pressable onPress={onPress}
@@ -82,7 +90,6 @@ export function Muted({ children, size = 12 }: { children: ReactNode; size?: num
 
 const s = StyleSheet.create({
   card: {
-    backgroundColor: T.glass,
     borderWidth: StyleSheet.hairlineWidth, borderColor: T.glassLine,
     borderRadius: T.r3,
     padding: T.s3,

@@ -1,9 +1,10 @@
 // The six tabs of the PWA's BottomNav, in the same order with the same labels:
 // Boards · Project · Picks · Players · Search · Saved. The account sheet is not
 // a tab on the web either; it opens from a header control (Phase 4).
-import { Tabs } from 'expo-router'
-import { Platform, Text } from 'react-native'
+import { Redirect, Tabs } from 'expo-router'
+import { Platform, Text, View } from 'react-native'
 import { F, T } from '@/theme'
+import { useSession } from '@/lib/session'
 
 const TABS = [
   { name: 'index',    label: 'Boards',  glyph: '▦' },
@@ -15,6 +16,13 @@ const TABS = [
 ] as const
 
 export default function TabsLayout() {
+  // THE MEMBER GATE. Nothing under (tabs) renders for anyone but an active
+  // member; the other two states are sent to their own screens. `loading`
+  // shows the ground colour rather than a flash of either.
+  const { status } = useSession()
+  if (status === 'loading') return <View style={{ flex: 1, backgroundColor: T.bg }} />
+  if (status === 'signed-out') return <Redirect href="/sign-in" />
+  if (status === 'locked') return <Redirect href="/locked" />
   return (
     <Tabs screenOptions={{
       headerShown: false,

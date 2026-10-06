@@ -21,6 +21,7 @@ import { BarlowCondensed_600SemiBold, BarlowCondensed_700Bold,
          BarlowCondensed_800ExtraBold, BarlowCondensed_900Black }
   from '@expo-google-fonts/barlow-condensed'
 import { T } from '@/theme'
+import { SessionProvider } from '@/lib/session'
 
 SplashScreen.preventAutoHideAsync()
 
@@ -45,12 +46,19 @@ export default function RootLayout() {
 
   if (!loaded && !error) return null
 
+  // The gate lives in the routes themselves ((tabs)/_layout, sign-in, locked)
+  // as <Redirect>s driven by useSession(), so every entry point — cold start,
+  // deep link, foreground re-check — resolves to the same three states.
   return (
-    <ThemeProvider value={NAV_THEME}>
-      <StatusBar style="light" />
-      <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: T.bg } }}>
-        <Stack.Screen name="(tabs)" />
-      </Stack>
-    </ThemeProvider>
+    <SessionProvider>
+      <ThemeProvider value={NAV_THEME}>
+        <StatusBar style="light" />
+        <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: T.bg } }}>
+          <Stack.Screen name="(tabs)" />
+          <Stack.Screen name="sign-in" options={{ animation: 'fade' }} />
+          <Stack.Screen name="locked" options={{ animation: 'fade' }} />
+        </Stack>
+      </ThemeProvider>
+    </SessionProvider>
   )
 }

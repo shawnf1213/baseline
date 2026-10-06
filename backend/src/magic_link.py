@@ -28,6 +28,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import time
 from typing import Optional
 
@@ -42,6 +43,26 @@ SECRET = os.getenv("APP_SESSION_SECRET", "").strip()
 
 LINK_TTL = 15 * 60             # 15 minutes
 _THROTTLE_SECONDS = 60         # one send per address per minute
+
+# ── THE 6-DIGIT CODE (operator, 2026-10-05, for the iOS app) ────────────────
+# The link works on the website because the browser that opened the email is
+# the browser that holds the session. On a phone the email is read in Mail and
+# the sign-in happens in the app, so a link that lands on baselineev.com in
+# Safari helps nobody. The same email now also carries a code the user can
+# type into the app. THE LINK IS UNCHANGED and still signs the website in.
+#
+#   10 minutes     shorter than the link's 15, because a six-digit code is
+#                  guessable in a way a signed token is not
+#   single use     the stored record is killed the moment a code succeeds
+#   5 attempts     then the record is killed too, and a new email is needed —
+#                  which also re-arms the 60s per-address throttle
+#
+# Stored HASHED in the durable cache table (database.cache_set with a TTL),
+# keyed by the address, so a restart between send and verify does not strand
+# the user and the plaintext code never sits in a database row.
+CODE_TTL = 10 * 60
+CODE_MAX_ATTEMPTS = 5
+_CODE_KEY = "magic_code:{}"
 _last_sent: dict = {}
 
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s.]+\.[^@\s]+$")
@@ -94,12 +115,21 @@ def read_token(token: str) -> Optional[str]:
     return (data.get("e") or "").strip() or None
 
 
-def _send(email: str, link: str) -> bool:
+def _send(email: str, link: str, code: str = "") -> bool:
     """Send via Resend. False on any failure — the caller must NOT surface that
     to the user, or a failed send becomes a way to probe which addresses
     exist."""
     if not RESEND_API_KEY:
         return False
+    code_block = f"""
+          <p style="font-size:12.5px;line-height:1.6;color:#7a7a7a;margin-top:26px">
+            Signing in on the Baseline iPhone app? Enter this code instead:
+          </p>
+          <div style="font-size:30px;font-weight:800;letter-spacing:8px;
+                      color:#ffffff;margin:6px 0 4px">{code}</div>
+          <p style="font-size:12px;color:#7a7a7a">
+            The code works once, for the next 10 minutes.
+          </p>""" if code else ""
     html = f"""
       <div style="font-family:-apple-system,Segoe UI,sans-serif;background:#0a0a0a;
                   padding:32px;color:#eaeaea">
@@ -119,7 +149,7 @@ def _send(email: str, link: str) -> bool:
           <p style="font-size:12.5px;line-height:1.6;color:#7a7a7a">
             If you didn't request this, ignore it — nothing happens until the
             link is opened, and it expires on its own.
-          </p>
+          </p>{code_block}
         </div>
       </div>"""
     try:
@@ -167,9 +197,72 @@ def request_link(email: str) -> dict:
 
     if entitled:
         link = f"{APP_URL}{'&' if '?' in APP_URL else '?'}magic={make_token(addr)}"
-        ok = _send(addr, link)
-        logger.info("magic link requested for a subscriber, sent=%s", ok)
+        code = _issue_code(addr)
+        ok = _send(addr, link, code)
+        logger.info("magic link requested for a subscriber, sent=%s code=%s",
+                    ok, bool(code))
     else:
         # No subscription. Nothing is sent and nothing is disclosed.
         logger.info("magic link requested for an address with no subscription")
     return generic
+
+
+# ── Codes ────────────────────────────────────────────────────────────────────
+def _code_hash(addr: str, code: str) -> str:
+    """HMAC of address+code under the app secret. Keyed to the address so a
+    code issued to one inbox cannot be replayed against another, and keyed
+    under the secret so a leaked table row is not a usable code."""
+    return hmac.new(SECRET.encode(), f"{addr}\x00{code}".encode(),
+                    hashlib.sha256).hexdigest()
+
+
+def _issue_code(addr: str) -> str:
+    """Mint a fresh 6-digit code for `addr` and store its hash. "" if the
+    durable store is unavailable — the LINK still goes out in that case, so
+    an outage of the code path degrades to the old behaviour, not to no
+    sign-in at all."""
+    try:
+        from . import database
+        code = f"{secrets.randbelow(10 ** 6):06d}"
+        ok = database.cache_set(_CODE_KEY.format(addr),
+                                {"h": _code_hash(addr, code), "n": 0},
+                                ttl_seconds=CODE_TTL)
+        return code if ok else ""
+    except Exception:  # noqa: BLE001
+        logger.exception("magic code issue failed — email goes out link-only")
+        return ""
+
+
+def verify_code(email: str, code: str) -> dict:
+    """{"email": addr} on success, else {"error": reason}.
+
+    Every failure path kills nothing EXCEPT the lockout: a wrong digit counts
+    an attempt, the fifth wrong one burns the record, and a correct code burns
+    it too. There is no path through here that leaves a usable code behind
+    after it has been used."""
+    addr = (email or "").strip().lower()
+    digits = "".join(ch for ch in str(code or "") if ch.isdigit())
+    if not addr or not _EMAIL_RE.match(addr) or len(digits) != 6:
+        return {"error": "enter the 6-digit code from the email"}
+    try:
+        from . import database
+        key = _CODE_KEY.format(addr)
+        rec = database.cache_get(key)
+        if not isinstance(rec, dict) or not rec.get("h"):
+            return {"error": "code expired or not found — request a new email"}
+        n = int(rec.get("n") or 0) + 1
+        if hmac.compare_digest(rec["h"], _code_hash(addr, digits)):
+            # SINGLE USE: the record is replaced by a dead marker that can never
+            # match, and expires with the original TTL.
+            database.cache_set(key, {"h": "", "n": CODE_MAX_ATTEMPTS},
+                               ttl_seconds=60)
+            return {"email": addr}
+        if n >= CODE_MAX_ATTEMPTS:
+            database.cache_set(key, {"h": "", "n": n}, ttl_seconds=60)
+            logger.warning("magic code locked after %d attempts", n)
+            return {"error": "too many attempts — request a new email"}
+        database.cache_set(key, {"h": rec["h"], "n": n}, ttl_seconds=CODE_TTL)
+        return {"error": f"incorrect code ({CODE_MAX_ATTEMPTS - n} attempts left)"}
+    except Exception:  # noqa: BLE001
+        logger.exception("magic code verify failed")
+        return {"error": "sign-in unavailable right now"}

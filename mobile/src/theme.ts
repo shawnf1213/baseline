@@ -37,7 +37,13 @@ export const T = {
   muted:     '#AAAAAA',
   muted2:    '#6b6b6b',
 
-  // Glass — see the note above on why this is a flat fill, not a gradient.
+  // Glass — the website's exact gradients, drawn with expo-linear-gradient
+  // (operator ruling, Phase 2). The web's `linear-gradient(160deg, a, b)`
+  // becomes the stop pair below plus GLASS_DIR; blur stays off, as on the
+  // web, for scroll performance. The flat values are kept for surfaces that
+  // cannot host a gradient view (inputs, tab chips).
+  glassStops:   ['rgba(255,255,255,0.052)', 'rgba(255,255,255,0.014)'] as const,
+  glassHiStops: ['rgba(255,255,255,0.085)', 'rgba(255,255,255,0.028)'] as const,
   glass:       'rgba(255,255,255,0.033)',
   glassHi:     'rgba(255,255,255,0.056)',
   glassLine:   'rgba(255,255,255,0.09)',
@@ -47,6 +53,11 @@ export const T = {
   s1: 6, s2: 10, s3: 14, s4: 20, s5: 28, s6: 40,
   r1: 10, r2: 14, r3: 18, r4: 24,
 } as const
+
+// CSS `160deg` is measured clockwise from "to top", so the gradient runs from
+// the top-right-ish edge toward the bottom-left: start/end points below are the
+// unit-square equivalent of that angle.
+export const GLASS_DIR = { start: { x: 0.68, y: 0 }, end: { x: 0.32, y: 1 } } as const
 
 // Registered font family names. The web stacks `"Barlow", -apple-system`; on
 // iOS the fallback is the system font, which is what RN uses when a family is

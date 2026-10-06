@@ -2442,6 +2442,11 @@ def auth_login(redirect: str = "", link_session: str = "", force: int = 0):
         data = discord_auth.read_session(link_session)
         if data and (data.get("k") or "discord") == "email":
             link_email = str(data.get("sub") or "")
+    # Validated here as well as at the callback, so an unknown redirect is
+    # refused at the START of the flow rather than silently replaced at the end
+    # of it — the website passes its own origin, the app passes baseline://auth.
+    if redirect and discord_auth.safe_return(redirect) != redirect:
+        raise HTTPException(status_code=400, detail="redirect not allowed")
     state = discord_auth.make_session(
         "state", json.dumps({"r": redirect or "", "e": link_email}))
     # force=1 -> prompt=consent, which is the ONLY way to reach Discord's
@@ -2497,7 +2502,12 @@ def auth_callback(code: str = "", state: str = ""):
             logger.exception("failed linking discord to %s", link_email)
 
     token = discord_auth.make_session(user["id"], user.get("username", ""))
-    app_url = (meta.get("r") or "").strip() or discord_auth.APP_URL
+    # THE BOUNCE TARGET IS ALLOWLISTED. `r` was taken from the state as-is,
+    # and although the state is signed by us, /login accepted any `redirect`
+    # the caller supplied — so a crafted login URL could bounce a victim's
+    # fresh session to a third-party host. safe_return() admits the website's
+    # origins and the iOS app's `baseline://auth` scheme and nothing else.
+    app_url = discord_auth.safe_return(meta.get("r") or "")
     sep = "&" if "?" in app_url else "?"
     return RedirectResponse(f"{app_url}{sep}session={token}", status_code=303)
 
@@ -2637,6 +2647,28 @@ async def magic_verify(req: Request):
     email = magic_link.read_token(str(body.get("token") or ""))
     if not email:
         raise HTTPException(status_code=400, detail="link expired or invalid")
+    if not discord_auth.access_for_email(email).get("active"):
+        raise HTTPException(status_code=403, detail="no active subscription")
+    return {"session": discord_auth.make_session(email, email.split("@")[0],
+                                                 kind="email"),
+            "email": email}
+
+
+@app.post("/api/auth/magic/code")
+async def magic_code(req: Request):
+    """Trade the 6-digit code from the sign-in email for an app session.
+
+    The iOS app's path through email sign-in — see magic_link.CODE_TTL. Same
+    entitlement re-check as /magic/verify: the code proves the inbox, never
+    that the subscription is still live.
+    """
+    from src import magic_link, discord_auth
+    body = await req.json()
+    out = magic_link.verify_code(str(body.get("email") or ""),
+                                 str(body.get("code") or ""))
+    if not out.get("email"):
+        raise HTTPException(status_code=400, detail=out.get("error") or "invalid code")
+    email = out["email"]
     if not discord_auth.access_for_email(email).get("active"):
         raise HTTPException(status_code=403, detail="no active subscription")
     return {"session": discord_auth.make_session(email, email.split("@")[0],
