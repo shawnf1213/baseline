@@ -17,7 +17,7 @@ import { Button, Card, Disclaimer, Muted } from './ui'
 import { Skeleton } from './Skeleton'
 import { EdgeScale, GameChart, HitWindows } from './charts'
 import { ResultBadge, SurfaceChip } from './PickCard'
-import { PhotoCredit, PlayerAvatar, TeamLogo } from './Avatar'
+import { PlayerAvatar, TeamLogo } from './Avatar'
 import { ConfRing } from './Ring'
 import { CardGlow } from './Glow'
 import { F, T, sideTone, tier } from '@/theme'
@@ -134,7 +134,6 @@ export function PickSheet({ pick, onClose }: { pick: PickRow | null; onClose: ()
           {[r.sport === 'tennis' ? r.tournament : r.matchup, when].filter(Boolean).join(' · ') || ' '}
         </Muted>
       </View>
-      <PhotoCredit sport={r.sport} names={r.sport === 'tennis' ? [r.player, r.opponent] : [r.player]} style={{ marginTop: 4 }} />
 
       {/* THE CALL */}
       <Card style={[s.call, { borderColor: `${side.tone}55` }]}>

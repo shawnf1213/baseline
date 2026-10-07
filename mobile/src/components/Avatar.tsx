@@ -1,5 +1,4 @@
-// A player's face in a circle, a team's abbreviation in a circle, and the
-// credit line the photos' free licences ask for.
+// A player's face in a circle, and a team's abbreviation in a circle.
 //
 // The face loads from lib/images; while it loads (or if there is none) the
 // circle shows the player's initials on a background tinted by `ring`, so a
@@ -7,15 +6,17 @@
 // ten minutes, so scrolling a long board does not re-ask for the same missing
 // photo on every recycle, but a face that was only temporarily unavailable
 // comes back.
+//
+// No source label is drawn (operator, 2026-10-07): the photos are free-use
+// images from Wikipedia where one exists for the player, and that is stated
+// in the App Store review notes rather than on the screen.
 import { useState } from 'react'
-import { Linking, Pressable, StyleSheet, StyleProp, Text, View, ViewStyle } from 'react-native'
+import { StyleSheet, Text, View } from 'react-native'
 import { Image } from 'expo-image'
 import { LinearGradient } from 'expo-linear-gradient'
 import { F, T } from '@/theme'
 import type { SportKey } from '@/lib/sports'
 import { initials, playerImageUrl } from '@/lib/images'
-import { fetchPhotoCredit } from '@/lib/api'
-import { tap } from '@/lib/haptics'
 
 const RETRY_MS = 10 * 60_000
 const failedAt = new Map<string, number>()
@@ -65,40 +66,8 @@ export function TeamLogo({ team, size = 44, ring }:
   )
 }
 
-// "Photos: Wikimedia Commons · Gauff ↗ · Mertens ↗" — each name opens the
-// Commons file page that names the photographer and the licence, which is the
-// attribution those licences ask for. A player with no photo opens Commons
-// itself; the line is still true of every face on the screen.
-const COMMONS = 'https://commons.wikimedia.org/'
-const surname = (n: string) => { const t = n.trim().split(/\s+/); return t[t.length - 1] || n }
-
-export function PhotoCredit({ sport, names, style }:
-  { sport: SportKey; names: (string | null | undefined)[]; style?: StyleProp<ViewStyle> }) {
-  const list = [...new Set(names.filter(Boolean) as string[])]
-  if (!list.length) return null
-  const open = async (n: string) => {
-    tap()
-    let url = COMMONS
-    try { const c = await fetchPhotoCredit(sport, n); url = c?.file_page || c?.article || COMMONS } catch { /* no photo for this name */ }
-    Linking.openURL(url).catch(() => {})
-  }
-  return (
-    <View style={[s.credit, style]}>
-      <Text style={s.creditText}>Photos: Wikimedia Commons</Text>
-      {list.map(n => (
-        <Pressable key={n} onPress={() => open(n)} hitSlop={6} accessibilityRole="link" accessibilityLabel={`Photo credit for ${n}`}>
-          <Text style={s.creditLink}>{surname(n)} ↗</Text>
-        </Pressable>
-      ))}
-    </View>
-  )
-}
-
 const s = StyleSheet.create({
   circle: { overflow: 'hidden', alignItems: 'center', justifyContent: 'center', backgroundColor: '#121212' },
   ini: { fontFamily: F.condBold, color: T.muted, letterSpacing: 0.5 },
   abbr: { fontFamily: F.condHeavy, color: T.muted, letterSpacing: 1 },
-  credit: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'center', gap: 8, marginTop: 8 },
-  creditText: { fontFamily: F.body, fontSize: 10.5, color: T.muted2 },
-  creditLink: { fontFamily: F.bodySemi, fontSize: 10.5, color: T.muted, textDecorationLine: 'underline' },
 })

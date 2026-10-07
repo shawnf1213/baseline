@@ -81,16 +81,17 @@ Notes that keep the declaration honest:
 
 ## Images and third-party material (guideline 5.2)
 
-**Since build 7 (2026-10-07):** player photos for every sport come only from
+**Since build 8 (2026-10-07):** player photos for every sport come only from
 Wikipedia / Wikimedia Commons through `/api/player/image`, which accepts a
 photo only when the article names that player, describes a player of that
 sport, is the only such article, and hosts the photo on Commons (free
-licence). The pick sheet and player sheet carry a "Photos: Wikimedia Commons"
-credit whose links open each photo's file page (author and licence) via
-`/api/player/image/credit`. The app shows **no team logos or league marks**
-(ESPN's logo CDN and the ESPN/NBA.com headshots were removed — unlicensed).
-The website still draws team marks on its NFL/NBA boards; that is outside
-Apple's review but carries the same exposure.
+licence). **No source label is shown in the app** (operator ruling: other
+apps carry none); the review notes state that free-use Wikipedia images are
+used where available. `/api/player/image/credit` still answers a photo's file
+page if provenance is ever asked for. The app shows **no team logos or league
+marks** (ESPN's logo CDN and the ESPN/NBA.com headshots were removed —
+unlicensed). The website still draws team marks on its NFL/NBA boards; that is
+outside Apple's review but carries the same exposure.
 
 ## Account deletion (guideline 5.1.1(v))
 

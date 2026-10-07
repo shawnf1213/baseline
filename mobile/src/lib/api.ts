@@ -119,10 +119,6 @@ export const fetchNflProps  = () => api.get<any>('/api/nfl/props')
 export const projectNfl     = (body: unknown, signal?: AbortSignal) =>
   api.price<any>('/api/nfl/project', body, signal)
 export const fetchNflPlayer = (player: string) => api.get<any>('/api/nfl/players', { player })
-// Where a player's photo came from: the Wikimedia Commons file page (author,
-// licence) and the Wikipedia article. 404 when the player has no photo.
-export const fetchPhotoCredit = (sport: string, name: string) =>
-  api.get<{ source: string; file_page?: string; article?: string; title?: string }>('/api/player/image/credit', { sport, name })
 
 // NBA — same five, against the NBA tables.
 export const fetchNbaBoard  = () => api.get<any>('/api/nba/board')

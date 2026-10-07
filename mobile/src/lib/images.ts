@@ -1,11 +1,10 @@
 // Where faces come from.
 //
-// PLAYERS go through the backend's /api/player/image (public, cached): a photo
-// from Wikipedia / Wikimedia Commons, verified to be this player, for every
-// sport. It answers 404 when it has nothing — the avatar then shows initials,
-// never a stranger's face. Those photos carry free licences, and
-// /api/player/image/credit hands back the file page (author and licence) that
-// PhotoCredit in Avatar.tsx links to.
+// PLAYERS go through the backend's /api/player/image (public, cached): a
+// free-use photo from Wikipedia, verified to be this player, for every sport.
+// It answers 404 when it has nothing — the avatar then shows initials, never
+// a stranger's face. The screen carries no source label (operator,
+// 2026-10-07); /api/player/image/credit still answers where a photo came from.
 //
 // NO TEAM CRESTS (operator, 2026-10-07: "remove and replace with free use
 // images"). A club's logo is a trademark with no free-use version — the ESPN
