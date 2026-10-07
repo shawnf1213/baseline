@@ -1,6 +1,6 @@
 # App Review reply — Guideline 2.1 "Information Needed" (2026-10-06, updated 2026-10-07 for build 7)
 
-Apple asked for a screen recording plus written answers on the first submission (new developer account). This is the reply as sent; Part B is also the text in App Review Information > Notes. The password is the reviewer code in the backend settings (APP_REVIEWER_CODE), never written here; `mobile/.secrets/app-review-reply.txt` holds the filled copy.
+Apple asked for a screen recording plus written answers on the first submission (new developer account). Part B is the text in App Review Information > Notes (and the reply, if a thread is open). The password is the reviewer code in the backend settings (APP_REVIEWER_CODE), never written here; `mobile/.secrets/app-review-reply.txt` holds the filled copy.
 
 ```text
 
@@ -9,7 +9,9 @@ PART A — FOR YOU: the screen recording (item 1). Not part of the reply.
 =====================================================================
 
 Before you record
-- Install build 6 from TestFlight on your iPhone (latest iOS).
+- Install build 7 from TestFlight on your iPhone (latest iOS). Build 7 is
+  the one with free-licence photos and no team logos; the recording must
+  match what the reply says.
 - Make sure the app is signed OUT so the recording starts on the Welcome
   screen: open the app, tap the round button top right, tap Sign out.
 - Device region must be United States (it is). Turn on Do Not Disturb.
@@ -19,8 +21,10 @@ Shot list (about 2-3 minutes)
  1. Welcome screen: pause on "What Baseline does" and "The record";
     scroll so the Subscribe card is visible. Do not tap it yet.
  2. Tap "Already a member? Sign in" > "Sign in with email" > type
-    chxpvro@gmail.com > "Email me a code" > type the password below into
-    the code box > "Sign in".
+    chxpvro@gmail.com > "Email me a code". A real 6-digit code now lands in
+    that inbox within seconds; if the Mail app is on the same phone, let the
+    notification show, then type the code and tap "Sign in". (The password
+    below also works in the code box if the inbox is not at hand.)
  3. Board: scroll; tap NFL, then NBA, then Tennis at the top; tap a player
     card marked "2 props" so it drops down; tap one prop to open its
     sheet; scroll the sheet; tap Done.
@@ -38,9 +42,12 @@ Shot list (about 2-3 minutes)
 10. Sign in again with the same email and password (it still works after
     deletion) until the Board shows. Stop recording.
 
-Attach the video to your reply in App Store Connect (the reply box takes
-attachments). If it is too large, put it in iCloud Drive and paste a
-share link into the reply.
+Where it goes: App Store Connect > your app > version 1.0 > App Review
+Information. Add the video under Attachments there and paste Part B into
+Notes. Then tap "Add for Review" and "Submit for Review" (the earlier
+submission closed when the screenshots were replaced; build 7 is already
+attached to the version). If Apple's message thread is open on the new
+submission, paste Part B there as well.
 
 The password (the review account's fixed sign-in code): (the reviewer code — see App Review Information)
 
@@ -85,8 +92,9 @@ Demo account (full member access; please use this one):
 Steps: launch the app > tap "Already a member? Sign in" > tap "Sign in
 with email" > enter the user name > tap "Email me a code" > on the next
 screen type the password above into the code box > tap "Sign in".
-Members normally receive a 6-digit code by email; this review account
-accepts the fixed password above instead, so no inbox is needed.
+Members receive a 6-digit code by email, and this address receives one
+too; the review account additionally accepts the fixed password above in
+the code box, so no inbox access is needed for review.
 There is one account type. Discord sign-in is a second way for members of
 our Discord server to reach the same membership; it is not needed for
 review.
