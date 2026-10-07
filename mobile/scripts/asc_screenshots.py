@@ -28,8 +28,10 @@ APP_ID = "6819564801"
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SHOTS = os.path.join(ROOT, "store", "screenshots")
 SETS = {"6.9in-1320x2868": "APP_IPHONE_67", "6.5in-1242x2688": "APP_IPHONE_65"}
-EDITABLE = {"PREPARE_FOR_SUBMISSION", "DEVELOPER_REJECTED", "REJECTED", "METADATA_REJECTED",
-            "INVALID_BINARY"}
+# READY_FOR_REVIEW is the state after "Add for Review" and again while a
+# submission has unresolved issues; the version is still editable then.
+EDITABLE = {"PREPARE_FOR_SUBMISSION", "READY_FOR_REVIEW", "DEVELOPER_REJECTED", "REJECTED",
+            "METADATA_REJECTED", "INVALID_BINARY"}
 
 
 def must(st, d, what):
