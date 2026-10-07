@@ -211,6 +211,18 @@ def request_link(email: str) -> dict:
     except Exception:  # noqa: BLE001
         logger.exception("magic link entitlement check failed")
         entitled = False
+    # THE REVIEW ADDRESS GETS THE REAL EMAIL TOO. It has no subscription, so
+    # the entitlement check says no and nothing was sent — which made the
+    # sign-in look broken when the flow was demonstrated for App Review
+    # (operator, 2026-10-07: "the 6 digit code never sent out to the email").
+    # Its entitlement is by configuration (discord_auth.REVIEWER_EMAILS), and
+    # the fixed code in verify_code keeps working beside the emailed one.
+    if not entitled:
+        try:
+            from . import discord_auth
+            entitled = addr in discord_auth.REVIEWER_EMAILS
+        except Exception:  # noqa: BLE001
+            pass
 
     if entitled:
         link = f"{APP_URL}{'&' if '?' in APP_URL else '?'}magic={make_token(addr)}"
