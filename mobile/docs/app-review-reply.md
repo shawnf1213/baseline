@@ -1,4 +1,4 @@
-# App Review reply — Guideline 2.1 "Information Needed" (2026-10-06)
+# App Review reply — Guideline 2.1 "Information Needed" (2026-10-06, updated 2026-10-07 for build 7)
 
 Apple asked for a screen recording plus written answers on the first submission (new developer account). This is the reply as sent; Part B is also the text in App Review Information > Notes. The password is the reviewer code in the backend settings (APP_REVIEWER_CODE), never written here; `mobile/.secrets/app-review-reply.txt` holds the filled copy.
 
@@ -134,9 +134,10 @@ comes from our own backend.
   ESPN's public API (NFL and NBA schedules and game odds for context),
   NBA.com statistics, and the public player-prop line feeds of PrizePicks
   and Underdog.
-- Images: tennis player photos from Wikipedia / Wikimedia Commons; NFL
-  player headshots and team logos from ESPN's image servers; NBA player
-  headshots from NBA.com's image servers.
+- Images: player photos for all three sports come from Wikipedia /
+  Wikimedia Commons under free licences; each sheet carries a "Photos:
+  Wikimedia Commons" credit that opens the photo's file page (author and
+  licence). The app shows no team logos or league marks.
 - No AI services, analytics SDKs, advertising SDKs or crash reporters are
   used in the app.
 
@@ -158,16 +159,10 @@ statistics and projection service. The lines it displays are the publicly
 posted player-prop lines of PrizePicks and Underdog, shown as the
 reference the projection is compared against. The app is rated 18+ and
 carries the 1-800-GAMBLER helpline.
-Third-party material: tennis player photographs are freely licensed
-images served from Wikipedia / Wikimedia Commons. NFL player headshots and
-team logos are loaded at display time from ESPN's public image servers,
-and NBA player headshots from NBA.com's public image servers, for
-identification only. No other third-party content, music or video is
-included.
-
-[ALTERNATIVE last paragraph of item 6, to use ONLY if the NFL/NBA images
-are removed from the app first:]
-Third-party material: the only third-party images are freely licensed
-tennis player photographs from Wikipedia / Wikimedia Commons. The app
-contains no team logos or league marks, and no third-party music or video.
+Third-party material: the only third-party images are player photographs
+from Wikipedia / Wikimedia Commons, which are published under free
+licences (Creative Commons and public domain); the app credits them with a
+link to each photo's file page, where the author and licence are stated.
+The app contains no team logos or league marks and no third-party music or
+video. Sports statistics are factual data.
 ```

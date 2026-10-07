@@ -79,6 +79,19 @@ Notes that keep the declaration honest:
 **Privacy policy URL:** https://baselineev.com/privacy
 **Support URL:** https://baselineev.com/support
 
+## Images and third-party material (guideline 5.2)
+
+**Since build 7 (2026-10-07):** player photos for every sport come only from
+Wikipedia / Wikimedia Commons through `/api/player/image`, which accepts a
+photo only when the article names that player, describes a player of that
+sport, is the only such article, and hosts the photo on Commons (free
+licence). The pick sheet and player sheet carry a "Photos: Wikimedia Commons"
+credit whose links open each photo's file page (author and licence) via
+`/api/player/image/credit`. The app shows **no team logos or league marks**
+(ESPN's logo CDN and the ESPN/NBA.com headshots were removed — unlicensed).
+The website still draws team marks on its NFL/NBA boards; that is outside
+Apple's review but carries the same exposure.
+
 ## Account deletion (guideline 5.1.1(v))
 
 In-app: Account sheet → Delete account → typed-style confirmation dialog →
