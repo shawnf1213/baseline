@@ -112,3 +112,10 @@ To refresh after a UI change (from `mobile/`):
 
 Copy and frame order live in `scripts/store_frames.mjs` (`FRAMES`); the
 Project matchup lives in `scripts/screenshots.mjs` and should be a current one.
+
+Apple locks screenshots once the version is in a submission ("Ready for
+Review", even with unresolved issues — the build can still be swapped, the
+screenshots answer 409). Remove the version from the submission first (App
+Store Connect, or `PATCH /v1/reviewSubmissionItems/{id}` with `removed: true`);
+removing the only item closes that submission, so afterwards it is "Add for
+Review" and "Submit for Review" again. Done this way on 2026-10-07 for build 7.
