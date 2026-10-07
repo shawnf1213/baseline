@@ -87,6 +87,11 @@ and push token cleared → Welcome. Also available on the website.
 
 ## Review notes (App Store Connect → App Review Information)
 
+**2026-10-06:** Apple's first-submission "Information Needed" request (screen
+recording + six written items) was answered with the text in
+`app-review-reply.md`; the same text now lives in the Notes field. The
+recording shot list is Part A of that file.
+
 - Sign-in for review: *Sign in with email* → `chxpvro@gmail.com` → enter the
   fixed reviewer code (a backend secret; paste it from your records into the
   review notes — it is not stored in this repo). This account has premium
