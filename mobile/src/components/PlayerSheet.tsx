@@ -13,7 +13,7 @@ import { router } from 'expo-router'
 import { Sheet } from './Sheet'
 import { Button, Card, Disclaimer, Muted, Pill } from './ui'
 import { Skeleton } from './Skeleton'
-import { PlayerAvatar } from './Avatar'
+import { PhotoCredit, PlayerAvatar } from './Avatar'
 import { CardGlow } from './Glow'
 import { Divider, Figures, GameChart, HitWindows, Meter } from './charts'
 import { fetchForm, fetchHistory, fetchNbaPlayer, fetchNextMatch, fetchNflPlayer, fetchStats } from '@/lib/api'
@@ -66,6 +66,7 @@ function Header({ name, badges, sport, team }:
         <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
           {badges.filter(Boolean).map(b => <Pill key={b!} tone={T.muted}>{b}</Pill>)}
         </View>
+        <PhotoCredit sport={sport} names={[name]} style={{ justifyContent: 'flex-start', marginTop: 10 }} />
       </View>
     </View>
   )

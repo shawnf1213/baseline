@@ -2464,79 +2464,132 @@ import threading as _threading
 _PIC_UPSTREAM = _threading.BoundedSemaphore(4)
 
 
-def _nfl_headshot(name: str):
-    """ESPN headshot for an NFL player, from the ESPN id the bot publishes in
-    each slate's player profiles (nfl/queries.py). A database read — never a
-    cold nflverse load on an image request."""
-    try:
-        from src import database
-        rows = database.nfl_players(player=name) or []
-        for r in rows:
-            prof = r.get("profile") or {}
-            eid = str(prof.get("espn_id") or "").strip()
-            if eid and eid.isdigit():
-                # ESPN's resizer: ~60 KB instead of the ~280 KB original.
-                return ("https://a.espncdn.com/combiner/i?img=/i/headshots/nfl/players/full/"
-                        f"{eid}.png&w=280&h=204")
-    except Exception as exc:  # noqa: BLE001
-        logger.info("nfl headshot lookup failed for %s: %s", name, exc)
-    return None
+# ── PLAYER PHOTOS: WIKIPEDIA / WIKIMEDIA COMMONS ONLY ────────────────────────
+# Operator, 2026-10-07: "remove and replace with free use images". NFL and NBA
+# rows used to pull ESPN and NBA.com headshots, which licensed nothing to us;
+# App Review asks for authorization for protected third-party material and
+# there was none to show. Every sport now goes through the same Wikipedia
+# lookup tennis always used, and only a photo hosted on Wikimedia Commons —
+# which means a free licence — is accepted. /api/player/image/credit returns
+# the file page (author and licence) so the app can give attribution.
+
+# Words the article's description must contain before its photo is trusted,
+# per sport — a name match alone returns strangers. NOT bare "football" for
+# the NFL: that is every soccer player on Wikipedia.
+_PIC_SPORT_WORDS = {"tennis": ("tennis",),
+                    "nba": ("basketball",),
+                    "nfl": ("american football", "gridiron football", "nfl",
+                            "national football league")}
+_WIKI_UA = {"User-Agent": "BaselineTennis/1.0 (baselineev.com)"}
+_WIKI_SUMMARY = "https://en.wikipedia.org/api/rest_v1/page/summary/"
+_WIKI_SEARCH = "https://en.wikipedia.org/w/rest.php/v1/search/title"
+_PIC_SUFFIXES = {"jr", "sr", "ii", "iii", "iv"}
 
 
-def _nba_headshot(name: str):
-    """NBA.com headshot from the player id in the cached game logs (the same
-    frame /api/nba/search reads). None if the logs are not on this deploy."""
-    try:
-        if _nba_mod() is None:
-            return None
-        from nba import queries as _q, client as _c
-        df = _q._frame()
-        if df is None or "player_id" not in df:
-            return None
-        key = _c._norm_name(name)
-        hit = df[df["player_name"].astype(str).map(_c._norm_name) == key]
-        if len(hit):
-            pid = int(hit.iloc[0]["player_id"])
-            # 260x190 is ~15 KB; the 1040x760 original is ~175 KB.
-            return f"https://cdn.nba.com/headshots/nba/latest/260x190/{pid}.png"
-    except Exception as exc:  # noqa: BLE001
-        logger.info("nba headshot lookup failed for %s: %s", name, exc)
-    return None
+def _pic_norm(s: str) -> list:
+    """Name tokens: accents stripped, a trailing "(wide receiver)" dropped,
+    hyphens split, generational suffixes removed, lower case."""
+    import re
+    import unicodedata
+    s = unicodedata.normalize("NFKD", s or "")
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    s = re.sub(r"\s*\(.*?\)\s*$", "", s)
+    s = re.sub(r"[^a-z ]", " ", s.lower().replace("-", " "))
+    return [t for t in s.split() if t not in _PIC_SUFFIXES]
 
 
-# Words the Wikipedia article must contain before its photo is trusted, per
-# sport — a name match alone returns strangers (see player_image).
-_PIC_SPORT_WORDS = {"tennis": ("tennis",), "nba": ("basketball",),
-                    "nfl": ("american football", "football")}
+def _pic_same_person(wanted: str, title: str) -> bool:
+    """The article title names the player we asked for: same last name, and
+    the same first name or a nickname of it ("Kenny" / "Kenneth"). Without
+    this a search for a player with no article returns the next footballer
+    alphabetically — Braelon Allen came back as Brandon Allen."""
+    a, b = _pic_norm(wanted), _pic_norm(title)
+    if len(a) < 2 or len(b) < 2 or a[-1] != b[-1]:
+        return False
+    fa, fb = a[0], b[0]
+    return fa == fb or (len(fa) >= 3 and len(fb) >= 3 and fa[:3] == fb[:3])
 
 
-@app.get("/api/player/image")
-def player_image(name: str = "", player_id: str = "", sport: str = "tennis"):
-    """Player headshot, sourced from Wikipedia/Wikimedia.
+def _commons_file_page(url: str) -> str:
+    """The Commons file page for a thumbnail or original URL —
+    .../wikipedia/commons/thumb/c/c1/NAME.jpg/330px-NAME.jpg -> File:NAME.jpg."""
+    path = (url or "").split("?")[0]
+    i = path.find("/wikipedia/commons/")
+    parts = path[i + len("/wikipedia/commons/"):].split("/") if i >= 0 else []
+    if parts and parts[0] == "thumb":
+        parts = parts[1:]
+    name = parts[2] if len(parts) >= 3 else (parts[-1] if parts else "")
+    return "https://commons.wikimedia.org/wiki/File:" + name if name else "https://commons.wikimedia.org/"
 
-    NOT SOFASCORE: it answers 403 to /player/{id}/image with a bare request,
-    with full browser headers, with a sofascore.com Referer AND through our
-    residential proxy, and img.sofascore.com 404s. There is no way through.
 
-    Wikimedia images are freely licensed and hotlinkable, so this redirects to
-    the file rather than proxying the bytes — the browser caches it and we pay
-    no bandwidth.
+def _wiki_pick(j: dict, sp: str):
+    """(url, meta) when a page summary is a {sp} player with a Commons photo,
+    else None. A disambiguation page, a different sport, no photo, or a photo
+    the article hosts on en.wikipedia itself (non-free) all give None."""
+    if (j.get("type") or "") != "standard":
+        return None
+    blurb = ((j.get("description") or "") + " " + (j.get("extract") or "")[:200]).lower()
+    if not any(w in blurb for w in _PIC_SPORT_WORDS[sp]):
+        return None
+    url = ((j.get("thumbnail") or {}).get("source")
+           or (j.get("originalimage") or {}).get("source"))
+    if not url or "/wikipedia/commons/" not in url:
+        return None
+    return url, {"title": j.get("title"),
+                 "article": ((j.get("content_urls") or {}).get("desktop") or {}).get("page"),
+                 "file_page": _commons_file_page(url)}
 
-    IT VERIFIES THE PERSON BEFORE RETURNING A FACE. Wikipedia will happily
-    answer "Michael Zheng" or "Lorenzo Giustino" with some other subject
-    entirely, and showing a stranger's photograph beside a player's name is far
-    worse than showing initials. The article description must identify a tennis
-    player or nothing is returned.
 
-    404 on any miss, so the client falls back to initials — never a placeholder
-    face, which would be inventing someone's appearance.
-    """
-    from fastapi.responses import RedirectResponse
-    # requests is NOT imported at module level in this file — only curl_cffi
-    # inside one function — so this must be local or the route NameErrors at
-    # request time, which a build would never catch.
+def _wiki_player_photo(nm: str, sp: str):
+    """(url, meta, definitive) for one player. definitive is False only on
+    transport trouble (timeouts, 429, 5xx), which is cached briefly; a real
+    answer — no article, someone else, no free photo — is cached for the TTL.
+
+    The exact title first (the common case). When that is missing, a
+    disambiguation page or about someone else, Wikipedia's title search is
+    asked and a candidate must (1) name this player, (2) be described as a
+    player of this sport and (3) be the ONLY such candidate: two active NFL
+    players called Chris Jones get initials rather than a coin flip."""
     import requests as _rq
     import urllib.parse
+    definitive = True
+    try:
+        with _PIC_UPSTREAM:
+            r = _rq.get(_WIKI_SUMMARY + urllib.parse.quote(nm.replace(" ", "_")),
+                        headers=_WIKI_UA, timeout=12)
+            if r.status_code == 200:
+                got = _wiki_pick(r.json() or {}, sp)
+                if got:
+                    return got[0], got[1], True
+            elif r.status_code != 404:
+                definitive = False
+            s = _rq.get(_WIKI_SEARCH, params={"q": nm, "limit": 8}, headers=_WIKI_UA, timeout=12)
+            if s.status_code != 200:
+                logger.info("player image %s: wikipedia search HTTP %s (not cached long)", nm, s.status_code)
+                return None, None, False
+            cands = []
+            for p in (s.json() or {}).get("pages") or []:
+                if not _pic_same_person(nm, p.get("title") or ""):
+                    continue
+                if not any(w in (p.get("description") or "").lower() for w in _PIC_SPORT_WORDS[sp]):
+                    continue
+                cands.append(p.get("key") or "")
+            if len(cands) != 1:
+                if len(cands) > 1:
+                    logger.info("player image %s: %d %s players share the name — no photo", nm, len(cands), sp)
+                return None, None, definitive
+            r2 = _rq.get(_WIKI_SUMMARY + urllib.parse.quote(cands[0]), headers=_WIKI_UA, timeout=12)
+            if r2.status_code == 200:
+                got = _wiki_pick(r2.json() or {}, sp)
+                return (got[0], got[1], True) if got else (None, None, True)
+            return None, None, r2.status_code == 404
+    except Exception:  # noqa: BLE001
+        logger.warning("player image lookup failed for %s", nm)
+        return None, None, False
+
+
+def _player_photo(name: str, sport: str):
+    """(url, meta) for a player, from the cache or a fresh lookup."""
     nm = (name or "").strip()
     if not nm:
         raise HTTPException(status_code=400, detail="name required")
@@ -2547,42 +2600,53 @@ def player_image(name: str = "", player_id: str = "", sport: str = "tennis"):
     key = nm.lower() if sp == "tennis" else f"{sp}:{nm.lower()}"
     hit = _PIC_CACHE.get(key)
     if hit and (time.time() - hit[0]) < (hit[2] if len(hit) > 2 else _PIC_TTL):
-        if hit[1]:
-            return RedirectResponse(hit[1], status_code=307)
-        raise HTTPException(status_code=404, detail="no image")
-    # NFL and NBA have real league headshots keyed by an id we already hold;
-    # Wikipedia is the fallback for anyone without one.
-    url = _nfl_headshot(nm) if sp == "nfl" else _nba_headshot(nm) if sp == "nba" else None
-    definitive = bool(url)
-    if not url:
-        try:
-            with _PIC_UPSTREAM:
-                r = _rq.get(
-                    "https://en.wikipedia.org/api/rest_v1/page/summary/"
-                    + urllib.parse.quote(nm.replace(" ", "_")),
-                    # Wikimedia require a descriptive agent and rate-limit generic ones.
-                    headers={"User-Agent": "BaselineTennis/1.0 (baselineev.vercel.app)"},
-                    timeout=12)
-            if r.status_code == 200:
-                definitive = True
-                j = r.json() or {}
-                blurb = ((j.get("description") or "") + " "
-                         + (j.get("extract") or "")[:200]).lower()
-                if any(w in blurb for w in _PIC_SPORT_WORDS[sp]):
-                    url = ((j.get("thumbnail") or {}).get("source")
-                           or (j.get("originalimage") or {}).get("source"))
-                else:
-                    logger.info("player image %s: article is not a %s player", nm, sp)
-            elif r.status_code == 404:
-                definitive = True          # no article — a real answer
-            else:
-                logger.info("player image %s: wikipedia HTTP %s (not cached long)", nm, r.status_code)
-        except Exception:  # noqa: BLE001
-            logger.warning("player image lookup failed for %s", nm)
-    _PIC_CACHE[key] = (time.time(), url, _PIC_TTL if (url or definitive) else _PIC_MISS_TTL)
+        return hit[1], (hit[3] if len(hit) > 3 else None)
+    url, meta, definitive = _wiki_player_photo(nm, sp)
+    _PIC_CACHE[key] = (time.time(), url, _PIC_TTL if (url or definitive) else _PIC_MISS_TTL, meta)
+    return url, meta
+
+
+@app.get("/api/player/image")
+def player_image(name: str = "", player_id: str = "", sport: str = "tennis"):
+    """Player photo, from Wikipedia / Wikimedia Commons and nowhere else.
+
+    NOT SOFASCORE: it answers 403 to /player/{id}/image with a bare request,
+    with full browser headers, with a sofascore.com Referer AND through our
+    residential proxy, and img.sofascore.com 404s. There is no way through.
+    NOT ESPN OR NBA.COM EITHER — see the note above _PIC_SPORT_WORDS.
+
+    Wikimedia images are freely licensed and hotlinkable, so this redirects to
+    the file rather than proxying the bytes — the browser caches it and we pay
+    no bandwidth. /api/player/image/credit gives the file page for attribution.
+
+    IT VERIFIES THE PERSON BEFORE RETURNING A FACE. Wikipedia will happily
+    answer "Michael Zheng" or "Lorenzo Giustino" with some other subject
+    entirely, and showing a stranger's photograph beside a player's name is far
+    worse than showing initials. The article must identify a player of the
+    requested sport, by name, or nothing is returned (_wiki_player_photo).
+
+    404 on any miss, so the client falls back to initials — never a placeholder
+    face, which would be inventing someone's appearance.
+    """
+    from fastapi.responses import RedirectResponse
+    url, _meta = _player_photo(name, sport)
     if url:
         return RedirectResponse(url, status_code=307)
     raise HTTPException(status_code=404, detail="no image")
+
+
+@app.get("/api/player/image/credit")
+def player_image_credit(name: str = "", sport: str = "tennis"):
+    """Where a player's photo comes from, for the attribution its free licence
+    asks for: the Wikimedia Commons file page (author and licence) and the
+    Wikipedia article. Public, like the image. 404 when there is no photo."""
+    url, meta = _player_photo(name, sport)
+    if not url:
+        raise HTTPException(status_code=404, detail="no image")
+    meta = meta or {}
+    return {"source": "Wikimedia Commons",
+            "file_page": meta.get("file_page") or _commons_file_page(url),
+            "article": meta.get("article"), "title": meta.get("title")}
 
 
 # ── APP AUTH (Discord sign-in) ───────────────────────────────────────────────

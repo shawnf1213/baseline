@@ -5,7 +5,7 @@
 import { Pressable, StyleSheet, Text, View } from 'react-native'
 import { LinearGradient } from 'expo-linear-gradient'
 import { Card } from './ui'
-import { PlayerAvatar, TeamLogo } from './Avatar'
+import { PlayerAvatar } from './Avatar'
 import { ConfRing } from './Ring'
 import { CardGlow } from './Glow'
 import { F, T, sideTone, tier } from '@/theme'
@@ -94,9 +94,8 @@ function Hero({ r, onPress, sub }: { r: PickRow; onPress: () => void; sub?: stri
         <View style={{ flex: 1, minWidth: 0 }}>
           <Text style={s.heroName} numberOfLines={2}>{r.player}</Text>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 6 }}>
-            {r.sport === 'tennis'
-              ? <PlayerAvatar sport="tennis" name={r.opponent} size={20} />
-              : <TeamLogo sport={r.sport} team={r.opponent} size={20} />}
+            {/* An NFL/NBA opponent is a team; its abbreviation is already in the text. */}
+            {r.sport === 'tennis' ? <PlayerAvatar sport="tennis" name={r.opponent} size={20} /> : null}
             <Text style={s.meta} numberOfLines={1}>vs {r.opponent}{sub ? ` · ${sub}` : ''}</Text>
           </View>
         </View>

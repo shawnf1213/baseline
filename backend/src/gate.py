@@ -48,6 +48,7 @@ PUBLIC_EXACT = {
     "/api/billing/portal",            # verifies its own session
     "/api/account/delete",            # verifies its own session
     "/api/player/image",              # a picture, same-origin for the website
+    "/api/player/image/credit",       # where that picture came from (attribution)
     "/api/admin/enforce",             # admin-token checked in the handler
 }
 PUBLIC_PREFIX = ("/api/auth/", "/docs", "/openapi", "/redoc")
