@@ -1,9 +1,8 @@
 # App Review reply — Guideline 2.1 "Information Needed" (2026-10-06, updated 2026-10-07 for build 8)
 
-Apple asked for a screen recording plus written answers on the first submission (new developer account). Part B is the text in App Review Information > Notes (and the reply, if a thread is open). The password is the reviewer code in the backend settings (APP_REVIEWER_CODE), never written here; `mobile/.secrets/app-review-reply.txt` holds the filled copy.
+Apple asked for a screen recording plus written answers on the first submission (new developer account). Part B is the text for App Review Information > Notes (4,000-character limit) and for the reply if a thread is open. The password is the reviewer code in the backend settings (APP_REVIEWER_CODE), never written here; `mobile/.secrets/app-review-reply.txt` holds the filled copy.
 
 ```text
-
 =====================================================================
 PART A — FOR YOU: the screen recording (item 1). Not part of the reply.
 =====================================================================
@@ -52,123 +51,20 @@ submission, paste Part B there as well.
 The password (the review account's fixed sign-in code): (the reviewer code — see App Review Information)
 
 =====================================================================
-PART B — PASTE THIS as the reply, AND into App Review Information > Notes
+PART B — PASTE THIS into App Review Information > Notes (4,000-character
+limit; this fits). Also paste it as the reply if Apple's thread is open.
 =====================================================================
 
-Thank you for the review. Answers to each item follow.
+1. SCREEN RECORDING: attached under Attachments. Physical iPhone, current iOS, from launch: sign-in, every screen, members-only content, the Subscribe path (opens checkout on our website in Safari), account deletion, and signing in again. There is no in-app registration: accounts come from subscribing on baselineev.com, so the recording shows sign-in.
 
-1. SCREEN RECORDING
-Attached: a screen recording from a physical iPhone on the current iOS,
-starting from app launch. It shows sign-in, every main screen, the
-members-only content, the Subscribe path (which opens checkout on our
-website in Safari), account deletion, and signing in again afterwards.
-There is no in-app account creation: a Baseline account comes from
-subscribing on our website, baselineev.com, and the app only signs in,
-so the recording shows sign-in rather than registration.
+2. PURPOSE: Baseline is a sports statistics and projection tool for adults (18+) who follow tennis, NFL and NBA player props. A statistical model prices a prop, shows its number beside the posted line, and grades every published pick in public, win or loss. Informational only: no bets are accepted or placed, no sportsbook integration, no affiliate or referral links; every projection screen says "for informational purposes only" and the app carries the 1-800-GAMBLER helpline. Nothing is sold in the app; a membership is bought on our website.
 
-2. PURPOSE AND AUDIENCE
-Baseline is a sports statistics and projection tool for adults who follow
-tennis, NFL and NBA player props. It prices a player prop (a tennis
-player's total games or aces, an NFL receiver's receiving yards, an NBA
-player's points) with a statistical model, shows the model's number next
-to the line the books post, and grades every pick it publishes in public,
-win or loss, so its record can be checked by anyone. The problem it
-solves: judging whether a posted line is high or low normally takes hours
-of manual stats work; Baseline does that work and shows the inputs
-(recent form, serve and return rates, game logs, matchup data). The
-audience is adult (18+) sports fans and prop-market researchers, mainly in
-the United States. Baseline is informational: it does not accept or place
-bets, has no sportsbook integration, no affiliate or referral links, and
-every projection screen states that projections are for informational
-purposes only. The app includes the National Problem Gambling Helpline
-(1-800-GAMBLER). The app sells nothing and has no in-app purchases; a
-membership is bought on our website.
+3. ACCESS. Demo account, full member access, sign-in method "Sign in with email". User name: chxpvro@gmail.com. Password: (the reviewer code — see App Review Information). Steps: launch > "Already a member? Sign in" > "Sign in with email" > enter the user name > "Email me a code" > type the password into the code box > "Sign in". This address receives the emailed 6-digit code like any member and also accepts the password, so no inbox is needed. One account type; Discord sign-in is an alternative route for members of our Discord server not needed for review.
+Features: Board (live PrizePicks and Underdog lines for tennis, NFL and NBA with Baseline's projection and confidence; switch sport and book; tap a player, then a prop, for the full sheet). Project (price any matchup: players, prop, line, surface). Picks (each day's released picks, the Pick of the Day, results, the month's record). Research (any player's form, prop history, game logs). Account (round button, top right): membership, notifications, privacy policy, support, sign out, delete account. Delete account: Account > Delete account > Delete; it removes personal data and signs out, and the demo account can sign in again afterwards. Notifications are optional. Internet required; no sample files.
 
-3. SETUP AND ACCESS
-Demo account (full member access; please use this one):
-  Sign-in method: Sign in with email
-  User name: chxpvro@gmail.com
-  Password: (the reviewer code — see App Review Information)
-Steps: launch the app > tap "Already a member? Sign in" > tap "Sign in
-with email" > enter the user name > tap "Email me a code" > on the next
-screen type the password above into the code box > tap "Sign in".
-Members receive a 6-digit code by email, and this address receives one
-too; the review account additionally accepts the fixed password above in
-the code box, so no inbox access is needed for review.
-There is one account type. Discord sign-in is a second way for members of
-our Discord server to reach the same membership; it is not needed for
-review.
+4. EXTERNAL SERVICES: our own backend API on Railway (the only server the app contacts); our website baselineev.com on Vercel, opened in the browser for checkout, privacy policy and support; Discord OAuth 2.0 (optional sign-in); Resend (email codes); Stripe (checkout and billing portal on the website, in Safari; the app never collects payment details); Whop (some members manage membership there, in the browser); Expo push service via APNs. Sports data, fetched by our backend only: Sofascore, Tennis Abstract datasets, nflverse, ESPN public API (schedules, odds), NBA.com statistics, and the public line feeds of PrizePicks and Underdog. Images: a free-use Wikipedia photo where one exists for a player, otherwise initials; no team logos or league marks. No AI services, analytics, advertising SDKs or crash reporters.
 
-Main features after sign-in:
-- Board: the live player-prop lines that PrizePicks and Underdog list for
-  tennis, NFL and NBA, each with Baseline's projection and confidence.
-  Switch sport and book at the top; search; tap a player card to see all
-  of that player's props; tap a prop for the full sheet (line vs
-  projection, edge, confidence, recent form, game log).
-- Project: price any matchup. Pick the players (search), the prop, the
-  line and the surface, then tap Run projection.
-- Picks: the ranked picks Baseline released each day, the Pick of the Day
-  when one qualified, results once games finish, and the month's record.
-- Research: look up any player: recent form, prop history, game logs.
-- Account (round button at the top right of every tab): membership
-  status, notification preferences, privacy policy, support, sign out,
-  delete account.
-Account deletion: Account > Delete account > confirm "Delete". It removes
-the account's personal data and signs the device out; the app returns to
-Welcome. The review account can be signed in again afterwards with the
-same credentials.
-Push notifications are optional and the app works fully without them. No
-sample files are needed. The app needs an internet connection; all data
-comes from our own backend.
+5. REGIONS: identical everywhere, with one difference: the Subscribe section (opens checkout on our website in the browser) appears only when the device region is United States; elsewhere sign-in only, with no purchase wording. English only.
 
-4. EXTERNAL SERVICES
-- Baseline backend API (our own service, hosted on Railway): the only
-  server the app talks to. Sign-in, membership status, all sports data and
-  projections.
-- Baseline website, baselineev.com (hosted on Vercel): opened in the
-  device's browser for checkout, the privacy policy and support. Never
-  embedded in the app.
-- Authentication: Discord OAuth 2.0 (optional sign-in method); email
-  one-time codes sent through Resend (transactional email).
-- Payments: Stripe. Checkout and the billing portal are Stripe-hosted
-  pages on our website, opened in Safari; the app never collects payment
-  details. Some members pay through Whop (a membership platform) and
-  manage it there through a link that opens in the browser.
-- Push notifications: Expo's push service, delivering through the Apple
-  Push Notification service.
-- Sports data (fetched by our backend, never by the device): Sofascore
-  (tennis match data and statistics), Tennis Abstract / Match Charting
-  Project (public tennis datasets), nflverse (public NFL statistics),
-  ESPN's public API (NFL and NBA schedules and game odds for context),
-  NBA.com statistics, and the public player-prop line feeds of PrizePicks
-  and Underdog.
-- Images: where a free-use photo of a player exists on Wikipedia, the app
-  shows it; otherwise the player's initials. The app shows no team logos
-  or league marks.
-- No AI services, analytics SDKs, advertising SDKs or crash reporters are
-  used in the app.
-
-5. REGIONAL DIFFERENCES
-The app behaves the same in every region with one difference: the
-Subscribe section, which opens checkout on our website in the browser, is
-shown only when the device's region is set to the United States. Outside
-the US, the Welcome and "No active membership" screens offer sign-in only
-and contain no purchase wording. Content, features and data are identical
-everywhere; the interface is in English only.
-
-6. REGULATED INDUSTRY AND THIRD-PARTY MATERIAL
-Baseline does not operate in a regulated industry. It is not a gambling
-operator or a sportsbook: it does not accept, place, broker or settle
-bets, it takes no money other than its own subscription (sold on the
-website), it has no sportsbook integrations and no affiliate or referral
-links, and it holds no gambling licence because none is required for a
-statistics and projection service. The lines it displays are the publicly
-posted player-prop lines of PrizePicks and Underdog, shown as the
-reference the projection is compared against. The app is rated 18+ and
-carries the 1-800-GAMBLER helpline.
-Third-party material: the only third-party images are player photographs
-taken from Wikipedia, used only where Wikipedia offers a free-use image for
-that player (Creative Commons or public domain); players without one are
-shown as initials. The app contains no team logos or league marks and no
-third-party music or video. Sports statistics are factual data.
+6. REGULATED INDUSTRY / THIRD-PARTY MATERIAL: not a regulated business. Baseline does not accept, place, broker or settle bets, takes no money except its own subscription (sold on the website), has no sportsbook integrations or affiliate links, and needs no gambling licence as a statistics service. The lines shown are the publicly posted player-prop lines of PrizePicks and Underdog, the reference the projection is compared against. Rated 18+. Third-party material: only player photographs from Wikipedia, used where Wikipedia offers a free-use (Creative Commons or public domain) image for that player; no team logos, league marks, music or video. Statistics are facts.
 ```
