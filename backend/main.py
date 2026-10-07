@@ -2457,11 +2457,17 @@ _PIC_TTL = 30 * 24 * 3600      # a headshot does not change
 # cached as "no photo" for the full 30 days, so one throttled request during a
 # board's burst of image loads hid that player's face for a month (Sinner,
 # 2026-10-06). Transient misses are retried after ten minutes.
-_PIC_MISS_TTL = 10 * 60
-# At most a few upstream lookups at once: a board opens with dozens of faces,
-# and Wikimedia throttles a burst from one address.
+_PIC_MISS_TTL = 90
+# TWO upstream lookups at once, spaced, and a 429 is waited out once: a board
+# opens with a hundred faces, the lookup can take three requests each, and
+# Wikimedia answered a burst of that from one address with 429s — which were
+# then remembered as "no photo" (2026-10-07, right after a deploy emptied the
+# cache). Hits and real misses now also persist in the database, so a restart
+# no longer re-asks for every face at once.
 import threading as _threading
-_PIC_UPSTREAM = _threading.BoundedSemaphore(4)
+_PIC_UPSTREAM = _threading.BoundedSemaphore(2)
+_PIC_SPACING_S = 0.15
+_PIC_DURABLE_KEY = "pic:v2:{}"
 
 
 # ── PLAYER PHOTOS: WIKIPEDIA / WIKIMEDIA COMMONS ONLY ────────────────────────
@@ -2484,6 +2490,22 @@ _WIKI_UA = {"User-Agent": "BaselineTennis/1.0 (baselineev.com)"}
 _WIKI_SUMMARY = "https://en.wikipedia.org/api/rest_v1/page/summary/"
 _WIKI_SEARCH = "https://en.wikipedia.org/w/rest.php/v1/search/title"
 _PIC_SUFFIXES = {"jr", "sr", "ii", "iii", "iv"}
+
+
+def _wiki_get(url: str, **kw):
+    """One Wikimedia request, spaced, with a single wait-and-retry on 429
+    (Retry-After honoured, capped at five seconds). Caller holds the semaphore."""
+    import requests as _rq
+    time.sleep(_PIC_SPACING_S)
+    r = _rq.get(url, headers=_WIKI_UA, timeout=12, **kw)
+    if r.status_code == 429:
+        try:
+            wait = min(5.0, max(1.0, float(r.headers.get("Retry-After") or 2)))
+        except ValueError:
+            wait = 2.0
+        time.sleep(wait)
+        r = _rq.get(url, headers=_WIKI_UA, timeout=12, **kw)
+    return r
 
 
 def _pic_norm(s: str) -> list:
@@ -2550,20 +2572,19 @@ def _wiki_player_photo(nm: str, sp: str):
     asked and a candidate must (1) name this player, (2) be described as a
     player of this sport and (3) be the ONLY such candidate: two active NFL
     players called Chris Jones get initials rather than a coin flip."""
-    import requests as _rq
     import urllib.parse
     definitive = True
     try:
         with _PIC_UPSTREAM:
-            r = _rq.get(_WIKI_SUMMARY + urllib.parse.quote(nm.replace(" ", "_")),
-                        headers=_WIKI_UA, timeout=12)
+            r = _wiki_get(_WIKI_SUMMARY + urllib.parse.quote(nm.replace(" ", "_")))
             if r.status_code == 200:
                 got = _wiki_pick(r.json() or {}, sp)
                 if got:
                     return got[0], got[1], True
             elif r.status_code != 404:
                 definitive = False
-            s = _rq.get(_WIKI_SEARCH, params={"q": nm, "limit": 8}, headers=_WIKI_UA, timeout=12)
+                logger.info("player image %s: wikipedia summary HTTP %s", nm, r.status_code)
+            s = _wiki_get(_WIKI_SEARCH, params={"q": nm, "limit": 8})
             if s.status_code != 200:
                 logger.info("player image %s: wikipedia search HTTP %s (not cached long)", nm, s.status_code)
                 return None, None, False
@@ -2578,7 +2599,7 @@ def _wiki_player_photo(nm: str, sp: str):
                 if len(cands) > 1:
                     logger.info("player image %s: %d %s players share the name — no photo", nm, len(cands), sp)
                 return None, None, definitive
-            r2 = _rq.get(_WIKI_SUMMARY + urllib.parse.quote(cands[0]), headers=_WIKI_UA, timeout=12)
+            r2 = _wiki_get(_WIKI_SUMMARY + urllib.parse.quote(cands[0]))
             if r2.status_code == 200:
                 got = _wiki_pick(r2.json() or {}, sp)
                 return (got[0], got[1], True) if got else (None, None, True)
@@ -2601,8 +2622,23 @@ def _player_photo(name: str, sport: str):
     hit = _PIC_CACHE.get(key)
     if hit and (time.time() - hit[0]) < (hit[2] if len(hit) > 2 else _PIC_TTL):
         return hit[1], (hit[3] if len(hit) > 3 else None)
+    # The durable copy survives restarts: one database read instead of a
+    # Wikipedia burst for every face after a deploy.
+    from src import database
+    try:
+        d = database.cache_get(_PIC_DURABLE_KEY.format(key))
+    except Exception:  # noqa: BLE001 — the lookup below still works
+        d = None
+    if isinstance(d, dict) and "url" in d:
+        _PIC_CACHE[key] = (time.time(), d.get("url"), _PIC_TTL, d.get("meta"))
+        return d.get("url"), d.get("meta")
     url, meta, definitive = _wiki_player_photo(nm, sp)
     _PIC_CACHE[key] = (time.time(), url, _PIC_TTL if (url or definitive) else _PIC_MISS_TTL, meta)
+    if url or definitive:
+        try:
+            database.cache_set(_PIC_DURABLE_KEY.format(key), {"url": url, "meta": meta}, ttl_seconds=_PIC_TTL)
+        except Exception:  # noqa: BLE001
+            pass
     return url, meta
 
 
